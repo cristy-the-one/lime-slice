@@ -421,6 +421,28 @@ let boxObject = "";
 // ===== 3d. apply:true in one job; 4. verify:true with the sliced Stress study. =====
 {
   const object = await shellBox(BX, BY, BZ);
+  // An opening through the floor, off the middle: its sides are free border, which the planner leaves free and the
+  // verify must not hold (docs/plan-auto-ribs.md 9.1).
+  const [ox, oy, ow, ol] = [BX / 4, BY / 5, 16, 12];
+  const cut = await call("model_apply", { object, probe: true, op: { kind: "boolean", op: "cut", primitive: "box", dx: ow, dy: ol, dz: 6, centre: [ox, oy, 1] } });
+  check("an opening cut through the floor", cut.ok === true, JSON.stringify(cut).slice(0, 300));
+  // A face of the opening: every triangle on the opening's outline, within the floor's thickness.
+  const openingFaces = (id: string): Set<number> => {
+    const s = held(id);
+    const all = new Map<number, boolean>();
+    for (let t = 0; t * 9 + 8 < s.positions.length; t += 1) {
+      let on = true;
+      for (let k = 0; k < 3; k += 1) {
+        const [x, y, z] = [s.positions[t * 9 + k * 3]!, s.positions[t * 9 + k * 3 + 1]!, s.positions[t * 9 + k * 3 + 2]!];
+        if (Math.abs(x - ox) > ow / 2 + 0.01 || Math.abs(y - oy) > ol / 2 + 0.01 || z < -0.01 || z > 2.01) on = false;
+      }
+      const face = Number(s.triangles[t]);
+      all.set(face, (all.get(face) ?? true) && on);
+    }
+    return new Set([...all].filter(([, on]) => on).map(([face]) => face));
+  };
+  const opening = openingFaces(object);
+  check("the opening has its four sides", opening.size === 4, JSON.stringify([...opening]));
   const rows = await historyCount(object);
   const started = await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } }, apply: true });
   const blocked = await call("model_check", { object });
@@ -429,15 +451,28 @@ let boxObject = "";
   check("ribs_plan {apply:true} plans and applies in one job", done.ok === true && done.applied === true && (await historyCount(object)) === rows + 1, JSON.stringify(done.apply ?? done).slice(0, 400));
   await call("model_undo", { object });
   const plan = await waitJob(String((await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } } })).job));
+  // The headline is the worst point; the strain-energy figure is labelled for what it is.
+  const peak = plan.plan?.bare?.maxDeflectionMm / plan.plan?.ribbed?.maxDeflectionMm;
+  check("the plan's worst-point figure is bare peak over ribbed peak", plan.plan?.peakFactor > 1 && Math.abs(plan.plan.peakFactor - peak) < 1e-3 && typeof plan.plan.stiffnessFactor === "number" && typeof plan.plan.figures?.peakFactor === "string", JSON.stringify({ peakFactor: plan.plan?.peakFactor, peak, stiffnessFactor: plan.plan?.stiffnessFactor }));
+  check("the plan sentence leads with the worst point, then the overall figure labelled", /^\d+ ribs?: bends [\d.]+× less at its worst point; [\d.]+× as stiff overall \(this wall alone, held at its edges\)\. Shell model, relative\./.test(String(plan.sentence)), String(plan.sentence));
+  check("free rib ends carry the safety line, and only then", plan.plan?.freeEnds === /longer end tapers help/.test(String(plan.sentence)), JSON.stringify({ freeEnds: plan.plan?.freeEnds, sentence: plan.sentence }));
+  const border = plan.wall?.borderFaces;
+  check("the opening's sides are free border, the inner walls held", JSON.stringify([...(border?.free ?? [])].sort((a: number, b: number) => a - b)) === JSON.stringify([...opening].sort((a, b) => a - b)) && border.held.length === 4 && border.held.every((face: number) => !opening.has(face)) && border.allBorders === false, JSON.stringify(border));
   const t0 = Date.now();
   const verifying = await call("ribs_apply", { job: plan.job, verify: true });
   check("verify answers with a job", verifying.status === "running" && typeof verifying.job === "string", JSON.stringify(verifying).slice(0, 300));
   const verified = await waitJob(String(verifying.job));
   const ms = Date.now() - t0;
-  check("verify: the sliced Stress study before and after", verified.ok === true && verified.verify?.before?.maxDisplacementMm > 0 && verified.verify?.after?.maxDisplacementMm > 0, JSON.stringify(verified.verify ?? verified).slice(0, 900));
-  check("verify: the ribbed part bends less", verified.verify?.after?.maxDisplacementMm < verified.verify?.before?.maxDisplacementMm, JSON.stringify(verified.verify));
-  check("verify: print time and filament of both slices", typeof verified.verify?.before?.slicerSeconds === "number" && typeof verified.verify?.after?.slicerGrams === "number", JSON.stringify(verified.verify));
-  report.push(`verify (sliced Stress study, placeholder card, relative): ${JSON.stringify(verified.verify)} in ${ms} ms`);
+  const v = verified.verify;
+  check("verify: the sliced Stress study before and after, its raw values kept in sliced.rough", verified.ok === true && v?.sliced?.rough?.before?.maxDisplacementMm > 0 && v?.sliced?.rough?.after?.maxDisplacementMm > 0 && typeof v?.sliced?.rough?.why === "string", JSON.stringify(v ?? verified).slice(0, 900));
+  check("verify: a 2 mm cell on a 2 mm wall is a meaningful rough check: the ribbed part bends less", v?.sliced?.meaningful === true && v.sliced.bendsLess > 1 && /^Sliced check, rough: bends [\d.]+× less\.$/.test(String(v.sentence)), JSON.stringify(v?.sliced));
+  check("verify: no deflection or safety factor from a rough study at one cell size, and no \"stiffer\"", v?.before?.minSafetyFactor === undefined && v?.after?.maxDisplacementMm === undefined && v?.change?.minSafetyFactor === undefined && v?.stiffer === undefined && !/stiffer/.test(String(verified.sentence)), JSON.stringify(v));
+  check("verify: holds the inner walls, not the opening's sides", Array.isArray(v?.setup?.holds?.[0]?.faces) && v.setup.holds[0].faces.length >= 4 && v.setup.holds[0].faces.every((face: number) => !openingFaces(object).has(face)) && JSON.stringify(v.setup.notHeld) === JSON.stringify(border.free), JSON.stringify(v?.setup));
+  check("verify: print time and filament of both slices", typeof v?.before?.slicerSeconds === "number" && typeof v?.after?.slicerGrams === "number", JSON.stringify(v));
+  check("the apply sentence names what was built, the plan's figures and the sliced check", /^Built \d+ rib paths? as one step, adding \d+ mm³/.test(String(verified.sentence)) && /Planned \(shell model, relative\): bends [\d.]+× less at its worst point/.test(String(verified.sentence)) && String(verified.sentence).endsWith(String(v?.sentence)), String(verified.sentence));
+  report.push(`plan sentence: ${plan.sentence}`);
+  report.push(`apply sentence: ${verified.sentence}`);
+  report.push(`verify (sliced Stress study, placeholder card, relative): ${JSON.stringify(v)} in ${ms} ms`);
   timings.push(`verify ${ms} ms`);
 }
 

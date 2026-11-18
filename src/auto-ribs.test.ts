@@ -13,8 +13,12 @@ import {
   comparisonLines,
   costText,
   editedNote,
+  freeEndsLine,
   gainText,
   goalLine,
+  overallLine,
+  peakGainText,
+  stressCheckLines,
   looseLine,
   goalOf,
   idleRun,
@@ -114,7 +118,7 @@ run = runEvent(run, { ...ev("changed", 4, 0.55), heights: [4] });
 eq("a changed rib is replaced in place", run.ribs.map((r) => [r.id, r.heights[0]]), [[4, 4], [5, 6]]);
 run = runEvent(run, ev("removed", 5, 0.6));
 eq("a removed rib leaves", run.ribs.map((r) => r.id), [4]);
-eq("the running line", totalsLine(run.totals, 1.24, 10000), "1 rib · +0.1 g, +0.7 % · 2× stiffer");
+eq("the running line", totalsLine(run.totals, 1.24, 10000), "1 rib · +0.1 g, +0.7 % · 2× as stiff overall");
 eq("before any rib", totalsLine(null, 1.24, 1), "No rib yet.");
 
 const plan: RibPlanResult = {
@@ -124,7 +128,7 @@ const plan: RibPlanResult = {
   ],
   ribVolumeMm3: 10000,
   bare: { compliance: 3, maxDeflectionMm: 0.9 },
-  ribbed: { compliance: 1, maxDeflectionMm: 0.3 },
+  ribbed: { compliance: 1, maxDeflectionMm: 0.36 },
   stiffnessFactor: 3.1,
   goalMet: true,
   thickening: { addedThicknessMm: 0.62, addedVolumeMm3: 20000 },
@@ -133,10 +137,26 @@ const plan: RibPlanResult = {
   stoppedEarly: false,
 };
 run = runDone(run, { ok: true, plan });
-eq("the result's gain and cost", resultNumbers(run, 1.24, 200000), { gain: "3.1× stiffer", cost: "+12 g, +5 %", edited: false, ribs: 2 });
+// The headline is the worst point (0.9 / 0.36 = 2.5), not the strain-energy figure (3.1), which is labelled for what it is.
+eq("the result's gain and cost", resultNumbers(run, 1.24, 200000), { gain: "Bends 2.5× less at its worst point", cost: "+12 g, +5 %", edited: false, ribs: 2 });
+eq("the overall line names what the strain-energy figure is", overallLine(plan, false), "3.1× as stiff overall: this wall alone, held at its edges.");
+eq("without both deflections the headline falls back to the overall figure", resultNumbers({ ...run, plan: { ...plan, ribbed: { compliance: 1, maxDeflectionMm: 0 } } }, 1.24, 200000)?.gain, "3.1× as stiff overall");
+eq("a rib with no free end: no safety line", freeEndsLine(plan.ribs), "");
+eq("a rib ending free in mid-wall: the safety line", freeEndsLine([{ ...plan.ribs[0]!, ends: ["boundary", "free"] }]), "Ribs can lower the least safety factor at a rib's free end and in its web; longer end tapers help.");
+eq("peak words", [peakGainText(1.01), peakGainText(1.18), peakGainText(0.8)], ["Bends about as much at its worst point", "Bends 1.2× less at its worst point", "Bends 1.3× more at its worst point"]);
 check("a full plan applies", applicable(run));
 run = toggleRemoved(run, 1);
-eq("a rib taken out: material recounted, stiffness the plan's before the edit", resultNumbers(run, 1.24, 200000), { gain: "3.1× stiffer before the edit", cost: "+8.7 g, +3.5 %", edited: true, ribs: 1 });
+eq("a rib taken out: material recounted, stiffness the plan's before the edit", resultNumbers(run, 1.24, 200000), { gain: "Bends 2.5× less at its worst point before the edit", cost: "+8.7 g, +3.5 %", edited: true, ribs: 1 });
+eq("and the overall line says so too", overallLine(plan, true), "3.1× as stiff overall: this wall alone, held at its edges, before the edit.");
+
+// --- The Stress check after Apply: a rough ratio only, never "N× stiffer", no safety factor from a rough study.
+const side = (mm: number, sf: number, trust: string | null = "rough") => ({ maxDisplacementMm: mm, minSafetyFactor: sf, trust });
+eq("a rough sliced check on a 2 mm wall: the ratio only", stressCheckLines({ before: side(0.4, 8.1), after: side(0.1, 5.4), cellMm: 2 }, 2), [
+  "Sliced check, rough: bends 4× less.",
+  "The whole part, sliced at one 2 mm cell, with the same holds and loads. Only the before/after ratio is a cross-check of the plan: a thin wall's deflection and safety factor from one cell size are not reliable, so they are not shown. Material cards are placeholders.",
+]);
+eq("a cell thicker than the wall: not meaningful, no ratio", stressCheckLines({ before: side(0.4, 8.1), after: side(0.1, 5.4), cellMm: 2 }, 1.5), ["Sliced check: not meaningful at this size. Its 2 mm cell is thicker than the 1.5 mm wall, so the sliced part cannot bend the way the wall does; no ratio is given."]);
+eq("one cell size is rough whatever the study's label: no safety factor", stressCheckLines({ before: side(0.4, 8.1, "usable"), after: side(0.1, 5.4, "usable"), cellMm: 2 }, 2)[0], "Sliced check, rough: bends 4× less.");
 check("the edited note says stale", editedNote(run).includes("(stale)"));
 eq("the kept ribs", keptRibs(run).length, 1);
 run = toggleRemoved(run, 0);
@@ -149,11 +169,11 @@ eq("the plan beats both", comparisonLines(plan, 1.24), ["A wall 0.62 mm thicker 
 check("a plan that beats neither says so", comparisonLines({ ...plan, notBetterThanBaseline: true }, 1.24).at(-1)!.startsWith("These ribs are no better"));
 eq("an unreached grid", comparisonLines({ ...plan, grid: { reached: false, pitchMm: 10, volumeMm3: null, gridVolumeMm3: 1 } }, 1.24)[1], "No even grid of the same ribs, down to 10 mm apart, is as stiff.");
 eq("stopped before the comparisons", comparisonLines({ ...plan, thickening: null, grid: null, stoppedEarly: true }, 1.24), ["Stopped before the comparisons with a thicker wall and an even grid."]);
-eq("a target not met", goalLine({ kind: "stiffer", factor: 3 }, { ...plan, goalMet: false, stiffnessFactor: 2.3 }, 1.24), "Reached 2.3× of the 3× asked: no further rib pays enough.");
+eq("a target not met", goalLine({ kind: "stiffer", factor: 3 }, { ...plan, goalMet: false, stiffnessFactor: 2.3 }, 1.24), "Reached 2.3× of the 3× asked (as stiff overall): no further rib pays enough.");
 eq("a met goal says nothing", goalLine({ kind: "stiffer", factor: 3 }, plan, 1.24), "");
 eq("loose ends said with why", looseLine({ ...plan, looseEnds: [{ rib: 0, end: 1, reason: "noRibZone" }, { rib: 2, end: 0, reason: "noRibZone" }] }), "2 rib ends stop short of a wall or another rib: 2 at a keep-clear zone.");
 eq("no loose end, no line", looseLine({ ...plan, looseEnds: [] }), "");
-eq("gain words", [gainText(1.01), gainText(3.14), gainText(12.6)], ["about as stiff", "3.1× stiffer", "13× stiffer"]);
+eq("gain words", [gainText(1.01), gainText(3.14), gainText(12.6)], ["about as stiff overall", "3.1× as stiff overall", "13× as stiff overall"]);
 eq("cost words", costText(9400 / 1.24, 1.24, 9400 / 1.24 / 0.06), "+9.4 g, +6 %");
 
 // --- The wall's line.

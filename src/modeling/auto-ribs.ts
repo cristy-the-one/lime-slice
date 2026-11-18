@@ -709,3 +709,96 @@ export function ribCardFor<C extends RibCardIn>(cards: readonly C[], filament: {
     },
   };
 }
+
+// --- What the numbers mean (docs/plan-auto-ribs.md 9.1): shared by ribs_plan, ribs_apply and the panel. ---
+
+/** How the strain-energy figure is labelled wherever it is shown: what it is a figure of. */
+export const WALL_ALONE = "this wall alone, held at its edges";
+
+/** The line a plan with free rib ends carries (9.1: a stub ending in mid-wall can lower the least safety factor). */
+export const FREE_END_LINE = "Ribs can lower the least safety factor at a rib's free end and in its web; longer end tapers help.";
+
+/** "2.33×", "1.09×", "4×", "12×": two decimals under 10, none from 10. */
+export function timesText(factor: number): string {
+  const k = factor < 10 ? 100 : 1;
+  return `${Math.round(factor * k) / k}×`;
+}
+
+/** The worst-point figure: the bare wall's greatest deflection over the ribbed wall's. Null without both. */
+export function peakFactorOf(bare: { maxDeflectionMm?: number | null } | null | undefined, ribbed: { maxDeflectionMm?: number | null } | null | undefined): number | null {
+  const b = bare?.maxDeflectionMm;
+  const a = ribbed?.maxDeflectionMm;
+  return typeof b === "number" && typeof a === "number" && Number.isFinite(b) && Number.isFinite(a) && b > 0 && a > 0 ? b / a : null;
+}
+
+/** "bends 1.18× less at its worst point"; "bends about as much at its worst point" within 2 %. */
+export function peakText(factor: number): string {
+  if (factor >= 1.02) return `bends ${timesText(factor)} less at its worst point`;
+  if (factor <= 1 / 1.02) return `bends ${timesText(1 / factor)} more at its worst point`;
+  return "bends about as much at its worst point";
+}
+
+/** "1.36× as stiff overall (this wall alone, held at its edges)": the strain-energy figure, labelled. */
+export function overallText(factor: number): string {
+  return `${timesText(factor)} as stiff overall (${WALL_ALONE})`;
+}
+
+/** Whether any rib of a plan ends free (in mid-wall, not at a border, a hold or another rib). */
+export function hasFreeEnds(ribs: readonly { ends?: readonly unknown[] | null }[]): boolean {
+  return ribs.some((rib) => Array.isArray(rib.ends) && rib.ends.some((end) => end === "free"));
+}
+
+/** One side of a sliced check: what the study answered. */
+export interface SlicedSide {
+  maxDisplacementMm: number | null;
+  minSafetyFactor: number | null;
+  /** The study's own trust label: rough, usable or converged. Null reads as rough. */
+  trust: string | null;
+}
+
+/** What a sliced before/after check may say, and why the raw values are held back. */
+export interface SlicedVerdict {
+  /** False when the cell is thicker than the wall, or a deflection is missing: then no ratio is given. */
+  meaningful: boolean;
+  /** Before over after, the greatest deflection's ratio; null when not meaningful. A rough cross-check only. */
+  bendsLess: number | null;
+  /** True only when the study is trusted (not rough) and the cell is no thicker than the wall. */
+  showSafety: boolean;
+  /** The plain sentence: "Sliced check, rough: bends 1.09× less." or why it is not meaningful. */
+  sentence: string;
+  /** Why the absolute values are not shown, or null when they are. */
+  why: string | null;
+}
+
+const two = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * What a sliced Stress check of a wall before and after ribs can honestly say (9.1). A sliced cell is `cellMm` square
+ * and about as tall, so a cell thicker than the wall spreads the wall's material over a deeper section: the check is
+ * then not meaningful at this size and gives no ratio. Otherwise its before/after ratio is a rough cross-check (within
+ * 4 % to 21 % low of a converged solid on the test boxes), never "N× stiffer"; its absolute deflection and safety factor
+ * are not converged at one cell size (they rose or fell with the cell size), so they are shown only when the study
+ * itself is trusted. A study solved at one cell size (`resolutionChecked` false: the verify and the panel's check) is
+ * rough whatever its label says, since no second size has moved its numbers (9.1: no safety factor from a sliced study
+ * at a single cell size). `wallMm` null (not known) is taken as thick enough.
+ */
+export function slicedVerdict(before: SlicedSide, after: SlicedSide, cellMm: number, wallMm: number | null, resolutionChecked = false): SlicedVerdict {
+  const tooCoarse = wallMm !== null && wallMm > 0 && cellMm > wallMm * 1.02;
+  const b = before.maxDisplacementMm;
+  const a = after.maxDisplacementMm;
+  const rough = !resolutionChecked || (before.trust ?? "rough") === "rough" || (after.trust ?? "rough") === "rough";
+  if (tooCoarse) {
+    const why = `The sliced study's ${cellMm} mm cell is thicker than the ${two(wallMm!)} mm wall: a cell spreads the wall's material over a deeper section, so neither its deflections nor their ratio say anything about this wall.`;
+    return { meaningful: false, bendsLess: null, showSafety: false, sentence: `Sliced check: not meaningful at this size. Its ${cellMm} mm cell is thicker than the ${two(wallMm!)} mm wall, so the sliced part cannot bend the way the wall does; no ratio is given.`, why };
+  }
+  const why = rough
+    ? `The sliced study ran at one ${cellMm} mm cell size, so its trust is rough: a thin wall's deflection and least safety factor from it change with the cell size (on a test box the deflection swung from 0.5 to 2.4 mm across four sizes, and the safety factor rose or fell), so only the before/after ratio is used, as a rough cross-check.`
+    : null;
+  if (!(typeof b === "number" && typeof a === "number" && b > 0 && a > 0)) return { meaningful: false, bendsLess: null, showSafety: false, sentence: "Sliced check: no deflection came back, so there is nothing to compare.", why };
+  const ratio = b / a;
+  const words = ratio >= 1.02 ? `bends ${timesText(ratio)} less` : ratio <= 1 / 1.02 ? `bends ${timesText(1 / ratio)} more` : "bends about as much";
+  const showSafety = !rough && before.minSafetyFactor !== null && after.minSafetyFactor !== null;
+  const safety = showSafety ? ` Least safety factor ${two(before.minSafetyFactor!)} → ${two(after.minSafetyFactor!)}.` : "";
+  const label = rough ? "rough" : before.trust === "converged" && after.trust === "converged" ? "converged" : "usable";
+  return { meaningful: true, bendsLess: ratio, showSafety, sentence: `Sliced check, ${label}: ${words}.${safety}`, why };
+}

@@ -187,6 +187,8 @@ export interface WallLoop {
   joinedShare: number;
   /** Runs along the loop of one class, in order. */
   spans: { class: "joined" | "free"; lengthMm: number; from: V3; to: V3 }[];
+  /** Per edge, from `vertices[i]` to the next (the last closes the loop): true when classed joined. */
+  joined: boolean[];
 }
 
 export interface WallHole {
@@ -2399,7 +2401,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
       }
       for (const span of spans) span.lengthMm = round(span.lengthMm, 2);
       const share = total > 0 ? joinedLen / total : 0;
-      loops.push({ vertices: verts, lengthMm: round(total, 2), class: share >= 0.9 ? "joined" : share <= 0.1 ? "free" : "mixed", joinedShare: round(share, 3), spans });
+      loops.push({ vertices: verts, lengthMm: round(total, 2), class: share >= 0.9 ? "joined" : share <= 0.1 ? "free" : "mixed", joinedShare: round(share, 3), spans, joined: cls });
     }
   }
   const longest = loops.reduce((best, loop, i) => (best < 0 || loop.lengthMm > loops[best]!.lengthMm ? i : best), -1);
@@ -2930,6 +2932,75 @@ function throughWall(rays: ReturnType<typeof meshRays>, ix: Indexed, p: V3, n: V
     if (travelled >= far) return null;
   }
   return null;
+}
+
+/**
+ * The faces the wall stops at, split by the border they run along: `held` meet the wall across spans classed joined
+ * (the part's material continues there: what the planner clamps), `free` only across free spans (the side faces of an
+ * open hole, an open edge: the planner leaves those free). Each border edge votes, by its length, for the stop face
+ * nearest its middle; a face goes to the class with more length. A stop face no border edge lies on (it meets the wall
+ * at a corner only) is in neither. `allBorders` is true when the wall has no joined span at all: a free panel the
+ * planner holds all round, so a check of the same problem holds every stop face.
+ */
+export function heldStopFaces(solid: RibWallSolid, wall: Pick<RibWall, "loops" | "skin" | "report">): { held: number[]; free: number[]; allBorders: boolean } {
+  const stops = [...new Set(wall.report.faces.stops.map((s) => s.face))].sort((a, b) => a - b);
+  const anyJoined = wall.loops.some((loop) => loop.joined.some(Boolean));
+  if (!anyJoined) return { held: stops, free: [], allBorders: true };
+  // Each stop face's triangles, with a box to skip far faces fast.
+  const pos = solid.positions;
+  const faces = stops.map((face) => {
+    const tris: [V3, V3, V3][] = [];
+    const lo: V3 = [Infinity, Infinity, Infinity];
+    const hi: V3 = [-Infinity, -Infinity, -Infinity];
+    for (let t = 0; t * 9 + 8 < pos.length; t += 1) {
+      if (Number(solid.faceOf[t]) !== face) continue;
+      const tri: [V3, V3, V3] = [
+        [pos[t * 9]!, pos[t * 9 + 1]!, pos[t * 9 + 2]!],
+        [pos[t * 9 + 3]!, pos[t * 9 + 4]!, pos[t * 9 + 5]!],
+        [pos[t * 9 + 6]!, pos[t * 9 + 7]!, pos[t * 9 + 8]!],
+      ];
+      for (const p of tri) for (let k = 0; k < 3; k += 1) {
+        lo[k] = Math.min(lo[k]!, p[k]!);
+        hi[k] = Math.max(hi[k]!, p[k]!);
+      }
+      tris.push(tri);
+    }
+    return { face, tris, lo, hi };
+  });
+  const joinedMm = new Map<number, number>();
+  const freeMm = new Map<number, number>();
+  for (const loop of wall.loops) {
+    const n = loop.vertices.length;
+    loop.joined.forEach((isJoined, i) => {
+      const a = wall.skin[loop.vertices[i]!]!;
+      const b = wall.skin[loop.vertices[(i + 1) % n]!]!;
+      const m = mul(add(a, b), 0.5);
+      let best: { face: number; d: number } | null = null;
+      for (const f of faces) {
+        // A box test first: a face farther than the best so far cannot win.
+        const reach = best ? best.d : Infinity;
+        let out = 0;
+        for (let k = 0; k < 3; k += 1) out = Math.max(out, f.lo[k]! - m[k]!, m[k]! - f.hi[k]!);
+        if (out > reach) continue;
+        for (const [p, q, s] of f.tris) {
+          const d = dist(m, closestOnTriangle(m, p, q, s).q);
+          if (!best || d < best.d) best = { face: f.face, d };
+        }
+      }
+      if (!best) return;
+      const into = isJoined ? joinedMm : freeMm;
+      into.set(best.face, (into.get(best.face) ?? 0) + dist(a, b));
+    });
+  }
+  const held: number[] = [];
+  const free: number[] = [];
+  for (const face of stops) {
+    const j = joinedMm.get(face) ?? 0;
+    const f = freeMm.get(face) ?? 0;
+    if (j === 0 && f === 0) continue;
+    (j >= f ? held : free).push(face);
+  }
+  return { held, free, allBorders: false };
 }
 
 // ------------------------------------------------------------------------------------------------ back to the part

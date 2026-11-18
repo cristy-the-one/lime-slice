@@ -10,7 +10,7 @@ import { posedContext } from "../../model-features";
 import { printFrame } from "../../model-check";
 import { ribNetPlan, ribNetVerify } from "../../modeling/rib-net.ts";
 import { meshToModel } from "../../plate";
-import { AUTO_RIBS_LABEL, cardFromRibNet, ribNetSource, type CheckNumbers } from "../../auto-ribs.ts";
+import { AUTO_RIBS_LABEL, cardFromRibNet, ribNetSource, type CheckNumbers, type StressCheckReply, type StressCheckSetup } from "../../auto-ribs.ts";
 import type { AutoRibsJob, AutoRibsJobBody, AutoRibsReply } from "../../auto-ribs-worker.ts";
 import type { GroupOp, ModelOp } from "../../model-tree";
 import type { NotOnWall, RibWall, RibWallOptions } from "../../modeling/rib-wall.ts";
@@ -60,10 +60,10 @@ let beforeApply: { mesh: ReturnType<typeof stressMesh>; positions: ArrayLike<num
 
 /**
  * Check with Stress: the sliced study of the whole part before and after the ribs, as ribs_apply's verify runs it,
- * through the desktop's existing `sim_study` (the Stress panel's solve). Holds are the user's, else the faces the wall
- * joins; loads the user's, else an even pressure on the wall. Faces are found again on the ribbed part by where they lay.
+ * through the desktop's existing `sim_study` (the Stress panel's solve). Holds are the user's, else the faces across the
+ * wall's joined borders (never an open hole's sides, which the planner leaves free); loads the user's, else an even pressure on the wall. Faces are found again on the ribbed part by where they lay.
  */
-async function stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { reason: string }> {
+async function stressCheck(setup: StressCheckSetup, progress: (text: string) => void): Promise<StressCheckReply> {
   const after = viewed();
   if (!beforeApply || !after) return { reason: "Apply the ribs first: the check compares the part before and after." };
   const material = materialCard();
@@ -83,7 +83,7 @@ async function stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wall
     if (typeof body !== "string") return body;
     const parsed = surfaceResult(await solveStudy(body), "displacement");
     if ("error" in parsed) return { reason: parsed.error };
-    return { maxDisplacementMm: parsed.maxDisplacementMm ?? 0, minSafetyFactor: parsed.minSafetyFactor ?? null };
+    return { maxDisplacementMm: parsed.maxDisplacementMm ?? 0, minSafetyFactor: parsed.minSafetyFactor ?? null, trust: parsed.trust ?? null };
   };
   progress("Slicing and solving the part as it was… (1 of 2)");
   const one = await solve(beforeApply.mesh, study);
@@ -91,7 +91,7 @@ async function stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wall
   progress("Slicing and solving the ribbed part… (2 of 2)");
   const two = await solve(stressMesh(), ribbed);
   if ("reason" in two) return two;
-  return { before: one, after: two };
+  return { before: one, after: two, cellMm: CHECK_CELL_MM };
 }
 
 let worker: Worker | null = null;

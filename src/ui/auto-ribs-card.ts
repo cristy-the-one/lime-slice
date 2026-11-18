@@ -16,7 +16,7 @@
 import { Check, X, createElement } from "lucide";
 import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
-import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
+import { heldStopFaces, wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
 import type { StudyHold, StudyLoad } from "../sim/study.ts";
@@ -37,7 +37,9 @@ import {
   comparisonLines,
   editedNote,
   fmt,
+  freeEndsLine,
   goalLine,
+  overallLine,
   looseLine,
   goalOf,
   grams,
@@ -48,6 +50,7 @@ import {
   newZone,
   notOnWallLines,
   resultNumbers,
+  stressCheckLines,
   ribBox,
   ribSoup,
   ribUnderRay,
@@ -69,6 +72,8 @@ import {
   type CheckNumbers,
   type DrawnRib,
   type RunState,
+  type StressCheckReply,
+  type StressCheckSetup,
   type ZoneRow,
   type ZoneShape,
 } from "../auto-ribs.ts";
@@ -120,7 +125,7 @@ export interface AutoRibsHost {
   /** Whether the Stress check can run here: the desktop's study solve. */
   stressAvailable(): boolean;
   /** The sliced Stress study before and after the ribs, opt-in after Apply. */
-  stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { reason: string }>;
+  stressCheck(setup: StressCheckSetup, progress: (text: string) => void): Promise<StressCheckReply>;
 }
 
 type Pick = { kind: "wall" } | { kind: "zoneFaces"; zone: number } | { kind: "hold" } | { kind: "load" } | { kind: "place"; shape: ZoneShape["kind"] };
@@ -140,7 +145,7 @@ interface WallRead {
 /** The material card the last plan was solved with, in a sentence. */
 let materialNote = "";
 /** The joined faces and the wall the last plan stood on: what the Stress check holds and presses by default. */
-let lastSetup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] } | null = null;
+let lastSetup: StressCheckSetup | null = null;
 /** The opt-in Stress check after Apply: not run, running (its line), done (its lines) or refused. */
 let stressRun: { phase: "running"; text: string } | { phase: "done"; lines: string[] } | { phase: "failed"; text: string } | null = null;
 
@@ -218,7 +223,9 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     </fieldset>
     <section class="ar-result" id="autoRibsResult" aria-label="The plan" hidden>
       <div class="ar-headline"><strong id="autoRibsGain"></strong><span id="autoRibsCost"></span><span class="ar-badge" id="autoRibsStopped" hidden>stopped early</span><span class="ar-badge" id="autoRibsEdited" hidden>edited</span></div>
+      <p class="model-note" id="autoRibsOverall" hidden></p>
       <p class="model-note" id="autoRibsStoppedLine" hidden>${STOPPED_LINE}</p>
+      <p class="model-note is-warn" id="autoRibsFreeEnds" hidden></p>
       <p class="model-note is-warn" id="autoRibsGoal" hidden></p>
       <ul class="ar-lines" id="autoRibsCompare" aria-label="Compared with"></ul>
       <p class="model-note ar-faint" id="autoRibsRelative">${RELATIVE_NOTE}</p>
@@ -741,7 +748,9 @@ async function applyPlan() {
   const density = host.densityGCm3();
   applied = { measured: measuredLine(done.beforeMm3, done.afterMm3, density), check: null, problems: [] };
   stressRun = null;
-  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)) };
+  // Held as the planner holds the wall: the faces across its joined borders, never an open hole's sides.
+  const border = heldStopFaces({ positions: ranWith.solid.positions, faceOf: ranWith.solid.faceOf }, ranWith.wall);
+  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: border.held.filter((face) => !ranWith!.wall.faces.includes(face)), wallMm: ranWith.wall.report.thickness.medianMm ?? null };
   edit = null;
   // Apply closed the card with the tool: it opens again on the new solid, with what was measured.
   root()?.toggleAttribute("hidden", false);
@@ -928,6 +937,8 @@ function paintResult() {
   };
   set("#autoRibsGain", plan.ribs.length ? numbers?.gain ?? "" : "No ribs");
   set("#autoRibsCost", plan.ribs.length ? numbers?.cost ?? "" : "");
+  set("#autoRibsOverall", overallLine(plan, run.removed.length > 0));
+  set("#autoRibsFreeEnds", freeEndsLine(keptRibs(run)));
   const stopped = $<HTMLElement>("#autoRibsStopped");
   if (stopped) stopped.hidden = !plan.stoppedEarly;
   const stoppedLine = $<HTMLElement>("#autoRibsStoppedLine");
@@ -1031,28 +1042,17 @@ function paintApplied() {
 async function runStressCheck() {
   if (!host || !lastSetup || stressRun?.phase === "running") return;
   const mine = generation;
+  const setup = lastSetup;
   stressRun = { phase: "running", text: "Starting the Stress check…" };
   paint();
-  const reply = await host.stressCheck(lastSetup, (text) => {
+  const reply = await host.stressCheck(setup, (text) => {
     if (mine !== generation) return;
     stressRun = { phase: "running", text };
     paint();
   });
   if (mine !== generation) return;
   if ("reason" in reply) stressRun = { phase: "failed", text: reply.reason };
-  else {
-    const mm = (v: number) => `${fmt(v, 3)} mm`;
-    const stiffer = reply.after.maxDisplacementMm > 0 ? reply.before.maxDisplacementMm / reply.after.maxDisplacementMm : null;
-    const safety = (v: number | null) => (v == null ? "—" : fmt(v, 2));
-    stressRun = {
-      phase: "done",
-      lines: [
-        `Greatest deflection ${mm(reply.before.maxDisplacementMm)} → ${mm(reply.after.maxDisplacementMm)}${stiffer ? `: ${fmt(stiffer, 2)}× as stiff on the sliced part` : ""}.`,
-        `Least safety factor ${safety(reply.before.minSafetyFactor)} → ${safety(reply.after.minSafetyFactor)}.`,
-        "The whole part, sliced, with the same holds and loads. Material cards are placeholders: compare before with after.",
-      ],
-    };
-  }
+  else stressRun = { phase: "done", lines: stressCheckLines(reply, setup.wallMm) };
   paint();
 }
 

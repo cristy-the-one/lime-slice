@@ -10,7 +10,7 @@
  */
 import type { StudyHold, StudyLoad } from "./sim/study.ts";
 import type { NotOnWall, WallRegion, WallZoneInput, RibWallReport } from "./modeling/rib-wall.ts";
-import type { RibProcess } from "./modeling/auto-ribs.ts";
+import { FREE_END_LINE, hasFreeEnds, peakFactorOf, slicedVerdict, WALL_ALONE, type RibProcess } from "./modeling/auto-ribs.ts";
 import type { PlanGoal, PlanProgress, PlannedRib, RibPlanResult, V3 } from "./auto-ribs-plan.ts";
 
 export const AUTO_RIBS_TITLE = "Auto ribs";
@@ -234,7 +234,7 @@ export function sliderNote(amount: Amount, balancedFactor: number | null): strin
   const stop = Math.max(-2, Math.min(2, Math.round(amount.stop)));
   if (stop === 0) return "Balanced: ribs are added while each still pays its way.";
   if (balancedFactor == null || !(balancedFactor > 1)) return `${SLIDER_LABELS[stop + 2]} needs a balanced plan to measure from: this run plans balanced.`;
-  return `${SLIDER_LABELS[stop + 2]}: aims at ${fmt(1 + (balancedFactor - 1) * SLIDER_SHARE[stop + 2]!, 2)}× as stiff, from the balanced plan's ${fmt(balancedFactor, 2)}×.`;
+  return `${SLIDER_LABELS[stop + 2]}: aims at ${fmt(1 + (balancedFactor - 1) * SLIDER_SHARE[stop + 2]!, 2)}× as stiff overall, from the balanced plan's ${fmt(balancedFactor, 2)}×.`;
 }
 
 // ------------------------------------------------------------------------------------------------ the run
@@ -312,9 +312,60 @@ export function fmt(value: number, digits = 1): string {
 
 export const grams = (volumeMm3: number, densityGCm3: number) => (volumeMm3 / 1000) * (densityGCm3 > 0 ? densityGCm3 : 1.24);
 
-/** "3.1× stiffer", or "about as stiff" under 1.05. */
+/**
+ * The strain-energy figure: "3.1× as stiff overall", or "about as stiff overall" under 1.05. It is a figure of the wall
+ * alone, held at its edges (the result labels it so); the headline is the worst point (`peakGainText`).
+ */
 export function gainText(factor: number): string {
-  return factor < 1.05 ? "about as stiff" : `${fmt(factor, factor < 10 ? 1 : 0)}× stiffer`;
+  return factor < 1.05 ? "about as stiff overall" : `${fmt(factor, factor < 10 ? 1 : 0)}× as stiff overall`;
+}
+
+/** The headline: "Bends 1.2× less at its worst point" (bare greatest deflection over ribbed), or about as much. */
+export function peakGainText(factor: number): string {
+  if (factor >= 1.05) return `Bends ${fmt(factor, factor < 10 ? 1 : 0)}× less at its worst point`;
+  if (factor <= 1 / 1.05) return `Bends ${fmt(1 / factor, 1)}× more at its worst point`;
+  return "Bends about as much at its worst point";
+}
+
+/** The strain-energy line under the headline: "1.4× as stiff overall: this wall alone, held at its edges." */
+export function overallLine(plan: RibPlanResult, edited: boolean): string {
+  if (plan.ribs.length === 0) return "";
+  return `${gainText(plan.stiffnessFactor).replace(/^./, (c) => c.toUpperCase())}: ${WALL_ALONE}${edited ? ", before the edit" : ""}.`;
+}
+
+/** What the Stress check after Apply runs with: holds and loads given, else the wall's held border faces and a pressure. */
+export interface StressCheckSetup {
+  holds: StudyHold[];
+  loads: StudyLoad[];
+  wallFaces: number[];
+  /** The faces across the wall's joined borders (heldStopFaces): never an open hole's sides. */
+  joinedFaces: number[];
+  /** The wall's median thickness, mm, null when not read. */
+  wallMm: number | null;
+}
+
+export interface StressCheckSide {
+  maxDisplacementMm: number;
+  minSafetyFactor: number | null;
+  trust: string | null;
+}
+
+export type StressCheckReply = { before: StressCheckSide; after: StressCheckSide; cellMm: number } | { reason: string };
+
+/**
+ * The Stress check's lines: a rough before/after ratio only ("Sliced check, rough: bends 4× less."), or why it is not
+ * meaningful at this cell size; a safety factor only from a trusted study; then what was solved.
+ */
+export function stressCheckLines(reply: { before: StressCheckSide; after: StressCheckSide; cellMm: number }, wallMm: number | null): string[] {
+  const verdict = slicedVerdict(reply.before, reply.after, reply.cellMm, wallMm);
+  const lines = [verdict.sentence];
+  if (verdict.meaningful) lines.push(`The whole part, sliced at one ${reply.cellMm} mm cell, with the same holds and loads. Only the before/after ratio is a cross-check of the plan${verdict.showSafety ? "" : ": a thin wall's deflection and safety factor from one cell size are not reliable, so they are not shown"}. Material cards are placeholders.`);
+  return lines;
+}
+
+/** The safety line when a planned rib ends free in mid-wall, else "". */
+export function freeEndsLine(ribs: readonly PlannedRib[]): string {
+  return hasFreeEnds(ribs) ? FREE_END_LINE : "";
 }
 
 /** "+9.4 g, +6 %": the material added and its share of the part. */
@@ -338,7 +389,10 @@ export function resultNumbers(run: RunState, densityGCm3: number, partMm3: numbe
   const edited = run.removed.length > 0;
   // As built when known (ribNet's own plan of the kept ribs: tapers, skipped stretches and crossings), else the planner's.
   const volume = builtMm3 ?? (edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3);
-  return { gain: edited ? `${gainText(plan.stiffnessFactor)} before the edit` : gainText(plan.stiffnessFactor), cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
+  // The headline is the worst point; a plan without both deflections falls back to the overall figure.
+  const peak = peakFactorOf(plan.bare, plan.ribbed);
+  const head = peak === null ? gainText(plan.stiffnessFactor).replace(/^./, (c) => c.toUpperCase()) : peakGainText(peak);
+  return { gain: edited ? `${head} before the edit` : head, cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
 }
 
 /** The line that says the totals are an edit: material re-added, stiffness not solved again. */
@@ -372,7 +426,7 @@ export function looseLine(plan: RibPlanResult): string {
 /** The goal's line when it was not met, else "". */
 export function goalLine(goal: PlanGoal, plan: RibPlanResult, densityGCm3: number): string {
   if (plan.goalMet || plan.stoppedEarly) return "";
-  if (goal.kind === "stiffer") return `Reached ${fmt(plan.stiffnessFactor, 1)}× of the ${fmt(goal.factor, 1)}× asked: no further rib pays enough.`;
+  if (goal.kind === "stiffer") return `Reached ${fmt(plan.stiffnessFactor, 1)}× of the ${fmt(goal.factor, 1)}× asked (as stiff overall): no further rib pays enough.`;
   if (goal.kind === "maxDeflection") return `Reached ${fmt(plan.ribbed.maxDeflectionMm, 2)} mm of the ${fmt(goal.mm, 2)} mm asked: no further rib pays enough.`;
   if (goal.kind === "budget") return `No rib fits within ${fmt(grams(goal.volumeMm3, densityGCm3), 1)} g.`;
   return "";

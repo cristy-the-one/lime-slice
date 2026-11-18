@@ -31,7 +31,7 @@ test("the engine plans the floor of a shelled box live, and the plan applies as 
   await primary(page).click();
   await expect(page.locator("#autoRibsResult")).toBeVisible({ timeout: 60_000 });
   await expect(page.locator("#autoRibsSourceNote")).toBeHidden();
-  await expect(page.locator("#autoRibsGain")).toHaveText(/× stiffer$/);
+  await expect(page.locator("#autoRibsGain")).toHaveText(/× less at its worst point$/);
   await expect(page.locator("#autoRibsCompare li")).toHaveCount(3);
   // Every rib stands on the floor's face (z = 2), lifted off the mid-surface the engine plans on (z = 1).
   const ribs = await planRibs(page);

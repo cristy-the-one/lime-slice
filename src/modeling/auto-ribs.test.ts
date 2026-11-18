@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, isOverhang, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
+import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, hasFreeEnds, isOverhang, narrowWidth, overallText, peakFactorOf, peakText, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, slicedVerdict, splitByHeight, teeMinHeight, timesText } from "./auto-ribs.ts";
 import { ribWall, type RibWallSolid } from "./rib-wall.ts";
 
 let failed = 0;
@@ -184,6 +184,28 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   const sections = heights.map((h) => ({ profile: h < 6 ? "tee" : "straight", width: 1.35 }) as const);
   const lean = dropStraightPoints(pts, heights, sections);
   check("straight points go (zigs of a tenth of a millimetre too), the height change and the turn stay", JSON.stringify(lean.points) === JSON.stringify([[0, 0, 2], [15, 0, 2], [25, 0, 2], [35, 8, 2]]) && JSON.stringify(lean.heights) === "[6,3,3]" && lean.sections.map((s) => s.profile).join() === "straight,tee,tee", JSON.stringify(lean));
+}
+
+// --- What the numbers mean (docs/plan-auto-ribs.md 9.1), on the synthetic twin's figures.
+{
+  // The planner's reply on the twin, scaled: compliance 1.359×, peak 1.436 → 1.220 mm.
+  const peak = peakFactorOf({ maxDeflectionMm: 1.436 }, { maxDeflectionMm: 1.22 });
+  check("the worst-point figure is bare peak over ribbed peak", peak !== null && near(peak, 1.436 / 1.22, 1e-12), String(peak));
+  check("no worst-point figure without both deflections", peakFactorOf({ maxDeflectionMm: 1 }, { maxDeflectionMm: 0 }) === null && peakFactorOf(null, { maxDeflectionMm: 1 }) === null);
+  check("the headline and the labelled overall figure", peakText(peak!) === "bends 1.18× less at its worst point" && overallText(1.359) === "1.36× as stiff overall (this wall alone, held at its edges)", `${peakText(peak!)} | ${overallText(1.359)}`);
+  check("times: two decimals under 10, none from 10", [timesText(1.0904), timesText(4), timesText(12.6)].join() === "1.09×,4×,13×");
+  check("free ends: only an end named free counts", hasFreeEnds([{ ends: ["boundary", "free"] }]) && !hasFreeEnds([{ ends: ["boundary", "rib"] }, {}]));
+  // The sliced verify of the twin at the verify's 2 mm cell: 2.445 → 2.241 mm, safety factor 3.15 → 1.76, trust rough.
+  const v = slicedVerdict({ maxDisplacementMm: 2.445, minSafetyFactor: 3.15, trust: "rough" }, { maxDisplacementMm: 2.241, minSafetyFactor: 1.76, trust: "rough" }, 2, 2);
+  check("a rough sliced check: the ratio as a rough cross-check, no safety factor", v.meaningful && near(v.bendsLess!, 2.445 / 2.241, 1e-12) && !v.showSafety && v.sentence === "Sliced check, rough: bends 1.09× less." && /one 2 mm cell size/.test(v.why ?? ""), JSON.stringify(v));
+  check("never \"stiffer\" from a sliced check", !/stiff/.test(v.sentence));
+  const coarse = slicedVerdict({ maxDisplacementMm: 2.445, minSafetyFactor: 3.15, trust: "usable" }, { maxDisplacementMm: 2.241, minSafetyFactor: 1.76, trust: "usable" }, 2, 1.6);
+  check("a cell thicker than the wall: not meaningful, no ratio, no safety factor", !coarse.meaningful && coarse.bendsLess === null && !coarse.showSafety && /^Sliced check: not meaningful at this size\. Its 2 mm cell is thicker than the 1\.6 mm wall/.test(coarse.sentence), JSON.stringify(coarse));
+  const labelled = slicedVerdict({ maxDisplacementMm: 2, minSafetyFactor: 3, trust: "converged" }, { maxDisplacementMm: 1, minSafetyFactor: 2.5, trust: "usable" }, 2, 2);
+  check("one cell size is rough whatever the study's label says", !labelled.showSafety && labelled.sentence === "Sliced check, rough: bends 2× less.", JSON.stringify(labelled));
+  const trusted = slicedVerdict({ maxDisplacementMm: 2, minSafetyFactor: 3, trust: "converged" }, { maxDisplacementMm: 1, minSafetyFactor: 2.5, trust: "usable" }, 2, 2, true);
+  check("a study whose resolution was checked and trusted shows its safety factor", trusted.showSafety && trusted.why === null && trusted.sentence === "Sliced check, usable: bends 2× less. Least safety factor 3 → 2.5.", JSON.stringify(trusted));
+  check("a wall within 2 % of the cell is thick enough", slicedVerdict({ maxDisplacementMm: 2, minSafetyFactor: null, trust: null }, { maxDisplacementMm: 1, minSafetyFactor: null, trust: null }, 2, 1.99).meaningful);
 }
 
 if (failed > 0) {

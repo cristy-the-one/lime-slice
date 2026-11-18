@@ -30,7 +30,9 @@ test("four actions: open the card, click the floor, Run, Apply; one History row,
   // Run: ribs, then the result.
   await primary(page).click();
   await expect(page.locator("#autoRibsResult")).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator("#autoRibsGain")).toHaveText(/^\d+(\.\d)?× stiffer$/);
+  // The headline is the worst point; the strain-energy figure is labelled as the wall alone, held at its edges.
+  await expect(page.locator("#autoRibsGain")).toHaveText(/^Bends \d+(\.\d)?× less at its worst point$/);
+  await expect(page.locator("#autoRibsOverall")).toHaveText(/^\d+(\.\d)?× as stiff overall: this wall alone, held at its edges\.$/);
   await expect(page.locator("#autoRibsCost")).toHaveText(/^\+\d+(\.\d)? g, \+\d+(\.\d)? %$/);
   await expect(page.locator("#autoRibsCompare li")).toHaveCount(3);
   await expect(page.locator("#autoRibsCompare li").last()).toContainText("less than either");
@@ -62,7 +64,9 @@ test("four actions: open the card, click the floor, Run, Apply; one History row,
   await shot(page, "6-applied.png");
   // Check with Stress, opt-in: the sliced study before and after, through the desktop study solve.
   await page.locator("#autoRibsStress").click();
-  await expect(page.locator("#autoRibsStressResult li").first()).toHaveText("Greatest deflection 0.4 mm → 0.1 mm: 4× as stiff on the sliced part.", { timeout: 20_000 });
+  // A rough ratio only: no "N× stiffer", no deflection or safety factor from one cell size.
+  await expect(page.locator("#autoRibsStressResult li").first()).toHaveText("Sliced check, rough: bends 4× less.", { timeout: 20_000 });
+  await expect(page.locator("#autoRibsStressResult")).not.toContainText(/stiffer|safety factor \d/);
   const bodies = await page.evaluate(() => (window as unknown as { __limeSimBodies: string[] }).__limeSimBodies.length);
   expect(bodies, "two solves: before and after").toBe(2);
   await shot(page, "6b-stress.png");

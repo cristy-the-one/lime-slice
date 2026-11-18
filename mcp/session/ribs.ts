@@ -14,8 +14,8 @@
  */
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
 import { buildDirection } from "../../src/belt.ts";
-import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
-import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { heldStopFaces, ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
+import { builtVolumeOf, FREE_END_LINE, hasFreeEnds, overallText, peakFactorOf, peakText, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, slicedVerdict, WALL_ALONE, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -200,10 +200,20 @@ function goalOf(goal: unknown, densityGCm3: number): Row | { reason: string } {
   return { kind: "balanced" };
 }
 
-/** A short plain summary of the plan. */
-function planSentence(ribs: number, factor: number, adds: { mm3: number; grams: number; percent: number }, stopped: boolean, goalMet: boolean, baseline: string): string {
+/** What the plan's two figures are, as plan.figures carries it. */
+const FIGURES = {
+  peakFactor: "The headline: the bare wall's greatest deflection over the ribbed wall's (bare.maxDeflectionMm / ribbed.maxDeflectionMm), \"bends N× less at its worst point\".",
+  stiffnessFactor: `Strain energy, bare over ribbed, summed over the whole wall: "N× as stiff overall (${WALL_ALONE})". The planner adds ribs by it, and a goal's stiffer factor is this figure. Ribs near the wall's edges can lower it a lot while the middle bends almost as before, so it is never the headline.`,
+};
+
+/**
+ * A short plain summary of the plan: the worst-point figure first, the strain-energy figure labelled for what it is,
+ * and, when a rib ends in mid-wall, the line on its safety factor.
+ */
+function planSentence(ribs: number, factor: number, peak: number | null, adds: { mm3: number; grams: number; percent: number }, stopped: boolean, goalMet: boolean, baseline: string, loose: string, freeEnds: boolean): string {
   if (ribs === 0) return stopped ? "Stopped before the first rib: no plan." : "No rib pays on this wall under these rules.";
-  return `${ribs} rib${ribs === 1 ? "" : "s"}, ${r(factor, 2)}× as stiff as the bare wall (shell model, relative), adding about ${r(adds.mm3, 0)} mm³, ${r(adds.grams, 2)} g, ${r(adds.percent, 1)} % of the part.${stopped ? " Stopped early: the best plan so far." : ""}${goalMet ? "" : " The goal is not met."} ${baseline}`;
+  const figures = peak === null ? `${overallText(factor)}` : `${peakText(peak)}; ${overallText(factor)}`;
+  return `${ribs} rib${ribs === 1 ? "" : "s"}: ${figures}. Shell model, relative. Adds about ${r(adds.mm3, 0)} mm³, ${r(adds.grams, 2)} g, ${r(adds.percent, 1)} % of the part.${stopped ? " Stopped early: the best plan so far." : ""}${goalMet ? "" : " The goal is not met."} ${baseline}${loose}${freeEnds ? ` ${FREE_END_LINE}` : ""}`;
 }
 
 /** The rib ends the plan leaves loose, and why, in a sentence ("" when every end meets something). */
@@ -235,7 +245,14 @@ export interface PlanRecord {
   holds?: unknown;
   loads?: unknown;
   wallFaces: number[];
+  /** The faces the verify holds when no holds were given: the stop faces across joined border spans (heldStopFaces). */
   joinedFaces: number[];
+  /** Stop faces across free spans only (an open hole's sides), which the verify leaves free as the planner does. */
+  freeFaces?: number[];
+  /** The wall's median thickness, mm: a sliced check with a thicker cell is not meaningful. */
+  wallThicknessMm?: number | null;
+  /** The plan's own figures, for the apply sentence. */
+  planned?: { peakFactor: number | null; stiffnessFactor: number };
   /** The solid the plan was made for; null only for a plan given without one, which is refused. */
   fingerprint: Fingerprint | null;
 }
@@ -426,6 +443,10 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   delete request.verify;
   const stoppedEarly = result.stoppedEarly === true;
   const fingerprint = fingerprintOf(obj);
+  const stiffnessFactor = num(result.stiffnessFactor) ?? 1;
+  const peakFactor = peakFactorOf(result.bare as Row | undefined, result.ribbed as Row | undefined);
+  const freeEnds = hasFreeEnds(ribs as { ends?: unknown[] }[]);
+  const wallThicknessMm = num(wall.report.thickness.medianMm) ?? null;
   const plan: Row = {
     object: obj.id,
     node: node === null ? null : `n${node}`,
@@ -435,7 +456,12 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     ribVolumeMm3: r(planVolume, 2),
     bare: result.bare,
     ribbed: result.ribbed,
-    stiffnessFactor: r(num(result.stiffnessFactor) ?? 1, 4),
+    // The headline: how much less the wall bends at its worst point (new in this field; stiffnessFactor is unchanged).
+    peakFactor: peakFactor === null ? null : r(peakFactor, 4),
+    stiffnessFactor: r(stiffnessFactor, 4),
+    figures: FIGURES,
+    freeEnds,
+    wallThicknessMm,
     goal,
     goalMet: result.goalMet === true,
     thickening: result.thickening ?? null,
@@ -451,17 +477,21 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     looseEnds: ((result.looseEnds as Row[] | undefined) ?? []).map((row) => ({ rib: row.rib, end: row.end, point: Array.isArray(row.point) ? rv(row.point as number[]) : null, reason: row.reason })),
     stats: result.stats,
   };
-  const joined = [...new Set(wall.report.faces.stops.map((row) => row.face))].filter((face) => !wallSet.has(face));
+  // The faces a check holds: those the wall runs on into the part across joined spans, not an open hole's sides (which
+  // the planner leaves free); a wall joined to nothing is held all round, as the planner holds it.
+  const border = heldStopFaces(typed.solid, wall);
+  const notWall = (faces: number[]) => faces.filter((face) => !wallSet.has(face));
+  const joined = notWall(border.held);
   // The verify study carries what the plan carried: holds and loads left out under ifMissed stay out of it too.
   const kept = (rows: unknown, gone: readonly number[] | undefined) => (Array.isArray(rows) && gone?.length ? rows.filter((_, i) => !gone.includes(i)) : rows);
-  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), wallFaces: wall.faces, joinedFaces: joined, fingerprint });
+  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), wallFaces: wall.faces, joinedFaces: joined, freeFaces: notWall(border.free), wallThicknessMm, planned: { peakFactor, stiffnessFactor }, fingerprint });
   const reply: Row = {
     ok: true,
     object: obj.id,
-    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result))}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
+    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, stiffnessFactor, peakFactor, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result), looseSentence((result.looseEnds as Row[] | undefined) ?? []), freeEnds)}`,
     plan,
     adds,
-    wall: wallReport(wall),
+    wall: { ...wallReport(wall), borderFaces: { held: joined, free: notWall(border.free), allBorders: border.allBorders, means: "The faces the wall runs on into: held (across joined border spans, where the part's material continues) and free (only across free spans, such as an open hole's sides). ribs_apply {verify:true} holds the held ones when no holds were given, as the planner clamps the joined borders and leaves the free ones free." } },
     rules: { width: r(rules.width, 4), maxHeight: r(rules.maxHeight, 3), minHeight: r(rules.minHeight, 3), minSpacing: r(rules.minSpacing, 2), minLength: r(rules.minLength, 2), profile: asked, process, printer: printer.name, build: build.map((v) => r(v, 4)), material: material.row, defaults: rules.defaults },
     comparisons: {
       thickening: result.thickening ?? null,
@@ -524,18 +554,27 @@ async function ribsApply(this: Session, input: Row, meta?: CallMeta): Promise<Ro
     if (job.tool !== "ribs_plan" || !job.result || job.result.ok !== true) return refuse("rib-plan-lost", `${input.job} is not a finished rib plan.`);
     const plan = job.result.plan as Row;
     const stored = this.ribPlans.get(String(plan.object));
-    record = stored && stored.request && JSON.stringify(stored.ribs) === JSON.stringify(plan.ribs) ? stored : { object: String(plan.object), node: parseNodeId(plan.node), request: plan.request as Row, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, wallFaces: [], joinedFaces: [], fingerprint: readFingerprint(plan.fingerprint) };
+    record = stored && stored.request && JSON.stringify(stored.ribs) === JSON.stringify(plan.ribs) ? stored : { object: String(plan.object), node: parseNodeId(plan.node), request: plan.request as Row, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, wallFaces: [], joinedFaces: [], ...plannedOf(plan), fingerprint: readFingerprint(plan.fingerprint) };
   } else if (input.plan && typeof input.plan === "object") {
     const plan = input.plan as Row;
     const object = typeof input.object === "string" ? input.object : typeof plan.object === "string" ? plan.object : this.selected;
     const stored = this.ribPlans.get(object);
     const fingerprint = readFingerprint(plan.fingerprint);
     if (!fingerprint) return refuse("bad-rib-plan", "A plan given to ribs_apply carries the fingerprint of the solid it was made for (plan.fingerprint {volumeMm3, faces, edges}, as ribs_plan gives it), so a plan for another shape is never built. Pass the plan whole, or plan again.");
-    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint };
+    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], freeFaces: stored?.freeFaces ?? [], ...plannedOf(plan), fingerprint };
   } else return refuse("bad-argument", "ribs_apply takes job (a finished ribs_plan job) or plan ({ribs}).");
   const obj = this.find(typeof input.object === "string" ? input.object : record.object);
   if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   return this.ribsApplyPlan(obj, record, input.verify === true, typeof input.label === "string" ? input.label : LABEL, ctx, 0);
+}
+
+/** A plan reply's own figures and wall thickness, for a record made from the plan alone. */
+function plannedOf(plan: Row): Pick<PlanRecord, "wallThicknessMm" | "planned"> {
+  const stiffness = num(plan.stiffnessFactor);
+  return {
+    wallThicknessMm: num(plan.wallThicknessMm) ?? null,
+    ...(stiffness !== undefined ? { planned: { peakFactor: num(plan.peakFactor) ?? peakFactorOf(plan.bare as Row | undefined, plan.ribbed as Row | undefined), stiffnessFactor: stiffness } } : {}),
+  };
 }
 
 function parseNodeId(value: unknown): number | null {
@@ -612,28 +651,47 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     check: { before: checkNumbers(checkBefore), after: checkNumbers(checkAfter), printer: this.printer().name },
     undo: "model_undo takes the whole network back as one step.",
   };
+  const lines = [`Built ${reply.paths} rib path${reply.paths === 1 ? "" : "s"} as one step, adding ${r(added, 0)} mm³ (${r((added / 1000) * density, 2)} g).`];
+  const planned = record.planned;
+  if (planned) lines.push(`Planned (shell model, relative): ${planned.peakFactor === null ? overallText(planned.stiffnessFactor) : `${peakText(planned.peakFactor)}; ${overallText(planned.stiffnessFactor)}`}.`);
+  if (hasFreeEnds(record.ribs as { ends?: unknown[] }[])) lines.push(FREE_END_LINE);
   if (verify && study && studyBefore) {
     stage("verify: slicing and solving the ribbed part", 0.65);
     const mapped = this.ribsStudyAfter(study, before, { positions: after.positions, faceOf: after.triangles });
     const studyAfter = await this.solveSliced(obj, mapped, false);
     const b = studyNumbers(studyBefore);
     const a = studyNumbers(studyAfter);
+    const side = (row: Row) => ({ maxDisplacementMm: num(row.maxDisplacementMm) ?? null, minSafetyFactor: num(row.minSafetyFactor) ?? null, trust: typeof row.trust === "string" ? row.trust : null });
+    const verdict = slicedVerdict(side(b), side(a), VERIFY_CELL_MM, record.wallThicknessMm ?? null);
+    // The study's deflection and safety factor only where the study is trusted; else in sliced.rough, with why.
+    const shown = (row: Row): Row => (verdict.showSafety ? row : Object.fromEntries(Object.entries(row).filter(([key]) => key !== "maxDisplacementMm" && key !== "minSafetyFactor")));
     const diff = (key: string) => (typeof a[key] === "number" && typeof b[key] === "number" ? r((a[key] as number) - (b[key] as number), 4) : null);
     reply.verify = {
-      before: b,
-      after: a,
-      change: { maxDisplacementMm: diff("maxDisplacementMm"), minSafetyFactor: diff("minSafetyFactor"), slicerSeconds: diff("slicerSeconds"), slicerGrams: diff("slicerGrams") },
-      stiffer: typeof a.maxDisplacementMm === "number" && typeof b.maxDisplacementMm === "number" && (a.maxDisplacementMm as number) > 0 ? r((b.maxDisplacementMm as number) / (a.maxDisplacementMm as number), 3) : null,
-      setup: { holds: mapped.holds.map((h) => ({ kind: h.kind, faces: h.faces })), loads: mapped.loads.map((l) => ({ kind: l.kind, faces: l.faces, magnitude: l.magnitude })), cellMm: VERIFY_CELL_MM, card: mapped.cardId },
-      note: "The sliced Stress study of the whole part, before and after, with the same holds and loads (faces found again on the ribbed part by where they lie). Material cards are placeholders: the numbers are relative.",
+      sentence: verdict.sentence,
+      sliced: {
+        cellMm: VERIFY_CELL_MM,
+        wallMm: record.wallThicknessMm ?? null,
+        meaningful: verdict.meaningful,
+        bendsLess: verdict.bendsLess === null ? null : r(verdict.bendsLess, 3),
+        trust: { before: b.trust ?? null, after: a.trust ?? null },
+        ...(verdict.showSafety ? {} : { rough: { before: { maxDisplacementMm: b.maxDisplacementMm ?? null, minSafetyFactor: b.minSafetyFactor ?? null }, after: { maxDisplacementMm: a.maxDisplacementMm ?? null, minSafetyFactor: a.minSafetyFactor ?? null }, why: verdict.why } }),
+      },
+      before: shown(b),
+      after: shown(a),
+      change: { ...(verdict.showSafety ? { maxDisplacementMm: diff("maxDisplacementMm"), minSafetyFactor: diff("minSafetyFactor") } : {}), slicerSeconds: diff("slicerSeconds"), slicerGrams: diff("slicerGrams") },
+      setup: { holds: mapped.holds.map((h) => ({ kind: h.kind, faces: h.faces })), loads: mapped.loads.map((l) => ({ kind: l.kind, faces: l.faces, magnitude: l.magnitude })), cellMm: VERIFY_CELL_MM, card: mapped.cardId, ...(record.holds === undefined || (Array.isArray(record.holds) && record.holds.length === 0) ? { notHeld: record.freeFaces ?? [] } : {}) },
+      note: "The sliced Stress study of the whole part, before and after, with the same holds and loads (faces found again on the ribbed part by where they lie). With no holds given it holds the faces the wall runs on into the part, not an open hole's sides (setup.notHeld), as the planner does. It runs at one cell size: its before/after ratio is a rough cross-check of the plan, not a stiffness figure. Material cards are placeholders: the numbers are relative.",
     };
+    lines.push(verdict.sentence);
   }
+  reply.sentence = lines.join(" ");
   return reply;
 }
 
 /**
- * The verify study on the part as it is: the plan's holds and loads when they were given, else the faces the wall is
- * joined to held and an even pressure on the wall's faces.
+ * The verify study on the part as it is: the plan's holds and loads when they were given, else the faces the wall runs
+ * on into across its joined borders held (never an open hole's sides, which the planner leaves free: heldStopFaces)
+ * and an even pressure on the wall's faces.
  */
 function ribsStudy(this: Session, _obj: PlateObject, record: PlanRecord): ObjectStudy | { reason: string } {
   const holds = this.readFixtures(record.holds);

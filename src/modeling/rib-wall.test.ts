@@ -4,7 +4,7 @@
  * it, a closed box (a lid over the floor); then zones of every kind, holds and loads, the way back to the surface,
  * determinism, and the time for a wall of about 20 thousand triangles.
  */
-import { ribPathsFromPlan, ribWall, wallFaces, type RibWall, type RibWallOptions, type RibWallSolid } from "./rib-wall.ts";
+import { heldStopFaces, ribPathsFromPlan, ribWall, wallFaces, type RibWall, type RibWallOptions, type RibWallSolid } from "./rib-wall.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -281,6 +281,12 @@ const holeBox = openBox(200, 100, 30, 2, 10).solid();
   const rim = new Set(w.loops[hole!.loop]!.vertices);
   check("hole: the hole's rim is not held", w.request.holds.holds.every((h) => !rim.has(h.node)));
   check("hole: thickness 2 ± 0.05", w.request.mesh.thickness.every((x) => near(x, 2, 0.05)));
+  // What a check of the planner's problem holds: the four inner sides (joined), not the hole's bore (free).
+  const stops = heldStopFaces(holeBox, w);
+  check("hole: the stop faces are the four inner sides and the bore", JSON.stringify(w.report.faces.stops.map((s) => s.face).sort((a, b) => a - b)) === "[8,9,10,11,12]", JSON.stringify(w.report.faces.stops));
+  check("hole: held faces are the four inner sides only", JSON.stringify(stops.held) === "[8,9,10,11]" && JSON.stringify(stops.free) === "[12]" && !stops.allBorders, JSON.stringify(stops));
+  const plain = heldStopFaces(box1, wallOf(box1, { picked: [6] }));
+  check("open box: every stop face held, none free", JSON.stringify(plain.held) === "[8,9,10,11]" && plain.free.length === 0, JSON.stringify(plain));
   // A rule zone: within 5 mm of the hole's rim.
   const z = wallOf(holeBox, { picked: [6], zones: [{ region: { near: { mm: 5, holes: true } } }] });
   const zone = z.zones[0]!;
@@ -360,6 +366,8 @@ const chan = channel(100, 30, 2, 6, 150).solid();
   const w = wallOf(plate, { picked: [2] });
   check("plate: one loop, free", w.loops.length === 1 && w.loops[0]!.class === "free", JSON.stringify(w.report.loops));
   check("plate: nothing held, and said", w.request.holds.holds.length === 0 && w.report.warnings.some((s) => s.startsWith("Nothing holds the wall")));
+  const stops = heldStopFaces(plate, w);
+  check("plate: no joined border, so a check holds every stop face (the planner holds it all round)", stops.allBorders && stops.held.length === w.report.faces.stops.length && stops.held.length > 0, JSON.stringify(stops));
 
   // A flange: a vertical leg at y 0..2, the flange out to y 60. Its top is joined to the leg and free elsewhere.
   const flange = extrude([{ p: [0, 0], face: 0 }, { p: [60, 0], face: 1 }, { p: [60, 2], face: 2 }, { p: [2, 2], face: 3 }, { p: [2, 40], face: 4 }, { p: [0, 40], face: 5 }], 80, [6, 7]).solid();
