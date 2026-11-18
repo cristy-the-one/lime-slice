@@ -196,7 +196,9 @@ async function solidMax(object: string, floor: number, tops: number[], e: number
     card: { isotropic: true, EInPlaneMPa: e, EAcrossLayersMPa: e, nu },
   });
   if (setup.ok !== true) return setup;
-  return call("sim_run", { object, checkResolution: false });
+  const run = await call("sim_run", { object, checkResolution: false });
+  // A sliced solve past the reply time comes back as a job. The next edit waits until it is done.
+  return typeof run.job === "string" && run.status === "running" ? waitJob(run.job) : run;
 }
 
 {
@@ -248,36 +250,38 @@ async function compare(title: string, object: string, kind: "cover" | "box", vol
   }
 }
 
-await compare("cover", await cover(), "cover", 16992);
-await compare("box", await openBox(), "box", 29472);
+try {
+  await compare("cover", await cover(), "cover", 16992);
+  await compare("box", await openBox(), "box", 29472);
 
-{
-  const object = await cover();
-  await fuse(object, { primitive: "cylinder", origin: [0, 0, -6], radius: 8, height: 6.05 });
-  const floor = faceAt(object, [0, 0, 2], [0, 0, 1]);
-  const tops = facesWhere(object, (n, g) => n[2] > 0.9 && g[2] > 12);
-  let folded = await plan(object, floor, tops, true, false);
-  if (folded.ok !== true && folded.code === "off-wall") folded = await plan(object, floor, tops, true, false, true, false);
-  const capped = await plan(object, floor, tops, false, false, false);
-  const real = (folded.wall?.patches ?? []) as Reply[];
-  const thick = real.filter((row) => Number(row.thicknessMm) > 7);
-  check("boss: folded keeps a patch over 7 mm", folded.ok === true && Number(folded.wall?.thickness?.maxMm) > 7 && thick.length > 0, JSON.stringify({ max: folded.wall?.thickness, patches: real, reason: folded.reason }).slice(0, 500));
-  check("boss: the pad is a plate, not a rigid lump", thick.some((row) => row.rigid === false), JSON.stringify(thick).slice(0, 400));
-  const capMax = Number(capped.wall?.thickness?.maxMm);
-  check("boss: without folded the old cap is about 6 mm", capped.ok === true && capMax > 5.5 && capMax < 6.5 && capped.wall?.patches === undefined, JSON.stringify(capped.wall?.thickness ?? capped.reason).slice(0, 300));
-  const solid = await solidMax(object, floor, tops, material.e, material.nu);
-  const solidW = typeof solid.maxDisplacementMm === "number" ? solid.maxDisplacementMm : NaN;
-  const on = bareMm(folded);
-  const off = bareMm(capped);
-  const err = (shell: number) => (100 * (shell - solidW)) / solidW;
-  report.push(`boss: folded patch ${r3(on)} mm (${r1(err(on))} %), 3× cap ${r3(off)} mm (${r1(err(off))} %), solid max ${r3(solidW)} mm at ${((solid.maxDisplacementAt ?? []) as number[]).map((n) => r1(n)).join(",")}, thickness folded ${folded.wall?.thickness?.maxMm} cap ${capMax}`);
-  check("boss: both shell deflections and the solid were measured", solid.ok === true && on > 0 && off > 0, `folded ${r3(on)}, cap ${r3(off)}, solid ${r3(solidW)} (${solid.reason ?? ""})`);
+  {
+    const object = await cover();
+    await fuse(object, { primitive: "cylinder", origin: [0, 0, -6], radius: 8, height: 6.05 });
+    const floor = faceAt(object, [0, 0, 2], [0, 0, 1]);
+    const tops = facesWhere(object, (n, g) => n[2] > 0.9 && g[2] > 12);
+    let folded = await plan(object, floor, tops, true, false);
+    if (folded.ok !== true && folded.code === "off-wall") folded = await plan(object, floor, tops, true, false, true, false);
+    const capped = await plan(object, floor, tops, false, false, false);
+    const real = (folded.wall?.patches ?? []) as Reply[];
+    const thick = real.filter((row) => Number(row.thicknessMm) > 7);
+    check("boss: folded keeps a patch over 7 mm", folded.ok === true && Number(folded.wall?.thickness?.maxMm) > 7 && thick.length > 0, JSON.stringify({ max: folded.wall?.thickness, patches: real, reason: folded.reason }).slice(0, 500));
+    check("boss: the pad is a plate, not a rigid lump", thick.some((row) => row.rigid === false), JSON.stringify(thick).slice(0, 400));
+    const capMax = Number(capped.wall?.thickness?.maxMm);
+    check("boss: without folded the old cap is about 6 mm", capped.ok === true && capMax > 5.5 && capMax < 6.5 && capped.wall?.patches === undefined, JSON.stringify(capped.wall?.thickness ?? capped.reason).slice(0, 300));
+    const solid = await solidMax(object, floor, tops, material.e, material.nu);
+    const solidW = typeof solid.maxDisplacementMm === "number" ? solid.maxDisplacementMm : NaN;
+    const on = bareMm(folded);
+    const off = bareMm(capped);
+    const err = (shell: number) => (100 * (shell - solidW)) / solidW;
+    report.push(`boss: folded patch ${r3(on)} mm (${r1(err(on))} %), 3× cap ${r3(off)} mm (${r1(err(off))} %), solid max ${r3(solidW)} mm at ${((solid.maxDisplacementAt ?? []) as number[]).map((n) => r1(n)).join(",")}, thickness folded ${folded.wall?.thickness?.maxMm} cap ${capMax}`);
+    check("boss: both shell deflections and the solid were measured", solid.ok === true && on > 0 && off > 0, `folded ${r3(on)}, cap ${r3(off)}, solid ${r3(solidW)} (${solid.reason ?? ""})`);
+  }
+} finally {
+  console.log("  --- folded shell ---");
+  for (const line of report) console.log(`  ${line}`);
+  console.log("  C1 cover, hand mesh, for scale: 3 ribs, ×2.251, 1372 mm³, length 62 % belly, 25 % wall, 13 % rim. The study: folded +6.1 % cover and +2.7 % box, one wall −28 %.");
+  rmSync(workspace, { recursive: true, force: true });
 }
-
-console.log("  --- folded shell ---");
-for (const line of report) console.log(`  ${line}`);
-console.log("  C1 cover, hand mesh, for scale: 3 ribs, ×2.251, 1372 mm³, length 62 % belly, 25 % wall, 13 % rim. The study: folded +6.1 % cover and +2.7 % box, one wall −28 %.");
-rmSync(workspace, { recursive: true, force: true });
 if (failed > 0) {
   console.error(`folded-shell-occt: ${failed} failed`);
   process.exit(1);
