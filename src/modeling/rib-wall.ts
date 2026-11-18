@@ -2230,7 +2230,10 @@ function insideRegion(region: PlaceRegion, p: V3, n: V3, thickness: number): boo
 /**
  * Everything the planner needs from the part, from a solid and the faces the user clicked. A refusal is a sentence.
  */
-export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall | { reason: string; missed?: NotOnWall[] } {
+export function ribWall(solidIn: RibWallSolid, options: RibWallOptions): RibWall | { reason: string; missed?: NotOnWall[] } {
+  // A flipped face would aim the thickness rays out of the part and, once it is the largest face of the sheet, take
+  // the fold's winding with it. Turn the whole solid out of the material first. Off the folded path the bytes stay.
+  const solid = options.folded ? { positions: orientSoup(solidIn.positions), faceOf: solidIn.faceOf } : solidIn;
   const start = now();
   const count = Math.floor(solid.positions.length / 9);
   if (count === 0 || solid.positions.length % 9 !== 0) return { reason: "The solid has no triangles to read." };
@@ -2319,6 +2322,9 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   }
   if (chordUsed > chord) warnings.push(`The wall is curved over much of its ${round(areaIn, 0)} mm²: meshed to follow its curves within ${round(chord, 2)} mm it would take about ${Math.round(atChord)} triangles, over the limit of ${maxTriangles}, so it follows them within ${round(chordUsed, 2)} mm (about ${Math.round(planned)}).`);
   const welded = weldWall({ pos: soupPos, label: soupLabel }, weld);
+  // One winding over the whole folded sheet, normals out of the material. A face that arrived flipped is turned
+  // back even when it is the largest face, which the area vote would otherwise follow.
+  if (options.folded) welded.stats.flipped += orientCavity(welded.mesh, rays);
   const rm = new Remesher(welded.mesh, target, chordUsed, RIB_WALL_DEFAULTS.cornerDeg, maxTriangles);
   rm.run(options.iterations ?? RIB_WALL_DEFAULTS.iterations, minDeg);
   const chordMax = rm.chordError();
@@ -2602,9 +2608,28 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   /** Wall triangles straight over a face of the far skin: their corners' rays all left through it. */
   const through = (faces: ReadonlySet<number>) => T.map((_, t) => t).filter((t) => T[t]!.every((v) => faces.has(oppFace[v]!)));
   const opposite = (v: number): V3 => sub(V[v]!, mul(normals[v]!, thick[v] ? NaN : thickness[v]!));
-  // Folded: a thick vertex sits half its own thickness in, not half the median. A thin vertex is the same offset as before.
+  // Folded: a thick vertex sits half its own thickness in, not half the median. A crease vertex sits where the faces'
+  // own mid-planes meet (the miter), not on the averaged normal. A vertex in the middle of one face is unchanged.
+  const vertTris: number[][] = options.folded ? V.map(() => []) : [];
+  if (options.folded) T.forEach((tri, t) => { for (const v of tri) vertTris[v]!.push(t); });
+  const creaseCos = Math.cos((20 * Math.PI) / 180);
+  const faceDirs = (v: number): V3[] => {
+    const acc = new Map<number, V3>();
+    for (const t of vertTris[v] ?? []) acc.set(out.L[t]!, add(acc.get(out.L[t]!) ?? [0, 0, 0], tn[t]!));
+    const dirs: V3[] = [];
+    for (const n0 of acc.values()) {
+      const n = unit(n0);
+      if (!(len(n0) > 0)) continue;
+      if (dirs.every((d) => dot(d, n) < creaseCos)) dirs.push(n);
+    }
+    return dirs;
+  };
   const mid = options.folded
-    ? V.map((p, v) => sub(p, mul(normals[v]!, thickness[v]! / 2)))
+    ? V.map((p, v) => {
+        const dirs = faceDirs(v);
+        const h = thickness[v]! / 2;
+        return dirs.length < 2 ? sub(p, mul(normals[v]!, h)) : miterPoint(p, dirs, h);
+      })
     : V.map((p, v) => sub(p, mul(normals[v]!, (thick[v] ? med : thickness[v]!) / 2)));
   const triArea = (tris: number[]) => tris.reduce((s, t) => s + tarea[t]!, 0);
 
@@ -3139,6 +3164,214 @@ export function missedSentence(missed: readonly NotOnWall[]): string {
 
 /** Three fixed directions, none along an axis, for the inside test. */
 const INSIDE_DIRS: V3[] = [unit([0.31, 0.52, 0.79]), unit([-0.67, 0.21, -0.71]), unit([0.43, -0.83, 0.35])];
+
+/**
+ * A point just along `n` is inside the solid when two of three rays cross the surface an odd number of times.
+ * Crossings, not the leaving bit: one flipped face would otherwise say a ray that exits through it is entering.
+ */
+function pointsInward(rays: ReturnType<typeof meshRays>, origin: V3, n: V3): boolean {
+  const probe = add(origin, mul(n, 0.35));
+  let inside = 0;
+  for (const d of INSIDE_DIRS) {
+    let o = probe;
+    let hits = 0;
+    let travelled = 0;
+    for (let k = 0; k < 12; k += 1) {
+      const hit = rays.first(o, d, 1e6 - travelled);
+      if (!hit) break;
+      hits += 1;
+      const step = hit.distance + 0.05;
+      o = add(o, mul(d, step));
+      travelled += step;
+      if (travelled >= 1e6) break;
+    }
+    if (hits % 2 === 1) inside += 1;
+  }
+  return inside >= 2;
+}
+
+/** The display mesh wound out of the material, so a fold is read with one cavity-side orientation. */
+function orientSoup(positions: Float32Array): Float32Array {
+  const out = new Float32Array(positions);
+  const count = Math.floor(out.length / 9);
+  const corner = (t: number, k: number): V3 => [out[t * 9 + k * 3]!, out[t * 9 + k * 3 + 1]!, out[t * 9 + k * 3 + 2]!];
+  const idOf = (p: V3) => `${Math.round(p[0] * 1e4)}:${Math.round(p[1] * 1e4)}:${Math.round(p[2] * 1e4)}`;
+  const ids: string[][] = [];
+  const byEdge = new Map<string, number[]>();
+  for (let t = 0; t < count; t += 1) {
+    const row = [0, 1, 2].map((k) => idOf(corner(t, k)));
+    ids.push(row);
+    for (let k = 0; k < 3; k += 1) {
+      const a = row[k]!;
+      const b = row[(k + 1) % 3]!;
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      const list = byEdge.get(key) ?? [];
+      list.push(t);
+      byEdge.set(key, list);
+    }
+  }
+  const runs = (t: number, a: string, b: string) => {
+    const row = ids[t]!;
+    for (let k = 0; k < 3; k += 1) if (row[k] === a && row[(k + 1) % 3] === b) return true;
+    return false;
+  };
+  const flipTri = (t: number) => {
+    for (let k = 0; k < 3; k += 1) {
+      const i = t * 9 + 3 + k;
+      const j = t * 9 + 6 + k;
+      const tmp = out[i]!;
+      out[i] = out[j]!;
+      out[j] = tmp;
+    }
+    const row = ids[t]!;
+    const swap = row[1]!;
+    row[1] = row[2]!;
+    row[2] = swap;
+  };
+  const rays = meshRays(positions);
+  const seen = new Uint8Array(count);
+  for (let seed = 0; seed < count; seed += 1) {
+    if (seen[seed]) continue;
+    const comp = [seed];
+    seen[seed] = 1;
+    const flip = new Int8Array(count).fill(-1);
+    flip[seed] = 0;
+    for (let i = 0; i < comp.length; i += 1) {
+      const t = comp[i]!;
+      const row = ids[t]!;
+      for (let k = 0; k < 3; k += 1) {
+        const a = flip[t] ? row[(k + 1) % 3]! : row[k]!;
+        const b = flip[t] ? row[k]! : row[(k + 1) % 3]!;
+        const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+        const nbrs = byEdge.get(key) ?? [];
+        if (nbrs.length !== 2) continue;
+        const o = nbrs[0] === t ? nbrs[1]! : nbrs[0]!;
+        if (flip[o]! >= 0) continue;
+        flip[o] = runs(o, a, b) ? 1 : 0;
+        seen[o] = 1;
+        comp.push(o);
+      }
+    }
+    let kept = 0;
+    let turned = 0;
+    for (const t of comp) {
+      const area = len(cross(sub(corner(t, 1), corner(t, 0)), sub(corner(t, 2), corner(t, 0))));
+      if (flip[t]) turned += area;
+      else kept += area;
+    }
+    const invert = turned > kept;
+    for (const t of comp) if (invert ? !flip[t] : !!flip[t]) flipTri(t);
+    let into = 0;
+    let outward = 0;
+    for (const t of comp) {
+      if (into + outward >= 5) break;
+      const n0 = cross(sub(corner(t, 1), corner(t, 0)), sub(corner(t, 2), corner(t, 0)));
+      if (!(len(n0) > 1e-8)) continue;
+      const c0 = mul(add(add(corner(t, 0), corner(t, 1)), corner(t, 2)), 1 / 3);
+      if (pointsInward(rays, c0, unit(n0))) into += 1;
+      else outward += 1;
+    }
+    if (into > outward) for (const t of comp) flipTri(t);
+  }
+  return out;
+}
+
+/**
+ * Turn each welded component so its normals point out of the material. The area vote keeps the largest face's
+ * winding; a flipped face that is the largest would take the rest with it, and a fold's sign depends on the normals
+ * agreeing across the crease.
+ */
+function orientCavity(mesh: InMesh, rays: ReturnType<typeof meshRays>): number {
+  const { P, T } = mesh;
+  const nt = T.length / 3;
+  const at = (v: number): V3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+  const byEdge = new Map<number, number[]>();
+  for (let t = 0; t < nt; t += 1) for (let k = 0; k < 3; k += 1) {
+    const key = ekey(T[t * 3 + k]!, T[t * 3 + ((k + 1) % 3)]!);
+    const row = byEdge.get(key);
+    if (row) row.push(t);
+    else byEdge.set(key, [t]);
+  }
+  const seen = new Uint8Array(nt);
+  let flipped = 0;
+  for (let seed = 0; seed < nt; seed += 1) {
+    if (seen[seed]) continue;
+    const comp = [seed];
+    seen[seed] = 1;
+    for (let i = 0; i < comp.length; i += 1) {
+      const t = comp[i]!;
+      for (let k = 0; k < 3; k += 1) {
+        for (const o of byEdge.get(ekey(T[t * 3 + k]!, T[t * 3 + ((k + 1) % 3)]!)) ?? []) if (!seen[o]) {
+          seen[o] = 1;
+          comp.push(o);
+        }
+      }
+    }
+    let into = 0;
+    let out = 0;
+    for (const t of comp) {
+      if (into + out >= 7) break;
+      const a = at(T[t * 3]!);
+      const b = at(T[t * 3 + 1]!);
+      const c = at(T[t * 3 + 2]!);
+      const n0 = cross(sub(b, a), sub(c, a));
+      if (!(len(n0) > 1e-8)) continue;
+      const n = unit(n0);
+      const c0 = mul(add(add(a, b), c), 1 / 3);
+      if (pointsInward(rays, c0, n)) into += 1;
+      else out += 1;
+    }
+    if (into <= out) continue;
+    for (const t of comp) {
+      const b = T[t * 3 + 1]!;
+      T[t * 3 + 1] = T[t * 3 + 2]!;
+      T[t * 3 + 2] = b;
+      flipped += 1;
+    }
+  }
+  return flipped;
+}
+
+/** The point where the faces' mid-planes meet: each plane is `p` moved `h` against that face's own normal. */
+function miterPoint(p: V3, ns: V3[], h: number): V3 {
+  const use = ns.slice(0, 3);
+  const rows: number[][] = [];
+  const rhs: number[] = [];
+  if (use.length >= 3 && Math.abs(dot(cross(use[0]!, use[1]!), use[2]!)) > 0.2) {
+    for (const n of use) {
+      rows.push(n);
+      rhs.push(-h);
+    }
+  } else {
+    const e = unit(cross(use[0]!, use[1]!));
+    rows.push(use[0]!, use[1]!, e);
+    rhs.push(-h, -h, 0);
+  }
+  const d = solvePlanes(rows, rhs);
+  return d ? add(p, d) : sub(p, mul(unit(add(use[0]!, use[1]!)), h));
+}
+
+function solvePlanes(rows: number[][], rhs: number[]): V3 | null {
+  const m = rows.map((r, i) => [r[0]!, r[1]!, r[2]!, rhs[i]!]);
+  for (let col = 0; col < 3; col += 1) {
+    let pivot = col;
+    for (let r = col + 1; r < 3; r += 1) if (Math.abs(m[r]![col]!) > Math.abs(m[pivot]![col]!)) pivot = r;
+    if (!(Math.abs(m[pivot]![col]!) > 1e-8)) return null;
+    if (pivot !== col) {
+      const swap = m[col]!;
+      m[col] = m[pivot]!;
+      m[pivot] = swap;
+    }
+    const div = m[col]![col]!;
+    for (let c = col; c < 4; c += 1) m[col]![c] = m[col]![c]! / div;
+    for (let r = 0; r < 3; r += 1) {
+      if (r === col) continue;
+      const f = m[r]![col]!;
+      for (let c = col; c < 4; c += 1) m[r]![c] = m[r]![c]! - f * m[col]![c]!;
+    }
+  }
+  return [m[0]![3]!, m[1]![3]!, m[2]![3]!];
+}
 
 /**
  * A ray straight in from a point of the wall (against `n`), out through a face turned back toward it within

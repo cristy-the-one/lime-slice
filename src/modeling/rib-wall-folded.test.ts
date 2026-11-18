@@ -207,6 +207,80 @@ const snapPath = fileURLToPath(new URL("./rib-wall-cover-one.json", import.meta.
   check("lump: the real reading is about 22 mm, and the patch is rigid", over.length >= 1 && over.every((x) => x > 20) && !!rigid && rigid.thicknessMm > 20 && /solver/.test(rigid.rule), JSON.stringify(w.report.patches));
 }
 
+{
+  const w = wallOf(cover.solid, { picked: [cover.belly], folded: true });
+  const crease = w.skin.flatMap((p, v) => (near(p[0], 2, 0.4) && near(p[2], 2, 0.4) && p[1] > 8 && p[1] < 40 ? [v] : []));
+  const off = crease.filter((v) => {
+    const h = w.request.mesh.thickness[v]! / 2;
+    const mid = w.request.mesh.vertices[v]!;
+    const skin = w.skin[v]!;
+    const bisector = h / Math.SQRT2;
+    return !(near(mid[0], skin[0] - h, 0.15) && near(mid[2], skin[2] - h, 0.15) && Math.abs(mid[0] - (skin[0] - bisector)) > 0.12);
+  });
+  console.log(`  miter: ${crease.length} crease vertices, ${off.length} off the face-normal intersection`);
+  check("miter: a floor-wall vertex meets the two mid-planes, not the bisector", crease.length > 3 && off.length === 0);
+  const flat = w.skin.flatMap((p, v) => (p[0] > 20 && p[0] < 60 && p[1] > 16 && p[1] < 32 && near(p[2], 2, 0.05) ? [v] : []));
+  check("miter: a vertex in the middle of the belly only moves through the thickness", flat.length > 3 && flat.every((v) => near(w.request.mesh.vertices[v]![0], w.skin[v]![0], 0.05) && near(w.request.mesh.vertices[v]![2], 1, 0.2)));
+}
+
+function flipFace(solid: RibWallSolid, face: number): RibWallSolid {
+  const pos = new Float32Array(solid.positions);
+  for (let t = 0; t < solid.faceOf.length; t += 1) {
+    if (solid.faceOf[t] !== face) continue;
+    for (let k = 0; k < 3; k += 1) {
+      const i = t * 9 + 3 + k;
+      const j = t * 9 + 6 + k;
+      const tmp = pos[i]!;
+      pos[i] = pos[j]!;
+      pos[j] = tmp;
+    }
+  }
+  return { positions: pos, faceOf: solid.faceOf };
+}
+{
+  const flipped = wallOf(flipFace(cover.solid, cover.belly), { picked: [cover.belly], folded: true });
+  const triN = (w: RibWall, t: number): V3 => {
+    const [a, b, c] = w.request.mesh.triangles[t]!;
+    const n = cross(sub(w.skin[b]!, w.skin[a]!), sub(w.skin[c]!, w.skin[a]!));
+    const l = Math.hypot(...n);
+    return [n[0] / l, n[1] / l, n[2] / l];
+  };
+  let belly = 0;
+  let bellyBad = 0;
+  let wall = 0;
+  let wallBad = 0;
+  flipped.request.mesh.triangles.forEach((_, t) => {
+    const [a, b, c] = flipped.request.mesh.triangles[t]!;
+    const p = flipped.skin[a]!;
+    const q = flipped.skin[b]!;
+    const r = flipped.skin[c]!;
+    const c0: V3 = [(p[0] + q[0] + r[0]) / 3, (p[1] + q[1] + r[1]) / 3, (p[2] + q[2] + r[2]) / 3];
+    const n = triN(flipped, t);
+    if (c0[0] > 8 && c0[0] < 72 && c0[1] > 8 && c0[1] < 40 && c0[2] < 3) {
+      belly += 1;
+      if (n[2] < 0.9) bellyBad += 1;
+    }
+    if (c0[0] < 3 && c0[2] > 4 && c0[2] < 12) {
+      wall += 1;
+      if (n[0] < 0.9) wallBad += 1;
+    }
+  });
+  const used = new Map<string, number>();
+  flipped.request.mesh.triangles.forEach(([a, b, c]) => {
+    for (const [x, y] of [[a, b], [b, c], [c, a]] as const) {
+      const key = x < y ? `${x},${y}` : `${y},${x}`;
+      used.set(key, (used.get(key) ?? 0) + 1);
+    }
+  });
+  let both = 0;
+  let one = 0;
+  for (const n of used.values()) if (n === 2) both += 1; else if (n === 1) one += 1;
+  console.log(`  flipped belly: input.flipped ${flipped.report.input.flipped}, belly ${belly - bellyBad}/${belly} up, wall ${wall - wallBad}/${wall} inward, edges both ways ${both}, boundary ${one}`);
+  check("flipped face: the belly still points into the cavity", belly > 10 && bellyBad === 0, `${bellyBad} of ${belly}`);
+  check("flipped face: the wall across the fold points into the cavity too", wall > 4 && wallBad === 0, `${wallBad} of ${wall}`);
+  check("flipped face: every shared edge is used both ways", both > 0 && [...used.values()].every((n) => n <= 2));
+}
+
 if (failed) {
   console.error(`rib-wall-folded: ${failed} failed`);
   process.exit(1);
