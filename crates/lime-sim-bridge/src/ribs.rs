@@ -242,6 +242,9 @@ pub struct RibPlanBody {
     /// to the rims.
     #[serde(default)]
     pub hole_rim_margin_mm: Option<f64>,
+    /// One weight per load case. Empty weighs every case at 1.
+    #[serde(default)]
+    pub case_weights: Vec<f64>,
 }
 
 /// The default material: a PETG-like placeholder. Only ratios matter for
@@ -526,7 +529,9 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         material,
         holds,
         load_cases,
-        case_weights: Vec::new(),
+        case_weights: body.case_weights.clone(),
+        // Worst-case mode stays in the crate: on a lopsided panel it does not
+        // beat the weighted plan, so the tool does not ask for it.
         combine: LoadCombine::Weighted,
         zones,
         hole_rim_margin: (rim > 0.0).then_some(rim),
@@ -630,13 +635,15 @@ pub fn plan_json(plan: &RibPlan) -> Value {
         })
         .collect();
     let s = &plan.stats.seconds;
-    json!({
+    let mut out = json!({
         "ok": true,
         "ribs": ribs,
         "ribVolumeMm3": r6(plan.rib_volume_mm3),
         "bare": { "compliance": r6(plan.bare.compliance), "maxDeflectionMm": r6(plan.bare.max_deflection) },
         "ribbed": { "compliance": r6(plan.ribbed.compliance), "maxDeflectionMm": r6(plan.ribbed.max_deflection) },
         "stiffnessFactor": r6(plan.stiffness_factor),
+        "caseFactors": plan.case_factors.iter().map(|f| r6(*f)).collect::<Vec<_>>(),
+        "caseDeflectionMm": plan.case_deflection_mm.iter().map(|d| json!({ "bare": r6(d[0]), "ribbed": r6(d[1]) })).collect::<Vec<_>>(),
         "goalMet": plan.goal_met,
         "thickening": plan.thickening.map(|t| json!({
             "addedThicknessMm": r6(t.added_thickness_mm),
@@ -686,7 +693,16 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "select": r6(s.select), "connect": r6(s.connect), "prune": r6(s.prune), "size": r6(s.size),
             "baselines": r6(s.baselines), "solver": r6(s.solver), "total": r6(s.total),
         },
-    })
+    });
+    // Only a worst-case plan has one, and the tool asks for weighted plans.
+    if !plan.worst_trace.is_empty() {
+        out["worstTrace"] = json!(plan
+            .worst_trace
+            .iter()
+            .map(|round| json!({ "case": round.limiting_case, "minFactor": r6(round.min_factor) }))
+            .collect::<Vec<_>>());
+    }
+    out
 }
 
 /// Read the body and plan, on this thread, with `control`. The reply is
