@@ -10,7 +10,7 @@ import { findFloor, openCard, openPart, primary, shot } from "./auto-ribs-box";
  */
 test("two load cases with different weights show each factor, equal to the plan on that request", async ({ page }) => {
   test.setTimeout(180_000);
-  await openPart(page);
+  await openPart(page, { stress: true });
   const floor = await findFloor(page);
   await openCard(page);
   await page.mouse.click(floor.x, floor.y);
@@ -57,4 +57,14 @@ test("two load cases with different weights show each factor, equal to the plan 
   expect(read.plan?.caseDeflectionMm).toEqual(outcomes.map((row) => ({ bare: row.bareMm, ribbed: row.ribbedMm })));
   expect(shown).toEqual(caseResultLines(["spread", "point"], read.plan?.caseFactors, read.plan?.caseDeflectionMm));
   await shot(page, "10-two-cases.png");
+
+  await primary(page).click();
+  await expect(page.locator("#autoRibsAppliedLine")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("#autoRibsStress")).toHaveAttribute("data-tip", /Each case adds two slices and two solves/);
+  await page.locator("#autoRibsStress").click();
+  await expect(page.locator("#autoRibsStressResult li").nth(0)).toHaveText("spread: greatest deflection 0.4 mm → 0.1 mm: 4× as stiff.", { timeout: 20_000 });
+  await expect(page.locator("#autoRibsStressResult li").nth(1)).toHaveText("point: greatest deflection 0.4 mm → 0.1 mm: 4× as stiff.");
+  const bodies = await page.evaluate(() => (window as unknown as { __limeSimBodies: string[] }).__limeSimBodies.length);
+  expect(bodies, "each case is a solve before and a solve after").toBe(4);
+  await shot(page, "10b-two-cases-stress.png");
 });

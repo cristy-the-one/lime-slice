@@ -124,7 +124,7 @@ export interface AutoRibsHost {
   /** Whether the Stress check can run here: the desktop's study solve. */
   stressAvailable(): boolean;
   /** The sliced Stress study before and after the ribs, opt-in after Apply. */
-  stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { reason: string }>;
+  stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[]; cases?: { name: string; loads: StudyLoad[] }[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { cases: { name: string; before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } }[] } | { reason: string }>;
 }
 
 type Pick = { kind: "wall" } | { kind: "zoneFaces"; zone: number } | { kind: "hold" } | { kind: "load"; case?: number } | { kind: "place"; shape: ZoneShape["kind"] };
@@ -144,7 +144,7 @@ interface WallRead {
 /** The material card the last plan was solved with, in a sentence. */
 let materialNote = "";
 /** The joined faces and the wall the last plan stood on: what the Stress check holds and presses by default. */
-let lastSetup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] } | null = null;
+let lastSetup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[]; cases?: { name: string; loads: StudyLoad[] }[] } | null = null;
 /** The opt-in Stress check after Apply: not run, running (its line), done (its lines) or refused. */
 let stressRun: { phase: "running"; text: string } | { phase: "done"; lines: string[] } | { phase: "failed"; text: string } | null = null;
 
@@ -758,7 +758,7 @@ async function applyPlan() {
   const density = host.densityGCm3();
   applied = { measured: measuredLine(done.beforeMm3, done.afterMm3, density), check: null, problems: [] };
   stressRun = null;
-  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)) };
+  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)), ...((card.cases?.length ?? 0) >= 2 ? { cases: card.cases!.map((row) => ({ name: row.name, loads: row.loads })) } : {}) };
   edit = null;
   // Apply closed the card with the tool: it opens again on the new solid, with what was measured.
   root()?.toggleAttribute("hidden", false);
@@ -1038,6 +1038,7 @@ function paintApplied() {
   if (button) {
     button.disabled = stressRun?.phase === "running";
     button.textContent = stressRun?.phase === "done" ? "Check again" : "Check with Stress";
+    button.dataset.tip = (lastSetup?.cases?.length ?? 0) >= 2 ? "Slice and solve the whole part before and after the ribs, once per load case. Each case adds two slices and two solves." : "Slice and solve the whole part before and after the ribs, with the same holds and loads. Slow, so it runs only when asked.";
   }
   const status = $<HTMLElement>("#autoRibsStressLine");
   if (status) {
@@ -1067,7 +1068,19 @@ async function runStressCheck() {
   });
   if (mine !== generation) return;
   if ("reason" in reply) stressRun = { phase: "failed", text: reply.reason };
-  else {
+  else if ("cases" in reply) {
+    const mm = (v: number) => `${fmt(v, 3)} mm`;
+    stressRun = {
+      phase: "done",
+      lines: [
+        ...reply.cases.map((row) => {
+          const stiffer = row.after.maxDisplacementMm > 0 ? row.before.maxDisplacementMm / row.after.maxDisplacementMm : null;
+          return `${row.name}: greatest deflection ${mm(row.before.maxDisplacementMm)} → ${mm(row.after.maxDisplacementMm)}${stiffer ? `: ${fmt(stiffer, 2)}× as stiff` : ""}.`;
+        }),
+        "Each case is the whole part, sliced, before and after. Each case adds two slices and two solves. Material cards are placeholders: compare before with after.",
+      ],
+    };
+  } else {
     const mm = (v: number) => `${fmt(v, 3)} mm`;
     const stiffer = reply.after.maxDisplacementMm > 0 ? reply.before.maxDisplacementMm / reply.after.maxDisplacementMm : null;
     const safety = (v: number | null) => (v == null ? "—" : fmt(v, 2));
