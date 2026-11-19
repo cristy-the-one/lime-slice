@@ -7,7 +7,7 @@ import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
 import { partitionNumbers } from "./modeling/partition.ts";
-import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BooleanKind, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project names its solids without loading these requests (./brep-file.ts).
 export { isBrep, solidFileName } from "./brep-file.ts";
@@ -191,6 +191,25 @@ export function faceExtrudeOp(
     distance,
     ...(draft != null && draft !== 0 ? { draftDeg: draft } : {}),
     ...(upTo != null ? { upTo: typeof upTo === "number" ? upTo : { ...upTo, mid: [...upTo.mid] } } : {}),
+  };
+}
+
+/** Faces tilted by `angleDeg`. Positive opens them toward `pull` (default +Z) so the part releases. */
+export function draftOp(
+  faces: readonly (number | FaceRef)[],
+  angleDeg: number,
+  options: { pull?: Vec3; neutral?: DraftNeutral } = {},
+): DraftOp {
+  const face = (pick: number | FaceRef): number | FaceRef => (typeof pick === "number" ? pick : { ...pick, mid: [...pick.mid] });
+  const neutral = options.neutral;
+  return {
+    kind: "draft",
+    faces: faces.map(face),
+    angleDeg,
+    ...(options.pull ? { pull: [...options.pull] as Vec3 } : {}),
+    ...(neutral === undefined
+      ? {}
+      : { neutral: typeof neutral === "number" ? neutral : "index" in neutral ? face(neutral) : { origin: [...neutral.origin] as Vec3, normal: [...neutral.normal] as Vec3 } }),
   };
 }
 

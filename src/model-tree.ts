@@ -107,6 +107,7 @@ type ModelOpBase =
   | GroupOp
   | FaceExtrudeOp
   | MoveFacesOp
+  | DraftOp
   | PartitionModelOp
   | TransitionOp
   | LetteringOp;
@@ -362,6 +363,22 @@ export interface FaceMove {
 export interface MoveFacesOp {
   kind: "moveFaces";
   faces: FaceMove[];
+}
+
+/** A face of the solid, or a plane, that a draft leaves fixed. */
+export type DraftNeutral = number | FaceRef | { origin: Vec3; normal: Vec3 };
+
+/**
+ * Faces tilted by `angleDeg`. A positive angle opens them toward `pull` (default +Z), so the part releases:
+ * a box drafted about its bottom shrinks at the top. Absent `neutral` is the plane through the lowest point of
+ * the faces along the pull.
+ */
+export interface DraftOp {
+  kind: "draft";
+  faces: (number | FaceRef)[];
+  angleDeg: number;
+  pull?: Vec3;
+  neutral?: DraftNeutral;
 }
 
 /**
@@ -694,6 +711,15 @@ function canonicalValue(op: ModelOp): unknown {
   if (op.kind === "extrude" && op.upTo !== undefined) return { ...op, upTo: index(op.upTo) };
   if (op.kind === "faceExtrude") return { ...op, face: index(op.face), ...(op.upTo !== undefined ? { upTo: index(op.upTo) } : {}) };
   if (op.kind === "moveFaces") return { ...op, faces: op.faces.map((row) => ({ ...row, face: index(row.face) })) };
+  if (op.kind === "draft") {
+    const face = (pick: number | FaceRef) => (typeof pick === "number" ? pick : pick.index);
+    const neutral = op.neutral;
+    return {
+      ...op,
+      faces: op.faces.map(face),
+      ...(neutral === undefined ? {} : { neutral: typeof neutral === "number" || "index" in neutral ? face(neutral) : neutral }),
+    };
+  }
   if (op.kind === "group") {
     const { source: _source, label: _label, steps, ...rest } = op;
     return { ...rest, steps: steps.map(canonicalValue) };
@@ -1004,6 +1030,10 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const shared = distance !== undefined && op.faces.every((row) => row.distance === distance);
       if (count <= 1 && distance !== undefined) return `${distance < 0 ? "Push" : "Pull"} face ${n(Math.abs(distance))} mm`;
       return shared ? `Move ${count} faces ${n(distance)} mm` : `Move ${count} faces`;
+    }
+    case "draft": {
+      const walls = op.faces.length === 1 ? "1 wall" : `${op.faces.length} walls`;
+      return `Draft ${walls} ${n(op.angleDeg)}°`;
     }
   }
 }

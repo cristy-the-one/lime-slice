@@ -175,6 +175,7 @@ export async function applyTool() {
     // --- P1 ---
     faceExtrude: "Pulling the face…",
     moveFaces: "Pulling the face…",
+    draft: "Drafting the walls…",
   };
   const fromSketch = tool === "hole" && S.sketchHoleDraft != null;
   if (fromSketch) holdSketchForApply(true);
@@ -335,6 +336,7 @@ function appliedMessage(op: ModelOp, solid: ParsedSolid) {
   if (op.kind === "chamfer") return `Chamfer. ${volume}${notes}`;
   if (op.kind === "hole") return `Hole. ${volume}${notes}`;
   if (op.kind === "shell") return `Shell. ${volume}${notes}`;
+  if (op.kind === "draft") return `Draft. ${volume}${notes}`;
   if (op.kind === "join") return `${opLabel(op)}. ${volume}${op.keepTool ? "" : ` ${op.tool.name} left the plate.`}${notes}`;
   return `${volume}${notes}`;
 }
