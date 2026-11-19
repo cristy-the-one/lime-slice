@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::os::raw::c_int;
 
 use super::NodeId;
-use super::ops::{EdgeFilter, EdgePick, EdgeRef, FaceMove, FacePick, FaceRef, Op};
+use super::ops::{EdgeFilter, EdgePick, EdgeRef, FaceMove, FacePick, FaceRef, Neutral, Op};
 use super::same::{same_edge, same_face};
 use super::shape::Shape;
 
@@ -108,6 +108,12 @@ pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolv
             up_to,
         } => resolve_face_extrude(from, *face, *distance, *draft_deg, *up_to),
         Op::MoveFaces { faces } => resolve_move_faces(from, faces),
+        Op::Draft {
+            faces,
+            angle_deg,
+            pull,
+            neutral,
+        } => resolve_draft(from, faces, *angle_deg, *pull, neutral),
         _ => Ok(Resolved {
             op: op.clone(),
             picks: Vec::new(),
@@ -408,6 +414,75 @@ fn resolve_move_faces(from: &mut Shape, faces: &[FaceMove]) -> Result<Resolved, 
         .collect();
     Ok(Resolved {
         op: Op::MoveFaces { faces },
+        picks,
+    })
+}
+
+fn unit_dir(pull: [f64; 3], what: &str) -> Result<[f64; 3], String> {
+    if !pull.iter().all(|value| value.is_finite()) {
+        return Err(format!("The {what} must be a direction."));
+    }
+    let length = (pull[0] * pull[0] + pull[1] * pull[1] + pull[2] * pull[2]).sqrt();
+    if length <= 1e-12 {
+        return Err(format!("The {what} must be a direction."));
+    }
+    Ok([pull[0] / length, pull[1] / length, pull[2] / length])
+}
+
+fn resolve_draft(
+    from: &mut Shape,
+    faces: &[FacePick],
+    angle_deg: f64,
+    pull: [f64; 3],
+    neutral: &Option<Neutral>,
+) -> Result<Resolved, String> {
+    if faces.is_empty() {
+        return Err("Pick a face to draft.".into());
+    }
+    if faces.len() > 50 {
+        return Err("Draft takes at most 50 faces.".into());
+    }
+    if !angle_deg.is_finite() || angle_deg == 0.0 || !(-30.0..=30.0).contains(&angle_deg) {
+        return Err("The draft angle must be between -30 and 30 degrees, and not 0.".into());
+    }
+    let pull = unit_dir(pull, "pull direction")?;
+    let mut refs = Vec::with_capacity(faces.len());
+    let mut picks = Vec::with_capacity(faces.len());
+    for (at, face) in faces.iter().copied().enumerate() {
+        let found = resolve_one_face(from, face)?;
+        if picks.contains(&found.index) {
+            return Err(format!("Face {at} is listed twice."));
+        }
+        refs.push(FacePick::Ref(found));
+        picks.push(found.index);
+    }
+    let neutral = match neutral.as_ref() {
+        None => None,
+        Some(Neutral::Face(pick)) => {
+            let found = resolve_one_face(from, *pick)?;
+            if picks.contains(&found.index) {
+                return Err("The neutral face is one of the faces being drafted.".into());
+            }
+            Some(Neutral::Face(FacePick::Ref(found)))
+        }
+        Some(Neutral::Plane { origin, normal }) => {
+            if !origin.iter().all(|value| value.is_finite()) {
+                return Err("The neutral plane needs an origin and a normal.".into());
+            }
+            let normal = unit_dir(*normal, "neutral plane's normal")?;
+            Some(Neutral::Plane {
+                origin: *origin,
+                normal,
+            })
+        }
+    };
+    Ok(Resolved {
+        op: Op::Draft {
+            faces: refs,
+            angle_deg,
+            pull,
+            neutral,
+        },
         picks,
     })
 }

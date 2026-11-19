@@ -413,6 +413,17 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
       return { tool: "pushpull", fields: { modelPull: op.distance }, faces: [op.face] };
     case "moveFaces":
       return { tool: "pushpull", fields: { modelPull: op.faces[0]?.distance ?? 0 }, faces: op.faces.map((row) => row.face) };
+    case "draft":
+      return {
+        tool: "draft",
+        fields: {
+          modelDraft: op.angleDeg,
+          modelDraftPullX: op.pull?.[0] ?? 0,
+          modelDraftPullY: op.pull?.[1] ?? 0,
+          modelDraftPullZ: op.pull?.[2] ?? 1,
+        },
+        faces: op.faces,
+      };
     case "extrude":
     case "revolve":
     case "loft":

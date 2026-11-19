@@ -155,6 +155,7 @@ fn group_step_refusal(step: &Op) -> Option<&'static str> {
         Op::Shell { .. } => Some("A group cannot contain a shell."),
         Op::FaceExtrude { .. } => Some("A group cannot contain a face extrude."),
         Op::MoveFaces { .. } => Some("A group cannot contain a face move."),
+        Op::Draft { .. } => Some("A group cannot contain a draft."),
         Op::Group { .. } => Some("A group cannot contain another group."),
         // --- Split to print.
         Op::Partition { .. } => Some("A group cannot contain a split to print."),

@@ -576,6 +576,51 @@ const faceOps = [
   },
 ];
 (op.oneOf as unknown[]).splice(5 + sketchOps.length, 0, ...faceOps);
+const draftOp = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "faces", "angleDeg"],
+  properties: {
+    kind: { const: "draft" },
+    faces: {
+      type: "array",
+      minItems: 1,
+      maxItems: 50,
+      description: "Walls to tilt. Indexes, or {normal, nearPoint}. At most 50.",
+      items: { description: "Index, or {normal, nearPoint}." },
+    },
+    angleDeg: {
+      type: "number",
+      minimum: -30,
+      maximum: 30,
+      description: "Degrees, not 0. Positive opens the faces toward pull so the part releases: matter leaves the pull side of the neutral plane, and a box's top shrinks.",
+    },
+    pull: {
+      type: "array",
+      minItems: 3,
+      maxItems: 3,
+      items: { type: "number", description: "Component." },
+      description: "Pull direction. Default +Z, [0, 0, 1].",
+    },
+    neutral: {
+      description: "The plane that stays put. A face (index or {normal, nearPoint}), or {origin, normal}. Absent: the plane through the lowest point of the picked faces along pull, with that pull as its normal.",
+      oneOf: [
+        { description: "A face: an index, or {normal, nearPoint}." },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["origin", "normal"],
+          properties: {
+            origin: { type: "array", minItems: 3, maxItems: 3, items: { type: "number", description: "Component." }, description: "A point on the plane." },
+            normal: { type: "array", minItems: 3, maxItems: 3, items: { type: "number", description: "Component." }, description: "The plane's normal." },
+          },
+        },
+      ],
+    },
+    label,
+  },
+};
+(op.oneOf as unknown[]).splice(5 + sketchOps.length + faceOps.length, 0, draftOp);
 const regionField = {
   type: "object",
   additionalProperties: false,
@@ -869,6 +914,7 @@ export const OP_SUMMARY: Record<string, string> = {
   shell: "shell {thickness, openFaces}: hollow the solid.",
   faceExtrude: "faceExtrude {face, distance}: a prism on a face.",
   moveFaces: "moveFaces {faces:[{face, distance}]}: push or pull faces.",
+  draft: "draft {faces, angleDeg, pull, neutral}: tilt walls so the part releases. Positive opens them toward pull.",
   boolean: "boolean {op:cut|fuse|common, primitive, dx, dy, dz | radius, height, origin | centre, turn}.",
   root: "root {primitive, sizes}: a new base solid.",
   join: "join {toolObject, op}: another object's solid as the tool.",

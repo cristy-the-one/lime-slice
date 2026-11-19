@@ -5,7 +5,7 @@ import { selectedEdges, selectedFaces } from "../../model-blend";
 import { isFeatureTool } from "../../model-features";
 import { isRepeatTool } from "../../model-repeat";
 import { type ModelOp, type Vec3 } from "../../model-tree";
-import { moveFacesOp, shellOp, stepEdges } from "../../model-request";
+import { draftOp, moveFacesOp, shellOp, stepEdges } from "../../model-request";
 import {
   fieldPrimitive,
   holeBoxes,
@@ -149,6 +149,17 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const prism = S.editing?.op.kind === "faceExtrude" ? S.editing.op : null;
       if (prism && faces.length === 1) return { ...prism, face: faces[0]!.index, distance };
       return moveFacesOp(faces.map((pick) => ({ face: pick.index, distance })));
+    }
+    case "draft": {
+      const faces = selectedFaces(S.picks);
+      const angle = num("#modelDraft");
+      if (faces.length === 0 || !Number.isFinite(angle) || angle === 0 || angle < -30 || angle > 30) return null;
+      const raw: Vec3 = [num("#modelDraftPullX"), num("#modelDraftPullY"), num("#modelDraftPullZ")];
+      const length = Math.hypot(raw[0], raw[1], raw[2]);
+      if (!(length > 1e-9)) return null;
+      const pull: Vec3 = [raw[0] / length, raw[1] / length, raw[2] / length];
+      const defaultPull = Math.abs(pull[0]) < 1e-9 && Math.abs(pull[1]) < 1e-9 && pull[2] > 0.999;
+      return draftOp(faces, angle, defaultPull ? {} : { pull });
     }
     default:
       return null;

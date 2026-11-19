@@ -113,7 +113,7 @@ async function sessionInfo(this: Session, verbose = false): Promise<Record<strin
     plugins: this.pluginsLine(),
     nuggets: this.nuggetsLine(),
     ...(whole ? { model: {
-      ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "transition", "split", "partition", "scale", "join", "root"],
+      ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "draft", "hole", "fillet", "chamfer", "transition", "split", "partition", "scale", "join", "root"],
       composite: [...COMPOSITE_KINDS],
       primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
       // --- 3.1 F16. A limit per call, as the app's composite tools have it, not per history: one object's history

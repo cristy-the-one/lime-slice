@@ -69,6 +69,8 @@
 #include <gp_Elips.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepOffsetAPI_DraftAngle.hxx>
+#include <Draft_ErrorStatus.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepOffset_Mode.hxx>
 #include <ChFi3d.hxx>
@@ -7255,6 +7257,198 @@ TopoDS_Shape build_move_faces(
         return {};
     }
     return out;
+}
+
+/// What `Draft_ErrorStatus` means, without an Open CASCADE class name.
+const char* draft_problem(Draft_ErrorStatus status) {
+    switch (status) {
+        case Draft_FaceRecomputation:
+            return "Open CASCADE could not recompute that face for this draft";
+        case Draft_EdgeRecomputation:
+            return "Open CASCADE could not recompute an edge of that face for this draft";
+        case Draft_VertexRecomputation:
+            return "Open CASCADE could not recompute a corner of that face for this draft";
+        default:
+            return "Open CASCADE could not draft that face";
+    }
+}
+
+GeomAbs_SurfaceType face_surface(const TopoDS_Face& face) {
+    try {
+        return BRepAdaptor_Surface(face).GetType();
+    } catch (const Standard_Failure&) {
+        return GeomAbs_OtherSurface;
+    }
+}
+
+/// The lowest point of `faces` along `pull`: a vertex when the faces have one, else a corner of their box.
+bool lowest_along(const std::vector<TopoDS_Face>& faces, const gp_Dir& pull, gp_Pnt& at) {
+    bool any = false;
+    double best = 0.0;
+    const auto consider = [&](const gp_Pnt& point) {
+        const double along = pull.X() * point.X() + pull.Y() * point.Y() + pull.Z() * point.Z();
+        if (!any || along < best) {
+            any = true;
+            best = along;
+            at = point;
+        }
+    };
+    for (const TopoDS_Face& face : faces) {
+        for (TopExp_Explorer exp(face, TopAbs_VERTEX); exp.More(); exp.Next()) {
+            consider(BRep_Tool::Pnt(TopoDS::Vertex(exp.Current())));
+        }
+    }
+    if (any) {
+        return true;
+    }
+    Bnd_Box box;
+    for (const TopoDS_Face& face : faces) {
+        BRepBndLib::Add(face, box);
+    }
+    if (box.IsVoid()) {
+        return false;
+    }
+    double x0 = 0, y0 = 0, z0 = 0, x1 = 0, y1 = 0, z1 = 0;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    for (const double x : {x0, x1}) {
+        for (const double y : {y0, y1}) {
+            for (const double z : {z0, z1}) {
+                consider(gp_Pnt(x, y, z));
+            }
+        }
+    }
+    return any;
+}
+
+TopoDS_Shape build_draft(
+    const TopoDS_Shape& current,
+    double before,
+    const std::vector<TopoDS_Face>& faces,
+    double angle_deg,
+    const gp_Dir& pull,
+    const TopoDS_Face* neutral,
+    const gp_Pnt* plane_origin,
+    const gp_Dir* plane_normal,
+    double& volume,
+    std::string& error) {
+    if (faces.empty()) {
+        error = "Pick a face to draft.";
+        return {};
+    }
+    if (faces.size() > 50) {
+        error = "Draft takes at most 50 faces.";
+        return {};
+    }
+    if (!std::isfinite(angle_deg) || angle_deg == 0.0 || angle_deg < -30.0 || angle_deg > 30.0) {
+        error = "The draft angle must be between -30 and 30 degrees, and not 0.";
+        return {};
+    }
+    if (count_of(current, TopAbs_SOLID) != 1) {
+        error = "Draft works on a part of one body.";
+        return {};
+    }
+    // A floor faces along the pull. Draft tilts walls, and a face this close to the pull is a floor.
+    const double floor_cos = std::cos(1.0 * kPi / 180.0);
+    for (size_t i = 0; i < faces.size(); ++i) {
+        const GeomAbs_SurfaceType kind = face_surface(faces[i]);
+        if (kind != GeomAbs_Plane && kind != GeomAbs_Cylinder && kind != GeomAbs_Cone) {
+            error = "Face " + std::to_string(i) + " is not a flat, cylindrical, or conical face. Draft tilts walls, not this surface.";
+            return {};
+        }
+        if (kind == GeomAbs_Plane) {
+            gp_Dir outward;
+            if (!outward_normal(faces[i], outward)) {
+                error = "Face " + std::to_string(i) + " has no direction, so it cannot be drafted.";
+                return {};
+            }
+            if (std::abs(outward.Dot(pull)) > floor_cos) {
+                error = "Face " + std::to_string(i) + " is a floor, parallel to the pull. Draft tilts walls, not floors.";
+                return {};
+            }
+        }
+    }
+    gp_Pln plane;
+    if (neutral != nullptr) {
+        if (face_surface(*neutral) != GeomAbs_Plane) {
+            error = "The neutral face must be flat.";
+            return {};
+        }
+        for (const TopoDS_Face& face : faces) {
+            if (face.IsSame(*neutral)) {
+                error = "The neutral face is one of the faces being drafted.";
+                return {};
+            }
+        }
+        try {
+            plane = BRepAdaptor_Surface(*neutral).Plane();
+        } catch (const Standard_Failure&) {
+            error = "The neutral face must be flat.";
+            return {};
+        }
+        // A floor used as the neutral plane points out of the part. The pull names which side loses matter.
+        gp_Dir normal = plane.Axis().Direction();
+        if (neutral->Orientation() == TopAbs_REVERSED) {
+            normal.Reverse();
+        }
+        if (normal.Dot(pull) < -0.5) {
+            plane = gp_Pln(plane.Location(), normal.Reversed());
+        }
+    } else if (plane_origin != nullptr && plane_normal != nullptr) {
+        plane = gp_Pln(*plane_origin, *plane_normal);
+    } else {
+        gp_Pnt lowest;
+        if (!lowest_along(faces, pull, lowest)) {
+            error = "Open CASCADE could not find the neutral plane for these faces.";
+            return {};
+        }
+        plane = gp_Pln(lowest, pull);
+    }
+    const TopoDS_Shape solid = as_solid(current);
+    g_stats.builds += 1;
+    try {
+        BRepOffsetAPI_DraftAngle draft(solid);
+        for (size_t i = 0; i < faces.size(); ++i) {
+            try {
+                draft.Add(faces[i], pull, angle_deg * kPi / 180.0, plane, Standard_True);
+            } catch (const Standard_Failure&) {
+                error = "Face " + std::to_string(i) + ": Open CASCADE could not draft that face.";
+                return {};
+            }
+            if (!draft.AddDone()) {
+                const Draft_ErrorStatus status = draft.Status();
+                try {
+                    const TopoDS_Shape bad = draft.ProblematicShape();
+                    if (!bad.IsNull() && bad.ShapeType() == TopAbs_FACE) {
+                        draft.Remove(TopoDS::Face(bad));
+                    } else {
+                        draft.Remove(faces[i]);
+                    }
+                } catch (const Standard_Failure&) {
+                }
+                error = "Face " + std::to_string(i) + ": " + draft_problem(status) + ".";
+                return {};
+            }
+        }
+        draft.Build();
+        if (!draft.IsDone() || draft.Shape().IsNull() || !has_solid(draft.Shape())) {
+            error = "Open CASCADE could not build this draft: " + std::string(draft_problem(draft.Status())) + ".";
+            return {};
+        }
+        TopoDS_Shape out = as_solid(draft.Shape());
+        if (count_of(out, TopAbs_SOLID) != 1 || !BRepCheck_Analyzer(out).IsValid()) {
+            error = "Open CASCADE could not build this draft.";
+            return {};
+        }
+        volume = volume_of(out);
+        if (!(volume > 1e-6) || std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+            error = "The draft does not change the part.";
+            return {};
+        }
+        return out;
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not build this draft.";
+        return {};
+    }
 }
 
 namespace {

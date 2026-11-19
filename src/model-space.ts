@@ -229,6 +229,22 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
     // --- A1 group: every step goes into the solid's frame, the same way it would alone. ---
     case "group":
       return { ...op, steps: op.steps.map((step) => toSolidOp(step, pose)) };
+    case "draft": {
+      const pull = turnDir(back, op.pull ?? [0, 0, 1]);
+      const neutral = op.neutral;
+      const turned = neutral !== undefined && typeof neutral === "object" && "origin" in neutral
+        ? { origin: point(neutral.origin), normal: turnDir(back, neutral.normal) }
+        : neutral;
+      const plusZ = Math.abs(pull[0]) < 1e-9 && Math.abs(pull[1]) < 1e-9 && pull[2] > 0.999;
+      return {
+        kind: "draft",
+        faces: op.faces,
+        angleDeg: op.angleDeg,
+        ...(plusZ ? {} : { pull }),
+        ...(turned !== undefined ? { neutral: turned } : {}),
+        ...(op.exprs ? { exprs: op.exprs } : {}),
+      };
+    }
     default:
       return op;
   }
