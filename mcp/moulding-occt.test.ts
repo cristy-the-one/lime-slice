@@ -93,3 +93,5 @@ if (failed) {
   process.exit(1);
 }
 console.log("moulding-occt: ok");
+// The engine worker keeps the process alive. The folded-shell step is 25 minutes, so exit as the other OCCT tests do.
+process.exit(0);
