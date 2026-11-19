@@ -2834,6 +2834,86 @@ LimeShape* lime_tree_move_faces(
     }
 }
 
+/// `faces` are `count` faces of `from`. `pull` is three numbers. `neutral_face` below 0 is no face.
+/// `plane` is six numbers, origin then normal, or null. A face Open CASCADE cannot draft refuses the whole op.
+LimeShape* lime_tree_draft(
+    const LimeShape* from,
+    const int* faces,
+    int count,
+    double angle_deg,
+    const double* pull,
+    int neutral_face,
+    const double* plane,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (count < 1) {
+            set_error(error, "Pick a face to draft.");
+            return nullptr;
+        }
+        std::vector<TopoDS_Face> picked;
+        picked.reserve(static_cast<size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            if (faces[i] < 0 || faces[i] >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this solid.");
+                return nullptr;
+            }
+            picked.push_back(TopoDS::Face(from->held.faces(faces[i] + 1)));
+        }
+        gp_Dir direction;
+        if (pull == nullptr) {
+            direction = gp_Dir(0, 0, 1);
+        } else {
+            const gp_Vec along(pull[0], pull[1], pull[2]);
+            if (!(along.Magnitude() > 1e-12)) {
+                set_error(error, "The pull direction must be a direction.");
+                return nullptr;
+            }
+            direction = gp_Dir(along);
+        }
+        TopoDS_Face neutral_held;
+        const TopoDS_Face* neutral = nullptr;
+        if (neutral_face >= 0) {
+            if (neutral_face >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this solid.");
+                return nullptr;
+            }
+            neutral_held = TopoDS::Face(from->held.faces(neutral_face + 1));
+            neutral = &neutral_held;
+        }
+        gp_Pnt origin;
+        gp_Dir normal;
+        const gp_Pnt* plane_origin = nullptr;
+        const gp_Dir* plane_normal = nullptr;
+        if (neutral == nullptr && plane != nullptr) {
+            const gp_Vec along(plane[3], plane[4], plane[5]);
+            if (!(along.Magnitude() > 1e-12) || !std::isfinite(plane[0]) || !std::isfinite(plane[1]) || !std::isfinite(plane[2])) {
+                set_error(error, "The neutral plane needs an origin and a normal.");
+                return nullptr;
+            }
+            origin = gp_Pnt(plane[0], plane[1], plane[2]);
+            normal = gp_Dir(along);
+            plane_origin = &origin;
+            plane_normal = &normal;
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape result = build_draft(
+            from->held.shape, from->held.volume, picked, angle_deg, direction, neutral, plane_origin, plane_normal, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "Open CASCADE could not build this draft.", error, from).release();
+    } catch (const Standard_Failure&) {
+        set_error(error, "Open CASCADE could not build this draft.");
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// The face's outline in its plane, as JSON `{origin, turn, loops}`, for the caller to free.
 char* lime_tree_face_loops(const LimeShape* shape, int face, char** error) {
     try {

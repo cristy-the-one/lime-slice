@@ -83,12 +83,12 @@ const corner = seatContextBar({ pointer: { x: 4, y: 4 }, bar, bounds: canvas, so
 check("a corner click does not cover the pointer", corner.y >= 4 + 8 || corner.x >= 4 + 8);
 
 eq(
-  "one flat face offers push, hole, and shell",
+  "one flat face offers push, hole, shell, and draft",
   actionsFor("flat-face").map((action) => action.id),
-  ["push-pull", "hole", "shell-face"],
+  ["push-pull", "hole", "shell-face", "draft"],
 );
-eq("several faces offer move and shell", actionsFor("faces").map((action) => action.id), ["move-faces", "shell-faces"]);
-eq("a cylinder offers its diameter", actionsFor("cylinder").map((action) => action.label), ["Change diameter"]);
+eq("several faces offer move, shell, and draft", actionsFor("faces").map((action) => action.id), ["move-faces", "shell-faces", "draft"]);
+eq("a cylinder offers its diameter and a draft", actionsFor("cylinder").map((action) => action.label), ["Change diameter", "Draft"]);
 eq("a curved face still pushes", actionsFor("curved").map((action) => action.id), ["push-pull-curved"]);
 eq("edges offer fillet and chamfer", actionsFor("edges").map((action) => action.id), ["fillet", "chamfer"]);
 eq("empty space offers a new primitive", actionsFor("empty").map((action) => action.id), ["new-primitive"]);
@@ -108,10 +108,10 @@ const remove = registerContextAction({
 eq(
   "a later package inserts itself without editing the bar",
   actionsFor("flat-face").map((action) => action.id),
-  ["push-pull", "sketch-on-face", "hole", "shell-face"],
+  ["push-pull", "sketch-on-face", "hole", "shell-face", "draft"],
 );
 remove();
-eq("unregister takes the package's button away", actionsFor("flat-face").map((action) => action.id), ["push-pull", "hole", "shell-face"]);
+eq("unregister takes the package's button away", actionsFor("flat-face").map((action) => action.id), ["push-pull", "hole", "shell-face", "draft"]);
 
 const off = registerContextAction({
   id: "pattern",
@@ -120,7 +120,7 @@ const off = registerContextAction({
   order: 50,
   enabled: () => false,
 });
-eq("an action that is not available yet stays off the bar", actionsFor("faces").map((action) => action.id), ["move-faces", "shell-faces"]);
+eq("an action that is not available yet stays off the bar", actionsFor("faces").map((action) => action.id), ["move-faces", "shell-faces", "draft"]);
 off();
 
 check("push/pull names its shortcut command", actionsFor("flat-face")[0]?.command === "model-pushpull");

@@ -11,6 +11,7 @@ use super::ffi::{
     lime_tree_chamfer2,
     lime_tree_extrude,
     lime_tree_extrude_extent,
+    lime_tree_draft,
     lime_tree_face_extrude,
     lime_tree_hole,
     lime_tree_join,
@@ -26,7 +27,7 @@ use super::ffi::{
 use super::group::{build_combined, build_group};
 use super::joints::{joined_of, keep_built, stored_joints, Joined};
 use super::k1::{build_k1_loops, k1_has_loops, push_shape};
-use super::ops::{Op, Primitive};
+use super::ops::{FacePick, Neutral, Op, Primitive};
 use super::outcome::Failure;
 use super::partition::{
     partition_max,
@@ -538,6 +539,37 @@ pub(super) fn build(
                     picks.as_ptr(),
                     distances.as_ptr(),
                     picks.len() as c_int,
+                    error,
+                )
+            })
+        }
+        Op::Draft {
+            angle_deg,
+            pull,
+            neutral,
+            ..
+        } => {
+            let neutral_face = match neutral {
+                Some(Neutral::Face(FacePick::Ref(face))) => face.index,
+                Some(Neutral::Face(FacePick::Index(index))) => *index,
+                _ => -1,
+            };
+            let plane = match neutral {
+                Some(Neutral::Plane { origin, normal }) => {
+                    Some([origin[0], origin[1], origin[2], normal[0], normal[1], normal[2]])
+                }
+                _ => None,
+            };
+            let plane_ptr = plane.as_ref().map_or(std::ptr::null(), |row| row.as_ptr());
+            Shape::made(|error| unsafe {
+                lime_tree_draft(
+                    from.raw(),
+                    picks.as_ptr(),
+                    picks.len() as c_int,
+                    *angle_deg,
+                    pull.as_ptr(),
+                    neutral_face,
+                    plane_ptr,
                     error,
                 )
             })

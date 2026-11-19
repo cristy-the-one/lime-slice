@@ -11,10 +11,10 @@ import { axesOf, framePose, isIdentityFrame, planePoint, workplaneOnFace, type W
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pushpull" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text" | "pattern" | "mirror";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pushpull" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text" | "pattern" | "mirror" | "draft";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pushpull", "pocket", "boss", "texture", "array", "ribs", "text", "pattern", "mirror"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pushpull", "pocket", "boss", "texture", "array", "ribs", "text", "pattern", "mirror", "draft"];
 
 // --- A3 composite features: one drag entry per feature, behind the single Features button. ---
 const FEATURE_DRAG: readonly ModelTool[] = ["pocket", "boss", "texture", "array", "ribs", "text"];
@@ -57,6 +57,7 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   pattern: ["modelPatSx", "modelPatSy", "modelPatSz", "modelPatCount", "modelPatS2x", "modelPatS2y", "modelPatS2z", "modelPatCount2", "modelPatAngle", "modelPatCx", "modelPatCy", "modelPatCz", "modelPatPx", "modelPatPy", "modelPatPz"],
   mirror: ["modelMirX", "modelMirY", "modelMirZ"],
   // --- end A4 ---
+  draft: ["modelDraft", "modelDraftPullX", "modelDraftPullY", "modelDraftPullZ"],
 };
 
 /**
@@ -200,7 +201,21 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   // --- A4 pattern and mirror ---
   if (tool === "pattern" || tool === "mirror") return repeatHandles(tool, ctx);
   // --- end A4 ---
+  if (tool === "draft") return draftHandles();
   return [];
+}
+
+/** The angle, and the pull the walls open toward. Both sit on the dock. */
+function draftHandles(): Spec[] {
+  const pulls: [string, string, Vec3, "x" | "y" | "z"][] = [
+    ["modelDraftPullX", "Pull X", [1, 0, 0], "x"],
+    ["modelDraftPullY", "Pull Y", [0, 1, 0], "y"],
+    ["modelDraftPullZ", "Pull Z", [0, 0, 1], "z"],
+  ];
+  return [
+    axisHandle("draft-angle", "knob", "modelDraft", KNOB, normalize([1, -1, 1]), "accent", "Angle", { rate: 0.05, step: 0.1, min: -30, max: 30, unit: "°" }),
+    ...pulls.map(([field, label, dir, color], i) => axisHandle(`draft-pull-${"xyz"[i]}`, "arrow", field, onDock(0), dir, color, label, { step: 0.1 })),
+  ];
 }
 
 /** The in-place arrow. No face, no handle: a push waits until one is under the pointer. */
