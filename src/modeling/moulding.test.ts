@@ -127,40 +127,55 @@ const rib = (points: V3[], section: MouldSection, height: number, wall: number, 
   check("no ribs: one pass line naming six rules", mouldingLines(report).join(" ") === "Moulding checks pass (6 rules)");
 }
 
-// The question to answer first. Printed, and only asserted to be computed.
+// The moulded default, sized so the base at that height is 0.6 × the wall. The root is half the top,
+// clamped at 0.25 × the wall. Junction is measured and not adjusted to pass 1.2.
 {
   console.log("moulded default table: base is the flanks at the wall, fillet left out; radius is the root; junction is the circle");
-  console.log("wall  height  width  base  base/wall  over 0.6  radius  radius/wall  junction/wall  over 1.2");
+  console.log("wall  height  width  base/wall  radius/wall  clamped  junction/wall  junction");
   const rows = [2, 3].flatMap((wall) => [1, 2, 3].map((n) => mouldedDefaultRow(wall, n)));
   for (const row of rows) {
-    const overBase = row.baseRatio === null ? "" : (row.baseRatio - MOULD_ROOT_RATIO).toFixed(4);
-    const overJoint = row.junctionRatio === null ? "" : (row.junctionRatio - MOULD_JUNCTION_RATIO).toFixed(4);
-    console.log([row.wall, row.height, row.width.toFixed(4), row.base === null ? "refused" : row.base.toFixed(4), row.baseRatio === null ? "refused" : row.baseRatio.toFixed(4), overBase, row.radius === null ? "refused" : row.radius.toFixed(4), row.radiusRatio === null ? "refused" : row.radiusRatio.toFixed(4), row.junctionRatio === null ? "refused" : row.junctionRatio.toFixed(4), overJoint].join("  "));
+    const clamped = row.radiusRatio !== null && near(row.radiusRatio, MOULD_ROOT_RADIUS_MIN, 1e-9);
+    const joint = row.junctionRatio === null ? "refused" : row.junctionRatio > MOULD_JUNCTION_RATIO ? `flag ${row.junctionRatio.toFixed(4)}` : `pass ${row.junctionRatio.toFixed(4)}`;
+    console.log([row.wall, row.height, row.width.toFixed(6), row.baseRatio === null ? "refused" : row.baseRatio.toFixed(6), row.radiusRatio === null ? "refused" : row.radiusRatio.toFixed(6), clamped ? "clamped" : "half top", row.junctionRatio === null ? "refused" : row.junctionRatio.toFixed(6), joint].join("  "));
   }
-  // The measured ratios, to four decimals. This locks the measurement; it does not ask the default to pass.
-  const measured: [number, number, number, number, number][] = [
-    [2, 2, 0.6175, 0.2913, 1.2332],
-    [2, 4, 0.6349, 0.2825, 1.2358],
-    [2, 6, 0.6524, 0.2738, 1.2381],
-    [3, 3, 0.6175, 0.2913, 1.2244],
-    [3, 6, 0.6349, 0.2825, 1.2272],
-    [3, 9, 0.6524, 0.2738, 1.2341],
-  ];
+  // Junction ratios from junctionDiameter on this section, locked so the measurement cannot drift.
+  // Every row is over 1.2. The 1.2 limit is unchanged.
+  const junction: number[] = [];
   check(
-    "the six default rows match the measured base, radius and junction ratios",
-    rows.length === 6 && rows.every((row, i) => {
-      const want = measured[i]!;
-      return row.wall === want[0] && row.height === want[1] && row.baseRatio !== null && near(row.baseRatio, want[2], 5e-5) && row.radiusRatio !== null && near(row.radiusRatio, want[3], 5e-5) && row.junctionRatio !== null && near(row.junctionRatio, want[4], 5e-5);
+    "each default row has base/wall 0.600 and a root inside 0.25–0.5, clamped only at 3 × wall",
+    rows.length === 6 && rows.every((row) => {
+      if (row.baseRatio === null || row.radiusRatio === null || row.junctionRatio === null) return false;
+      junction.push(row.junctionRatio);
+      const overWall = row.height / row.wall;
+      const clamped = overWall === 3;
+      const radiusOk = row.radiusRatio >= MOULD_ROOT_RADIUS_MIN - 1e-9 && row.radiusRatio <= MOULD_ROOT_RADIUS_MAX + 1e-9;
+      const clampOk = clamped ? near(row.radiusRatio, MOULD_ROOT_RADIUS_MIN, 1e-9) : row.radiusRatio > MOULD_ROOT_RADIUS_MIN + 1e-6;
+      const one = mouldingReport([rib([[0, 0, 0], [40, 0, 0]], { profile: "drafted", width: row.width, draftDeg: 1, rootRadius: row.radius! }, row.height, row.wall)]);
+      const base = one.rules.find((rule) => rule.rule === "base")!;
+      return near(row.baseRatio, MOULD_ROOT_RATIO, 1e-6) && radiusOk && clampOk && base.pass && !one.flags.some((flag) => flag.rule === "base");
     }),
     JSON.stringify(rows),
   );
-  console.log("same default, fillet sized once at 3 × wall (what the planner stores) and measured at the shorter height");
-  console.log("wall  height  filletAt  base/wall  radius/wall  junction/wall");
+  // Measured by junctionDiameter on the default section. Every row is over 1.2; nothing is changed to pass it.
+  const junctionWant = [1.2213888888888889, 1.2127754681746374, 1.2066666666666666, 1.2152295074071757, 1.2091666666666667, 1.2014900470669965];
+  check(
+    "junction/wall stays over 1.2 on every default row",
+    junction.length === junctionWant.length && junction.every((value, i) => near(value, junctionWant[i]!, 1e-12) && value > MOULD_JUNCTION_RATIO),
+    junction.join(" "),
+  );
+  console.log("same default, width and fillet sized once at 3 × wall (what the planner stores) and measured at the shorter height");
+  console.log("wall  height  filletAt  base/wall  radius/wall  clamped  junction/wall  junction");
   const planned = [2, 3].flatMap((wall) => [1, 2, 3].map((n) => mouldedDefaultRow(wall, n, 3)));
   for (const row of planned) {
-    console.log([row.wall, row.height, row.filletAt, row.baseRatio === null ? "refused" : row.baseRatio.toFixed(4), row.radiusRatio === null ? "refused" : row.radiusRatio.toFixed(4), row.junctionRatio === null ? "refused" : row.junctionRatio.toFixed(4)].join("  "));
+    const clamped = row.radiusRatio !== null && near(row.radiusRatio, MOULD_ROOT_RADIUS_MIN, 1e-9);
+    const joint = row.junctionRatio === null ? "refused" : row.junctionRatio > MOULD_JUNCTION_RATIO ? `flag ${(row.junctionRatio - MOULD_JUNCTION_RATIO).toFixed(4)} over` : "pass";
+    console.log([row.wall, row.height, row.filletAt, row.baseRatio === null ? "refused" : row.baseRatio.toFixed(6), row.radiusRatio === null ? "refused" : row.radiusRatio.toFixed(6), clamped ? "clamped" : "half top", row.junctionRatio === null ? "refused" : row.junctionRatio.toFixed(6), joint].join("  "));
   }
-  check("the planner-fillet rows are computed", planned.length === 6 && planned.every((row) => row.baseRatio !== null && Number.isFinite(row.baseRatio) && row.radiusRatio !== null && Number.isFinite(row.radiusRatio) && row.junctionRatio !== null && Number.isFinite(row.junctionRatio)));
+  check(
+    "the planner stores one clamped root at 3 × wall, and the base is 0.600 only at that height",
+    planned.length === 6 && planned.every((row) => row.baseRatio !== null && row.radiusRatio !== null && near(row.radiusRatio, MOULD_ROOT_RADIUS_MIN, 1e-9) && (row.height === row.filletAt ? near(row.baseRatio, MOULD_ROOT_RATIO, 1e-6) : row.baseRatio < MOULD_ROOT_RATIO - 1e-4)),
+    JSON.stringify(planned),
+  );
 }
 
 // A drafted rib on a 2 mm wall, 6 mm tall. The product root (half the top) cannot pass: base ≤ 0.6 and

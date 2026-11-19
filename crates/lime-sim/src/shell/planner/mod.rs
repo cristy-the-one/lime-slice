@@ -66,7 +66,10 @@ use super::{
     ShellModel, ShellOptions,
 };
 
-pub use profile::{choose_profile, FlangeShape, Process, ProfileRules, RibProfile};
+pub use profile::{
+    choose_profile, moulded_default_root, moulded_default_width, FlangeShape, Process,
+    ProfileRules, RibProfile,
+};
 pub use trace::Family;
 
 /// The default load when none is given: 1 kPa on every triangle, along

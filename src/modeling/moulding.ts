@@ -9,6 +9,7 @@
  * Thresholds are named constants. They are not product defaults: the moulded rib's width, draft and root
  * stay as the planner builds them.
  */
+import { mouldedDefaultRoot, mouldedDefaultWidth } from "./auto-ribs.ts";
 import { ribShape, type RibProfile, type RibShape } from "./rib-net.ts";
 
 type V3 = [number, number, number];
@@ -521,16 +522,16 @@ export interface DefaultRow {
 }
 
 /**
- * Today's moulded default, measured: width 0.6 × the wall at half height, draft 1°, root half the top.
- * Base is the flanks at the wall, fillet left out. `filletAt` sizes the root; the outline is measured at `height`.
- * The product default is not changed.
+ * The moulded default, measured: the base at `filletAt` is 0.6 × the wall, draft 1°, root half the top
+ * or 0.25 × the wall when half the top is smaller. Base is the flanks at the wall, fillet left out.
+ * `filletAt` sizes the width and the root; the outline is measured at `height`.
  */
 export function mouldedDefaultRow(wall: number, heightOverWall: number, filletOverWall = heightOverWall): DefaultRow {
   const height = wall * heightOverWall;
   const filletAt = wall * filletOverWall;
-  const width = Math.max(0.4, 0.6 * wall);
+  const width = mouldedDefaultWidth(wall, filletAt);
   const sized = defaultDraftedSection(width, filletAt);
-  const section: MouldSection = { ...sized, width };
+  const section: MouldSection = { ...sized, width, rootRadius: mouldedDefaultRoot(width, filletAt, wall) };
   const base = baseWidth(section, height);
   const radius = builtRootRadius(section, height);
   const dia = junctionDiameter(section, height, wall);

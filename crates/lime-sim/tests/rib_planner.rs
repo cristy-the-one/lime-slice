@@ -1393,3 +1393,158 @@ fn no_rib_end_is_left_loose_without_a_reason() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// One panel and four f64 bit patterns (volume, factor, and the second pair).
+struct PanelBits {
+    name: &'static str,
+    a: f64,
+    b: f64,
+    div: [usize; 2],
+    bits: [u64; 4],
+}
+
+/// Filament and resin on the 240 × 100 panel the profile tests use, and on
+/// the 300 × 120 panel above. Bits are the solves from before the moulded
+/// base rule (width 1.2 rectangular; resin 1.6 with the chamfered tee).
+/// Baselines off: the section is the question. Spacing stays 15 mm.
+#[test]
+fn filament_and_resin_panels_stay_byte_identical() {
+    use lime_sim::shell::planner::{choose_profile, FlangeShape, Process, ProfileRules};
+    // bits: filament volume, filament factor, resin volume, resin factor.
+    let panels = [
+        PanelBits {
+            name: "240×100",
+            a: 240.0,
+            b: 100.0,
+            div: [48, 20],
+            bits: [4656984680464829719, 4612823276001609070, 4658573435595198838, 4613498784394864162],
+        },
+        PanelBits {
+            name: "300×120",
+            a: 300.0,
+            b: 120.0,
+            div: [60, 24],
+            bits: [4657942165573853954, 4612176606691696420, 4659854928379426258, 4613014876238403575],
+        },
+    ];
+    for PanelBits { name, a, b, div, bits } in panels {
+        let [fv, ff, rv, rf] = bits;
+        let mut filament = panel_request(a, b, div);
+        filament.options.baselines = false;
+        let f = plan_ribs(&filament).unwrap();
+        eprintln!(
+            "FILAMENT {name} ribs {} width {} vol_bits {} factor_bits {} vol {:.16} factor {:.16} profile {:?}",
+            f.ribs.len(),
+            filament.rules.width,
+            f.rib_volume_mm3.to_bits(),
+            f.stiffness_factor.to_bits(),
+            f.rib_volume_mm3,
+            f.stiffness_factor,
+            f.ribs.first().map(|r| r.profile),
+        );
+        assert_eq!(f.ribs.len(), 3, "{name}");
+        assert_eq!(f.rib_volume_mm3.to_bits(), fv, "{name} filament volume");
+        assert_eq!(f.stiffness_factor.to_bits(), ff, "{name} filament factor");
+        let mut resin = filament.clone();
+        resin.rules.width = 1.6;
+        resin.rules.profile = choose_profile(&ProfileRules {
+            process: Process::Resin,
+            flange: Some(FlangeShape::Chamfered),
+            width: 1.6,
+            max_height: 6.0,
+            wall: 2.0,
+            force: None,
+        });
+        let r = plan_ribs(&resin).unwrap();
+        eprintln!(
+            "RESIN {name} ribs {} width {} vol_bits {} factor_bits {} vol {:.16} factor {:.16} profile {:?}",
+            r.ribs.len(),
+            resin.rules.width,
+            r.rib_volume_mm3.to_bits(),
+            r.stiffness_factor.to_bits(),
+            r.rib_volume_mm3,
+            r.stiffness_factor,
+            r.ribs.first().map(|rib| rib.profile),
+        );
+        assert_eq!(r.ribs.len(), 3, "{name}");
+        assert_eq!(r.rib_volume_mm3.to_bits(), rv, "{name} resin volume");
+        assert_eq!(r.stiffness_factor.to_bits(), rf, "{name} resin factor");
+    }
+}
+
+/// The same two panels, moulded. Old is the previous default: width 1.2
+/// (0.6 × the 2 mm wall at half height) and a root of half the top. New is
+/// the base rule at 3 × wall, root clamped at 0.25 × wall. Spacing stays
+/// 15 mm either way, so only the section changes.
+#[test]
+fn moulded_panels_old_half_height_width_against_the_base_rule() {
+    use lime_sim::shell::planner::{
+        choose_profile, moulded_default_width, Process, ProfileRules, RibProfile,
+    };
+    // bits: old volume, old factor, new volume, new factor.
+    let panels = [
+        PanelBits {
+            name: "240×100",
+            a: 240.0,
+            b: 100.0,
+            div: [48, 20],
+            bits: [4657096567636845424, 4612758373617716472, 4656601929896895588, 4612551330513681031],
+        },
+        PanelBits {
+            name: "300×120",
+            a: 300.0,
+            b: 120.0,
+            div: [60, 24],
+            bits: [4658076529526389633, 4612121196119228356, 4657554629237953800, 4611959505399519076],
+        },
+    ];
+    let width = moulded_default_width(2.0, 6.0);
+    let profile = choose_profile(&ProfileRules {
+        process: Process::Moulded,
+        flange: None,
+        width,
+        max_height: 6.0,
+        wall: 2.0,
+        force: None,
+    });
+    assert!(
+        matches!(profile, RibProfile::Drafted { root_radius, .. } if (root_radius - 0.5).abs() < 1e-12),
+        "{profile:?}"
+    );
+    for PanelBits { name, a, b, div, bits } in panels {
+        let [old_vol, old_factor, new_vol, new_factor] = bits;
+        let mut old_req = panel_request(a, b, div);
+        old_req.options.baselines = false;
+        old_req.rules.width = 1.2;
+        old_req.rules.profile = RibProfile::default_drafted(1.2, 6.0);
+        let old = plan_ribs(&old_req).unwrap();
+        let mut new_req = old_req.clone();
+        new_req.rules.width = width;
+        new_req.rules.profile = profile;
+        let new = plan_ribs(&new_req).unwrap();
+        eprintln!(
+            "MOULDED {name} old ribs {} width 1.2 vol_bits {} factor_bits {} vol {:.16} factor {:.16}",
+            old.ribs.len(),
+            old.rib_volume_mm3.to_bits(),
+            old.stiffness_factor.to_bits(),
+            old.rib_volume_mm3,
+            old.stiffness_factor,
+        );
+        eprintln!(
+            "MOULDED {name} new ribs {} width {:.16} vol_bits {} factor_bits {} vol {:.16} factor {:.16} profile {:?}",
+            new.ribs.len(),
+            width,
+            new.rib_volume_mm3.to_bits(),
+            new.stiffness_factor.to_bits(),
+            new.rib_volume_mm3,
+            new.stiffness_factor,
+            new.ribs.first().map(|rib| rib.profile),
+        );
+        assert_eq!(old.ribs.len(), 3, "{name}");
+        assert_eq!(new.ribs.len(), 3, "{name}");
+        assert_eq!(old.rib_volume_mm3.to_bits(), old_vol, "{name} old volume");
+        assert_eq!(old.stiffness_factor.to_bits(), old_factor, "{name} old factor");
+        assert_eq!(new.rib_volume_mm3.to_bits(), new_vol, "{name} new volume");
+        assert_eq!(new.stiffness_factor.to_bits(), new_factor, "{name} new factor");
+    }
+}

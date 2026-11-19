@@ -20,6 +20,35 @@ type V3 = [number, number, number];
 
 export type RibProcess = "filament" | "resin" | "moulded";
 
+/** Draft of the moulded default, degrees a side. The same angle `RibProfile::default_drafted` uses. */
+export const MOULD_DRAFT_DEG = 1;
+/** Base of the moulded default, where the flanks meet the wall, over the wall. The fillet is not part of it. */
+export const MOULD_BASE_RATIO = 0.6;
+/** The moulded default root is at least this many wall thicknesses. Half the top is kept when it is larger. */
+export const MOULD_ROOT_FLOOR = 0.25;
+/** Thinnest moulded or resin default, mm. The same floor `ribRules` already used. */
+const MIN_DEFAULT_WIDTH_MM = 0.4;
+
+/**
+ * Half-height width of the moulded default, so the base at `height` is
+ * {@link MOULD_BASE_RATIO} × `wall`. Draft stays {@link MOULD_DRAFT_DEG}. One place: the panel and
+ * `ribs_plan` both call `ribRules`, which calls this. The planner's copy is `moulded_default_width`.
+ */
+export function mouldedDefaultWidth(wall: number, height: number): number {
+  const tan = Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
+  return Math.max(MIN_DEFAULT_WIDTH_MM, MOULD_BASE_RATIO * wall - height * tan);
+}
+
+/**
+ * Root radius of the moulded default, mm. Half the top width, or {@link MOULD_ROOT_FLOOR} × `wall`
+ * when half the top is smaller. A typed root is not passed here.
+ */
+export function mouldedDefaultRoot(width: number, height: number, wall: number): number {
+  const tan = Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
+  const halfTop = 0.5 * Math.max(0, width - height * tan);
+  return Math.max(halfTop, MOULD_ROOT_FLOOR * wall);
+}
+
 /** One bead of a nozzle, as the stress smear lays it: 1.125 × the nozzle. */
 export function beadWidth(nozzleMm: number): number {
   return Math.min(1.2, Math.max(0.2, nozzleMm * 1.125));
@@ -67,6 +96,9 @@ export function narrowWidth(areaMm2: number, outerLoopMm: number): number {
 export function ribRules(input: RibRuleInput): RibRulesChosen {
   const defaults: string[] = [];
   const t = input.thicknessMm;
+  // The moulded width is sized at the greatest height, so that height is known first. A typed height is that height.
+  let maxHeight = input.given.maxHeight;
+  if (maxHeight === undefined) maxHeight = Math.max(1, 3 * t);
   let width: number;
   if (input.process === "filament") {
     const bead = beadWidth(input.nozzleMm);
@@ -79,14 +111,15 @@ export function ribRules(input: RibRuleInput): RibRulesChosen {
       defaults.push(`width ${r2(width)} mm: 3 beads of ${r2(bead)} mm (1.125 × the ${input.nozzleMm} mm nozzle)`);
     }
   } else if (input.given.width !== undefined) width = input.given.width;
-  else {
-    const share = input.process === "moulded" ? 0.6 : 0.8;
-    width = Math.max(0.4, share * t);
-    defaults.push(`width ${r2(width)} mm: ${share} × the wall's ${r2(t)} mm (${input.process})`);
+  else if (input.process === "moulded") {
+    width = mouldedDefaultWidth(t, maxHeight);
+    defaults.push(`width ${r2(width)} mm: 0.6 × the wall at the rib's base (the wall's ${r2(t)} mm)`);
+    defaults.push("root radius half the top width, or 0.25 × the wall when half the top is smaller");
+  } else {
+    width = Math.max(MIN_DEFAULT_WIDTH_MM, 0.8 * t);
+    defaults.push(`width ${r2(width)} mm: 0.8 × the wall's ${r2(t)} mm (resin)`);
   }
-  let maxHeight = input.given.maxHeight;
-  if (maxHeight === undefined) {
-    maxHeight = Math.max(1, 3 * t);
+  if (input.given.maxHeight === undefined) {
     defaults.push(`greatest height ${r2(maxHeight)} mm: 3 × the wall's median ${r2(t)} mm, less where something faces the wall or a zone caps it`);
   }
   let minHeight = input.given.minHeight;

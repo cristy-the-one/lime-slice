@@ -15,7 +15,7 @@
  * Shared module: no DOM, no engine.
  */
 import type { RibWallRequest } from "./modeling/rib-wall.ts";
-import type { Section } from "./modeling/auto-ribs.ts";
+import { mouldedDefaultRoot, type Section } from "./modeling/auto-ribs.ts";
 import { defaultDraftedSection } from "./modeling/moulding.ts";
 
 export type V3 = [number, number, number];
@@ -547,9 +547,13 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
       const wire = body.rules.profile;
       const asked = wire?.kind;
       const profile: RibProfileName = asked === "drafted" || asked === "tee" ? asked : "straight";
-      // Moulded auto, and an asked drafted rib, use the planner's drafted default (1° and the root from the greatest height).
-      const drafted = wire?.kind === "drafted" || (wire?.kind === "auto" && wire.process === "moulded");
-      const draftedRoot = drafted ? defaultDraftedSection(width, tall).rootRadius : 0;
+      // An asked drafted rib uses ribNet's root (half the top). Moulded auto uses the moulded default: half the top,
+      // or 0.25 × the thinnest wall when half the top is smaller. The planner clamps with that same thinnest wall.
+      const mouldedAuto = wire?.kind === "auto" && wire.process === "moulded";
+      const drafted = wire?.kind === "drafted" || mouldedAuto;
+      const plainRoot = drafted ? defaultDraftedSection(width, tall).rootRadius ?? 0 : 0;
+      const thinnest = body.request.mesh.thickness.reduce((min, t) => (t > 0 && t < min ? t : min), Infinity);
+      const draftedRoot = mouldedAuto && thinnest < Infinity ? mouldedDefaultRoot(width, tall, thinnest) : plainRoot;
       let fraction = 0;
       let factor = 1;
       const bareDeflection = 0.8;
