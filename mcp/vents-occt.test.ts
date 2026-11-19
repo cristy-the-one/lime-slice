@@ -1,8 +1,9 @@
 /**
  * Resin vent notches on a synthetic shelled box, through ribs_plan against real Open CASCADE.
  * The floor's ribs stand upward. buildAxis [0,0,-1] points that opening at the platform, so the
- * closed cells are vented and the notched ribNet builds. [0,0,1] points it at the tank, so nothing cups.
- * Filament and moulded on the same wall have no vents key.
+ * closed cells are vented and ribs_apply builds the notched ribNet. With no buildAxis the build is
+ * the part as it sits (+Z, toward the tank), so nothing cups, and the note says the plate has no
+ * resin printer. Filament and moulded on the same wall have no vents key.
  * Skips without LIME_OCCT_BRIDGE; fails in CI when it is unset.
  * Kept in the folded-shell job: a box plan is too heavy for the shared Open CASCADE job.
  */
@@ -61,10 +62,11 @@ if (shelled.ok !== true) throw new Error(`shell: ${JSON.stringify(shelled).slice
 const wall = { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } };
 const goal = { budgetMm3: 2500 };
 const t0 = Date.now();
-const resin = await waitJob(String((await call("ribs_plan", { object, wall, process: "resin", goal, baselines: false, buildAxis: [0, 0, -1] })).job));
+const resinJob = String((await call("ribs_plan", { object, wall, process: "resin", goal, baselines: false, buildAxis: [0, 0, -1] })).job);
+const resin = await waitJob(resinJob);
 const resinS = (Date.now() - t0) / 1000;
 const t1 = Date.now();
-const upright = await waitJob(String((await call("ribs_plan", { object, wall, process: "resin", goal, baselines: false, buildAxis: [0, 0, 1] })).job));
+const upright = await waitJob(String((await call("ribs_plan", { object, wall, process: "resin", goal, baselines: false })).job));
 const uprightS = (Date.now() - t1) / 1000;
 const t2 = Date.now();
 const filament = await waitJob(String((await call("ribs_plan", { object, wall, process: "filament", goal, baselines: false })).job));
@@ -81,7 +83,7 @@ check(
   typeof vents?.factorBefore === "number" && typeof vents?.factorAfter === "number" && vents.factorAfter <= vents.factorBefore + 1e-4 && vents.mouseHoleFactor + 1e-4 >= vents.factorAfter && Math.abs(resin.plan.stiffnessFactor - vents.factorAfter) < 1e-3,
   JSON.stringify({ before: vents?.factorBefore, after: vents?.factorAfter, mouse: vents?.mouseHoleFactor, reported: resin.plan?.stiffnessFactor }),
 );
-check("the note says the plate has no resin printer", typeof vents?.note === "string" && String(vents.note).includes("no resin printer"));
+check("a given build axis is the direction the note names", vents?.note === "Build direction is the one given.");
 
 const drained = ventPockets({
   ribs: ribs.map((rib) => ({ points: rib.points, ends: rib.ends?.[0] === "free" || rib.ends?.[1] === "free" ? ["free", "free"] : undefined })),
@@ -90,17 +92,12 @@ const drained = ventPockets({
 });
 check("the notched ribs, read on their own, close no cupping cell", drained.pockets.length === 0, JSON.stringify(drained.pockets).slice(0, 300));
 
-const built = await call("model_apply", {
-  object,
-  op: {
-    kind: "ribNet",
-    paths: ribs.map((rib) => ({ points: rib.points, width: rib.width, height: rib.height, ...(Array.isArray(rib.heights) ? { heights: rib.heights } : {}) })),
-  },
-});
-check("the notched ribNet builds", built.ok === true, JSON.stringify(built).slice(0, 300));
+const built = await call("ribs_apply", { job: resinJob });
+check("the notched ribNet builds", built.ok === true && Number(built.paths) >= ribs.length, JSON.stringify(built).slice(0, 400));
 
 const up = upright.plan?.vents as Reply | undefined;
-check("the same floor facing the tank cups nothing", upright.ok === true && Array.isArray(up?.pockets) && up.pockets.length === 0, JSON.stringify(up).slice(0, 300));
+check("the same floor with the default build, toward the tank, cups nothing", upright.ok === true && Array.isArray(up?.pockets) && up.pockets.length === 0, JSON.stringify(up).slice(0, 300));
+check("the note says the plate has no resin printer", typeof up?.note === "string" && String(up.note).includes("no resin printer"));
 
 check("filament has no vents key", filament.ok === true && filament.plan && !("vents" in filament.plan));
 check("moulded has no vents key", moulded.ok === true && moulded.plan && !("vents" in moulded.plan) && "moulding" in moulded.plan);
