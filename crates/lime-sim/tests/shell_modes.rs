@@ -2,10 +2,14 @@
 //! 2 % band are the ones docs/plan-shell-modes.md measured; the tolerances
 //! are not loosened.
 
+use std::time::Instant;
+
+use lime_sim::shell::planner::{plan_ribs, Goal, RibPlan, RibPlanRequest};
 use lime_sim::shell::{
-    CLUSTER_GAP, IsotropicShell, Rib, RibSide, ShellMesh, ShellModel, ShellOptions, cluster_count,
+    cluster_count, IsotropicShell, Rib, RibSide, ShellLoad, ShellMesh, ShellModel, ShellOptions,
+    CLUSTER_GAP,
 };
-use shell_common::{Edge, material, rectangle_holds, rigidity};
+use shell_common::{material, rectangle_holds, rigidity, Edge};
 
 #[path = "shell_common/mod.rs"]
 mod shell_common;
@@ -160,6 +164,241 @@ fn repeated_pair_cluster_score_is_basis_independent() {
         (score - again).abs() <= 1e-9 * scale,
         "rotated score {again} differs from {score}"
     );
+}
+
+#[test]
+fn a_frequency_goal_names_itself_when_it_refuses() {
+    let mesh = ShellMesh::rectangle([40.0, 20.0], [4, 2], 2.0);
+    let mut req = RibPlanRequest::new(mesh, material(2000.0, 0.3));
+    req.goal = Goal::Frequency { factor: 1.3 };
+    let err = plan_ribs(&req).unwrap_err().to_string();
+    assert!(
+        err.contains("frequency goal") && err.contains("density"),
+        "{err}"
+    );
+    req.material = dense(2000.0, 0.3);
+    req.goal = Goal::Frequency { factor: 0.5 };
+    let err = plan_ribs(&req).unwrap_err().to_string();
+    assert!(err.contains("frequency goal"), "{err}");
+    // The goal is one variant. A frequency request has no budget to set
+    // beside it, which is how a conflicting goal is refused today.
+    assert!(!format!("{:?}", Goal::Frequency { factor: 1.3 }).contains("volume"));
+}
+
+/// Clamped 120 × 70 × 2 at the planner's 5 mm pitch. Reaches ×1.3, and
+/// under the study's point load beats an equal volume of compliance ribs.
+#[test]
+fn frequency_plan_reaches_1_3_and_beats_compliance_ribs() {
+    let mesh = ShellMesh::rectangle([120.0, 70.0], [24, 14], 2.0);
+    let mat = dense(2000.0, 0.3);
+    let node = nearest(&mesh, [15.0, 35.0, 0.0]);
+    let point = vec![vec![ShellLoad::Force {
+        node,
+        force: [0.0, 0.0, -10.0],
+    }]];
+
+    let mut freq = RibPlanRequest::new(mesh.clone(), mat);
+    freq.goal = Goal::Frequency { factor: 1.3 };
+    freq.load_cases = point.clone();
+    freq.options.baselines = false;
+    let t = Instant::now();
+    let plan = plan_ribs(&freq).unwrap();
+    let freq_s = t.elapsed().as_secs_f64();
+    let hz = plan.frequency_hz.expect("a frequency result");
+    println!(
+        "frequency plan: bare {:.3} Hz, ribbed {:.3} Hz, ×{:.4} frequency, ×{:.4} stiffness, volume {:.2} mm³, {:.2} s, goal_met {}",
+        hz.bare,
+        hz.ribbed,
+        plan.frequency_factor.unwrap(),
+        plan.stiffness_factor,
+        plan.rib_volume_mm3,
+        freq_s,
+        plan.goal_met
+    );
+    println!("notes: {:?}", plan.notes);
+    assert!(
+        plan.notes.iter().any(|n| n.contains("ignored")),
+        "the result should say the loads are ignored"
+    );
+    assert!(
+        plan.frequency_factor.unwrap() >= 1.3,
+        "reached ×{:.4}, under ×1.3",
+        plan.frequency_factor.unwrap()
+    );
+    assert!(plan.goal_met);
+
+    let (with_mass, without) = rib_mass_shift(&plan, mat);
+    let drop = (without - with_mass) / without;
+    println!(
+        "rib mass: {with_mass:.4} Hz with it, {without:.4} Hz without, {:+.3}%",
+        drop * 100.0
+    );
+    assert!(with_mass < without, "rib mass should lower the frequency");
+    assert!(
+        drop < 0.01,
+        "rib mass moved the frequency by {:.3}%, over 1%",
+        drop * 100.0
+    );
+
+    let mut spend = RibPlanRequest::new(mesh.clone(), mat);
+    spend.goal = Goal::Budget {
+        volume_mm3: plan.rib_volume_mm3,
+    };
+    spend.load_cases = point.clone();
+    spend.options.baselines = false;
+    let t = Instant::now();
+    let compliance = plan_ribs(&spend).unwrap();
+    let comp_s = t.elapsed().as_secs_f64();
+    let (c_bare, c_rib) = plan_hz(&compliance, mat);
+    let c_factor = c_rib / c_bare;
+    println!(
+        "frequency ribs: {}, compliance ribs: {}",
+        plan.ribs.len(),
+        compliance.ribs.len()
+    );
+    println!(
+        "compliance plan: bare {:.3} Hz, ribbed {:.3} Hz, ×{:.4} frequency, ×{:.4} stiffness, volume {:.2} mm³, {:.2} s",
+        c_bare, c_rib, c_factor, compliance.stiffness_factor, compliance.rib_volume_mm3, comp_s
+    );
+    println!("plan time: frequency {freq_s:.2} s, stiffness {comp_s:.2} s");
+    // How far a frequency plan goes once the ratio stops being the limit.
+    let mut far = RibPlanRequest::new(mesh.clone(), mat);
+    far.goal = Goal::Frequency { factor: 4.0 };
+    far.load_cases = point.clone();
+    far.options.baselines = false;
+    let far = plan_ribs(&far).unwrap();
+    println!(
+        "frequency plan asked for ×4: reached ×{:.4}, {} ribs, volume {:.2} mm³, goal_met {}",
+        far.frequency_factor.unwrap(),
+        far.ribs.len(),
+        far.rib_volume_mm3,
+        far.goal_met
+    );
+    assert!(
+        hz.ribbed > c_rib,
+        "frequency ribs {:.3} Hz, compliance ribs {:.3} Hz",
+        hz.ribbed,
+        c_rib
+    );
+
+    let mut bare = ShellModel::new(
+        mesh,
+        mat,
+        &rectangle_holds(
+            &ShellMesh::rectangle([120.0, 70.0], [24, 14], 2.0),
+            120.0,
+            70.0,
+            Edge::Clamped,
+        ),
+        ShellOptions::default(),
+    )
+    .unwrap();
+    bare.set_threads(1);
+    let load = vec![ShellLoad::Force {
+        node,
+        force: [0.0, 0.0, -10.0],
+    }];
+    let t = Instant::now();
+    bare.solve(&load).unwrap();
+    let static_s = t.elapsed().as_secs_f64();
+    let t = Instant::now();
+    bare.lowest_modes(RHO, 1).unwrap();
+    let eigen_s = t.elapsed().as_secs_f64();
+    println!("bare panel: static {static_s:.4} s, lowest mode {eigen_s:.4} s");
+}
+
+fn nearest(mesh: &ShellMesh, at: [f64; 3]) -> u32 {
+    mesh.vertices
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            let d = |p: &[f64; 3]| {
+                (p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2) + (p[2] - at[2]).powi(2)
+            };
+            d(a).total_cmp(&d(b))
+        })
+        .map(|(i, _)| i as u32)
+        .unwrap()
+}
+
+fn plan_ribs_of(plan: &RibPlan) -> Vec<Rib> {
+    plan.ribs
+        .iter()
+        .flat_map(|r| {
+            r.profile
+                .solver_ribs(&r.vertices, &r.heights, r.width, r.side)
+        })
+        .collect()
+}
+
+fn plan_hz(plan: &RibPlan, mat: IsotropicShell) -> (f64, f64) {
+    let holds = rectangle_holds(&plan.mesh, 120.0, 70.0, Edge::Clamped);
+    let mut model =
+        ShellModel::new(plan.mesh.clone(), mat, &holds, ShellOptions::default()).unwrap();
+    model.set_threads(1);
+    let bare = model.lowest_modes(RHO, 1).unwrap().modes[0].hz;
+    model.set_ribs(plan_ribs_of(plan)).unwrap();
+    let ribbed = model.lowest_modes(RHO, 1).unwrap().modes[0].hz;
+    (bare, ribbed)
+}
+
+fn rib_mass_shift(plan: &RibPlan, mat: IsotropicShell) -> (f64, f64) {
+    let holds = rectangle_holds(&plan.mesh, 120.0, 70.0, Edge::Clamped);
+    let mut model =
+        ShellModel::new(plan.mesh.clone(), mat, &holds, ShellOptions::default()).unwrap();
+    model.set_threads(1);
+    model.set_ribs(plan_ribs_of(plan)).unwrap();
+    let with_mass = model.lowest_modes(RHO, 1).unwrap().modes[0].hz;
+    let without = model.lowest_modes_with(RHO, 1, false).unwrap().modes[0].hz;
+    (with_mass, without)
+}
+
+/// A stiffness request's plan, serialised without the frequency fields.
+/// Locked to the bytes this branch produced from the unchanged selector;
+/// the v6.11.0 snapshot tests lock the same plan to 1e-12.
+#[test]
+fn a_stiffness_plan_json_is_unchanged() {
+    let mut req = RibPlanRequest::new(
+        ShellMesh::rectangle([160.0, 80.0], [24, 12], 2.0),
+        material(2000.0, 0.35),
+    );
+    req.goal = Goal::Stiffer(2.0);
+    req.options.baselines = false;
+    let plan = plan_ribs(&req).unwrap();
+    assert!(plan.frequency_hz.is_none());
+    assert!(plan.frequency_factor.is_none());
+    assert!(plan.notes.is_empty());
+    let stamp = stiffness_stamp(&plan);
+    assert_eq!(stamp, include_str!("one_case_stamp_v6110.json"));
+}
+
+fn stiffness_stamp(plan: &RibPlan) -> String {
+    let ribs: Vec<_> = plan
+        .ribs
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "height": r.height,
+                "heights": r.heights,
+                "points": r.points,
+                "family": format!("{:?}", r.family),
+                "ends": format!("{:?}", r.ends),
+                "volume_mm3": r.volume_mm3,
+            })
+        })
+        .collect();
+    let v = serde_json::json!({
+        "stiffness_factor": plan.stiffness_factor,
+        "rib_volume_mm3": plan.rib_volume_mm3,
+        "bare_compliance": plan.bare.compliance,
+        "ribbed_compliance": plan.ribbed.compliance,
+        "bare_deflection": plan.bare.max_deflection,
+        "ribbed_deflection": plan.ribbed.max_deflection,
+        "goal_met": plan.goal_met,
+        "case_factors": plan.case_factors,
+        "ribs": ribs,
+    });
+    serde_json::to_string_pretty(&v).unwrap() + "\n"
 }
 
 fn centre_rib(a: f64, n: usize) -> Rib {
