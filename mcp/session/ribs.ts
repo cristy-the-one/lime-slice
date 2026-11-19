@@ -16,6 +16,7 @@ import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -69,6 +70,29 @@ const rv = (p: readonly number[]): V3 => [r(p[0]!, 4), r(p[1]!, 4), r(p[2]!, 4)]
 
 function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * The loads ribs_plan puts on the wall and on the plan body. One load stays `loads`. Cases go through `loadRequest`,
+ * so the names, the weights and the cap of 8 are the panel's, not a second copy.
+ */
+export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { reason: string }, input: { loads?: unknown; loadCases?: unknown }): ReturnType<typeof loadRequest> | { reason: string; code: "bad-argument" | "bad-load" } {
+  const loads = readLoads(input.loads);
+  if ("reason" in loads) return { reason: loads.reason, code: "bad-load" };
+  const rawCases = input.loadCases;
+  if (rawCases !== undefined && !Array.isArray(rawCases)) return { reason: "loadCases is a list of load cases, each {name?, weight?, loads}.", code: "bad-argument" };
+  const caseList = Array.isArray(rawCases) ? (rawCases as Row[]) : [];
+  if (caseList.length && loads.length) return { reason: "Give loads or loadCases, not both. loads is one case; loadCases weighs several together.", code: "bad-argument" };
+  const parsed: PanelLoadCase[] = [];
+  for (const [ci, item] of caseList.entries()) {
+    const row = (item ?? {}) as Row;
+    if (!Array.isArray(row.loads)) return { reason: `Load case ${ci + 1} needs loads, a list of loads as loads takes them.`, code: "bad-argument" };
+    const got = readLoads(row.loads);
+    if ("reason" in got) return { reason: `Load case ${ci + 1}: ${got.reason}`, code: "bad-load" };
+    if (got.length === 0) return { reason: `Load case ${ci + 1} has no load.`, code: "bad-argument" };
+    parsed.push({ name: typeof row.name === "string" ? row.name : "", weight: typeof row.weight === "number" ? row.weight : Number.NaN, loads: got });
+  }
+  return loadRequest(loads, parsed.length ? parsed : undefined, true);
 }
 
 /** The solid's mesh in the frame its Model numbers are typed in, with the face of each triangle. */
@@ -277,25 +301,9 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   if ("reason" in zones) return refuse("bad-zone", zones.reason);
   const holds = this.readFixtures(input.holds);
   if ("reason" in holds) return refuse("bad-fixture", holds.reason);
-  const loads = this.readLoads(input.loads);
-  if ("reason" in loads) return refuse("bad-load", loads.reason);
-  const rawCases = input.loadCases;
-  if (rawCases !== undefined && !Array.isArray(rawCases)) return refuse("bad-argument", "loadCases is a list of load cases, each {name?, weight?, loads}.");
-  const caseList = Array.isArray(rawCases) ? (rawCases as Row[]) : [];
-  if (caseList.length && loads.length) return refuse("bad-argument", "Give loads or loadCases, not both. loads is one case; loadCases weighs several together.");
-  if (caseList.length > 8) return refuse("bad-argument", `loadCases takes up to 8 cases; this has ${caseList.length}.`);
-  const parsedCases: { name: string; weight: number; loads: StudyLoad[] }[] = [];
-  for (const [ci, item] of caseList.entries()) {
-    const row = (item ?? {}) as Row;
-    if (!Array.isArray(row.loads)) return refuse("bad-argument", `Load case ${ci + 1} needs loads, a list of loads as loads takes them.`);
-    const got = this.readLoads(row.loads);
-    if ("reason" in got) return refuse("bad-load", `Load case ${ci + 1}: ${got.reason}`);
-    if (got.length === 0) return refuse("bad-argument", `Load case ${ci + 1} has no load.`);
-    const weight = num(row.weight);
-    if (row.weight !== undefined && !(weight !== undefined && weight > 0)) return refuse("bad-argument", `Load case ${ci + 1}: weight is a number above zero.`);
-    const named = typeof row.name === "string" && row.name.trim() ? row.name.trim() : `Case ${ci + 1}`;
-    parsedCases.push({ name: named, weight: weight ?? 1, loads: got });
-  }
+  const sentLoads = ribsLoadRequest((value) => this.readLoads(value), input);
+  if ("code" in sentLoads) return refuse(sentLoads.code, sentLoads.reason);
+  const parsedCases = sentLoads.loadCases ? sentLoads.loadCases.map((c, i) => ({ name: c.name, weight: sentLoads.caseWeights![i]!, loads: c.loads })) : [];
   const filament = this.filament();
   const density = filament.densityGCm3 > 0 ? filament.densityGCm3 : 1.24;
   const goal = goalOf(input.goal, density);
@@ -315,7 +323,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     ...(Array.isArray(wallIn.excludeFaces) ? { excludeFaces: wallIn.excludeFaces as number[] } : {}),
     zones,
     holds,
-    ...(parsedCases.length ? { loadCases: parsedCases.map((c) => ({ name: c.name, loads: c.loads })) } : { loads }),
+    ...(sentLoads.loadCases ? { loadCases: sentLoads.loadCases } : { loads: sentLoads.loads }),
     ...(num(rib.minHeight) !== undefined ? { minRibHeightMm: num(rib.minHeight)! } : {}),
     ...(input.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
     ...(num(wallIn.thicknessMm) !== undefined ? { thicknessMm: num(wallIn.thicknessMm)! } : {}),
@@ -371,7 +379,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     goal,
     options: { baselines: input.baselines !== false },
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
-    ...(parsedCases.length ? { caseWeights: parsedCases.map((c) => c.weight) } : {}),
+    ...(sentLoads.caseWeights ? { caseWeights: sentLoads.caseWeights } : {}),
   };
   if (!this.engine.ribPlanStart || !this.engine.ribPlanPoll || !this.engine.ribPlanCancel) return refuse("solver-unavailable", "This engine has no rib planner. Rebuild the in-process engine.");
   stage("planning: starting", 0.05);

@@ -191,6 +191,7 @@ src/sim/study-mesh.test.ts
 src/sim/stress-cells.test.ts
 src/sim/paint-mesh.test.ts
 mcp/load-place.test.ts
+mcp/ribs-load-request.test.ts
 mcp/numbers.test.ts
 mcp/render.test.ts
 mcp/native-load.test.ts
