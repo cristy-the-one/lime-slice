@@ -184,13 +184,14 @@ export function plateBoxes(): Bounds[] {
 }
 
 /** No solid to show: the view says so plainly, with New solid at hand, and shows whatever model space holds. */
-export function showEmpty(mesh: boolean) {
+export function showEmpty(mesh: boolean, meshStep = false) {
   readout("");
   const card = document.querySelector<HTMLElement>("#modelEmpty");
   const title = document.querySelector("#modelEmptyTitle");
   const text = document.querySelector("#modelEmptyText");
   if (title) title.textContent = mesh ? "This object is a mesh" : "No solid open";
-  if (text) text.textContent = mesh ? "Model edits STEP solids. Start a new solid from a primitive, or add a STEP file." : "Start a solid from a primitive, or open a STEP file.";
+  if (text && meshStep) text.textContent = "This STEP file holds a mesh with open edges, not a solid. Model edits solids. Start a new solid from a primitive, or add a STEP file of a solid.";
+  else if (text) text.textContent = mesh ? "Model edits STEP solids. Start a new solid from a primitive, or add a STEP file." : "Start a solid from a primitive, or open a STEP file.";
   const fileButton = document.querySelector("#modelEmptyOpen");
   if (fileButton) fileButton.textContent = state.plate.objects.length > 0 ? "Add a file" : "Open a file";
   if (card) card.hidden = false;

@@ -375,3 +375,105 @@ fn a_sphere_with_two_cross_holes_keeps_its_sphere() {
     assert!((vol - 29870.90).abs() < 29870.90 * 0.01, "volume {vol}");
     assert_eq!(boundary_edges(&mesh), 0);
 }
+
+/// A 10 mm cube as a mesh converter writes it: flat faces with straight edges in one open shell of a surface model, and
+/// no solid. `faces` are loops of corner numbers, counter-clockwise seen from outside.
+fn faceted_step(faces: &[&[usize]]) -> String {
+    let corners = [
+        [0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0],
+        [0, 0, 10], [10, 0, 10], [10, 10, 10], [0, 10, 10],
+    ];
+    let mut out = String::from(
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('mesh'),'2;1');\nFILE_NAME('m','',(''),(''),'','','');\n\
+         FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n\
+         #1 = SHAPE_REPRESENTATION('',(#3),#2);\n\
+         #2 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT((#5,#6,#7)) REPRESENTATION_CONTEXT('','') );\n\
+         #5 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+         #6 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n\
+         #7 = ( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );\n\
+         #8 = DIRECTION('',(0.,0.,1.));\n#9 = DIRECTION('',(1.,0.,0.));\n\
+         #10 = AXIS2_PLACEMENT_3D('',#20,#8,#9);\n#11 = PLANE('',#10);\n\
+         #12 = VECTOR('',#9,1.);\n#13 = LINE('',#20,#12);\n",
+    );
+    for (i, c) in corners.iter().enumerate() {
+        out += &format!("#{} = CARTESIAN_POINT('',({}.,{}.,{}.));\n", 20 + i, c[0], c[1], c[2]);
+        out += &format!("#{} = VERTEX_POINT('',#{});\n", 30 + i, 20 + i);
+    }
+    // One edge per pair of corners, whichever face names it first; the other face runs it backwards.
+    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut next = 100;
+    let mut shell = Vec::new();
+    for face in faces {
+        let mut oriented = Vec::new();
+        for (k, &a) in face.iter().enumerate() {
+            let b = face[(k + 1) % face.len()];
+            let (id, along) = match edges.get(&(b, a)) {
+                Some(&id) => (id, false),
+                None => {
+                    let id = *edges.entry((a, b)).or_insert_with(|| {
+                        next += 1;
+                        next
+                    });
+                    (id, true)
+                }
+            };
+            if along && !out.contains(&format!("#{id} = EDGE_CURVE")) {
+                out += &format!("#{id} = EDGE_CURVE('',#{},#{},#13,.T.);\n", 30 + a, 30 + b);
+            }
+            next += 1;
+            out += &format!("#{next} = ORIENTED_EDGE('',*,*,#{id},.{}.);\n", if along { "T" } else { "F" });
+            oriented.push(format!("#{next}"));
+        }
+        out += &format!("#{} = EDGE_LOOP('',({}));\n", next + 1, oriented.join(","));
+        out += &format!("#{} = FACE_BOUND('',#{},.T.);\n", next + 2, next + 1);
+        out += &format!("#{} = ADVANCED_FACE('',(#{}),#11,.T.);\n", next + 3, next + 2);
+        shell.push(format!("#{}", next + 3));
+        next += 3;
+    }
+    out += &format!("#4 = OPEN_SHELL('',({}));\n#3 = SHELL_BASED_SURFACE_MODEL('',(#4));\nENDSEC;\nEND-ISO-10303-21;\n", shell.join(","));
+    out
+}
+
+const CUBE_FACES: [&[usize]; 7] = [
+    &[0, 3, 2, 1],
+    &[4, 5, 6],
+    &[4, 6, 7],
+    &[0, 1, 5, 4],
+    &[1, 2, 6, 5],
+    &[2, 3, 7, 6],
+    &[3, 0, 4, 7],
+];
+
+/// FreeCAD's "mesh to shape" writes a mesh as flat faces in surface shells with no solid. Open CASCADE took 214 s over a
+/// 48 MB one and then refused it. Its facets are read as they stand, as an STL's are.
+#[test]
+fn a_converted_mesh_in_surface_shells_loads_as_its_facets() {
+    let step = faceted_step(&CUBE_FACES);
+    let mesh = load_mesh("mesh.step", step.as_bytes()).unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(mesh.triangle_count(), 12);
+    expect_box(&mesh, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0], 1e-9);
+    assert!((volume(&mesh) - 1000.0).abs() < 1e-6, "volume {}", volume(&mesh));
+    assert_eq!(boundary_edges(&mesh), 0);
+    let preview = lime_slice_core::mesh_preview("mesh.step", step.as_bytes()).unwrap();
+    assert_eq!(preview.note, None);
+}
+
+/// A mesh with a hole in it still loads, and the reply says how many edges are open.
+#[test]
+fn a_converted_mesh_with_a_hole_loads_and_says_so() {
+    let step = faceted_step(&CUBE_FACES[..6]);
+    let mesh = load_mesh("mesh.step", step.as_bytes()).unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(mesh.triangle_count(), 10);
+    assert_eq!(boundary_edges(&mesh), 4);
+    let preview = lime_slice_core::mesh_preview("mesh.step", step.as_bytes()).unwrap();
+    let note = preview.note.expect("a note about the open edges");
+    assert!(note.contains("4 of its edges are open"), "{note}");
+}
+
+/// Open shells of curved surfaces are not a mesh, and stay refused.
+#[test]
+fn an_open_shell_of_curved_faces_is_still_refused() {
+    let step = faceted_step(&CUBE_FACES).replace("#13 = LINE('',#20,#12);", "#13 = LINE('',#20,#12);\n#14 = CYLINDRICAL_SURFACE('',#10,5.);");
+    let err = load_mesh("mesh.step", step.as_bytes()).unwrap_err();
+    assert!(err.contains("no closed solid"), "{err}");
+}

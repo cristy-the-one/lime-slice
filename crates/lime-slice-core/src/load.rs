@@ -18,6 +18,9 @@ pub struct MeshPreview {
     pub positions: Vec<f32>,
     /// How far the file was lowered to seat it: its own Z is `positions` Z plus this. X and Y are the file's.
     pub seat_mm: f64,
+    /// Something the person should know about what was read, when the file is not what its format promises.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 pub fn mesh_preview(filename: &str, bytes: &[u8]) -> Result<MeshPreview, String> {
@@ -29,7 +32,7 @@ pub fn mesh_preview_tol(
     bytes: &[u8],
     step_tolerance_mm: f64,
 ) -> Result<MeshPreview, String> {
-    let mut mesh = load_slice_mesh_tol(filename, bytes, true, step_tolerance_mm)?;
+    let (mut mesh, note) = load_noted(filename, bytes, true, step_tolerance_mm)?;
     let (raw_min, _) = mesh.bounds().ok_or("empty mesh")?;
     mesh.settle_on_bed();
     // `settle_on_bed` leaves a mesh within a nanometre of the bed where it is.
@@ -49,6 +52,7 @@ pub fn mesh_preview_tol(
         max,
         positions,
         seat_mm,
+        note,
     })
 }
 
@@ -74,9 +78,26 @@ pub fn load_slice_mesh_tol(
     pose_after: bool,
     step_tolerance_mm: f64,
 ) -> Result<Mesh, String> {
+    Ok(load_noted(filename, bytes, pose_after, step_tolerance_mm)?.0)
+}
+
+/// [`load_slice_mesh_tol`], and a sentence for the person when a STEP file turned out to be a mesh with open edges.
+fn load_noted(
+    filename: &str,
+    bytes: &[u8],
+    pose_after: bool,
+    step_tolerance_mm: f64,
+) -> Result<(Mesh, Option<String>), String> {
     let lower = filename.to_ascii_lowercase();
+    let mut note = None;
     let mut mesh = if lower.ends_with(".step") || lower.ends_with(".stp") {
-        crate::step::load_step(bytes, step_tolerance_mm)?
+        let (mesh, timings) = crate::step::load_step_timed(bytes, step_tolerance_mm)?;
+        note = timings.open_edges.filter(|&open| open > 0).map(|open| {
+            format!(
+                "This STEP file is a converted mesh, not a closed solid: {open} of its edges are open. It was read as a mesh, so check the sliced layers for gaps."
+            )
+        });
+        mesh
     } else if lower.ends_with(".3mf") || looks_like_zip(bytes) && !lower.ends_with(".stl") {
         load_3mf(bytes)?
     } else if lower.ends_with(".stl") || looks_like_stl(bytes) {
@@ -92,7 +113,7 @@ pub fn load_slice_mesh_tol(
     if !pose_after {
         mesh.settle_on_bed();
     }
-    Ok(mesh)
+    Ok((mesh, note))
 }
 
 fn looks_like_zip(bytes: &[u8]) -> bool {

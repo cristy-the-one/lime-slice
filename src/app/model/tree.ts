@@ -23,6 +23,7 @@ import { meshTokenOf } from "../../plate";
 import { fx } from "../fx";
 import { freshTreeKey, modelTrees } from "../model-trees";
 import { isStepName } from "../settings";
+import { isOpenMeshStep } from "../../modeling/mesh-step";
 import { setInspectVolume } from "../../ui/model-inspect";
 import { state } from "../state";
 import { endStressPick } from "../../ui/stress.ts";
@@ -55,6 +56,8 @@ export function rootSource(of: { fileName: string; bytes: ArrayBuffer; sourcePos
   const mesh: PlateMesh = { name: of.fileName, bytes: of.bytes, sourcePos: of.sourcePos, token, ...(of.brep ? { step: of.brep } : {}) };
   const source = [...modelTrees.values()].find((tree) => nodeWithMesh(tree, token) != null);
   if ((source?.root.kind === "primitive" || source?.root.kind === "feature") && nodeWithMesh(source, token) === ROOT) return { from: source.root, mesh };
+  // A mesh written as STEP that does not close holds no solid: it is a mesh here, as an STL is.
+  if (!of.brep && isStepName(of.fileName) && isOpenMeshStep(of.bytes)) return null;
   if (of.brep || isStepName(of.fileName)) return { from: { kind: "step", name: of.brep ? stepFileName(of.fileName) : of.fileName, bytes: of.brep ?? of.bytes }, mesh };
   return source ? { copies: { key: source.key, node: nodeWithMesh(source, token)! }, mesh } : null;
 }

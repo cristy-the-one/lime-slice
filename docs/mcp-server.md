@@ -556,6 +556,9 @@ Every refusal is `{ok: false, code, reason}`. `reason` is the sentence a person 
 | `object_select` | session | the current object |
 | `object_place` | Prepare placement: centre X/Y, scale percent 10–400, the existing orient operations (centre on bed, lay flat, a turn about a bed axis) | the new centre and whether a re-slice is required. This is not Model `modelPose` |
 | `object_remove` | plate edit | the remaining ids |
+| `mesh_close_holes` | `closeHoles` in `src/mesh-check.ts`, then the object's mesh is replaced with an STL of the mended triangles in the frame it already had | `object`, `name`, `changed`, `holes`, `added`, `removed`, `openBefore`, `openAfter`, `nonManifold`, `largestLoopMm`, `skipped`, and a `summary` sentence |
+
+`mesh_close_holes {object, maxLoopMm}` mends cracks where edges meet, removes doubled triangles and loose flaps, and fills every loop of open edges, then replaces the object's mesh. The object keeps its id, name, position and settings. Its paint, support edits, reinforcement and Model solid are dropped, because they belonged to the old triangles; `plate_undo` puts the old mesh back. Edges shared by more than two triangles are not mended; `nonManifold` counts them. `maxLoopMm` leaves a longer loop open and counts it in `skipped`. A mesh with nothing to mend is left as it is and the reply says so.
 
 `mesh_import` accepts `.stl`, `.3mf`, `.step`, and `.stp`, which is the Open dialog's list (`src/app/markup.ts`). A `.lime` is `project_open`, not an import. A foreign 3MF adds the mesh and returns the sentence from `foreign3mfMessage`; it does not import that slicer's settings.
 

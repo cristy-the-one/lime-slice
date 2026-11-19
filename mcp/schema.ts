@@ -1287,6 +1287,18 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle } },
   },
   {
+    name: "mesh_close_holes",
+    description: "Close the holes of an object's mesh and replace the object's mesh with the result. It mends cracks where edges meet, removes doubled triangles and loose flaps, then fills every loop of open edges with triangles. The object keeps its id, name, position and settings; its triangles change, so its paint, support edits, reinforcement and Model solid are dropped. A mesh from STEP or a Model commit becomes a plain mesh. plate_undo puts the old mesh back. Edges shared by more than two triangles are not mended; nonManifold counts them. maxLoopMm leaves a loop open when it is longer than that, so a large opening is not covered by mistake. The reply gives holes (loops filled), added (triangles added), removed, openBefore and openAfter (open edges), nonManifold, largestLoopMm, skipped (loops left open), and a summary sentence. A mesh with nothing to mend is left as it is, and the reply says so. Then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        maxLoopMm: { type: "number", exclusiveMinimum: 0, description: "Longest loop to fill, mm. Default: any length." },
+      },
+    },
+  },
+  {
     name: "plate_print_order",
     description: "Choose whether the plate prints its objects together or one after another (sequential), once it is placed. A pair too close for sequential printing is named. Then slice_start.",
     inputSchema: {
