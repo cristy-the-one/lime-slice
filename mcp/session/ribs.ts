@@ -17,7 +17,7 @@ import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
-import { loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { engineMaterial, goalFromTool, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -216,17 +216,12 @@ function wallZones(this: Session, obj: PlateObject, zones: unknown): WallZoneInp
   return out;
 }
 
-/** The goal as the engine reads it, or a sentence. */
-function goalOf(goal: unknown, densityGCm3: number): Row | { reason: string } {
-  if (goal === undefined) return { kind: "balanced" };
-  const g = goal as Row;
-  const keys = Object.keys(g).filter((key) => g[key] !== undefined && g[key] !== false);
-  if (keys.length > 1) return { reason: `A goal is one of stiffer, maxDeflectionMm, budgetMm3, budgetG or balanced; this one has ${keys.join(", ")}.` };
-  if (num(g.stiffer) !== undefined) return { kind: "stiffer", factor: g.stiffer };
-  if (num(g.maxDeflectionMm) !== undefined) return { kind: "maxDeflection", mm: g.maxDeflectionMm };
-  if (num(g.budgetMm3) !== undefined) return { kind: "budget", volumeMm3: g.budgetMm3 };
-  if (num(g.budgetG) !== undefined) return { kind: "budget", volumeMm3: ((g.budgetG as number) / densityGCm3) * 1000 };
-  return { kind: "balanced" };
+/** A frequency plan in one sentence: Hz before and after, the ratio, and the stiffness factor for information. */
+function frequencySentence(ribs: number, hz: { bare: number; ribbed: number }, freqFactor: number, asked: number, stiff: number, stopped: boolean, goalMet: boolean): string {
+  if (ribs === 0) return stopped ? "Stopped before the first rib: no plan." : "No rib pays on this wall under these rules.";
+  const reach = goalMet ? "" : ` Reached ${r(freqFactor, 3)}× of the ${r(asked, 3)}× asked.`;
+  const stop = stopped ? " Stopped early: the best plan so far." : "";
+  return `${ribs} rib${ribs === 1 ? "" : "s"}, lowest frequency ${r(hz.bare, 3)} Hz → ${r(hz.ribbed, 3)} Hz (${r(freqFactor, 3)}×).${reach}${stop} Stiffness ${r(stiff, 2)}×, for information.`;
 }
 
 /** A short plain summary of the plan. */
@@ -239,8 +234,9 @@ function planSentence(ribs: number, factor: number, adds: { mm3: number; grams: 
 function looseSentence(loose: readonly Row[]): string {
   if (loose.length === 0) return "";
   const zone = loose.filter((row) => row.reason === "noRibZone").length;
-  const budget = loose.length - zone;
-  const why = [zone ? `${zone} at a no-rib zone's border` : "", budget ? `${budget} where the budget leaves no material to carry ${budget === 1 ? "it" : "them"} on` : ""].filter(Boolean).join(" and ");
+  const open = loose.filter((row) => row.reason === "open").length;
+  const budget = loose.length - zone - open;
+  const why = [zone ? `${zone} at a no-rib zone's border` : "", budget ? `${budget} where the budget leaves no material to carry ${budget === 1 ? "it" : "them"} on` : "", open ? `${open} left where the trace stopped` : ""].filter(Boolean).join(" and ");
   return ` ${loose.length} rib end${loose.length === 1 ? " stays" : "s stay"} loose: ${why} (plan.looseEnds).`;
 }
 
@@ -269,6 +265,8 @@ export interface PlanRecord {
   joinedFaces: number[];
   /** The solid the plan was made for; null only for a plan given without one, which is refused. */
   fingerprint: Fingerprint | null;
+  /** The engine goal, so apply and a static verify can say a frequency plan has no frequency to check. */
+  goal?: Row;
 }
 
 async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row> {
@@ -311,7 +309,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const parsedCases = sentLoads.loadCases ? sentLoads.loadCases.map((c, i) => ({ name: c.name, weight: sentLoads.caseWeights![i]!, loads: c.loads })) : [];
   const filament = this.filament();
   const density = filament.densityGCm3 > 0 ? filament.densityGCm3 : 1.24;
-  const goal = goalOf(input.goal, density);
+  const goal = goalFromTool(input.goal, density);
   if ("reason" in goal) return refuse("bad-goal", String(goal.reason));
   const process: RibProcess = input.process === "resin" || input.process === "moulded" ? input.process : "filament";
   let pull: V3 | null = null;
@@ -382,9 +380,11 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const flange = typedChamfer !== undefined ? (typedChamfer > 0 ? "chamfered" : "square") : flanges.flange;
   const extra = (keys: string[]) => Object.fromEntries(keys.filter((key) => num(rib[key]) !== undefined).map((key) => [key, num(rib[key])!]));
   const profile: Row = wireProfileOf(asked, process, flange, extra(asked === "tee" ? ["flangeWidth", "flangeThickness", "flangeChamferDeg", "rootRadius"] : ["draftDeg", "rootRadius"]));
+  const builtMaterial = engineMaterial({ e: card.EInPlaneMPa, nu: card.nu, densityGCm3: card.densityGCm3, name: card.polymer }, goal);
+  if ("reason" in builtMaterial) return refuse("bad-goal", builtMaterial.reason);
   const body = {
     request: sent,
-    material: { e: card.EInPlaneMPa, nu: card.nu },
+    material: builtMaterial.material,
     rules: { width: rules.width, maxHeight: rules.maxHeight, minHeight: rules.minHeight, minSpacing: rules.minSpacing, minLength: rules.minLength, profile },
     goal,
     options: { baselines: input.baselines !== false },
@@ -489,6 +489,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     stiffnessFactor: r(num(result.stiffnessFactor) ?? 1, 4),
     ...(caseRows ? { cases: caseRows } : {}),
     goal,
+    ...(goal.kind === "frequency" ? { frequencyHz: { bare: r(num((result.frequencyHz as Row | undefined)?.bare) ?? 0, 6), ribbed: r(num((result.frequencyHz as Row | undefined)?.ribbed) ?? 0, 6) }, frequencyFactor: r(num(result.frequencyFactor) ?? 1, 6) } : {}),
     goalMet: result.goalMet === true,
     thickening: result.thickening ?? null,
     grid: result.grid ?? null,
@@ -517,11 +518,16 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
         return { name: c.name, loads: c.loads.filter((_, i) => !gone.has(i)) };
       })
     : undefined;
-  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), ...(verifyCases ? { cases: verifyCases } : {}), wallFaces: wall.faces, joinedFaces: joined, fingerprint });
+  if (Array.isArray(result.notes)) for (const note of result.notes as unknown[]) if (typeof note === "string" && note) notes.push(note);
+  const hzRow = result.frequencyHz as Row | undefined;
+  const sentenceCore = goal.kind === "frequency"
+    ? frequencySentence(ribs.length, { bare: num(hzRow?.bare) ?? 0, ribbed: num(hzRow?.ribbed) ?? 0 }, num(result.frequencyFactor) ?? 1, goal.factor, num(result.stiffnessFactor) ?? 1, stoppedEarly, result.goalMet === true)
+    : planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result));
+  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), ...(verifyCases ? { cases: verifyCases } : {}), wallFaces: wall.faces, joinedFaces: joined, fingerprint, goal });
   const reply: Row = {
     ok: true,
     object: obj.id,
-    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result))}${caseRows ? ` Per case: ${caseRows.map((c) => `${c.name} ${c.factor}×`).join(", ")}.` : ""}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
+    sentence: `${substituted ? `${substituted.sentence} ` : ""}${sentenceCore}${caseRows ? ` Per case: ${caseRows.map((c) => `${c.name} ${c.factor}×`).join(", ")}.` : ""}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
     plan,
     adds,
     wall: wallReport(wall),
@@ -597,14 +603,14 @@ async function ribsApply(this: Session, input: Row, meta?: CallMeta): Promise<Ro
     if (job.tool !== "ribs_plan" || !job.result || job.result.ok !== true) return refuse("rib-plan-lost", `${input.job} is not a finished rib plan.`);
     const plan = job.result.plan as Row;
     const stored = this.ribPlans.get(String(plan.object));
-    record = stored && stored.request && JSON.stringify(stored.ribs) === JSON.stringify(plan.ribs) ? stored : { object: String(plan.object), node: parseNodeId(plan.node), request: plan.request as Row, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, wallFaces: [], joinedFaces: [], fingerprint: readFingerprint(plan.fingerprint) };
+    record = stored && stored.request && JSON.stringify(stored.ribs) === JSON.stringify(plan.ribs) ? stored : { object: String(plan.object), node: parseNodeId(plan.node), request: plan.request as Row, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, wallFaces: [], joinedFaces: [], fingerprint: readFingerprint(plan.fingerprint), goal: plan.goal as Row | undefined };
   } else if (input.plan && typeof input.plan === "object") {
     const plan = input.plan as Row;
     const object = typeof input.object === "string" ? input.object : typeof plan.object === "string" ? plan.object : this.selected;
     const stored = this.ribPlans.get(object);
     const fingerprint = readFingerprint(plan.fingerprint);
     if (!fingerprint) return refuse("bad-rib-plan", "A plan given to ribs_apply carries the fingerprint of the solid it was made for (plan.fingerprint {volumeMm3, faces, edges}, as ribs_plan gives it), so a plan for another shape is never built. Pass the plan whole, or plan again.");
-    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, ...(stored?.cases ? { cases: stored.cases } : {}), wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint };
+    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, ...(stored?.cases ? { cases: stored.cases } : {}), wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint, goal: (plan.goal as Row | undefined) ?? stored?.goal };
   } else return refuse("bad-argument", "ribs_apply takes job (a finished ribs_plan job) or plan ({ribs}).");
   const obj = this.find(typeof input.object === "string" ? input.object : record.object);
   if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
@@ -700,6 +706,8 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     check: { before: checkNumbers(checkBefore), after: checkNumbers(checkAfter), printer: this.printer().name },
     undo: "model_undo takes the whole network back as one step.",
   };
+  const frequencyPlan = record.goal?.kind === "frequency";
+  if (frequencyPlan) reply.note = "The ribs are built. A static Stress check has no frequency to check.";
   if (caseBefore) {
     const reported: Row[] = [];
     for (const [i, c] of caseBefore.entries()) {
@@ -720,7 +728,7 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     reply.verify = {
       cases: reported,
       seconds: r((Date.now() - verifyT0) / 1000, 1),
-      note: "The sliced Stress study of the whole part for each load case, before and after (faces found again on the ribbed part by where they lie). One case is two slices and two solves; each further case adds two more. Material cards are placeholders: the numbers are relative.",
+      note: `The sliced Stress study of the whole part for each load case, before and after (faces found again on the ribbed part by where they lie). One case is two slices and two solves; each further case adds two more. Material cards are placeholders: the numbers are relative.${frequencyPlan ? " This check is static: it has no frequency to check." : ""}`,
     };
   } else if (verify && study && studyBefore) {
     stage("verify: slicing and solving the ribbed part", 0.65);
@@ -735,7 +743,7 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
       change: { maxDisplacementMm: diff("maxDisplacementMm"), minSafetyFactor: diff("minSafetyFactor"), slicerSeconds: diff("slicerSeconds"), slicerGrams: diff("slicerGrams") },
       stiffer: typeof a.maxDisplacementMm === "number" && typeof b.maxDisplacementMm === "number" && (a.maxDisplacementMm as number) > 0 ? r((b.maxDisplacementMm as number) / (a.maxDisplacementMm as number), 3) : null,
       setup: { holds: mapped.holds.map((h) => ({ kind: h.kind, faces: h.faces })), loads: mapped.loads.map((l) => ({ kind: l.kind, faces: l.faces, magnitude: l.magnitude })), cellMm: VERIFY_CELL_MM, card: mapped.cardId },
-      note: "The sliced Stress study of the whole part, before and after, with the same holds and loads (faces found again on the ribbed part by where they lie). Material cards are placeholders: the numbers are relative.",
+      note: `The sliced Stress study of the whole part, before and after, with the same holds and loads (faces found again on the ribbed part by where they lie). Material cards are placeholders: the numbers are relative.${frequencyPlan ? " This check is static: it has no frequency to check." : ""}`,
     };
   }
   return reply;

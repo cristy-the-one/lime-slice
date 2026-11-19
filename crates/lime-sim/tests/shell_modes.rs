@@ -5,7 +5,8 @@
 use std::time::Instant;
 
 use lime_sim::shell::planner::{
-    plan_ribs, plan_ribs_with, Goal, PlanControl, PlanEvent, PlanStage, RibPlan, RibPlanRequest,
+    plan_ribs, plan_ribs_with, Goal, LooseEndReason, PlanControl, PlanEvent, PlanStage, RibEndKind,
+    RibPlan, RibPlanRequest, Zone, ZoneMode,
 };
 use lime_sim::shell::{
     cluster_count, IsotropicShell, Rib, RibSide, ShellLoad, ShellMesh, ShellModel, ShellOptions,
@@ -449,6 +450,80 @@ fn a_cancel_at_each_stage_returns_a_plan() {
             plan.stopped_early
         );
     }
+}
+
+/// The frequency path reports each accepted rib before Done, moves the
+/// Select stage as the ratio climbs, and lists every free end as open.
+#[test]
+fn a_frequency_plan_reports_ribs_and_lists_free_ends() {
+    use std::sync::Mutex;
+
+    let mesh = ShellMesh::rectangle([80.0, 40.0], [8, 4], 2.0);
+    let zone: Vec<u32> = mesh
+        .triangles
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| {
+            let c = (0..3).fold([0.0; 3], |acc, k| {
+                let v = mesh.vertices[t[k] as usize];
+                [acc[0] + v[0], acc[1] + v[1], acc[2] + v[2]]
+            });
+            let (x, y) = (c[0] / 3.0, c[1] / 3.0);
+            if (25.0..55.0).contains(&x) && (12.0..28.0).contains(&y) {
+                Some(i as u32)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let events = Mutex::new(Vec::new());
+    let sink = |e: &PlanEvent| events.lock().unwrap().push(e.clone());
+    let mut req = RibPlanRequest::new(mesh, dense(2000.0, 0.3));
+    req.goal = Goal::Frequency { factor: 1.05 };
+    req.options.baselines = false;
+    req.zones = vec![Zone {
+        triangles: zone,
+        mode: ZoneMode::NoRibs,
+        margin: 0.0,
+    }];
+    let plan = plan_ribs_with(
+        &req,
+        PlanControl {
+            progress: Some(&sink),
+            cancel: None,
+        },
+    )
+    .unwrap();
+    let ev = events.lock().unwrap();
+    let rib_at = ev.iter().position(|e| matches!(e, PlanEvent::Rib(_)));
+    let done_at = ev.iter().position(|e| matches!(e, PlanEvent::Stage { stage: PlanStage::Done, .. }));
+    println!(
+        "progress: {} events, first rib {:?}, done {:?}, ribs {}, loose {}",
+        ev.len(),
+        rib_at,
+        done_at,
+        plan.ribs.len(),
+        plan.loose_ends.len()
+    );
+    assert!(rib_at.is_some(), "no rib event");
+    assert!(done_at.is_some() && rib_at.unwrap() < done_at.unwrap(), "a rib event must come before Done");
+    assert!(
+        ev[..rib_at.unwrap()].iter().any(|e| matches!(e, PlanEvent::Stage { stage: PlanStage::Select, .. })),
+        "Select must be reported before the first rib"
+    );
+    let mut free: Vec<(usize, usize)> = plan
+        .ribs
+        .iter()
+        .enumerate()
+        .flat_map(|(k, rib)| (0..2).filter(move |&e| rib.ends[e] == RibEndKind::Free).map(move |e| (k, e)))
+        .collect();
+    let mut listed: Vec<(usize, usize)> = plan.loose_ends.iter().map(|l| (l.rib, l.end)).collect();
+    free.sort();
+    listed.sort();
+    assert_eq!(free, listed, "every free end is listed, and only those");
+    assert!(plan.loose_ends.iter().all(|l| l.reason == LooseEndReason::Open));
+    assert!(!plan.loose_ends.is_empty(), "the center keep-clear zone should leave a free end");
+    println!("free ends listed as open: {}", plan.loose_ends.len());
 }
 
 fn nearest(mesh: &ShellMesh, at: [f64; 3]) -> u32 {

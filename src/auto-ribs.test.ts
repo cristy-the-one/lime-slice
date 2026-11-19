@@ -18,6 +18,10 @@ import {
   goalLine,
   looseLine,
   goalOf,
+  goalFromTool,
+  engineMaterial,
+  frequencyAside,
+  frequencyFactorAt,
   idleRun,
   keptRibs,
   measuredLine,
@@ -154,6 +158,7 @@ eq("stopped before the comparisons", comparisonLines({ ...plan, thickening: null
 eq("a target not met", goalLine({ kind: "stiffer", factor: 3 }, { ...plan, goalMet: false, stiffnessFactor: 2.3 }, 1.24), "Reached 2.3× of the 3× asked: no further rib pays enough.");
 eq("a met goal says nothing", goalLine({ kind: "stiffer", factor: 3 }, plan, 1.24), "");
 eq("loose ends said with why", looseLine({ ...plan, looseEnds: [{ rib: 0, end: 1, reason: "noRibZone" }, { rib: 2, end: 0, reason: "noRibZone" }] }), "2 rib ends stop short of a wall or another rib: 2 at a keep-clear zone.");
+eq("an open end is not counted as the budget", looseLine({ ...plan, looseEnds: [{ rib: 0, end: 0, reason: "open" }] }), "1 rib end stops short of a wall or another rib: 1 left where the trace stopped.");
 eq("no loose end, no line", looseLine({ ...plan, looseEnds: [] }), "");
 eq("gain words", [gainText(1.01), gainText(3.14), gainText(12.6)], ["about as stiff", "3.1× stiffer", "13× stiffer"]);
 eq("cost words", costText(9400 / 1.24, 1.24, 9400 / 1.24 / 0.06), "+9.4 g, +6 %");
@@ -221,6 +226,26 @@ const drawn = [
 eq("a stretch is ten triangles (no bottom)", [ribSoup(drawn[0]!).length / 9, ribSoup(drawn[1]!).length / 9], [10, 20]);
 eq("a ray down onto the second rib", ribUnderRay(drawn, [15, 20, 50], [0, 0, -1], 1), 1);
 eq("a ray between the ribs", ribUnderRay(drawn, [5, 10, 50], [0, 0, -1], 1), -1);
+
+// --- Frequency: the tool and the panel build the same request, and a stiffness request stays e and nu.
+const panelGoal = goalOf({ kind: "slider", stop: -1 }, 1.24, null, "frequency");
+const toolGoal = goalFromTool({ frequency: 1.3 }, 1.24);
+eq("the slider stop and the tool ask for the same frequency goal", panelGoal, toolGoal);
+eq("stop −1 is ×1.3", frequencyFactorAt(-1), 1.3);
+const petg = { e: 1800, nu: 0.35, densityGCm3: 1.27, name: "PETG" };
+if ("reason" in toolGoal) throw new Error(toolGoal.reason);
+eq("the tool and the panel send the same material", engineMaterial(petg, panelGoal), engineMaterial(petg, toolGoal));
+eq("a stiffness request drops the density", engineMaterial(petg, { kind: "balanced" }), { material: { e: 1800, nu: 0.35 } });
+eq("a frequency goal with a budget names both", goalFromTool({ frequency: 1.3, budgetMm3: 4000 }, 1.24), { reason: "A plan has one goal: frequency and budgetMm3 cannot both be set." });
+eq("a factor below 1 is refused", goalFromTool({ frequency: 0.5 }, 1.24), { reason: "A frequency goal must be 1 or more." });
+eq("a material with no density is refused by name", engineMaterial({ e: 1800, nu: 0.35, name: "PETG" }, toolGoal), { reason: "PETG has no density." });
+const freqPlan = { ...plan, goalMet: true, frequencyHz: { bare: 100, ribbed: 130 }, frequencyFactor: 1.3, stiffnessFactor: 1.8 };
+eq("hertz before and after", resultNumbers({ ...runDone(startedRun(), { ok: true, plan: freqPlan }), removed: [] }, 1.24, 200000)?.gain, "100 Hz → 130 Hz");
+eq("the stiffness factor is information", frequencyAside(freqPlan), "1.8× as stiff, for information.");
+eq("a stiffness plan has no frequency aside", frequencyAside(plan), "");
+eq("an unreached frequency says the ratio", goalLine({ kind: "frequency", factor: 2 }, { ...freqPlan, goalMet: false, frequencyFactor: 1.42 }, 1.24), "Reached 1.42× of the 2× asked: no further rib pays enough.");
+eq("stiffness is still the default", newAutoRibsCard().quantity, "stiffness");
+eq("a stored frequency choice comes back", cardFromStored({ ...newAutoRibsCard(), picked: [6], quantity: "frequency" })?.quantity, "frequency");
 
 if (failed) {
   console.error(`auto-ribs: ${failed} failed`);

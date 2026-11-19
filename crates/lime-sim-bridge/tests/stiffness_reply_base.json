@@ -1,0 +1,225 @@
+{
+  "bare": {
+    "compliance": 0.000076,
+    "maxDeflectionMm": 0.000294
+  },
+  "caseDeflectionMm": [
+    {
+      "bare": 0.000294,
+      "ribbed": 0.000191
+    }
+  ],
+  "caseFactors": [
+    1.545298
+  ],
+  "goalMet": true,
+  "grid": null,
+  "looseEnds": [],
+  "notBetterThanBaseline": false,
+  "ok": true,
+  "profile": {
+    "kind": "straight"
+  },
+  "ribVolumeMm3": 217.799008,
+  "ribbed": {
+    "compliance": 0.000049,
+    "maxDeflectionMm": 0.000191
+  },
+  "ribs": [
+    {
+      "ends": [
+        "boundary",
+        "boundary"
+      ],
+      "energyShare": 0.201605,
+      "family": "major",
+      "gain": 0.312967,
+      "height": 6.0,
+      "heights": [
+        6.0,
+        6.0,
+        6.0
+      ],
+      "lengthMm": 21.831959,
+      "points": [
+        [
+          15.208146,
+          0.0,
+          0.0
+        ],
+        [
+          16.827018,
+          3.378384,
+          0.0
+        ],
+        [
+          20.0,
+          10.0,
+          0.0
+        ],
+        [
+          23.926206,
+          20.0,
+          0.0
+        ]
+      ],
+      "profile": {
+        "kind": "straight"
+      },
+      "sections": [
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        }
+      ],
+      "volumeMm3": 157.190103,
+      "width": 1.2
+    },
+    {
+      "ends": [
+        "boundary",
+        "boundary"
+      ],
+      "energyShare": 0.044021,
+      "family": "minor",
+      "gain": 0.142607,
+      "height": 2.0,
+      "heights": [
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "lengthMm": 26.454005,
+      "points": [
+        [
+          24.298125,
+          0.0,
+          0.0
+        ],
+        [
+          21.338378,
+          1.338378,
+          0.0
+        ],
+        [
+          20.0,
+          1.943583,
+          0.0
+        ],
+        [
+          16.827018,
+          3.378384,
+          0.0
+        ],
+        [
+          14.452241,
+          4.452241,
+          0.0
+        ],
+        [
+          10.0,
+          6.465515,
+          0.0
+        ],
+        [
+          7.566105,
+          7.566105,
+          0.0
+        ],
+        [
+          2.183683,
+          10.0,
+          0.0
+        ],
+        [
+          0.0,
+          10.0,
+          0.0
+        ]
+      ],
+      "profile": {
+        "kind": "straight"
+      },
+      "sections": [
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        },
+        {
+          "profile": "straight",
+          "rootRadius": 0.0,
+          "width": 1.2
+        }
+      ],
+      "volumeMm3": 63.489613,
+      "width": 1.2
+    }
+  ],
+  "stats": {
+    "baselineSolves": 0,
+    "candidates": 3,
+    "cleanRetries": 0,
+    "embeddedCandidates": 3,
+    "embeddedTriangles": 41,
+    "inputTriangles": 16,
+    "looseEnds": {
+      "after": 0,
+      "before": 0,
+      "dropped": 0,
+      "extended": 0,
+      "trimmed": 0
+    },
+    "selectionFactor": 1.545771,
+    "solves": 21
+  },
+  "stiffnessFactor": 1.545298,
+  "stoppedEarly": false,
+  "thickening": null
+}

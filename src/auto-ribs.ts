@@ -27,6 +27,9 @@ export const OPEN_SHELL = "This part is surfaces only, not a closed solid, so ri
 
 export type ProfileChoice = "auto" | "straight" | "drafted" | "tee";
 
+/** What the slider multiplies. Stiffness is the panel's default, so an untouched card plans as before. */
+export type Quantity = "stiffness" | "frequency";
+
 /** How much: the slider's five stops (−2 lightest … 0 balanced … 2 stiffest), or a target, or a budget. */
 export type Amount =
   | { kind: "slider"; stop: number }
@@ -72,6 +75,8 @@ export interface AutoRibsCard {
   /** Also take thin faces across a sharp edge. Off unless the panel's box is checked. */
   folded: boolean;
   amount: Amount;
+  /** Stiffness unless the user chose Higher frequency. */
+  quantity: Quantity;
   holds: StudyHold[];
   /** Today's one load. Empty when `cases` holds two or more. */
   loads: StudyLoad[];
@@ -88,7 +93,7 @@ export interface AutoRibsCard {
 }
 
 export function newAutoRibsCard(): AutoRibsCard {
-  return { picked: [], excluded: [], justThis: false, folded: false, amount: { kind: "slider", stop: 0 }, holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" }, ifMissed: "refuse" };
+  return { picked: [], excluded: [], justThis: false, folded: false, amount: { kind: "slider", stop: 0 }, quantity: "stiffness", holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" }, ifMissed: "refuse" };
 }
 
 /** A card read back from a stored row (`auto.panel`), every field checked; null when it is not one. */
@@ -105,6 +110,7 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
     justThis: row.justThis === true,
     folded: row.folded === true,
     amount: row.amount && typeof row.amount === "object" ? (row.amount as Amount) : fresh.amount,
+    quantity: row.quantity === "frequency" ? "frequency" : "stiffness",
     holds: Array.isArray(row.holds) ? row.holds : [],
     loads: Array.isArray(row.loads) ? row.loads : [],
     ...(cases ? { cases } : {}),
@@ -266,13 +272,27 @@ export function newZone(id: number, kind: ZoneShape["kind"], at: V3, extent: num
 
 const SLIDER_SHARE = [0.5, 0.75, 1, 1.35, 1.75] as const;
 export const SLIDER_LABELS = ["Lightest", "Lighter", "Balanced", "Stiffer", "Stiffest"] as const;
+/** Slider stops −2..2 as a multiple of the lowest natural frequency. Stop 0 is 1.5×. There is no balanced frequency plan to share. */
+export const FREQUENCY_STOPS = [1.15, 1.3, 1.5, 2, 3] as const;
+
+/** The frequency multiple a slider stop asks for. */
+export function frequencyFactorAt(stop: number): number {
+  const i = Math.max(0, Math.min(FREQUENCY_STOPS.length - 1, Math.round(stop) + 2));
+  return FREQUENCY_STOPS[i]!;
+}
 
 /**
  * The goal the planner gets. The engine has one balanced goal and no lean, so a slider stop off the middle asks for a
  * share of the stiffness the last balanced plan gained (`balancedFactor`): lightest half its gain, stiffest 1.75×.
- * Without a balanced plan yet, it plans balanced.
+ * Without a balanced plan yet, it plans balanced. A frequency quantity uses the same stops as multiples of the lowest
+ * natural frequency, and the default quantity is stiffness.
  */
-export function goalOf(amount: Amount, densityGCm3: number, balancedFactor: number | null): PlanGoal {
+export function goalOf(amount: Amount, densityGCm3: number, balancedFactor: number | null, quantity: Quantity = "stiffness"): PlanGoal {
+  if (quantity === "frequency") {
+    if (amount.kind === "stiffer") return { kind: "frequency", factor: amount.factor };
+    if (amount.kind === "slider") return { kind: "frequency", factor: frequencyFactorAt(amount.stop) };
+    return { kind: "frequency", factor: frequencyFactorAt(0) };
+  }
   if (amount.kind === "stiffer") return { kind: "stiffer", factor: amount.factor };
   if (amount.kind === "deflection") return { kind: "maxDeflection", mm: amount.mm };
   if (amount.kind === "budget") return { kind: "budget", volumeMm3: (amount.grams / (densityGCm3 > 0 ? densityGCm3 : 1.24)) * 1000 };
@@ -281,9 +301,47 @@ export function goalOf(amount: Amount, densityGCm3: number, balancedFactor: numb
   return { kind: "stiffer", factor: Math.round((1 + (balancedFactor - 1) * SLIDER_SHARE[stop + 2]!) * 100) / 100 };
 }
 
+/**
+ * The goal ribs_plan's flat keys become. One key. `frequency` beside any other key is refused in one sentence that
+ * names both; any other mix keeps the stiffness sentence. `factor` below 1 is refused.
+ */
+export function goalFromTool(goal: unknown, densityGCm3: number): PlanGoal | { reason: string } {
+  if (goal === undefined) return { kind: "balanced" };
+  const g = goal as Record<string, unknown>;
+  const keys = Object.keys(g).filter((key) => g[key] !== undefined && g[key] !== false);
+  if (keys.includes("frequency")) {
+    if (keys.length > 1) {
+      const others = keys.filter((key) => key !== "frequency");
+      return { reason: `A plan has one goal: frequency and ${others.join(" and ")} cannot both be set.` };
+    }
+    const factor = g.frequency;
+    if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 1) return { reason: "A frequency goal must be 1 or more." };
+    return { kind: "frequency", factor };
+  }
+  if (keys.length > 1) return { reason: `A goal is one of stiffer, maxDeflectionMm, budgetMm3, budgetG or balanced; this one has ${keys.join(", ")}.` };
+  if (typeof g.stiffer === "number" && Number.isFinite(g.stiffer)) return { kind: "stiffer", factor: g.stiffer };
+  if (typeof g.maxDeflectionMm === "number" && Number.isFinite(g.maxDeflectionMm)) return { kind: "maxDeflection", mm: g.maxDeflectionMm };
+  if (typeof g.budgetMm3 === "number" && Number.isFinite(g.budgetMm3)) return { kind: "budget", volumeMm3: g.budgetMm3 };
+  if (typeof g.budgetG === "number" && Number.isFinite(g.budgetG)) return { kind: "budget", volumeMm3: (g.budgetG / densityGCm3) * 1000 };
+  return { kind: "balanced" };
+}
+
+/**
+ * The material both the tool and the panel send. A stiffness goal sends `e` and `nu` only, so a card that also has a
+ * density does not change that reply. A frequency goal adds the density (g/cm³) and the card's name, and a card with
+ * no density is refused by that name.
+ */
+export function engineMaterial(card: { e: number; nu: number; densityGCm3?: number; name?: string }, goal: PlanGoal): { material: { e: number; nu: number; densityGCm3?: number; name?: string } } | { reason: string } {
+  if (goal.kind !== "frequency") return { material: { e: card.e, nu: card.nu } };
+  const name = card.name && card.name.trim() ? card.name.trim() : "The material";
+  if (!(typeof card.densityGCm3 === "number" && Number.isFinite(card.densityGCm3) && card.densityGCm3 > 0)) return { reason: `${name} has no density.` };
+  return { material: { e: card.e, nu: card.nu, densityGCm3: card.densityGCm3, name } };
+}
+
 /** The line under the slider. */
-export function sliderNote(amount: Amount, balancedFactor: number | null): string {
+export function sliderNote(amount: Amount, balancedFactor: number | null, quantity: Quantity = "stiffness"): string {
   if (amount.kind !== "slider") return "";
+  if (quantity === "frequency") return `Higher frequency: ${fmt(frequencyFactorAt(amount.stop), 2)}× the lowest natural frequency.`;
   const stop = Math.max(-2, Math.min(2, Math.round(amount.stop)));
   if (stop === 0) return "Balanced: ribs are added while each still pays its way.";
   if (balancedFactor == null || !(balancedFactor > 1)) return `${SLIDER_LABELS[stop + 2]} needs a balanced plan to measure from: this run plans balanced.`;
@@ -305,7 +363,7 @@ export interface RunState {
   fraction: number;
   /** Ribs as they stand, in the order they were first added. */
   ribs: LiveRib[];
-  totals: { ribs: number; ribVolumeMm3: number; stiffnessFactor: number } | null;
+  totals: { ribs: number; ribVolumeMm3: number; stiffnessFactor: number; frequencyFactor?: number } | null;
   plan: RibPlanResult | null;
   error: string | null;
   /** Plan ribs (by index) the user took out before applying. */
@@ -324,7 +382,7 @@ export function startedRun(): RunState {
 export function runEvent(run: RunState, event: PlanProgress): RunState {
   const fraction = Math.max(run.fraction, Math.min(1, event.fraction));
   if (event.kind === "stage") return { ...run, stage: event.stage, fraction };
-  const totals = { ribs: event.ribs, ribVolumeMm3: event.ribVolumeMm3, stiffnessFactor: event.stiffnessFactor };
+  const totals = { ribs: event.ribs, ribVolumeMm3: event.ribVolumeMm3, stiffnessFactor: event.stiffnessFactor, ...(event.frequencyFactor != null ? { frequencyFactor: event.frequencyFactor } : {}) };
   if (event.change === "removed") return { ...run, fraction, totals, ribs: run.ribs.filter((rib) => rib.id !== event.id) };
   const rib: LiveRib = { id: event.id, points: event.points, heights: event.heights };
   const at = run.ribs.findIndex((row) => row.id === event.id);
@@ -335,7 +393,7 @@ export function runEvent(run: RunState, event: PlanProgress): RunState {
 /** The job answered: its plan (stopped early or not), or its refusal. */
 export function runDone(run: RunState, reply: { ok: true; plan: RibPlanResult } | { ok: false; reason: string }): RunState {
   if (!reply.ok) return { ...run, phase: "failed", error: reply.reason, fraction: run.fraction };
-  return { ...run, phase: "done", plan: reply.plan, fraction: 1, stage: reply.plan.stoppedEarly ? run.stage : "done", removed: [], totals: { ribs: reply.plan.ribs.length, ribVolumeMm3: reply.plan.ribVolumeMm3, stiffnessFactor: reply.plan.stiffnessFactor } };
+  return { ...run, phase: "done", plan: reply.plan, fraction: 1, stage: reply.plan.stoppedEarly ? run.stage : "done", removed: [], totals: { ribs: reply.plan.ribs.length, ribVolumeMm3: reply.plan.ribVolumeMm3, stiffnessFactor: reply.plan.stiffnessFactor, ...(reply.plan.frequencyFactor != null ? { frequencyFactor: reply.plan.frequencyFactor } : {}) } };
 }
 
 /** A plan rib taken out of the plan, or put back. */
@@ -380,7 +438,8 @@ export function costText(volumeMm3: number, densityGCm3: number, partMm3: number
 /** The running line under the progress bar. */
 export function totalsLine(totals: RunState["totals"], densityGCm3: number, partMm3: number): string {
   if (!totals || totals.ribs === 0) return "No rib yet.";
-  return `${totals.ribs} rib${totals.ribs === 1 ? "" : "s"} · ${costText(totals.ribVolumeMm3, densityGCm3, partMm3)} · ${gainText(totals.stiffnessFactor)}`;
+  const gain = totals.frequencyFactor != null ? `${fmt(totals.frequencyFactor, 2)}× frequency` : gainText(totals.stiffnessFactor);
+  return `${totals.ribs} rib${totals.ribs === 1 ? "" : "s"} · ${costText(totals.ribVolumeMm3, densityGCm3, partMm3)} · ${gain}`;
 }
 
 /** One line per case, beside the combined factor. One case, or a plan that did not report cases, is no lines. */
@@ -397,7 +456,8 @@ export function resultNumbers(run: RunState, densityGCm3: number, partMm3: numbe
   const edited = run.removed.length > 0;
   // As built when known (ribNet's own plan of the kept ribs: tapers, skipped stretches and crossings), else the planner's.
   const volume = builtMm3 ?? (edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3);
-  return { gain: edited ? `${gainText(plan.stiffnessFactor)} before the edit` : gainText(plan.stiffnessFactor), cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
+  const gain = plan.frequencyHz ? `${fmt(plan.frequencyHz.bare, 1)} Hz → ${fmt(plan.frequencyHz.ribbed, 1)} Hz` : gainText(plan.stiffnessFactor);
+  return { gain: edited ? `${gain} before the edit` : gain, cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
 }
 
 /** The line that says the totals are an edit: material re-added, stiffness not solved again. */
@@ -423,14 +483,16 @@ export function looseLine(plan: RibPlanResult): string {
   const loose = plan.looseEnds ?? [];
   if (loose.length === 0) return "";
   const zone = loose.filter((row) => row.reason === "noRibZone").length;
-  const budget = loose.length - zone;
-  const why = [zone ? `${zone} at a keep-clear zone` : "", budget ? `${budget} where the budget runs out` : ""].filter(Boolean).join(" and ");
+  const open = loose.filter((row) => row.reason === "open").length;
+  const budget = loose.length - zone - open;
+  const why = [zone ? `${zone} at a keep-clear zone` : "", budget ? `${budget} where the budget runs out` : "", open ? `${open} left where the trace stopped` : ""].filter(Boolean).join(" and ");
   return `${loose.length} rib end${loose.length === 1 ? " stops" : "s stop"} short of a wall or another rib: ${why}.`;
 }
 
 /** The goal's line when it was not met, else "". */
 export function goalLine(goal: PlanGoal, plan: RibPlanResult, densityGCm3: number): string {
   if (plan.goalMet || plan.stoppedEarly) return "";
+  if (goal.kind === "frequency") return `Reached ${fmt(plan.frequencyFactor ?? 1, 2)}× of the ${fmt(goal.factor, 2)}× asked: no further rib pays enough.`;
   if (goal.kind === "stiffer") return `Reached ${fmt(plan.stiffnessFactor, 1)}× of the ${fmt(goal.factor, 1)}× asked: no further rib pays enough.`;
   if (goal.kind === "maxDeflection") return `Reached ${fmt(plan.ribbed.maxDeflectionMm, 2)} mm of the ${fmt(goal.mm, 2)} mm asked: no further rib pays enough.`;
   if (goal.kind === "budget") return `No rib fits within ${fmt(grams(goal.volumeMm3, densityGCm3), 1)} g.`;
@@ -501,6 +563,12 @@ export function checkLines(printer: string, before: CheckNumbers, after: CheckNu
   say(fresh(after.thin, before.thin), "a new thin wall");
   if (problems.size === 0) lines.push(after.overhangMm2 <= before.overhangMm2 + 1 && after.thinMm2 <= before.thinMm2 + 1 ? "No rib makes anything new to print around." : "The change is not on a rib.");
   return { lines, problems: [...problems].sort((a, b) => a - b) };
+}
+
+/** The stiffness factor beside a frequency result, for information. Empty on a stiffness plan. */
+export function frequencyAside(plan: RibPlanResult): string {
+  if (plan.frequencyHz == null && plan.frequencyFactor == null) return "";
+  return `${fmt(plan.stiffnessFactor, 2)}× as stiff, for information.`;
 }
 
 /** What Apply measured: "+9.6 g (+6.2 %), measured on the solid." */

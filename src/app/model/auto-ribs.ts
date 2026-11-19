@@ -279,7 +279,7 @@ export function bindAutoRibs() {
     apply: applyNet,
     material() {
       const chosen = materialCard();
-      return chosen ? { e: chosen.card.EInPlaneMPa, nu: chosen.card.nu, note: chosen.note } : null;
+      return chosen ? { e: chosen.card.EInPlaneMPa, nu: chosen.card.nu, densityGCm3: chosen.card.densityGCm3, name: chosen.card.polymer, note: chosen.note } : null;
     },
     // The desktop's sim_study runs the check; a page under test may answer it (`__limeSimStudy`). A browser has neither.
     stressAvailable: () => isTauri() || typeof (globalThis as { __limeSimStudy?: unknown }).__limeSimStudy === "function",

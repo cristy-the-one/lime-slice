@@ -61,6 +61,8 @@ export interface RibEvent {
   ribVolumeMm3: number;
   compliance: number;
   stiffnessFactor: number;
+  /** Ribbed over bare lowest frequency, only on a frequency plan's rib events. */
+  frequencyFactor?: number;
   fraction: number;
 }
 
@@ -94,6 +96,10 @@ export interface RibPlanResult {
   bare: PlanResponse;
   ribbed: PlanResponse;
   stiffnessFactor: number;
+  /** Lowest natural frequency before and after the ribs, Hz. Absent on a stiffness plan. */
+  frequencyHz?: { bare: number; ribbed: number };
+  /** Ribbed over bare lowest frequency. Absent on a stiffness plan. */
+  frequencyFactor?: number;
   goalMet: boolean;
   /** The wall thickened evenly to the plan's stiffness. Null when stopped early or not computed. */
   thickening: { addedThicknessMm: number; addedVolumeMm3: number } | null;
@@ -102,7 +108,7 @@ export interface RibPlanResult {
   notBetterThanBaseline: boolean;
   stoppedEarly: boolean;
   /** Rib ends left loose, each with why: a no-rib zone's border, or the budget. Every other end meets something. */
-  looseEnds?: { rib: number; end: number; reason: "noRibZone" | "budget" }[];
+  looseEnds?: { rib: number; end: number; reason: "noRibZone" | "budget" | "open" }[];
   /** Per case, only when the plan was asked for two or more. One load leaves these off. */
   caseFactors?: number[];
   caseDeflectionMm?: { bare: number; ribbed: number }[];
@@ -131,7 +137,7 @@ function perCaseOf(combined: number, bareMm: number, weights: readonly number[])
 }
 
 /** `WireGoal`. */
-export type PlanGoal = { kind: "balanced" } | { kind: "stiffer"; factor: number } | { kind: "maxDeflection"; mm: number } | { kind: "budget"; volumeMm3: number };
+export type PlanGoal = { kind: "balanced" } | { kind: "stiffer"; factor: number } | { kind: "maxDeflection"; mm: number } | { kind: "budget"; volumeMm3: number } | { kind: "frequency"; factor: number };
 
 /** `WireProfile`. */
 export type WireProfile =
@@ -143,7 +149,7 @@ export type WireProfile =
 /** `RibPlanBody`: ribWall's request and what the planner needs besides. */
 export interface RibPlanBody {
   request: Omit<RibWallRequest, "holds"> & { holds: RibWallRequest["holds"] | { kind: "allBoundary" } };
-  material?: { e: number; nu: number };
+  material?: { e: number; nu: number; densityGCm3?: number; name?: string };
   rules: { width: number; maxHeight: number; minHeight?: number; minSpacing: number; minLength: number; profile?: WireProfile };
   goal?: PlanGoal;
   options?: { baselines?: boolean };
@@ -233,6 +239,7 @@ export function readEvent(row: Row): PlanProgress | null {
     ribVolumeMm3: num(row.ribVolumeMm3),
     compliance: num(row.compliance),
     stiffnessFactor: num(row.stiffnessFactor, 1),
+    ...(typeof row.frequencyFactor === "number" ? { frequencyFactor: row.frequencyFactor } : {}),
     fraction: num(row.fraction),
   };
 }
@@ -269,12 +276,14 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       bare: response(row.bare),
       ribbed: response(row.ribbed),
       stiffnessFactor: num(row.stiffnessFactor, 1),
+      ...(row.frequencyHz && typeof row.frequencyHz === "object" ? { frequencyHz: { bare: num((row.frequencyHz as Row).bare), ribbed: num((row.frequencyHz as Row).ribbed) } } : {}),
+      ...(typeof row.frequencyFactor === "number" ? { frequencyFactor: row.frequencyFactor } : {}),
       goalMet: row.goalMet === true,
       thickening: thick ? { addedThicknessMm: num(thick.addedThicknessMm), addedVolumeMm3: num(thick.addedVolumeMm3) } : null,
       grid: grid ? { reached: grid.reached === true, pitchMm: num(grid.pitchMm), volumeMm3: typeof grid.volumeMm3 === "number" ? grid.volumeMm3 : null, gridVolumeMm3: num(grid.gridVolumeMm3) } : null,
       notBetterThanBaseline: row.notBetterThanBaseline === true,
       stoppedEarly: row.stoppedEarly === true,
-      looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" : "noRibZone" })),
+      looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" as const : l.reason === "open" ? "open" as const : "noRibZone" as const })),
       ...perCase(row),
     },
   };
@@ -565,7 +574,8 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
       const rib = (change: RibChange, id: number, at: number) => {
         fraction = Math.max(fraction, at);
         const now = live.get(id);
-        progress({ kind: "rib", change, id, points: now ? now.points.map((p) => [...p] as V3) : [], heights: now ? [...now.heights] : [], ...totals(), fraction });
+        const frequency = body.goal?.kind === "frequency";
+        progress({ kind: "rib", change, id, points: now ? now.points.map((p) => [...p] as V3) : [], heights: now ? [...now.heights] : [], ...totals(), ...(frequency ? { frequencyFactor: r3(factor) } : {}), fraction });
       };
       const result = (stopped: boolean, goalMet: boolean): RibPlanResult => {
         const ribs: PlannedRib[] = [...live.values()].map((row) => {
@@ -576,12 +586,15 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         const volume = totals().ribVolumeMm3;
         const thin = set.beatsNeither ? 0.8 : 1.9;
         const gridShare = set.beatsNeither ? 0.9 : 1.35;
+        // 100 Hz is a label for the panel, not a solve. The real Hz come from the bridge test.
+        const frequency = body.goal?.kind === "frequency";
         return {
           ribs,
           ribVolumeMm3: volume,
           bare: { compliance: 1, maxDeflectionMm: bareDeflection },
           ribbed: { compliance: r3(1 / factor), maxDeflectionMm: r3(bareDeflection / factor) },
           stiffnessFactor: r3(factor),
+          ...(frequency ? { frequencyHz: { bare: 100, ribbed: r3(100 * factor) }, frequencyFactor: r3(factor) } : {}),
           goalMet,
           thickening: stopped ? null : { addedThicknessMm: 0.4, addedVolumeMm3: r3(volume * thin) },
           grid: stopped ? null : { reached: true, pitchMm: Math.max(body.rules.minSpacing, 5), volumeMm3: r3(volume * gridShare), gridVolumeMm3: r3(volume * gridShare) },
@@ -607,12 +620,12 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         stage("choosing ribs", 0.08);
         const goal = body.goal ?? { kind: "balanced" };
         const count = goal.kind === "balanced" ? FAKE_BALANCED_RIBS : pool.length;
-        const target = goal.kind === "stiffer" ? goal.factor : goal.kind === "maxDeflection" ? bareDeflection / Math.max(goal.mm, 1e-6) : Infinity;
+        const target = goal.kind === "stiffer" || goal.kind === "frequency" ? goal.factor : goal.kind === "maxDeflection" ? bareDeflection / Math.max(goal.mm, 1e-6) : Infinity;
         const longest = Math.max(1, ...pool.map((c) => c.lengthMm));
         let id = 0;
         for (const cand of pool) {
           if (live.size >= count) break;
-          if ((goal.kind === "stiffer" || goal.kind === "maxDeflection") && factor >= target) break;
+          if ((goal.kind === "stiffer" || goal.kind === "maxDeflection" || goal.kind === "frequency") && factor >= target) break;
           const volume = volumeOf(cand.points, cand.heights, width);
           if (goal.kind === "budget" && totals().ribVolumeMm3 + volume > goal.volumeMm3) continue;
           factor += 0.9 * (cand.lengthMm / longest) * (Math.max(...cand.heights) / tall) * 0.75 ** live.size;
@@ -622,7 +635,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           await wait();
           if (cancelled) return stopped(false);
         }
-        const goalMet = goal.kind === "stiffer" || goal.kind === "maxDeflection" ? factor >= target : goal.kind === "budget" ? live.size > 0 : true;
+        const goalMet = goal.kind === "stiffer" || goal.kind === "maxDeflection" || goal.kind === "frequency" ? factor >= target : goal.kind === "budget" ? live.size > 0 : true;
         stage("joining ends", 0.65);
         if (live.has(1)) rib("changed", 1, 0.67);
         await wait();
@@ -639,7 +652,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         stage("sizing heights", 0.78);
         const last = Math.max(-1, ...live.keys());
         const row = live.get(last);
-        if (row && row.heights.every((h) => h === tall)) {
+        if (goal.kind !== "frequency" && row && row.heights.every((h) => h === tall)) {
           row.heights = row.heights.map((h) => r3(h * 0.75));
           rib("changed", last, 0.86);
         }

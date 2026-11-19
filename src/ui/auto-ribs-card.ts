@@ -42,6 +42,10 @@ import {
   fmt,
   caseResultLines,
   goalLine,
+  engineMaterial,
+  frequencyAside,
+  frequencyFactorAt,
+  FREQUENCY_STOPS,
   loadRequest,
   looseLine,
   MAX_LOAD_CASES,
@@ -123,7 +127,7 @@ export interface AutoRibsHost {
   /** Face picking on (the card takes clicks) or off. */
   pickFaces(): void;
   /** The shell model's material card for the selected filament (shared with ribs_plan), with the sentence naming it. */
-  material(): { e: number; nu: number; note: string } | null;
+  material(): { e: number; nu: number; densityGCm3?: number; name?: string; note: string } | null;
   /** Whether the Stress check can run here: the desktop's study solve. */
   stressAvailable(): boolean;
   /** The sliced Stress study before and after the ribs, opt-in after Apply. */
@@ -228,6 +232,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     </fieldset>
     <section class="ar-result" id="autoRibsResult" aria-label="The plan" hidden>
       <div class="ar-headline"><strong id="autoRibsGain"></strong><span id="autoRibsCost"></span><span class="ar-badge" id="autoRibsStopped" hidden>stopped early</span><span class="ar-badge" id="autoRibsEdited" hidden>edited</span></div>
+      <p class="model-note" id="autoRibsFrequency" hidden></p>
       <ul class="ar-lines" id="autoRibsCaseLines" aria-label="Each load case" hidden></ul>
       <p class="model-note" id="autoRibsStoppedLine" hidden>${STOPPED_LINE}</p>
       <p class="model-note is-warn" id="autoRibsGoal" hidden></p>
@@ -253,6 +258,10 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     </section>
     <details class="stress-more ar-more" id="autoRibsHowMuch">
       <summary>How much</summary>
+      <div class="modes ar-measure" role="group" aria-label="What to raise">
+        <button class="btn mode" type="button" data-measure="stiffness" aria-pressed="true">Stiffer</button>
+        <button class="btn mode" type="button" data-measure="frequency" aria-pressed="false">Higher frequency</button>
+      </div>
       <div class="modes ar-modes" role="group" aria-label="How much">
         <button class="btn mode" type="button" data-amount="slider" aria-pressed="true">Slider</button>
         <button class="btn mode" type="button" data-amount="stiffer" aria-pressed="false">Target</button>
@@ -261,10 +270,10 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
       </div>
       <div class="ar-slider" data-for-amount="slider">
         <input id="autoRibsSlider" type="range" min="-2" max="2" step="1" value="0" aria-label="Lightest to stiffest" aria-valuetext="Balanced" list="autoRibsStops">
-        <div class="ar-slider-ends" aria-hidden="true"><span>Lightest</span><span>Balanced</span><span>Stiffest</span></div>
+        <div class="ar-slider-ends" aria-hidden="true"><span id="autoRibsSliderLo">Lightest</span><span id="autoRibsSliderMid">Balanced</span><span id="autoRibsSliderHi">Stiffest</span></div>
         <p class="model-note ar-faint" id="autoRibsSliderNote"></p>
       </div>
-      <div class="model-fields" data-for-amount="stiffer" hidden><label data-wide><span class="scrub-label">As stiff ×</span><input id="autoRibsStiffer" type="number" step="0.1" min="1.05" value="2" aria-label="Times as stiff as the bare wall"></label></div>
+      <div class="model-fields" data-for-amount="stiffer" hidden><label data-wide><span class="scrub-label" id="autoRibsStifferLabel">As stiff ×</span><input id="autoRibsStiffer" type="number" step="0.1" min="1.05" value="2" aria-label="Times as stiff as the bare wall"></label></div>
       <div class="model-fields" data-for-amount="deflection" hidden><label data-wide><span class="scrub-label">Deflection under mm</span><input id="autoRibsDeflection" type="number" step="0.05" min="0.01" value="0.5" aria-label="Greatest deflection, millimetres"></label></div>
       <div class="model-fields" data-for-amount="budget" hidden><label data-wide><span class="scrub-label">At most g</span><input id="autoRibsBudget" type="number" step="0.5" min="0.1" value="10" aria-label="Most rib material, grams"></label></div>
     </details>
@@ -624,7 +633,7 @@ function planStale(): boolean {
 }
 
 function currentGoal(): PlanGoal {
-  return goalOf(card.amount, host?.densityGCm3() ?? 1.24, balancedFactor);
+  return goalOf(card.amount, host?.densityGCm3() ?? 1.24, balancedFactor, card.quantity);
 }
 
 function bodyRules(wall: RibWall): RibPlanBody["rules"] {
@@ -657,11 +666,24 @@ async function startRun() {
   }
   const wall = read.wall;
   const goal = currentGoal();
+  if (goal.kind === "frequency" && !(goal.factor >= 1)) {
+    host.readout("A frequency goal must be 1 or more.");
+    return;
+  }
   const sent: RibPlanBody["request"] = wall.request.holds.holds.length === 0 ? { ...wall.request, holds: { kind: "allBoundary" } } : wall.request;
   const material = host.material();
   materialNote = material?.note ?? "";
+  let sentMaterial: RibPlanBody["material"] | undefined;
+  if (goal.kind === "frequency" || material) {
+    const built = engineMaterial(material ?? { e: 0, nu: 0, name: "The material" }, goal);
+    if ("reason" in built) {
+      host.readout(built.reason);
+      return;
+    }
+    sentMaterial = built.material;
+  }
   const asked = loadRequest(card.loads, card.cases);
-  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
+  const body: RibPlanBody = { request: sent, ...(sentMaterial ? { material: sentMaterial } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
 
   generation += 1;
   const mine = generation;
@@ -772,7 +794,8 @@ async function applyPlan() {
     return;
   }
   const density = host.densityGCm3();
-  applied = { measured: measuredLine(done.beforeMm3, done.afterMm3, density), check: null, problems: [] };
+  const frequencyNote = ranWith?.goal.kind === "frequency" ? " The ribs are built. A static Stress check has no frequency to check." : "";
+  applied = { measured: measuredLine(done.beforeMm3, done.afterMm3, density) + frequencyNote, check: null, problems: [] };
   stressRun = null;
   lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)), ...((card.cases?.length ?? 0) >= 2 ? { cases: card.cases!.map((row) => ({ name: row.name, loads: row.loads })) } : {}) };
   edit = null;
@@ -961,6 +984,7 @@ function paintResult() {
     node.hidden = !show || text === "";
   };
   set("#autoRibsGain", plan.ribs.length ? numbers?.gain ?? "" : "No ribs");
+  set("#autoRibsFrequency", frequencyAside(plan));
   const caseLines = $<HTMLElement>("#autoRibsCaseLines");
   if (caseLines) {
     const lines = caseResultLines(ranWith?.caseNames ?? [], plan.caseFactors, plan.caseDeflectionMm);
@@ -1072,7 +1096,8 @@ function paintApplied() {
   if (button) {
     button.disabled = stressRun?.phase === "running";
     button.textContent = stressRun?.phase === "done" ? "Check again" : "Check with Stress";
-    button.dataset.tip = (lastSetup?.cases?.length ?? 0) >= 2 ? "Slice and solve the whole part before and after the ribs, once per load case. Each case adds two slices and two solves." : "Slice and solve the whole part before and after the ribs, with the same holds and loads. Slow, so it runs only when asked.";
+    const frequencyNote = ranWith?.goal.kind === "frequency" ? " A static Stress check has no frequency to check." : "";
+    button.dataset.tip = ((lastSetup?.cases?.length ?? 0) >= 2 ? "Slice and solve the whole part before and after the ribs, once per load case. Each case adds two slices and two solves." : "Slice and solve the whole part before and after the ribs, with the same holds and loads. Slow, so it runs only when asked.") + frequencyNote;
   }
   const status = $<HTMLElement>("#autoRibsStressLine");
   if (status) {
@@ -1111,7 +1136,7 @@ async function runStressCheck() {
           const stiffer = row.after.maxDisplacementMm > 0 ? row.before.maxDisplacementMm / row.after.maxDisplacementMm : null;
           return `${row.name}: greatest deflection ${mm(row.before.maxDisplacementMm)} → ${mm(row.after.maxDisplacementMm)}${stiffer ? `: ${fmt(stiffer, 2)}× as stiff` : ""}.`;
         }),
-        "Each case is the whole part, sliced, before and after. Each case adds two slices and two solves. Material cards are placeholders: compare before with after.",
+        `Each case is the whole part, sliced, before and after. Each case adds two slices and two solves. Material cards are placeholders: compare before with after.${ranWith?.goal.kind === "frequency" ? " A static Stress check has no frequency to check." : ""}`,
       ],
     };
   } else {
@@ -1123,7 +1148,7 @@ async function runStressCheck() {
       lines: [
         `Greatest deflection ${mm(reply.before.maxDisplacementMm)} → ${mm(reply.after.maxDisplacementMm)}${stiffer ? `: ${fmt(stiffer, 2)}× as stiff on the sliced part` : ""}.`,
         `Least safety factor ${safety(reply.before.minSafetyFactor)} → ${safety(reply.after.minSafetyFactor)}.`,
-        "The whole part, sliced, with the same holds and loads. Material cards are placeholders: compare before with after.",
+        `The whole part, sliced, with the same holds and loads. Material cards are placeholders: compare before with after.${ranWith?.goal.kind === "frequency" ? " A static Stress check has no frequency to check." : ""}`,
       ],
     };
   }
@@ -1132,12 +1157,39 @@ async function runStressCheck() {
 
 function paintHowMuch() {
   const a = card.amount;
-  for (const button of root()?.querySelectorAll<HTMLElement>("[data-amount]") ?? []) press(button, button.dataset.amount === a.kind);
+  const frequency = card.quantity === "frequency";
+  for (const button of root()?.querySelectorAll<HTMLElement>("[data-measure]") ?? []) press(button, button.dataset.measure === card.quantity);
+  for (const button of root()?.querySelectorAll<HTMLElement>("[data-amount]") ?? []) {
+    const kind = button.dataset.amount;
+    button.hidden = frequency && (kind === "deflection" || kind === "budget");
+    press(button, kind === a.kind);
+  }
   for (const row of root()?.querySelectorAll<HTMLElement>("[data-for-amount]") ?? []) row.hidden = row.dataset.forAmount !== a.kind;
   const slider = $<HTMLInputElement>("#autoRibsSlider");
-  if (slider && a.kind === "slider") slider.setAttribute("aria-valuetext", SLIDER_LABELS[Math.round(a.stop) + 2] ?? "Balanced");
+  if (slider) slider.setAttribute("aria-label", frequency ? "Times the lowest natural frequency" : "Lightest to stiffest");
+  if (slider && a.kind === "slider") slider.setAttribute("aria-valuetext", frequency ? `${fmt(frequencyFactorAt(a.stop), 2)}×` : SLIDER_LABELS[Math.round(a.stop) + 2] ?? "Balanced");
+  const end = (id: string, text: string) => {
+    const node = $<HTMLElement>(id);
+    if (node) node.textContent = text;
+  };
+  if (frequency) {
+    end("#autoRibsSliderLo", `${FREQUENCY_STOPS[0]}×`);
+    end("#autoRibsSliderMid", `${FREQUENCY_STOPS[2]}×`);
+    end("#autoRibsSliderHi", `${FREQUENCY_STOPS[4]}×`);
+  } else {
+    end("#autoRibsSliderLo", "Lightest");
+    end("#autoRibsSliderMid", "Balanced");
+    end("#autoRibsSliderHi", "Stiffest");
+  }
+  const label = $<HTMLElement>("#autoRibsStifferLabel");
+  const stiffer = $<HTMLInputElement>("#autoRibsStiffer");
+  if (label) label.textContent = frequency ? "Frequency ×" : "As stiff ×";
+  if (stiffer) {
+    stiffer.min = frequency ? "1" : "1.05";
+    stiffer.setAttribute("aria-label", frequency ? "Times the lowest natural frequency" : "Times as stiff as the bare wall");
+  }
   const note = $<HTMLElement>("#autoRibsSliderNote");
-  if (note) note.textContent = sliderNote(a, balancedFactor);
+  if (note) note.textContent = sliderNote(a, balancedFactor, card.quantity);
 }
 
 function paintHoldLoad() {
@@ -1686,6 +1738,17 @@ function onClick(ev: Event) {
     host.readout(run.removed.length ? "Edited: the material is recounted; the stiffness is not solved again." : "Check the plan, then Apply.");
     return paint();
   }
+  if (target.dataset.measure === "stiffness" || target.dataset.measure === "frequency") {
+    const quantity = target.dataset.measure;
+    let amount = card.amount;
+    if (quantity === "frequency" && (amount.kind === "deflection" || amount.kind === "budget")) {
+      amount = { kind: "slider", stop: 0 };
+      const slider = $<HTMLInputElement>("#autoRibsSlider");
+      if (slider) slider.value = "0";
+    }
+    card = { ...card, quantity, amount };
+    return paint();
+  }
   if (target.dataset.amount) {
     const kind = target.dataset.amount;
     const value = (id: string, d: number) => {
@@ -1832,9 +1895,19 @@ function onInput(ev: Event) {
     card = { ...card, amount: { kind: "slider", stop: value } };
     return paint();
   }
-  if (target.id === "autoRibsStiffer" && value > 1) {
-    card = { ...card, amount: { kind: "stiffer", factor: value } };
-    return paint();
+  if (target.id === "autoRibsStiffer") {
+    if (card.quantity === "frequency") {
+      if (!(value >= 1)) {
+        host?.readout("A frequency goal must be 1 or more.");
+        return;
+      }
+      card = { ...card, amount: { kind: "stiffer", factor: value } };
+      return paint();
+    }
+    if (value > 1) {
+      card = { ...card, amount: { kind: "stiffer", factor: value } };
+      return paint();
+    }
   }
   if (target.id === "autoRibsDeflection" && value > 0) {
     card = { ...card, amount: { kind: "deflection", mm: value } };

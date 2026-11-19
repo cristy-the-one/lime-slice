@@ -39,7 +39,7 @@ for (const key of ["status", "stage", "fraction", "events", "dropped", "totals",
 check("start answers {id} or {error}", bridge.includes('json!({ "id": id })') && bridge.includes('json!({ "error": err })'));
 const eventKeys = ["kind", "change", "id", "points", "heights", "ribs", "ribVolumeMm3", "compliance", "stiffnessFactor", "fraction"];
 for (const key of eventKeys) check(`a rib event has ${key}`, bridge.includes(`"${key}":`), key);
-for (const key of ["ribs", "ribVolumeMm3", "bare", "ribbed", "stiffnessFactor", "goalMet", "thickening", "grid", "notBetterThanBaseline", "stoppedEarly", "sections", "maxDeflectionMm", "addedThicknessMm", "addedVolumeMm3", "pitchMm", "volumeMm3", "gridVolumeMm3", "reached", "caseFactors", "caseDeflectionMm"]) check(`the plan has ${key}`, bridge.includes(`"${key}":`), key);
+for (const key of ["ribs", "ribVolumeMm3", "bare", "ribbed", "stiffnessFactor", "goalMet", "thickening", "grid", "notBetterThanBaseline", "stoppedEarly", "sections", "maxDeflectionMm", "addedThicknessMm", "addedVolumeMm3", "pitchMm", "volumeMm3", "gridVolumeMm3", "reached", "caseFactors", "caseDeflectionMm", "frequencyHz", "frequencyFactor"]) check(`the plan has ${key}`, bridge.includes(`"${key}":`), key);
 // Every stage name the bridge writes has a name on screen.
 const stages = [...(/fn stage_name[\s\S]*?\n\}/.exec(bridge)?.[0] ?? "").matchAll(/=> "([^"]+)"/g)].map((m) => m[1]!);
 check("the bridge's stage names were read", stages.length === 10, stages);
