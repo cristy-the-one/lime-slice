@@ -1,6 +1,7 @@
 /**
- * The panel and ribs_plan build load cases through one function. The same two cases, one of them unnamed and
- * weighted 0, give the same wall request and the same plan body from each path. One load stays `loads` alone.
+ * The panel and ribs_plan build load cases through one function. The same two cases give the same wall request
+ * and the same plan body. ribs_plan refuses a weight that is not above zero, and more than 8 cases, before that.
+ * One load stays `loads` alone.
  */
 import { loadRequest } from "../src/auto-ribs.ts";
 import { ribWall, type RibWall, type RibWallSolid } from "../src/modeling/rib-wall.ts";
@@ -81,11 +82,11 @@ const force = one(rawForce);
 
 const panelCases = [
   { name: "spread", weight: 1, loads: [pressure] },
-  { name: "  ", weight: 0, loads: [force] },
+  { name: "  ", weight: 4, loads: [force] },
 ];
 const toolCases = [
   { name: "spread", weight: 1, loads: [rawPressure] },
-  { name: "  ", weight: 0, loads: [rawForce] },
+  { name: "  ", weight: 4, loads: [rawForce] },
 ];
 const panel = loadRequest([], panelCases);
 const tool = ribsLoadRequest(read, { loadCases: toolCases });
@@ -94,7 +95,7 @@ if ("code" in tool) {
   process.exit(1);
 }
 eq("two cases: the panel and ribs_plan ask for the same loads", tool, panel);
-eq("a blank name is Case 2 and a weight of 0 is 1", panel, { loads: [], loadCases: [{ name: "spread", loads: [pressure] }, { name: "Case 2", loads: [force] }], caseWeights: [1, 1] });
+eq("a blank name is Case 2", panel, { loads: [], loadCases: [{ name: "spread", loads: [pressure] }, { name: "Case 2", loads: [force] }], caseWeights: [1, 4] });
 
 const panelWall = ribWall(solid, { picked: [6], ...(panel.loadCases ? { loadCases: panel.loadCases } : { loads: panel.loads }) });
 const toolWall = ribWall(solid, { picked: [6], ...(tool.loadCases ? { loadCases: tool.loadCases } : { loads: tool.loads }) });
@@ -122,12 +123,15 @@ if ("reason" in onePanelWall || "reason" in oneToolWall) {
 eq("one load: the same wall request", oneToolWall.request, onePanelWall.request);
 eq("one load: the same plan body, with no case weights", planBody(oneToolWall, oneTool.caseWeights), planBody(onePanelWall, onePanel.caseWeights));
 
-const many = Array.from({ length: 9 }, (_, i) => ({ name: i === 8 ? "" : `c${i + 1}`, weight: i === 3 ? -1 : i + 1, loads: [pressure] }));
-const manyRaw = Array.from({ length: 9 }, (_, i) => ({ name: i === 8 ? "" : `c${i + 1}`, weight: i === 3 ? -1 : i + 1, loads: [rawPressure] }));
-const manyPanel = loadRequest([], many);
-const manyTool = ribsLoadRequest(read, { loadCases: manyRaw });
-eq("nine cases: both keep eight, and a weight below zero is 1", manyTool, manyPanel);
-eq("the ninth case is the one left out", manyPanel.loadCases?.length, 8);
+function refusal(name: string, got: unknown, code: string, reason: string) {
+  const row = got as { code?: string; reason?: string };
+  eq(name, "code" in (got as object) ? { code: row.code, reason: row.reason } : got, { code, reason });
+}
+const badWeight = ribsLoadRequest(read, { loadCases: [{ name: "spread", loads: [rawPressure] }, { name: "point", weight: 0, loads: [rawForce] }] });
+refusal("a weight that is not above zero is refused, naming the case", badWeight, "bad-argument", "Load case 2: weight is a number above zero.");
+const tooMany = ribsLoadRequest(read, { loadCases: Array.from({ length: 9 }, () => ({ name: "c", loads: [rawPressure] })) });
+refusal("more than 8 cases is refused, saying 8 is the most", tooMany, "bad-argument", "loadCases takes up to 8 cases; this has 9.");
+eq("the panel still turns a weight of 0 into 1", loadRequest([], [{ name: "a", weight: 0, loads: [force] }, { name: "b", weight: 2, loads: [pressure] }]).caseWeights, [1, 2]);
 
 if (failed) {
   console.error(`${failed} failed`);

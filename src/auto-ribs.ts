@@ -118,8 +118,9 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
 /**
  * What a plan sends for its loads. One load is `loads` alone. Two or more are `loadCases` plus `caseWeights` and no
  * `loads`, since the wall takes one or the other. A blank name is "Case 1", "Case 2", …. A weight that is not above
- * zero is 1. At most 8 cases. The panel and ribs_plan both call this: the panel folds a single case back into the one
- * load, and ribs_plan passes `keepOne` so one named case stays a case.
+ * zero is 1. At most 8 cases. The panel keeps these quiet fixes. ribs_plan refuses a bad weight and more than 8
+ * before it calls this, and passes `keepOne` so one named case stays a case; the panel folds a single case back
+ * into the one load.
  */
 export function loadRequest(loads: StudyLoad[], cases: PanelLoadCase[] | undefined, keepOne = false): { loads: StudyLoad[]; loadCases?: { name: string; loads: StudyLoad[] }[]; caseWeights?: number[] } {
   if (!cases || cases.length < (keepOne ? 1 : 2)) return { loads };

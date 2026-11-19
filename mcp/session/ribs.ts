@@ -73,8 +73,9 @@ function num(value: unknown): number | undefined {
 }
 
 /**
- * The loads ribs_plan puts on the wall and on the plan body. One load stays `loads`. Cases go through `loadRequest`,
- * so the names, the weights and the cap of 8 are the panel's, not a second copy.
+ * The loads ribs_plan puts on the wall and on the plan body. One load stays `loads`. A weight that is not a number
+ * above zero, and more than 8 cases, are refused here, before `loadRequest`. Names still come from `loadRequest`,
+ * and a weight that was left out is 1 there. The panel calls `loadRequest` on its own and keeps the quiet fixes.
  */
 export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { reason: string }, input: { loads?: unknown; loadCases?: unknown }): ReturnType<typeof loadRequest> | { reason: string; code: "bad-argument" | "bad-load" } {
   const loads = readLoads(input.loads);
@@ -83,6 +84,7 @@ export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { r
   if (rawCases !== undefined && !Array.isArray(rawCases)) return { reason: "loadCases is a list of load cases, each {name?, weight?, loads}.", code: "bad-argument" };
   const caseList = Array.isArray(rawCases) ? (rawCases as Row[]) : [];
   if (caseList.length && loads.length) return { reason: "Give loads or loadCases, not both. loads is one case; loadCases weighs several together.", code: "bad-argument" };
+  if (caseList.length > 8) return { reason: `loadCases takes up to 8 cases; this has ${caseList.length}.`, code: "bad-argument" };
   const parsed: PanelLoadCase[] = [];
   for (const [ci, item] of caseList.entries()) {
     const row = (item ?? {}) as Row;
@@ -90,7 +92,9 @@ export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { r
     const got = readLoads(row.loads);
     if ("reason" in got) return { reason: `Load case ${ci + 1}: ${got.reason}`, code: "bad-load" };
     if (got.length === 0) return { reason: `Load case ${ci + 1} has no load.`, code: "bad-argument" };
-    parsed.push({ name: typeof row.name === "string" ? row.name : "", weight: typeof row.weight === "number" ? row.weight : Number.NaN, loads: got });
+    const weight = num(row.weight);
+    if (row.weight !== undefined && !(weight !== undefined && weight > 0)) return { reason: `Load case ${ci + 1}: weight is a number above zero.`, code: "bad-argument" };
+    parsed.push({ name: typeof row.name === "string" ? row.name : "", weight: weight ?? Number.NaN, loads: got });
   }
   return loadRequest(loads, parsed.length ? parsed : undefined, true);
 }
