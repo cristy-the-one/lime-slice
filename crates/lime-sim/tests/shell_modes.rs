@@ -4,7 +4,9 @@
 
 use std::time::Instant;
 
-use lime_sim::shell::planner::{plan_ribs, Goal, RibPlan, RibPlanRequest};
+use lime_sim::shell::planner::{
+    plan_ribs, plan_ribs_with, Goal, PlanControl, PlanEvent, PlanStage, RibPlan, RibPlanRequest,
+};
 use lime_sim::shell::{
     cluster_count, IsotropicShell, Rib, RibSide, ShellLoad, ShellMesh, ShellModel, ShellOptions,
     CLUSTER_GAP,
@@ -144,6 +146,15 @@ fn repeated_pair_cluster_score_is_basis_independent() {
     let pair = vec![modes.modes[1].vector.clone(), modes.modes[2].vector.clone()];
     let rib = centre_rib(a, n);
     let score = model.cluster_shift(&rib, &pair, RHO).unwrap();
+    // A sum of the cluster is basis-invariant too (it is the trace). The
+    // lower eigenvalue is the one that sits below both single-vector scores.
+    let left = model.cluster_shift(&rib, &pair[..1], RHO).unwrap();
+    let right = model.cluster_shift(&rib, &pair[1..], RHO).unwrap();
+    println!("single-vector Δ(ω²) {left:.9} {right:.9}, cluster {score:.9}");
+    assert!(
+        score < left && score < right,
+        "cluster {score} is not below both single-vector scores {left} and {right}"
+    );
     let (c, s) = (0.6, 0.8);
     let rotated = vec![
         pair[0]
@@ -158,11 +169,19 @@ fn repeated_pair_cluster_score_is_basis_independent() {
             .collect(),
     ];
     let again = model.cluster_shift(&rib, &rotated, RHO).unwrap();
-    println!("cluster lower Δ(ω²) {score:.9} rotated {again:.9}");
+    let rot_left = model.cluster_shift(&rib, &rotated[..1], RHO).unwrap();
+    let rot_right = model.cluster_shift(&rib, &rotated[1..], RHO).unwrap();
+    println!(
+        "cluster lower Δ(ω²) {score:.9} rotated {again:.9}; rotated singles {rot_left:.9} {rot_right:.9}"
+    );
     let scale = score.abs().max(1.0);
     assert!(
         (score - again).abs() <= 1e-9 * scale,
         "rotated score {again} differs from {score}"
+    );
+    assert!(
+        again < rot_left && again < rot_right,
+        "rotated cluster {again} is not below both single-vector scores {rot_left} and {rot_right}"
     );
 }
 
@@ -185,8 +204,10 @@ fn a_frequency_goal_names_itself_when_it_refuses() {
     assert!(!format!("{:?}", Goal::Frequency { factor: 1.3 }).contains("volume"));
 }
 
-/// Clamped 120 × 70 × 2 at the planner's 5 mm pitch. Reaches ×1.3, and
-/// under the study's point load beats an equal volume of compliance ribs.
+/// Clamped 120 × 70 × 2 at the planner's 5 mm pitch. Reaches ×1.3. Under
+/// the study's point load, the frequency rise per mm³ beats a compliance
+/// plan given that volume as a budget. A budget is a ceiling, so the two
+/// volumes are asserted through the per-mm³ figures rather than assumed equal.
 #[test]
 fn frequency_plan_reaches_1_3_and_beats_compliance_ribs() {
     let mesh = ShellMesh::rectangle([120.0, 70.0], [24, 14], 2.0);
@@ -221,11 +242,21 @@ fn frequency_plan_reaches_1_3_and_beats_compliance_ribs() {
         "the result should say the loads are ignored"
     );
     assert!(
+        plan.notes.iter().any(|n| n.contains("full height")),
+        "the result should say ribs stay at full height: {:?}",
+        plan.notes
+    );
+    assert!(
         plan.frequency_factor.unwrap() >= 1.3,
         "reached ×{:.4}, under ×1.3",
         plan.frequency_factor.unwrap()
     );
     assert!(plan.goal_met);
+    assert!(
+        plan.notes.iter().all(|n| !n.contains("cannot be reached")),
+        "a reached plan should not say the ratio is unreachable: {:?}",
+        plan.notes
+    );
 
     let (with_mass, without) = rib_mass_shift(&plan, mat);
     let drop = (without - with_mass) / without;
@@ -260,26 +291,62 @@ fn frequency_plan_reaches_1_3_and_beats_compliance_ribs() {
         "compliance plan: bare {:.3} Hz, ribbed {:.3} Hz, ×{:.4} frequency, ×{:.4} stiffness, volume {:.2} mm³, {:.2} s",
         c_bare, c_rib, c_factor, compliance.stiffness_factor, compliance.rib_volume_mm3, comp_s
     );
+    let rise_f = (hz.ribbed - hz.bare) / plan.rib_volume_mm3;
+    let rise_c = (c_rib - c_bare) / compliance.rib_volume_mm3;
+    println!(
+        "volumes: frequency {:.4} mm³, compliance {:.4} mm³",
+        plan.rib_volume_mm3, compliance.rib_volume_mm3
+    );
+    println!(
+        "frequency rise per mm³: frequency plan {rise_f:.6} Hz/mm³, compliance plan {rise_c:.6} Hz/mm³"
+    );
     println!("plan time: frequency {freq_s:.2} s, stiffness {comp_s:.2} s");
+    // A budget is a ceiling. The compliance plan does not have to spend
+    // the frequency plan's volume, so the comparison is the rise per mm³.
+    assert!(
+        plan.rib_volume_mm3 > 0.0 && compliance.rib_volume_mm3 > 0.0,
+        "both plans add rib volume"
+    );
+    assert!(
+        rise_f > rise_c,
+        "frequency rise per mm³ {rise_f:.6} is not above the compliance plan's {rise_c:.6} (volumes {:.2} and {:.2} mm³)",
+        plan.rib_volume_mm3,
+        compliance.rib_volume_mm3
+    );
     // How far a frequency plan goes once the ratio stops being the limit.
     let mut far = RibPlanRequest::new(mesh.clone(), mat);
     far.goal = Goal::Frequency { factor: 4.0 };
     far.load_cases = point.clone();
     far.options.baselines = false;
+    let t4 = Instant::now();
     let far = plan_ribs(&far).unwrap();
+    let far_s = t4.elapsed().as_secs_f64();
     println!(
-        "frequency plan asked for ×4: reached ×{:.4}, {} ribs, volume {:.2} mm³, goal_met {}",
+        "frequency plan asked for ×4: reached ×{:.6}, {} ribs, volume {:.2} mm³, goal_met {}, {:.3} s, clean retries {}",
         far.frequency_factor.unwrap(),
         far.ribs.len(),
         far.rib_volume_mm3,
-        far.goal_met
+        far.goal_met,
+        far_s,
+        far.stats.clean_retries
     );
-    assert!(
-        hz.ribbed > c_rib,
-        "frequency ribs {:.3} Hz, compliance ribs {:.3} Hz",
-        hz.ribbed,
-        c_rib
-    );
+    println!("×4 notes: {:?}", far.notes);
+    if !far.goal_met {
+        let note = far
+            .notes
+            .iter()
+            .find(|n| n.contains("cannot be reached"))
+            .unwrap_or_else(|| panic!("a miss needs a note, got {:?}", far.notes));
+        let shown = format!("{:.6}", far.frequency_factor.unwrap());
+        assert!(
+            note.contains(&shown),
+            "{note} does not quote the ratio {shown}"
+        );
+        assert_eq!(
+            far.stats.clean_retries, 0,
+            "selection that stopped short of ×4 was asked again"
+        );
+    }
 
     let mut bare = ShellModel::new(
         mesh,
@@ -305,6 +372,83 @@ fn frequency_plan_reaches_1_3_and_beats_compliance_ribs() {
     bare.lowest_modes(RHO, 1).unwrap();
     let eigen_s = t.elapsed().as_secs_f64();
     println!("bare panel: static {static_s:.4} s, lowest mode {eigen_s:.4} s");
+}
+
+/// Cancel during bare solve, the field, the trace, the embed, or selection.
+/// Each one returns a plan. A cancel before any rib was solved used to panic
+/// on `clean.expect`, and that path reported one case no matter how many
+/// the request carried.
+#[test]
+fn a_cancel_at_each_stage_returns_a_plan() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    let mesh = ShellMesh::rectangle([80.0, 40.0], [8, 4], 2.0);
+    let stages = [
+        PlanStage::BareSolve,
+        PlanStage::Field,
+        PlanStage::Trace,
+        PlanStage::Embed,
+        PlanStage::Select,
+    ];
+    for stage in stages {
+        let cancel = AtomicBool::new(false);
+        let seen = Mutex::new(false);
+        let sink = |e: &PlanEvent| {
+            if let PlanEvent::Stage { stage: got, .. } = e {
+                if *got == stage {
+                    cancel.store(true, Ordering::Relaxed);
+                    *seen.lock().unwrap() = true;
+                }
+            }
+        };
+        let mut req = RibPlanRequest::new(mesh.clone(), dense(2000.0, 0.3));
+        req.goal = Goal::Frequency { factor: 1.3 };
+        req.options.baselines = false;
+        // Both cases load a free part of the wall. A force on a clamped
+        // corner does no work, and the stiffness factor of that case is
+        // not a number.
+        let interior = mesh.nearest_vertex([40.0, 20.0, 0.0]);
+        req.load_cases = vec![
+            vec![ShellLoad::Pressure {
+                triangles: (0..mesh.triangles.len() as u32).collect(),
+                pressure: 0.001,
+            }],
+            vec![ShellLoad::Force {
+                node: interior,
+                force: [0.0, 0.0, -1.0],
+            }],
+        ];
+        let plan = plan_ribs_with(
+            &req,
+            PlanControl {
+                progress: Some(&sink),
+                cancel: Some(&cancel),
+            },
+        )
+        .unwrap();
+        assert!(*seen.lock().unwrap(), "{stage:?} was never entered");
+        assert!(plan.stopped_early, "{stage:?} did not stop early");
+        assert_eq!(plan.case_factors.len(), 2, "{stage:?} case_factors");
+        assert_eq!(
+            plan.case_deflection_mm.len(),
+            2,
+            "{stage:?} case_deflection_mm"
+        );
+        assert!(
+            plan.case_factors.iter().all(|f| f.is_finite()),
+            "{stage:?} case_factors {:?}",
+            plan.case_factors
+        );
+        assert!(plan.frequency_hz.is_some(), "{stage:?}");
+        println!(
+            "cancel at {stage:?}: ribs {}, factors {:?}, deflections {:?}, stopped {}",
+            plan.ribs.len(),
+            plan.case_factors,
+            plan.case_deflection_mm,
+            plan.stopped_early
+        );
+    }
 }
 
 fn nearest(mesh: &ShellMesh, at: [f64; 3]) -> u32 {
@@ -354,8 +498,10 @@ fn rib_mass_shift(plan: &RibPlan, mat: IsotropicShell) -> (f64, f64) {
 }
 
 /// A stiffness request's plan, serialised without the frequency fields.
-/// Locked to the bytes this branch produced from the unchanged selector;
-/// the v6.11.0 snapshot tests lock the same plan to 1e-12.
+/// The file was generated from commit 4ef7fd0d with this request, and it
+/// is byte-identical to the same request on the v6.11.0 tag (one case, so
+/// `case_factors` is the stiffness factor). This branch reproduces it.
+/// The one_case_*_v6110.txt snapshots are the other identity guard.
 #[test]
 fn a_stiffness_plan_json_is_unchanged() {
     let mut req = RibPlanRequest::new(

@@ -7,11 +7,14 @@
 //! in the lowest frequency per added volume. A repeated cluster is scored
 //! by the lower eigenvalue of the projected pair, and the shortlist is
 //! re-solved exactly.
+//!
+//! Loose ends are left where the trace stopped. They are not extended or
+//! closed, and every rib stays at full height. The result's notes say so.
 
 use std::time::Instant;
 
 use super::select::{network_volume, CandChain, DRib};
-use super::trace::{self, TraceEnd};
+use super::trace;
 use super::{
     edge_caps, restrictions, Clean, FrequencyHz, GRib, Goal, PlanStage, PlanStats, PlannedRib,
     Reporter, Response, RibPlan, RibPlanRequest, TARGET_FLOOR,
@@ -87,7 +90,6 @@ pub(crate) fn plan(
     }
     let t = Instant::now();
     rep.stage(PlanStage::Trace, 0.0);
-    let extend_limit = rules.extend_limit.unwrap_or(2.0 * rules.min_spacing);
     let trace_rules = trace::TraceRules {
         spacing: rules.min_spacing,
         min_length: rules.min_length,
@@ -104,13 +106,19 @@ pub(crate) fn plan(
     let traced = tracer.candidates();
     stats.candidates = traced.len();
     stats.seconds.trace = t.elapsed().as_secs_f64();
+    if rep.cancelled() {
+        return Ok(shell_only(req, &bare_modes, stats, started, rep));
+    }
 
     let t = Instant::now();
     rep.stage(PlanStage::Embed, 0.0);
-    let (cands, mesh1, holds1, pos) = embed(req, &s0, &zones, &traced, &tracer, extend_limit)?;
+    let (cands, mesh1, holds1, pos) = embed(req, &s0, &zones, &traced)?;
     stats.embedded_candidates = cands.len();
     stats.embedded_triangles = mesh1.triangles.len();
     stats.seconds.embed = t.elapsed().as_secs_f64();
+    if rep.cancelled() {
+        return Ok(shell_only(req, &bare_modes, stats, started, rep));
+    }
 
     let mut model = ShellModel::new(mesh1, req.material, &holds1, ShellOptions::default())?;
     model.set_threads(1);
@@ -119,19 +127,22 @@ pub(crate) fn plan(
     let ctx_max = rules.max_height;
     let shortlist = req.options.shortlist;
 
-    // Selection, then the clean mesh. If the clean frequency misses the
-    // ratio the selection reached, ask a little higher and select again.
+    // Selection, then the clean mesh. Ask again, a little higher, only when
+    // selection itself reached this ask and the clean mesh did not. A miss
+    // from the gain floor or an empty pool is the same design at any higher
+    // ask, so that path stops once.
     let mut ask = factor;
     let mut gribs: Vec<GRib> = Vec::new();
     let mut clean: Option<Clean> = None;
     let mut hz = [0.0, 0.0];
+    let mut unreached: Option<f64> = None;
     for attempt in 0..3 {
         if rep.cancelled() {
             break;
         }
         rep.stage(PlanStage::Select, 0.0);
         let t = Instant::now();
-        let design = grow(
+        let grown = grow(
             &mut model,
             &cands,
             &pos,
@@ -145,6 +156,7 @@ pub(crate) fn plan(
             rules.min_height,
         )?;
         stats.seconds.select += t.elapsed().as_secs_f64();
+        let design = grown.design;
         gribs = design
             .iter()
             .map(|d| GRib {
@@ -161,15 +173,23 @@ pub(crate) fn plan(
         let got = if bare_hz > 0.0 { rib_hz / bare_hz } else { 1.0 };
         stats.selection_factor = got;
         clean = Some(solved);
-        if got + 1e-9 >= factor || design.is_empty() {
+        if got + 1e-9 >= factor {
+            break;
+        }
+        if !grown.reached || design.is_empty() {
+            unreached = Some(got);
             break;
         }
         ask = (ask * (factor / got) * 1.002).max(ask + 1e-6);
         stats.clean_retries = attempt + 1;
     }
-    let clean = clean.expect("a frequency plan solves once");
+    let Some(clean) = clean else {
+        return Ok(shell_only(req, &bare_modes, stats, started, rep));
+    };
     let achieved = if hz[0] > 0.0 { hz[1] / hz[0] } else { 1.0 };
-    finish(req, clean, gribs, hz, achieved, factor, stats, started, rep)
+    finish(
+        req, clean, gribs, hz, achieved, factor, unreached, stats, started, rep,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -180,6 +200,7 @@ fn finish(
     hz: [f64; 2],
     achieved: f64,
     factor: f64,
+    unreached: Option<f64>,
     mut stats: PlanStats,
     started: Instant,
     rep: &Reporter,
@@ -239,10 +260,23 @@ fn finish(
             ribbed: hz[1],
         }),
         frequency_factor: Some(achieved),
-        notes: vec![
-            "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string(),
-        ],
+        notes: frequency_notes(unreached),
     })
+}
+
+/// What a frequency plan does, and does not do. `unreached` is the clean
+/// ratio when selection stopped short of the ask.
+fn frequency_notes(unreached: Option<f64>) -> Vec<String> {
+    let mut notes = vec![
+        "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string(),
+        "Loose ends are not extended or closed, and ribs stay at full height.".to_string(),
+    ];
+    if let Some(ratio) = unreached {
+        notes.push(format!(
+            "The frequency ratio cannot be reached. The plan reaches ×{ratio:.6}."
+        ));
+    }
+    notes
 }
 
 fn empty(
@@ -268,8 +302,8 @@ fn empty(
             max_deflection: 0.0,
         },
         stiffness_factor: 1.0,
-        case_factors: vec![1.0],
-        case_deflection_mm: vec![[0.0, 0.0]],
+        case_factors: vec![1.0; load_case_count(req)],
+        case_deflection_mm: vec![[0.0, 0.0]; load_case_count(req)],
         worst_trace: Vec::new(),
         goal_met: false,
         thickening: None,
@@ -284,10 +318,14 @@ fn empty(
             ribbed: hz,
         }),
         frequency_factor: Some(1.0),
-        notes: vec![
-            "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string(),
-        ],
+        notes: frequency_notes(None),
     }
+}
+
+/// One reported factor per load case. An empty request is the single
+/// default pressure, the same count the stiffness path uses.
+fn load_case_count(req: &RibPlanRequest) -> usize {
+    req.load_cases.len().max(1)
 }
 
 fn shell_only(
@@ -332,33 +370,14 @@ fn embed(
     s0: &super::surface::Surface,
     zones: &super::Restrictions,
     traced: &[trace::Candidate],
-    tracer: &trace::Tracer,
-    extend_limit: f64,
 ) -> Result<EmbeddedCandidates, SimError> {
+    // No extension stubs. A frequency plan does not extend or close loose
+    // ends, and the stubs were built and then discarded.
     let rules = &req.rules;
-    let mut stubs: Vec<[Option<Vec<[f64; 3]>>; 2]> = Vec::with_capacity(traced.len());
-    for c in traced {
-        stubs.push([0, 1].map(|end| {
-            if c.ends[end] == TraceEnd::Boundary {
-                return None;
-            }
-            let p = if end == 0 {
-                c.points[0]
-            } else {
-                *c.points.last().expect("a line has points")
-            };
-            let (stub, _) = tracer.straight_to(c.end_tri[end], p, c.end_dir[end], extend_limit);
-            (stub.len() >= 2).then_some(stub)
-        }));
-    }
     let mut s1 = s0.clone();
     let ids: Vec<Option<usize>> = traced
         .iter()
         .map(|c| s1.embed_polyline(&c.points))
-        .collect();
-    let stub_ids: Vec<[Option<usize>; 2]> = stubs
-        .iter()
-        .map(|pair| [0, 1].map(|k| pair[k].as_ref().and_then(|pts| s1.embed_polyline(pts))))
         .collect();
     let mut cands = Vec::new();
     for (i, c) in traced.iter().enumerate() {
@@ -371,16 +390,6 @@ fn embed(
         if caps.iter().all(|&h| h < rules.min_height) {
             continue;
         }
-        let _stub = [0, 1].map(|end| {
-            let sid = stub_ids[i][end]?;
-            let st = s1.chains[sid].clone();
-            let at = if end == 0 {
-                chain[0]
-            } else {
-                *chain.last().expect("chain")
-            };
-            (st.first() == Some(&at)).then_some(st)
-        });
         cands.push(CandChain {
             chain,
             caps,
@@ -407,21 +416,30 @@ fn grow(
     profile: super::RibProfile,
     side: crate::shell::RibSide,
     min_height: f64,
-) -> Result<Vec<DRib>, SimError> {
-    let bare = model.lowest_modes(density, MODES)?;
-    let omega0 = bare.modes[0].omega2.sqrt();
+) -> Result<Grown, SimError> {
+    // The model arrives with no ribs. Clearing them drops a factor, so the
+    // bare modes are solved once, after that, and reused for the first round.
+    model.set_ribs(Vec::new())?;
+    let first = model.lowest_modes(density, MODES)?;
+    let omega0 = first.modes[0].omega2.sqrt();
+    let mut pending = Some(first);
     let mut omega = omega0;
     let mut design: Vec<DRib> = Vec::new();
     let mut used = vec![false; cands.len()];
     let mut first_eff: Option<f64> = None;
-    model.set_ribs(Vec::new())?;
+    let mut reached = false;
     for _round in 0..cands.len() {
         if omega / omega0 >= factor {
+            reached = true;
             break;
         }
-        let modes = model.lowest_modes(density, MODES)?;
+        let modes = match pending.take() {
+            Some(ready) => ready,
+            None => model.lowest_modes(density, MODES)?,
+        };
         omega = modes.modes[0].omega2.sqrt();
         if omega / omega0 >= factor {
+            reached = true;
             break;
         }
         let mass = model.mass_upper(density, true);
@@ -433,6 +451,7 @@ fn grow(
             .take(nclus)
             .map(|m| m.vector.clone())
             .collect();
+        let gram = model.mass_gram(&vectors, &mass);
         let base_volume = network_volume(pos, &design);
         let mut pool: Vec<(f64, usize, f64)> = Vec::new();
         for (i, c) in cands.iter().enumerate() {
@@ -453,7 +472,7 @@ fn grow(
                 continue;
             }
             let ribs = d.solver_ribs(side);
-            let shift = model.cluster_shift_mass(&ribs, &vectors, &mass)?;
+            let shift = model.cluster_shift_mass(&ribs, &vectors, &gram)?;
             pool.push((shift / dv, i, dv));
         }
         if pool.is_empty() {
@@ -504,7 +523,17 @@ fn grow(
         let with: Vec<Rib> = design.iter().flat_map(|r| r.solver_ribs(side)).collect();
         model.set_ribs(with)?;
     }
-    Ok(design)
+    if omega / omega0 >= factor {
+        reached = true;
+    }
+    Ok(Grown { design, reached })
+}
+
+/// What [`grow`] accepted, and whether the lowest frequency met the ask
+/// before the candidates or the gain floor ran out.
+struct Grown {
+    design: Vec<DRib>,
+    reached: bool,
 }
 
 fn candidate_rib(

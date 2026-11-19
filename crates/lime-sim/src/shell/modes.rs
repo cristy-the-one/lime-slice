@@ -6,7 +6,7 @@
 //! magnitude). K⁻¹ M is self-adjoint in the M inner product, not the
 //! Euclidean one, so `partial_self_adjoint_eigen` does not apply.
 //!
-//! Membrane dofs carry no mass, so their eigenvalues of K⁻¹ M are zero and
+//! Rotational dofs carry no mass, so their eigenvalues of K⁻¹ M are zero and
 //! a largest-magnitude solve never returns them. What comes back is a
 //! bending mode. The reported frequency is the Rayleigh quotient
 //! vᵀ K v / vᵀ M v, not the raw Ritz value.
@@ -287,10 +287,13 @@ pub(crate) fn lowest(
     let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
     let mut vecs = Mat::<c64>::zeros(n, want);
     let mut vals = vec![c64::ZERO; want];
+    // >> 32 keeps a full u32, so the components fill [-1, 1]. >> 33
+    // would leave them in [-1, 0).
     let v0 = faer::Col::<f64>::from_fn(n, |i| {
         let mut h = i as u64;
         h = h.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        ((h >> 33) as f64 / (u32::MAX as f64)) * 2.0 - 1.0
+        let unit = (h >> 32) as f64 / (u32::MAX as f64);
+        unit * 2.0 - 1.0
     });
     let started = Instant::now();
     let info = partial_eigen(

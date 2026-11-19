@@ -1472,13 +1472,14 @@ impl ShellModel {
     }
 
     /// A free-dof vector as a shell result, so a mode can feed the same
-    /// direction field a static solution does. Held dofs stay at rest.
+    /// direction field a static solution does. Held dofs stay at rest:
+    /// a mode is the motion about the holds, not the holds themselves.
     pub(crate) fn result_of_free(&self, free: &[f64]) -> Result<ShellResult, SimError> {
         if free.len() != self.pattern.n {
             return Err(SimError::new("The vector is not one of this shell."));
         }
         let n = self.mesh.vertices.len();
-        let mut u = self.prescribed.clone();
+        let mut u = vec![0.0; self.prescribed.len()];
         for (id, &d) in self.dof.iter().enumerate() {
             if d != HELD {
                 u[id] = free[d];
@@ -1506,20 +1507,40 @@ impl ShellModel {
         density: f64,
     ) -> Result<f64, SimError> {
         let mass = self.mass_upper(density, true);
-        self.cluster_shift_mass(std::slice::from_ref(rib), vectors, &mass)
+        let gram = self.mass_gram(vectors, &mass);
+        self.cluster_shift_mass(std::slice::from_ref(rib), vectors, &gram)
+    }
+
+    /// φᵢᵀ M φⱼ for a cluster, row-major. It does not depend on a candidate
+    /// rib, so a round of [`ShellModel::cluster_shift_mass`] computes it once.
+    pub(crate) fn mass_gram(&self, vectors: &[Vec<f64>], mass: &[f64]) -> Vec<f64> {
+        let n = vectors.len();
+        let mut b = vec![0.0; n * n];
+        for i in 0..n {
+            for j in i..n {
+                let m = self.mass_inner(mass, &vectors[i], &vectors[j]);
+                b[i * n + j] = m;
+                b[j * n + i] = m;
+            }
+        }
+        b
     }
 
     /// The same score for several ribs at once: one projected matrix, the
-    /// sum of their stiffnesses, not the sum of their scores.
+    /// sum of their stiffnesses, not the sum of their scores. `mass_gram`
+    /// is [`ShellModel::mass_gram`] for these vectors.
     pub(crate) fn cluster_shift_mass(
         &self,
         ribs: &[Rib],
         vectors: &[Vec<f64>],
-        mass: &[f64],
+        mass_gram: &[f64],
     ) -> Result<f64, SimError> {
         let n = vectors.len();
         if n == 0 {
             return Err(SimError::new("A cluster score needs a mode."));
+        }
+        if mass_gram.len() != n * n {
+            return Err(SimError::new("The mass Gram does not match the cluster."));
         }
         for rib in ribs {
             self.check_rib(rib)?;
@@ -1542,9 +1563,8 @@ impl ShellModel {
                 }
                 a[i * n + j] = s;
                 a[j * n + i] = s;
-                let m = self.mass_inner(mass, &vectors[i], &vectors[j]);
-                b[i * n + j] = m;
-                b[j * n + i] = m;
+                b[i * n + j] = mass_gram[i * n + j];
+                b[j * n + i] = mass_gram[j * n + i];
             }
         }
         Ok(super::modes::lower_generalized(&a, &b, n))
@@ -1721,4 +1741,71 @@ fn quadratic<const N: usize>(k: &[[f64; N]; N], u: &[f64; N]) -> f64 {
         s += u[i] * row;
     }
     0.5 * s
+}
+
+#[cfg(test)]
+mod mode_shape {
+    use super::{ShellHold, ShellMesh, ShellModel, ShellOptions};
+
+    /// A nonzero prescribed hold must not appear in the mode shape. Held
+    /// dofs stay at rest.
+    #[test]
+    fn a_mode_shape_starts_from_rest() {
+        let (a, b) = (100.0, 50.0);
+        let mesh = ShellMesh::rectangle([a, b], [8, 4], 1.0);
+        let mat = crate::shell::IsotropicShell::new(2000.0, 0.3)
+            .unwrap()
+            .with_density(1.0e-9)
+            .unwrap();
+        let corner = 0usize;
+        let prescribed_uz = 1.25;
+        let prescribed_rz = 0.4;
+        let mut holds = Vec::new();
+        for (i, p) in mesh.vertices.iter().enumerate() {
+            let on_edge = p[0] == 0.0 || p[1] == 0.0 || p[0] == a || p[1] == b;
+            if !on_edge {
+                continue;
+            }
+            if i == corner {
+                holds.push(ShellHold {
+                    node: i as u32,
+                    dofs: [
+                        Some(0.0),
+                        Some(0.0),
+                        Some(prescribed_uz),
+                        Some(0.0),
+                        Some(0.0),
+                        Some(prescribed_rz),
+                    ],
+                });
+            } else {
+                holds.push(ShellHold::clamped(i as u32));
+            }
+        }
+        let mut model = ShellModel::new(mesh, mat, &holds, ShellOptions::default()).unwrap();
+        model.set_threads(1);
+        let modes = model.lowest_modes(1.0e-9, 1).unwrap();
+        let shape = model.result_of_free(&modes.modes[0].vector).unwrap();
+        let d = shape.displacement[corner];
+        let r = shape.rotation[corner];
+        assert_eq!(
+            d,
+            [0.0, 0.0, 0.0],
+            "held displacement {d:?} kept the prescribed uz {prescribed_uz}"
+        );
+        assert_eq!(
+            r,
+            [0.0, 0.0, 0.0],
+            "held rotation {r:?} kept the prescribed θz {prescribed_rz}"
+        );
+        let peak = shape
+            .displacement
+            .iter()
+            .map(|u| u[2].abs())
+            .fold(0.0, f64::max);
+        println!(
+            "prescribed hold uz {prescribed_uz} θz {prescribed_rz}; mode at that node displacement {d:?} rotation {r:?}; peak |uz| {peak}"
+        );
+        assert!(peak > 1e-8, "the mode shape did not move, peak |uz| {peak}");
+    }
 }
