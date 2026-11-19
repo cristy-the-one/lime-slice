@@ -52,6 +52,17 @@ export interface ZoneRow {
   marginMm: number;
 }
 
+/** One named load case. Two or more are weighed together; a single load stays in `loads` and has no case. */
+export interface PanelLoadCase {
+  name: string;
+  /** Above zero. The panel's default is 1. */
+  weight: number;
+  loads: StudyLoad[];
+}
+
+/** The most cases the panel and ribs_plan accept. */
+export const MAX_LOAD_CASES = 8;
+
 export interface AutoRibsCard {
   /** Faces clicked; each takes its smooth continuations unless `justThis`. */
   picked: number[];
@@ -60,7 +71,13 @@ export interface AutoRibsCard {
   justThis: boolean;
   amount: Amount;
   holds: StudyHold[];
+  /** Today's one load. Empty when `cases` holds two or more. */
   loads: StudyLoad[];
+  /**
+   * Two or more named cases. Absent for the one-load panel: removing back down to one case drops this and puts that
+   * case's loads back in `loads`, so the card is the single-load card again.
+   */
+  cases?: PanelLoadCase[];
   zones: ZoneRow[];
   holeRim: { on: boolean; mm: number };
   ribs: { width: number | null; height: number | null; profile: ProfileChoice; process: RibProcess };
@@ -79,6 +96,7 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
   const fresh = newAutoRibsCard();
   const ints = (v: unknown) => (Array.isArray(v) ? v.filter((n): n is number => Number.isInteger(n)) : []);
   if (!Array.isArray(row.picked)) return null;
+  const cases = storedCases(row.cases);
   return {
     picked: ints(row.picked),
     excluded: ints(row.excluded),
@@ -86,11 +104,41 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
     amount: row.amount && typeof row.amount === "object" ? (row.amount as Amount) : fresh.amount,
     holds: Array.isArray(row.holds) ? row.holds : [],
     loads: Array.isArray(row.loads) ? row.loads : [],
+    ...(cases ? { cases } : {}),
     zones: Array.isArray(row.zones) ? row.zones : [],
     holeRim: row.holeRim && typeof row.holeRim === "object" ? row.holeRim : fresh.holeRim,
     ribs: row.ribs && typeof row.ribs === "object" ? { ...fresh.ribs, ...row.ribs } : fresh.ribs,
     ifMissed: row.ifMissed === "evenPressure" ? "evenPressure" : "refuse",
   };
+}
+
+/**
+ * What the panel sends for its loads: one load is `loads` alone, and two or more are `loadCases` plus `caseWeights`
+ * (no `loads`, since the wall takes one or the other). A blank name is "Case 1", "Case 2", …, the same words ribs_plan
+ * gives an unnamed case.
+ */
+export function loadRequest(loads: StudyLoad[], cases: PanelLoadCase[] | undefined): { loads: StudyLoad[]; loadCases?: { name: string; loads: StudyLoad[] }[]; caseWeights?: number[] } {
+  if (!cases || cases.length < 2) return { loads };
+  const kept = cases.slice(0, MAX_LOAD_CASES);
+  return {
+    loads: [],
+    loadCases: kept.map((row, i) => ({ name: row.name.trim() || `Case ${i + 1}`, loads: row.loads })),
+    caseWeights: kept.map((row) => (Number.isFinite(row.weight) && row.weight > 0 ? row.weight : 1)),
+  };
+}
+
+/** Cases stored on a card: two or more, each with a name, a weight and its loads. One stored case is not a case list. */
+function storedCases(value: unknown): PanelLoadCase[] | undefined {
+  if (!Array.isArray(value) || value.length < 2) return undefined;
+  const out: PanelLoadCase[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return undefined;
+    const row = item as Partial<PanelLoadCase>;
+    const weight = typeof row.weight === "number" && row.weight > 0 ? row.weight : 1;
+    const name = typeof row.name === "string" && row.name.trim() ? row.name : `Case ${out.length + 1}`;
+    out.push({ name, weight, loads: Array.isArray(row.loads) ? row.loads : [] });
+  }
+  return out.length >= 2 ? out.slice(0, MAX_LOAD_CASES) : undefined;
 }
 
 /** A History step's rib network as typed, when the step is one: a group whose source is a `ribNet`. */
@@ -328,6 +376,12 @@ export function costText(volumeMm3: number, densityGCm3: number, partMm3: number
 export function totalsLine(totals: RunState["totals"], densityGCm3: number, partMm3: number): string {
   if (!totals || totals.ribs === 0) return "No rib yet.";
   return `${totals.ribs} rib${totals.ribs === 1 ? "" : "s"} · ${costText(totals.ribVolumeMm3, densityGCm3, partMm3)} · ${gainText(totals.stiffnessFactor)}`;
+}
+
+/** One line per case, beside the combined factor. One case, or a plan that did not report cases, is no lines. */
+export function caseResultLines(names: readonly string[], factors: readonly number[] | undefined, deflection: readonly { bare: number; ribbed: number }[] | undefined): string[] {
+  if (!factors || !deflection || names.length < 2 || factors.length !== names.length || deflection.length !== names.length) return [];
+  return names.map((name, i) => `${name}: ${gainText(factors[i]!)}, deflection ${fmt(deflection[i]!.bare, 3)} mm → ${fmt(deflection[i]!.ribbed, 3)} mm`);
 }
 
 /** What the result shows: gain, cost, and whether a removed rib makes them estimates. */

@@ -792,6 +792,9 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-auto-ribs .ar-zone .ar-wide { grid-column: 1 / span 2; }
 .model-auto-ribs .ar-inline { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-1); color: var(--text-dim); }
 .model-auto-ribs .ar-inline input { width: 56px; height: var(--control-h-sm); }
+.model-auto-ribs .ar-case-head { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); }
+.model-auto-ribs .ar-case-head input[data-case-field="name"] { flex: 1 1 auto; min-width: 0; height: var(--control-h-sm); }
+.model-auto-ribs #autoRibsAddCase { margin: 0 0 var(--space-2); }
 .model-auto-ribs .ar-inline-row { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); font-size: var(--fs-1); }
 .model-auto-ribs .ar-inline-row select { flex: 1 1 auto; height: var(--control-h-sm); }
 .model-auto-ribs .ar-stress { display: grid; gap: 4px; justify-items: start; margin: 0 0 var(--space-2); }

@@ -102,6 +102,31 @@ export interface RibPlanResult {
   stoppedEarly: boolean;
   /** Rib ends left loose, each with why: a no-rib zone's border, or the budget. Every other end meets something. */
   looseEnds?: { rib: number; end: number; reason: "noRibZone" | "budget" }[];
+  /** Per case, only when the plan was asked for two or more. One load leaves these off. */
+  caseFactors?: number[];
+  caseDeflectionMm?: { bare: number; ribbed: number }[];
+}
+
+/**
+ * The browser stand-in's per-case result, for the panel test only. `fakePlanSource` uses it so a run with two weights
+ * can show a factor per case without the engine. The heaviest case takes the combined factor; a lighter case takes a
+ * share of the gain in proportion to its weight. These are not the planner's `caseFactors`. One weight, or none, is
+ * not a case list.
+ */
+export function caseOutcomes(combined: number, bareMm: number, weights: readonly number[]): { factor: number; bareMm: number; ribbedMm: number }[] {
+  if (weights.length < 2) return [];
+  const top = Math.max(...weights.map((w) => (w > 0 ? w : 1)));
+  const round = (v: number) => Math.round(v * 1e6) / 1e6;
+  return weights.map((w) => {
+    const weight = w > 0 ? w : 1;
+    const factor = round(1 + (combined - 1) * (weight / top));
+    return { factor, bareMm, ribbedMm: factor > 0 ? round(bareMm / factor) : bareMm };
+  });
+}
+
+function perCaseOf(combined: number, bareMm: number, weights: readonly number[]): Pick<RibPlanResult, "caseFactors" | "caseDeflectionMm"> {
+  const rows = caseOutcomes(combined, bareMm, weights);
+  return rows.length >= 2 ? { caseFactors: rows.map((row) => row.factor), caseDeflectionMm: rows.map((row) => ({ bare: row.bareMm, ribbed: row.ribbedMm })) } : {};
 }
 
 /** `WireGoal`. */
@@ -122,6 +147,8 @@ export interface RibPlanBody {
   goal?: PlanGoal;
   options?: { baselines?: boolean };
   holeRimMarginMm?: number;
+  /** One weight per load case, in order. Absent for one load, which is a plain sum, as before. */
+  caseWeights?: number[];
 }
 
 export type PlanReply = { ok: true; plan: RibPlanResult } | { ok: false; reason: string };
@@ -247,8 +274,16 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       notBetterThanBaseline: row.notBetterThanBaseline === true,
       stoppedEarly: row.stoppedEarly === true,
       looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" : "noRibZone" })),
+      ...perCase(row),
     },
   };
+}
+
+/** Two or more cases on the wire. One case (or none) adds nothing, so a one-load plan reads as before. */
+function perCase(row: Row): Pick<RibPlanResult, "caseFactors" | "caseDeflectionMm"> {
+  const factors = Array.isArray(row.caseFactors) ? (row.caseFactors as unknown[]).map((v) => num(v)) : [];
+  const deflection = Array.isArray(row.caseDeflectionMm) ? (row.caseDeflectionMm as unknown[]).map((v) => ({ bare: num((v as Row | null)?.bare), ribbed: num((v as Row | null)?.ribbed) })) : [];
+  return factors.length >= 2 && deflection.length === factors.length ? { caseFactors: factors, caseDeflectionMm: deflection } : {};
 }
 
 const parse = (text: string): Row => {
@@ -547,6 +582,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           grid: stopped ? null : { reached: true, pitchMm: Math.max(body.rules.minSpacing, 5), volumeMm3: r3(volume * gridShare), gridVolumeMm3: r3(volume * gridShare) },
           notBetterThanBaseline: !stopped && !!set.beatsNeither,
           stoppedEarly: stopped,
+          ...perCaseOf(r3(factor), bareDeflection, body.caseWeights ?? []),
         };
       };
       const run = async (): Promise<PlanReply> => {
