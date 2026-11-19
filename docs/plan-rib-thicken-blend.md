@@ -37,7 +37,7 @@ The curved wall is the v6.11.0 snapshot: cylinder radius 40 mm, length 80 mm, 90
 
 The flat panel is the other v6.11.0 snapshot: 160 × 80 mm, 24 × 12, thickness 2 mm, the boundary clamped, `Goal::Stiffer(2)`. Two ribs, 1061.3536 mm³, factor 2.005698. The plan took 0.23 s and 47 solves. Membrane energy is under 0.01% of the total, so there is no membrane region to thicken. The hot quarter holds 62% of the energy and still needs 3.6× the rib material. The even grid that reaches the factor is a single cross, 1719 mm³, still more than the planned ribs. Pre-thickening by 0.13 mm and planning again spends 2831 mm³ to land on the same factor.
 
-The coarse cover is not the folded cover from the C study. That mesh is extracted from a solid, and this machine has no Open CASCADE bridge, so the probe built a shell by hand: a 40 × 24 mm floor, walls 12 mm high, 8 × 5 cells on the floor and 3 up the walls, thickness 2 mm, pressure on the floor only, the top rim clamped, spacing 8 mm, `Goal::Stiffer(1.5)`. 236 triangles. The plan places five ribs, 762 mm³, factor 1.696, in 0.36 s and 202 solves. An even grid reaches the same compliance in 711 mm³, so on this coarse box the ribs do not beat the grid. Thickening only the 55 membrane triangles does not reach the factor even at +8 mm. The hot quarter does, at 602 mm³ on the input mesh. That is a lead for a later wall, not a result on the C-study cover, and the grid baseline already beats these five ribs inside the planner. Pre-thickening the membrane set by 0.5 mm and planning again stops at ×1.065.
+The coarse cover is a hand-built shell, not the folded parts. A 40 × 24 mm floor, walls 12 mm high, 8 × 5 cells on the floor and 3 up the walls, thickness 2 mm, pressure on the floor only, the top rim clamped, spacing 8 mm, `Goal::Stiffer(1.5)`. 236 triangles. The plan places five ribs, 762 mm³, factor 1.696, in 0.36 s and 202 solves. An even grid reaches the same compliance in 711 mm³, so on this coarse box the ribs do not beat the grid. Thickening only the 55 membrane triangles does not reach the factor even at +8 mm. The hot quarter does, at 602 mm³ on the input mesh. Pre-thickening the membrane set by 0.5 mm and planning again stops at ×1.065. The real cover and the open box, extracted from solids, are under "What was not answered", and on those the ribs do beat both baselines.
 
 A per-step cost, release, one thread, the second build (the first is the same size):
 
@@ -79,7 +79,15 @@ The moulded preset in `docs/plan-auto-ribs.md` §2.4 is a rib no thicker than 60
 
 ## What was not answered
 
-- The folded cover from the C study (`wall.folded`, about 13k degrees of freedom in `docs/plan-folded-shell.md`) was not planned. Reaching it means extracting a solid, which needs the Open CASCADE bridge, and the extractor is `rib-wall.ts`, which belongs to other work. The coarse box is the stand-in, and it is labelled as one.
+The folded cover and the open box are planned. `mcp/folded-shell-occt.test.ts` runs each folded request once more with `baselines: true`. This machine has no Open CASCADE bridge, so the numbers are from CI job "Folded shell against real Open CASCADE" on `2e7d1944` (run 44498064625). The job took 480 s, the test 307 s after a 118 s engine build, and the two extra plans 26.09 s and 59.08 s. That is under the 1500 s limit. **[probe]**
+
+| Part | Factor | Ribs, mm³ | Uniform thickening, mm³ | Grid, mm³ |
+|---|---:|---:|---:|---:|
+| Cover | 2.4101 | 1381.98 | 6122.99 (+0.701 mm) | 2941.82 |
+| Open box | 1.8292 | 1368.25 | 6718.61 (+0.455 mm) | 2974.04 |
+
+The grid reached both, at pitch 19.97 mm on the cover and 34.40 mm on the box. Neither baseline wins on either part. Thickening needs 4.43× the rib material on the cover and 4.91× on the box. The grid needs 2.13× and 2.17×. The test asserts only that the three volumes are present and positive.
+
 - There is no measured cell-model column. The paper was read; the model was not built, for the reason in the cell section.
 - No screenshot. Nothing was built in the kernel.
 
@@ -95,4 +103,4 @@ The curved plan inside the probe, baselines on, is the same four ribs, 1811.5285
 
 ## Recommendation
 
-Leave the planner as it is. The uniform baseline is the equal-material check the handover asks for, and the curved wall still favours ribs, by 16% of the added volume, not by a margin that needs a new move. A cell model is a second planner and these walls do not ask for it. A regional thicken candidate is a small loop change that would have lost every comparison that matters here, and it cannot become a History row until a face can be split. Revisit the candidate only when a wall shows a hot patch beating the ribs at the same compliance; the coarse cover's 602 mm³ against 762 mm³ is a hint on the wrong mesh, and its own grid already wins.
+Leave the planner as it is. The uniform baseline is the equal-material check the handover asks for, and the curved wall still favours ribs, by 16% of the added volume, not by a margin that needs a new move. A cell model is a second planner and these walls do not ask for it. A regional thicken candidate is a small loop change that would have lost every comparison that matters here, and it cannot become a History row until a face can be split. Revisit the candidate only when a wall shows a hot patch beating the ribs at the same compliance. The coarse box did, and it does not survive on the real parts: there the ribs use less material than both baselines.

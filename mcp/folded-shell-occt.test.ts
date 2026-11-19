@@ -247,6 +247,21 @@ async function compare(title: string, object: string, kind: "cover" | "box", vol
     const line = `${title} plan: ${ribs.length} ribs, factor ${on.plan?.stiffnessFactor}, planner ${on.adds?.plannerMm3} mm³, built ${on.adds?.mm3} mm³, width ${on.rules?.width} mm, length belly ${lengths.belly} % wall ${lengths.wall} % rim ${lengths.rim} % (${r1(lengths.total)} mm)`;
     report.push(line);
     check(`${title}: the plan has ribs`, ribs.length > 0 && Number(on.plan?.stiffnessFactor) > 1 && Number(on.adds?.plannerMm3) > 0, line);
+    // The same folded plan again, with the uniform-thickening and even-grid baselines. The rib choice does not depend on them.
+    const started = await call("ribs_plan", { ...on.plan.request, baselines: true });
+    const base = started.ok === true && typeof started.job === "string" ? await waitJob(started.job) : started;
+    const ribVol = Number(base.plan?.ribVolumeMm3);
+    const thickVol = Number(base.plan?.thickening?.addedVolumeMm3);
+    const gridVol = Number(base.plan?.grid?.volumeMm3);
+    const factor = Number(base.plan?.stiffnessFactor);
+    const baseLine = `${title} baselines: ribs ${ribVol} mm³, thickening ${thickVol} mm³ (dt ${base.plan?.thickening?.addedThicknessMm} mm), grid ${gridVol} mm³ (reached ${base.plan?.grid?.reached}, pitch ${base.plan?.grid?.pitchMm} mm), factor ${factor}, plan ${base.seconds?.plan} s`;
+    report.push(baseLine);
+    check(`${title}: ribs, thickening and grid volumes are present and positive`, ribVol > 0 && thickVol > 0 && gridVol > 0, baseLine);
+    const winners = [
+      thickVol < ribVol ? `thickening uses ${thickVol} mm³, ${ribVol - thickVol} mm³ less than the ribs` : "",
+      gridVol < ribVol ? `the grid uses ${gridVol} mm³, ${ribVol - gridVol} mm³ less than the ribs` : "",
+    ].filter(Boolean);
+    report.push(winners.length ? `${title}: ${winners.join("; ")}` : `${title}: ribs use no more material than either baseline`);
   }
 }
 
