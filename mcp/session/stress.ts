@@ -11,7 +11,7 @@ import { patternBlend } from "../../src/sim/pattern-patch.ts";
 import { resolved } from "../../src/strategy.ts";
 import { recipeRefusal, simRecipe } from "../../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../../src/sim/study-mesh.ts";
-import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../../src/sim/study.ts";
+import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readPlace, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../../src/sim/study.ts";
 import { LABEL } from "../../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../../src/sim/cards.ts";
 import { BEAM_SIZE, OPEN_MESH, SLICED_FIELD, SLICED_SWEEP, RESLICE_BEAM, RESLICE_PARAMETERS, RESLICE_PATTERN_KEEP, SWEEP_CAP, SWEEP_REFUSAL, ZERO_AXIS, axisLength, boxPositions, constraintVerdict, elementRefusal, pageCursor, pageLimit, readLimits, readPatch, representationOf, runSolver, scaleLoads, setupSentence, solverJob, vec3Of, type ConstraintLimits, type SweepPatch } from "../sim.ts";
@@ -78,6 +78,14 @@ function readLoads(this: Session, value: unknown): StudyLoad[] | { reason: strin
       if (!region) return { reason: REGION_SHAPE };
       if ("faces" in region) loads.push({ kind: row.kind, faces: region.faces, magnitude: row.magnitude, direction });
       else loads.push({ kind: row.kind, faces: [], magnitude: row.magnitude, direction, place: region });
+      continue;
+    }
+    // A stored study load already carries its place. ribs_apply verify reads the plan's loads back in this shape.
+    // Dropping the place leaves faces: [], and the sliced study then loads a sliver at the part's max X.
+    if (row.place !== undefined) {
+      const place = readPlace(row.place);
+      if (!place) return { reason: REGION_SHAPE };
+      loads.push({ kind: row.kind, faces: [], magnitude: row.magnitude, direction, place });
       continue;
     }
     if (!Array.isArray(row.faces) || !row.faces.every((face) => Number.isInteger(face) && (face as number) >= 0)) return { reason: "Face indexes are whole numbers." };
