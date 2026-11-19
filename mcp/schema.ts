@@ -2607,7 +2607,7 @@ export const TOOLS: ToolSpec[] = [
           },
         },
         process: { enum: ["filament", "resin", "moulded"], description: "What the part is made by: sets the width default and the profile auto picks. Default filament." },
-        buildAxis: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Resin only, and refused for filament or moulded. In the plate frame: +Z is the part as it sits, from the platform toward the tank. It is turned into the wall frame by the plate orientation and the pose. The plate printer's direction is not used. Default: plate +Z, and the plan's notes say the plate has no resin printer." },
+        buildAxis: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Resin only; filament and moulded refuse it. Plate frame, from the platform toward the tank, turned into the wall frame. Default plate +Z; the notes say there is no resin printer." },
         pull: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Pull direction for the moulding draft check, when process is moulded. Default: the wall normal on the side the ribs stand on." },
         holeRimMm: { type: "number", minimum: 0, maximum: 50, description: "Ribs keep this far from a hole's rim, mm. Default 3; 0 lets them run to it." },
         baselines: { type: "boolean", description: "Compute the thickening and even-grid comparisons. Default true." },

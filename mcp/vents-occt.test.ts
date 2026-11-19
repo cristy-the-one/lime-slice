@@ -85,6 +85,9 @@ if (shelled.ok !== true) throw new Error(`shell: ${JSON.stringify(shelled).slice
 const floor = { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } };
 const side = { face: { normal: [-1, 0, 0], nearPoint: [62, 20, 8] } };
 const goal = { budgetMm3: 2500 };
+// The side wall is short. Resin's drafted default also puts a root on the rim, which ribNet will not build.
+// Straight ribs, spaced so a 0.75 mm gap leaves two pieces at least the minimum length.
+const sideRib = { profile: "straight", width: 1.2, minLength: 2, minSpacing: 16 };
 
 const t0 = Date.now();
 const floorJob = String((await call("ribs_plan", { object, wall: floor, process: "resin", goal, baselines: false })).job);
@@ -92,19 +95,20 @@ const floorPlan = await waitJob(floorJob);
 const floorS = (Date.now() - t0) / 1000;
 
 const t1 = Date.now();
-const sideJob = String((await call("ribs_plan", { object, wall: side, process: "resin", goal, baselines: false, buildAxis: [-1, 0, 0] })).job);
+const sideJob = String((await call("ribs_plan", { object, wall: side, process: "resin", goal, baselines: false, buildAxis: [-1, 0, 0], rib: sideRib })).job);
 const sidePlan = await waitJob(sideJob);
 const sideS = (Date.now() - t1) / 1000;
 
 const t2 = Date.now();
-const platform = await waitJob(String((await call("ribs_plan", { object, wall: side, process: "resin", goal, baselines: false, buildAxis: [1, 0, 0] })).job));
+const platform = await waitJob(String((await call("ribs_plan", { object, wall: side, process: "resin", goal, baselines: false, buildAxis: [1, 0, 0], rib: sideRib })).job));
 const platformS = (Date.now() - t2) / 1000;
 
 const t3 = Date.now();
 const filament = await waitJob(String((await call("ribs_plan", { object, wall: floor, process: "filament", goal, baselines: false })).job));
 const filamentS = (Date.now() - t3) / 1000;
 const moulded = await waitJob(String((await call("ribs_plan", { object, wall: floor, process: "moulded", goal, baselines: false })).job));
-const refused = await call("ribs_plan", { object, wall: floor, process: "filament", goal, baselines: false, buildAxis: [0, 0, 1] });
+const refusedStart = await call("ribs_plan", { object, wall: floor, process: "filament", goal, baselines: false, buildAxis: [0, 0, 1] });
+const refused = refusedStart.job ? await waitJob(String(refusedStart.job)) : refusedStart;
 
 const floorVents = floorPlan.plan?.vents as Reply | undefined;
 const floorNotes = (floorPlan.plan?.notes ?? floorPlan.notes ?? []) as string[];
