@@ -48,14 +48,16 @@ interface Held {
 }
 const volumeOf = (object: string) => (session as unknown as { find(id: string): Held | undefined }).find(object)?.solid?.volumeMm3;
 
-/** Four side walls of a 40 × 30 × h box, drafted `angle` degrees about the bottom, pull +Z. */
-function frustum(h: number, angleDeg: number): { volume: number; top: number } {
-  const shrink = 2 * h * Math.tan((angleDeg * Math.PI) / 180);
-  const topW = 40 - shrink;
-  const topD = 30 - shrink;
-  const bottom = 40 * 30;
-  const top = topW * topD;
-  return { volume: (h / 3) * (bottom + top + Math.sqrt(bottom * top)), top };
+/**
+ * Four side walls of a 40 × 30 × h box, drafted `angleDeg` about the bottom, pull +Z.
+ * At height z the section loses `2 z tan` on every side. The top is not a scaled copy of the
+ * bottom, so the volume is the integral of that rectangle.
+ */
+function draftedBox(h: number, angleDeg: number): { volume: number; top: number } {
+  const t = Math.tan((angleDeg * Math.PI) / 180);
+  const top = (40 - 2 * h * t) * (30 - 2 * h * t);
+  const volume = 40 * 30 * h - (40 + 30) * h * h * t + (4 / 3) * h * h * h * t * t;
+  return { volume, top };
 }
 
 function close(actual: number, expected: number): boolean {
@@ -87,7 +89,7 @@ try {
   const walls = await wallsOf(bare.object);
   const draft = { kind: "draft", faces: walls, angleDeg: 3 };
   const built = await call("model_build", { name: "mould", base: { primitive: "box", dx: 40, dy: 30, dz: 20 }, ops: [draft] });
-  const want = frustum(20, 3);
+  const want = draftedBox(20, 3);
   const builtVolume = volumeOf(built.object);
   check(
     "four walls at 3° match the frustum",
@@ -96,7 +98,7 @@ try {
   );
 
   const grown = await call("model_build", { name: "grown", base: { primitive: "box", dx: 40, dy: 30, dz: 20 }, ops: [{ ...draft, angleDeg: -3 }] });
-  const wantGrown = frustum(20, -3);
+  const wantGrown = draftedBox(20, -3);
   const grownVolume = volumeOf(grown.object);
   check(
     "minus 3° grows the top by the same frustum",
@@ -105,7 +107,7 @@ try {
   );
 
   const taller = await call("model_build", { name: "taller", base: { primitive: "box", dx: 40, dy: 30, dz: 25 }, ops: [draft] });
-  const wantTall = frustum(25, 3);
+  const wantTall = draftedBox(25, 3);
   const tallVolume = volumeOf(taller.object);
   check(
     "the same wall picks draft a taller box",
@@ -113,7 +115,7 @@ try {
     `volume ${tallVolume} want ${wantTall.volume}; ${JSON.stringify(taller.reason ?? "").slice(0, 200)}`,
   );
 
-  const floor = await call("model_apply", { object: bare.object, op: { kind: "draft", faces: [{ normal: [0, 0, 1], nearPoint: [0, 0, 20] }], angleDeg: 3 } });
+  const floor = await call("model_apply", { object: bare.object, probe: true, op: { kind: "draft", faces: [{ normal: [0, 0, 1], nearPoint: [0, 0, 20] }], angleDeg: 3 } });
   check(
     "a floor is refused and the box is unchanged",
     floor.ok === false && String(floor.reason).includes("Face 0") && String(floor.reason).includes("floor") && close(volumeOf(bare.object) ?? NaN, 40 * 30 * 20),
@@ -121,6 +123,7 @@ try {
   );
   const mixed = await call("model_apply", {
     object: bare.object,
+    probe: true,
     op: { kind: "draft", faces: [walls[0], { normal: [0, 0, 1], nearPoint: [0, 0, 20] }, walls[2]], angleDeg: 3 },
   });
   check(

@@ -423,7 +423,7 @@ fn unit_dir(pull: [f64; 3], what: &str) -> Result<[f64; 3], String> {
         return Err(format!("The {what} must be a direction."));
     }
     let length = (pull[0] * pull[0] + pull[1] * pull[1] + pull[2] * pull[2]).sqrt();
-    if !(length > 1e-12) {
+    if length <= 1e-12 {
         return Err(format!("The {what} must be a direction."));
     }
     Ok([pull[0] / length, pull[1] / length, pull[2] / length])

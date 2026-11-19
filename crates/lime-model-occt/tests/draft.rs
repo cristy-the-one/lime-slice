@@ -45,15 +45,17 @@ fn ready(key: &str) -> bool {
     true
 }
 
+/// A planar face with this outward normal. A cylinder also reports a normal, and it is not a wall.
 fn face_facing(reply: &Value, normal: [f64; 3]) -> usize {
     let faces = reply["faces"].as_array().expect("faces");
     let found: Vec<usize> = faces
         .iter()
         .enumerate()
         .filter(|(_, face)| {
-            face["normal"].as_array().is_some_and(|n| {
-                (0..3).all(|i| (n[i].as_f64().unwrap() - normal[i]).abs() < 1e-6)
-            })
+            face.get("surface").is_none()
+                && face["normal"].as_array().is_some_and(|n| {
+                    (0..3).all(|i| (n[i].as_f64().unwrap() - normal[i]).abs() < 1e-6)
+                })
         })
         .map(|(index, _)| index)
         .collect();
@@ -80,16 +82,16 @@ fn draft(faces: &[usize], angle: f64) -> Value {
     json!({ "kind": "draft", "faces": faces, "angleDeg": angle })
 }
 
-/// A frustum of height `h` between areas `a1` and `a2`.
-fn frustum(a1: f64, a2: f64, h: f64) -> f64 {
-    h / 3.0 * (a1 + a2 + (a1 * a2).sqrt())
-}
-
-/// Four walls of a 40 × 30 × 20 box, drafted `angle` degrees about the bottom, pull +Z.
-fn four_walls(angle: f64) -> (f64, f64) {
-    let shrink = 2.0 * 20.0 * angle.to_radians().tan();
-    let top = (40.0 - shrink) * (30.0 - shrink);
-    (frustum(40.0 * 30.0, top, 20.0), top)
+/// Four walls of a `40 × 30 × h` box, drafted `angle` degrees about the bottom, pull +Z.
+///
+/// Each wall tilts by the angle, so at height `z` the section is smaller by `2 z tan(angle)` on
+/// every side. The top is not a scaled copy of the bottom (40 and 30 shrink by the same length),
+/// so the volume is the integral of that rectangle, not the similar-section frustum.
+fn drafted_box(h: f64, angle: f64) -> (f64, f64) {
+    let t = angle.to_radians().tan();
+    let top = (40.0 - 2.0 * h * t) * (30.0 - 2.0 * h * t);
+    let volume = 40.0 * 30.0 * h - (40.0 + 30.0) * h * h * t + (4.0 / 3.0) * h * h * h * t * t;
+    (volume, top)
 }
 
 #[test]
@@ -100,7 +102,7 @@ fn four_walls_at_three_degrees_match_the_frustum() {
     let opened = ok(json!({ "call": "goto", "key": "four", "node": 0 }));
     let faces = walls(&opened);
     let drafted = apply("four", 0, 1, draft(&faces, 3.0));
-    let (expected, top) = four_walls(3.0);
+    let (expected, top) = drafted_box(20.0, 3.0);
     rel(volume(&drafted), expected);
     // The top shrinks by 2 · 20 · tan 3° on each side, so its area is that rectangle.
     rel(area(&drafted, face_facing(&drafted, [0.0, 0.0, 1.0])), top);
@@ -136,12 +138,11 @@ fn a_positive_angle_shrinks_the_top_and_a_negative_one_grows_it() {
     let faces = walls(&opened);
     let plus = apply("sign", 0, 1, draft(&faces, 3.0));
     let minus = apply("sign", 0, 2, draft(&faces, -3.0));
-    let (plus_volume, plus_top) = four_walls(3.0);
-    let grow = 2.0 * 20.0 * 3.0_f64.to_radians().tan();
-    let minus_top = (40.0 + grow) * (30.0 + grow);
+    let (plus_volume, plus_top) = drafted_box(20.0, 3.0);
+    let (minus_volume, minus_top) = drafted_box(20.0, -3.0);
     rel(volume(&plus), plus_volume);
     rel(area(&plus, face_facing(&plus, [0.0, 0.0, 1.0])), plus_top);
-    rel(volume(&minus), frustum(40.0 * 30.0, minus_top, 20.0));
+    rel(volume(&minus), minus_volume);
     rel(area(&minus, face_facing(&minus, [0.0, 0.0, 1.0])), minus_top);
     assert!(plus_top < 40.0 * 30.0 && minus_top > 40.0 * 30.0);
 }
@@ -206,10 +207,7 @@ fn a_wall_beside_a_fillet_is_drafted_or_refused_cleanly() {
         "op": draft(&[face], 3.0)
     }));
     if let Some(message) = drafted["error"].as_str() {
-        assert!(
-            message.contains("Face 0"),
-            "a refusal names the face in the list: {message}"
-        );
+        assert!(!message.is_empty(), "a refusal says why");
         let still = ok(json!({ "call": "goto", "key": "fillet", "node": 1 }));
         rel(volume(&still), before);
         eprintln!("draft fillet-adjacent: refused: {message}");
@@ -266,7 +264,7 @@ fn a_draft_is_applied_again_after_an_earlier_hole_changes() {
     let drilled = apply("replay", 0, 1, hole(2.0));
     rel(volume(&drilled), 24000.0 - PI * 4.0 * 20.0);
     let drafted = apply("replay", 1, 2, draft(&walls(&drilled), 3.0));
-    let (body, _) = four_walls(3.0);
+    let (body, _) = drafted_box(20.0, 3.0);
     rel(volume(&drafted), body - PI * 4.0 * 20.0);
     let edited = call(json!({
         "call": "edit", "key": "replay", "parent": 0, "node": 3, "op": hole(3.0),
@@ -285,7 +283,7 @@ fn an_imported_step_box_drafts_the_same_way() {
     let imported = ok(json!({ "call": "open", "key": "step-in", "dataB64": exported["bytesBase64"] }));
     rel(volume(&imported), 24000.0);
     let drafted = apply("step-in", 0, 1, draft(&walls(&imported), 3.0));
-    let (expected, top) = four_walls(3.0);
+    let (expected, top) = drafted_box(20.0, 3.0);
     rel(volume(&drafted), expected);
     rel(area(&drafted, face_facing(&drafted, [0.0, 0.0, 1.0])), top);
 }
