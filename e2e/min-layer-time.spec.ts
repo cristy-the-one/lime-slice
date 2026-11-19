@@ -50,14 +50,20 @@ test("the minimum layer time sits in Speed & travel, is always sent, and stales 
   await expect(group.locator("#minlayerspd")).toHaveValue("15");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
+  // The slice rebuilds the settings form when it lands. The next value is typed only after that,
+  // so the keystrokes are not lost on the form the reply replaces.
+  await expect(page.locator("#slice")).toBeEnabled();
   expect(bodies[1]).toMatchObject({ minLayerTimeS: 12, minLayerSpeedMmS: 15 });
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 
   await page.locator("#minlayerspd").fill("20");
   await page.locator("#minlayerspd").blur();
   await expect(page.locator("#stage")).toHaveClass(/stale/);
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(3);
+  await expect(page.locator("#slice")).toBeEnabled();
   expect(bodies[2]).toMatchObject({ minLayerTimeS: 12, minLayerSpeedMmS: 20 });
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 
   // Off hides the speed it would have floored, and is sent as 0.
   await page.locator("#minlayer").fill("0");
