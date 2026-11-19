@@ -773,7 +773,8 @@ function refreshObjectPlace() {
   const slot = document.querySelector<HTMLElement>('[data-slot="objectPlace"]');
   // A field being typed in is left alone: the next draw of the panel shows the row.
   if (!slot || slot.contains(document.activeElement)) return;
-  slot.innerHTML = objectPlaceHtml();
+  // The same markup the panel's own draw puts here, built by this module with its values escaped.
+  setHtml(slot, raw(objectPlaceHtml()));
 }
 
 /** A row to close the holes of the selected mesh, once its open edges have been counted and there are some. */
