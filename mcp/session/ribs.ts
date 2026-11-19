@@ -16,6 +16,7 @@ import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
 import { loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
@@ -313,6 +314,11 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const goal = goalOf(input.goal, density);
   if ("reason" in goal) return refuse("bad-goal", String(goal.reason));
   const process: RibProcess = input.process === "resin" || input.process === "moulded" ? input.process : "filament";
+  let pull: V3 | null = null;
+  if (process === "moulded" && input.pull !== undefined) {
+    pull = readPull(input.pull);
+    if (!pull) return refuse("bad-argument", "pull is the mould's pull direction: three numbers, not all zero. It is only read when process is moulded.");
+  }
   const rib = (input.rib ?? {}) as Row;
   if (input.ifMissed !== undefined && input.ifMissed !== "refuse" && input.ifMissed !== "evenPressure") return refuse("bad-argument", `ifMissed is "refuse" (the default) or "evenPressure"; it is ${JSON.stringify(input.ifMissed)}.`);
   if (wallIn.thicknessMm !== undefined && !(num(wallIn.thicknessMm) !== undefined && (wallIn.thicknessMm as number) > 0)) return refuse("bad-wall", "wall.thicknessMm is the wall's thickness in mm, a number above zero.");
@@ -497,6 +503,10 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     looseEnds: ((result.looseEnds as Row[] | undefined) ?? []).map((row) => ({ rib: row.rib, end: row.end, point: Array.isArray(row.point) ? rv(row.point as number[]) : null, reason: row.reason })),
     stats: result.stats,
   };
+  if (process === "moulded") {
+    const mesh = wall.request.mesh;
+    mouldedOnly(process, plan, mouldingReport(onSkin.ribs.map((rib) => ({ points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p)) })), pull));
+  }
   const joined = [...new Set(wall.report.faces.stops.map((row) => row.face))].filter((face) => !wallSet.has(face));
   // The verify study carries what the plan carried: holds and loads left out under ifMissed stay out of it too.
   const kept = (rows: unknown, gone: readonly number[] | undefined) => (Array.isArray(rows) && gone?.length ? rows.filter((_, i) => !gone.includes(i)) : rows);
@@ -533,6 +543,14 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   return { ...reply, applied: applied.ok === true, apply: applied };
 }
 
+
+/** A pull direction for the moulding draft check: three finite numbers, not the zero vector. */
+function readPull(value: unknown): V3 | null {
+  if (!Array.isArray(value) || value.length !== 3 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  const l = Math.hypot(value[0], value[1], value[2]);
+  if (!(l > 1e-9)) return null;
+  return [value[0] / l, value[1] / l, value[2] / l];
+}
 
 /** The wall report a reply carries: what was taken, where it stopped, thickness, borders, zones, and what missed. */
 function wallReport(wall: RibWall): Row {

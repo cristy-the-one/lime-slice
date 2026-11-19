@@ -8,7 +8,7 @@
  * commands, the `serve` routes): one poller per job, since each event is handed out once. `src/app/model/
  * auto-ribs-source.ts` picks the transport.
  *
- * `fakePlanSource` is a deterministic stand-in with the same shape, for the browser specs: it lays straight ribs across
+ * `fakePlanSource` is a deterministic stand-in with the same shape, for the browser specs: it lays ribs across
  * the wall along its two longest directions, centre first, honours "no ribs" and height-capped zones and the clearance
  * in the request, and goes through the same stages. Its numbers are made up.
  *
@@ -16,6 +16,7 @@
  */
 import type { RibWallRequest } from "./modeling/rib-wall.ts";
 import type { Section } from "./modeling/auto-ribs.ts";
+import { defaultDraftedSection } from "./modeling/moulding.ts";
 
 export type V3 = [number, number, number];
 
@@ -543,8 +544,12 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           };
         });
       const live = new Map<number, { points: V3[]; heights: number[] }>();
-      const asked = body.rules.profile?.kind;
+      const wire = body.rules.profile;
+      const asked = wire?.kind;
       const profile: RibProfileName = asked === "drafted" || asked === "tee" ? asked : "straight";
+      // Moulded auto, and an asked drafted rib, use the planner's drafted default (1° and the root from the greatest height).
+      const drafted = wire?.kind === "drafted" || (wire?.kind === "auto" && wire.process === "moulded");
+      const draftedRoot = drafted ? defaultDraftedSection(width, tall).rootRadius : 0;
       let fraction = 0;
       let factor = 1;
       const bareDeflection = 0.8;
@@ -566,7 +571,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         const ribs: PlannedRib[] = [...live.values()].map((row) => {
           let length = 0;
           for (let i = 1; i < row.points.length; i += 1) length += norm(sub(row.points[i]!, row.points[i - 1]!));
-          return { points: row.points, heights: row.heights, width, height: Math.max(...row.heights), sections: row.heights.map(() => ({ profile, width })), lengthMm: r3(length), volumeMm3: r3(volumeOf(row.points, row.heights, width)), gain: 0.1 };
+          return { points: row.points, heights: row.heights, width, height: Math.max(...row.heights), sections: row.heights.map(() => (drafted ? { profile: "drafted" as const, width, draftDeg: 1, rootRadius: draftedRoot } : { profile, width })), lengthMm: r3(length), volumeMm3: r3(volumeOf(row.points, row.heights, width)), gain: 0.1 };
         });
         const volume = totals().ribVolumeMm3;
         const thin = set.beatsNeither ? 0.8 : 1.9;

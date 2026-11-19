@@ -442,10 +442,12 @@ jobs:
           export LD_LIBRARY_PATH="${OCCT_ROOT}/lib:${LD_LIBRARY_PATH:-}"
           # Folded walls, opt-in: the synthetic cover and open box through ribs_plan {wall.folded:true},
           # against the sliced Stress study (solid infill, six walls).
-          # Draft on existing faces: a synthetic box against the frustum, on this job so the shared
-          # Open CASCADE job stays inside its limit.
           node --experimental-strip-types mcp/folded-shell-occt.test.ts
+          # Draft on existing faces: a synthetic box against the drafted-box volume, on this job so the shared
+          # Open CASCADE job stays inside its limit.
           node --experimental-strip-types mcp/draft-occt.test.ts
+          # Moulding report on a small synthetic shelled box. Kept here so the shared Open CASCADE job stays within its 25 minutes.
+          node --experimental-strip-types mcp/moulding-occt.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:
