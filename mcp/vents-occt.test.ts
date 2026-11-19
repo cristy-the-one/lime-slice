@@ -3,8 +3,11 @@
  *
  * The floor of an open box is walled in all round. With the part sitting +Z, that
  * opening faces the tank, so the plan reports that the part itself cups and cuts
- * nothing. A side wall has a free rim at the open top: buildAxis along its opening
- * (plate frame) vents it, and the opposite axis, facing the platform, cups nothing.
+ * nothing. The box is 90 mm tall so a side wall is about 36 × 88 mm. Its free rim
+ * is the open top. Ribs there are straight, 1.2 mm wide, at least 5 mm long and
+ * 16 mm apart, so a boundary stretch can hold a 0.75 mm gap. A drafted root on
+ * that rim runs off the wall, which ribNet will not build. buildAxis along the
+ * opening (plate frame) vents it; the opposite axis, facing the platform, cups nothing.
  * The gap is measured on the ribs the solid is built from, then ribs_apply builds them.
  *
  * Filament and moulded omit vents. A buildAxis on either is refused.
@@ -78,16 +81,19 @@ function gapMm(ribs: Reply[]): number {
   return best;
 }
 
-const object = String((await call("solid_new", { primitive: "box", dx: 64, dy: 40, dz: 16 })).object);
+const object = String((await call("solid_new", { primitive: "box", dx: 64, dy: 40, dz: 90 })).object);
 const shelled = await call("model_apply", { object, probe: true, op: { kind: "shell", thickness: 2, openFaces: [{ normal: [0, 0, 1] }] } });
 if (shelled.ok !== true) throw new Error(`shell: ${JSON.stringify(shelled).slice(0, 300)}`);
 
 const floor = { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } };
-const side = { face: { normal: [-1, 0, 0], nearPoint: [62, 20, 8] } };
+// The box is centred in X and Y and stands on Z 0. The inner +X wall is at X 30.
+const side = { face: { normal: [-1, 0, 0], nearPoint: [30, 0, 40] } };
 const goal = { budgetMm3: 2500 };
-// The side wall is short. Resin's drafted default also puts a root on the rim, which ribNet will not build.
-// Straight ribs, spaced so a 0.75 mm gap leaves two pieces at least the minimum length.
-const sideRib = { profile: "straight", width: 1.2, minLength: 2, minSpacing: 16 };
+const sideGoal = { budgetMm3: 8000 };
+// 16 mm between ribs, on a wall about 88 mm tall. A 0.75 mm gap in the middle of
+// such a stretch leaves two pieces longer than the 5 mm minimum. Straight: resin's
+// drafted root runs off the open rim.
+const sideRib = { profile: "straight", width: 1.2, minLength: 5, minSpacing: 16 };
 
 const t0 = Date.now();
 const floorJob = String((await call("ribs_plan", { object, wall: floor, process: "resin", goal, baselines: false })).job);
@@ -95,12 +101,12 @@ const floorPlan = await waitJob(floorJob);
 const floorS = (Date.now() - t0) / 1000;
 
 const t1 = Date.now();
-const sideJob = String((await call("ribs_plan", { object, wall: side, process: "resin", goal, baselines: false, buildAxis: [-1, 0, 0], rib: sideRib })).job);
+const sideJob = String((await call("ribs_plan", { object, wall: side, process: "resin", goal: sideGoal, baselines: false, buildAxis: [-1, 0, 0], rib: sideRib })).job);
 const sidePlan = await waitJob(sideJob);
 const sideS = (Date.now() - t1) / 1000;
 
 const t2 = Date.now();
-const platform = await waitJob(String((await call("ribs_plan", { object, wall: side, process: "resin", goal, baselines: false, buildAxis: [1, 0, 0], rib: sideRib })).job));
+const platform = await waitJob(String((await call("ribs_plan", { object, wall: side, process: "resin", goal: sideGoal, baselines: false, buildAxis: [1, 0, 0], rib: sideRib })).job));
 const platformS = (Date.now() - t2) / 1000;
 
 const t3 = Date.now();
