@@ -9,6 +9,7 @@
  * 2. Plan: a background job (src/auto-ribs-plan.ts): the stage and a bar that never goes back, each rib drawn on the wall
  *    as it is chosen, the running totals, Stop for the plan so far.
  * 3. The plan: gain and cost, the goal not met, the comparisons, the relative note; a rib list to light or take out.
+ *    Process moulded also lists moulding flags under the result. Filament and resin do not.
  * 4. Apply: one History row, then what it measured and the print check before and after.
  * Optional, folded: How much, Hold and load (the Stress panel's controls), Keep clear (zones, each a place), Ribs.
  *
@@ -19,6 +20,7 @@ import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
+import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
 import type { StudyHold, StudyLoad } from "../sim/study.ts";
 import { stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
@@ -176,7 +178,7 @@ let faceRibs: FaceRib[] = [];
 let liveDrawn = new Map<number, DrawnRib>();
 
 /** The run's request and the read it came from: what the plan answers. */
-let ranWith: { key: string; goal: PlanGoal; body: RibPlanBody; wall: RibWall; solid: AutoRibsSolid; caseNames: string[] | null } | null = null;
+let ranWith: { key: string; goal: PlanGoal; body: RibPlanBody; wall: RibWall; solid: AutoRibsSolid; caseNames: string[] | null; process: RibProcess } | null = null;
 let balancedFactor: number | null = null;
 let edit: { head: string } | null = null;
 let applying = false;
@@ -230,6 +232,10 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
       <p class="model-note" id="autoRibsStoppedLine" hidden>${STOPPED_LINE}</p>
       <p class="model-note is-warn" id="autoRibsGoal" hidden></p>
       <ul class="ar-lines" id="autoRibsCompare" aria-label="Compared with"></ul>
+      <div id="autoRibsMoulding" hidden>
+        <p class="model-note" id="autoRibsMouldingTitle">Moulding</p>
+        <ul class="ar-lines" id="autoRibsMouldingList" aria-label="Moulding"></ul>
+      </div>
       <p class="model-note ar-faint" id="autoRibsRelative">${RELATIVE_NOTE}</p>
       <ul class="tc-list ar-ribs" id="autoRibsList" aria-label="Planned ribs"></ul>
       <p class="model-note is-warn" id="autoRibsEditedNote" hidden></p>
@@ -664,7 +670,7 @@ async function startRun() {
   faceRibs = [];
   liveDrawn = new Map();
   lit = null;
-  ranWith = { key: read.key, goal, body, wall, solid, caseNames: (card.cases?.length ?? 0) >= 2 ? card.cases!.map((row) => row.name) : null };
+  ranWith = { key: read.key, goal, body, wall, solid, caseNames: (card.cases?.length ?? 0) >= 2 ? card.cases!.map((row) => row.name) : null, process: card.ribs.process };
   const source = host.source();
   const note = $<HTMLElement>("#autoRibsSourceNote");
   if (note) note.hidden = source.kind !== "stand-in";
@@ -986,6 +992,23 @@ function paintResult() {
       if (i === all.length - 1 && plan.notBetterThanBaseline) li.className = "is-warn";
       return li;
     }));
+  }
+  const moulding = $<HTMLElement>("#autoRibsMoulding");
+  const mouldingList = $<HTMLElement>("#autoRibsMouldingList");
+  if (moulding && mouldingList) {
+    const show = ranWith?.process === "moulded" && plan.ribs.length > 0;
+    moulding.hidden = !show;
+    if (show && ranWith) {
+      const mesh = ranWith.wall.request.mesh;
+      const report = mouldingReport(faceRibs.map((rib, i) => (run.removed.includes(i) ? { points: [], heights: [], sections: [], normals: [], wallMm: [] } : { points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p)) })));
+      const lines = mouldingLines(report);
+      mouldingList.replaceChildren(...lines.map((text) => {
+        const li = document.createElement("li");
+        li.textContent = text;
+        if (!text.startsWith("Moulding checks pass")) li.className = "is-warn";
+        return li;
+      }));
+    }
   }
   const list = $<HTMLElement>("#autoRibsList");
   if (list) {
