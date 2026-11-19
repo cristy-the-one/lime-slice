@@ -558,6 +558,8 @@ fn goal_met(goal: Goal, c0: f64, e: &Eval) -> bool {
         Goal::Stiffer(f) => c0 / e.compliance >= f,
         Goal::MaxDeflection(d) => e.max_deflection <= d,
         Goal::Budget { .. } | Goal::Balanced => false,
+        // Frequency is planned apart from this compliance selector.
+        Goal::Frequency { .. } => false,
     }
 }
 
@@ -938,7 +940,7 @@ pub(crate) fn run(
                 next += 1;
                 let remove = match ctx.goal {
                     Goal::Stiffer(_) | Goal::MaxDeflection(_) => goal_met(ctx.goal, c0, &e),
-                    Goal::Balanced | Goal::Budget { .. } => {
+                    Goal::Balanced | Goal::Budget { .. } | Goal::Frequency { .. } => {
                         let dv =
                             network_volume(&ctx.pos, &design) - network_volume(&ctx.pos, &trial);
                         dv > 0.0 && (e.compliance - cur.compliance) / dv < floor
