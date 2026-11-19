@@ -494,17 +494,51 @@ let boxObject = "";
 }
 
 // ===== 5c. ribs_apply {verify:true} with two load cases. A 64 × 40 × 14 box: four sliced studies on the
-// 120 × 70 box would run this job past its 25 minutes (the one-case study there took about 200 s). =====
+// 120 × 70 box would run this job past its 25 minutes (the one-case study there took about 200 s).
+// The point load is a 20 N force in a box over the middle of the inner floor. A sphere centred on that
+// face (z 2) also covered the outer bottom, and the sliced study then barely moved the floor. =====
 {
   const [sx, sy, sz] = [64, 40, 14];
   const object = await shellBox(sx, sy, sz);
   const floor = faceAt(object, [0, 0, 2], [0, 0, 1]);
+  // Inner floor at z 2, outer bottom at z 0, walls about 18 mm off the middle. The box takes the inner face only.
+  const pointBox = { min: [-12, -10, 1.2], max: [12, 10, 3.2] };
+  const pointForce = [0, 0, -20];
   const loadCases = [
     { name: "spread", loads: [{ kind: "pressure", faces: [floor], magnitude: 0.01, direction: [0, 0, -1] }] },
-    { name: "point", weight: 2, loads: [{ kind: "force", region: { sphere: { centre: [0, 0, 2], radiusMm: 8 } }, magnitude: 20, direction: [0, 0, -1] }] },
+    { name: "point", weight: 2, loads: [{ kind: "force", region: { box: pointBox }, magnitude: 20, direction: [0, 0, -1] }] },
   ];
+  const pos = held(object).positions;
+  const faceOf = held(object).triangles;
+  const byFace = new Map<number, { area: number; triangles: number }>();
+  for (let t = 0; t * 9 + 8 < pos.length; t += 1) {
+    const corner = (k: number) => [pos[t * 9 + k]!, pos[t * 9 + k + 1]!, pos[t * 9 + k + 2]!] as V3;
+    const a = corner(0);
+    const b = corner(3);
+    const c = corner(6);
+    const g = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
+    if (g.some((v, k) => v < pointBox.min[k]! || v > pointBox.max[k]!)) continue;
+    const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const cross = [e1[1]! * e2[2]! - e1[2]! * e2[1]!, e1[2]! * e2[0]! - e1[0]! * e2[2]!, e1[0]! * e2[1]! - e1[1]! * e2[0]!];
+    const area = Math.hypot(cross[0]!, cross[1]!, cross[2]!) / 2;
+    const face = Number(faceOf[t]);
+    const row = byFace.get(face) ?? { area: 0, triangles: 0 };
+    row.area += area;
+    row.triangles += 1;
+    byFace.set(face, row);
+  }
+  const landed = [...byFace.entries()].map(([face, row]) => ({ face, areaMm2: Math.round(row.area * 100) / 100, triangles: row.triangles })).sort((p, q) => q.areaMm2 - p.areaMm2);
   const planned = await waitJob(String((await call("ribs_plan", { object, wall: { faces: [floor] }, loadCases, goal: { budgetMm3: 600 }, baselines: false })).job));
+  const planCases = planned.plan?.cases as Reply[] | undefined;
+  const wallCases = planned.wall?.cases as Reply[] | undefined;
+  const pointWall = wallCases?.find((c) => c.name === "point");
+  report.push(`point load on ${sx} × ${sy} × ${sz}: force [${pointForce.join(", ")}] N, box ${JSON.stringify(pointBox)}, faces ${JSON.stringify(landed)}, wall ${JSON.stringify(pointWall?.loads ?? null)}, plan ${JSON.stringify(planCases?.map((c) => ({ name: c.name, factor: c.factor, bare: c.bare?.deflectionMm, ribbed: c.ribbed?.deflectionMm })))}`);
   check("two-case verify: the plan has ribs", planned.ok === true && planned.plan?.ribs?.length > 0, JSON.stringify(planned).slice(0, 400));
+  check("two-case verify: the point load lands on the floor", landed[0]?.face === floor && landed[0]!.areaMm2 > 50 && pointWall?.loads?.[0]?.how === "on the wall" && pointWall.loads[0].share >= 0.9, JSON.stringify({ floor, landed, how: pointWall?.loads }));
+  const planSpread = planCases?.find((c) => c.name === "spread");
+  const planPoint = planCases?.find((c) => c.name === "point");
+  check("two-case verify: the point case bends the floor in the plan", typeof planPoint?.bare?.deflectionMm === "number" && planPoint.bare.deflectionMm > (planSpread?.bare?.deflectionMm ?? 0) * 0.25, JSON.stringify(planCases));
   const t0 = Date.now();
   const verifying = await call("ribs_apply", { job: planned.job, verify: true });
   const verified = await waitJob(String(verifying.job));
@@ -512,6 +546,18 @@ let boxObject = "";
   const rows = verified.verify?.cases as Reply[] | undefined;
   check("two-case verify: each case has a before and an after", verified.ok === true && rows?.length === 2 && rows.every((c) => typeof c.name === "string" && c.before?.maxDisplacementMm > 0 && c.after?.maxDisplacementMm > 0), JSON.stringify(verified.verify ?? verified).slice(0, 900));
   check("two-case verify: the ribbed part is stiffer for each case", !!rows && rows.every((c) => c.after.maxDisplacementMm < c.before.maxDisplacementMm), JSON.stringify(rows?.map((c) => ({ name: c.name, before: c.before?.maxDisplacementMm, after: c.after?.maxDisplacementMm, stiffer: c.stiffer }))));
+  const sameWay = (plan: number, got: number) => {
+    const a = plan - 1;
+    const b = got - 1;
+    return Math.abs(a) < 0.02 && Math.abs(b) < 0.02 ? true : a * b > 0;
+  };
+  check("two-case verify: each case's factor is in the same direction as the plan", !!rows && !!planCases && rows.every((c) => {
+    const plan = planCases.find((p) => p.name === c.name);
+    return typeof plan?.factor === "number" && typeof c.stiffer === "number" && sameWay(plan.factor, c.stiffer);
+  }), JSON.stringify({ plan: planCases?.map((c) => ({ name: c.name, factor: c.factor })), verify: rows?.map((c) => ({ name: c.name, stiffer: c.stiffer })) }));
+  const verifySpread = rows?.find((c) => c.name === "spread");
+  const verifyPoint = rows?.find((c) => c.name === "point");
+  check("two-case verify: the point case bends the floor", typeof verifyPoint?.before?.maxDisplacementMm === "number" && verifyPoint.before.maxDisplacementMm > (verifySpread?.before?.maxDisplacementMm ?? 0) * 0.25, JSON.stringify(rows?.map((c) => ({ name: c.name, before: c.before?.maxDisplacementMm }))));
   report.push(`verify two cases on ${sx} × ${sy} × ${sz}: ${(rows ?? []).map((c) => `${c.name} ${c.before.maxDisplacementMm} → ${c.after.maxDisplacementMm} mm (${c.stiffer}×)`).join("; ")} in ${ms} ms (reported ${verified.verify?.seconds} s)`);
   timings.push(`verify two cases ${ms} ms`);
 }
