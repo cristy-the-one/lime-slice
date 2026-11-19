@@ -27,7 +27,7 @@ export interface EdgeReport {
   nonManifoldAt: EdgeIssue[];
 }
 
-interface Welded {
+export interface Welded {
   /** Welded points, three numbers each. */
   points: number[];
   /** Three point indexes per kept triangle. */
@@ -44,7 +44,7 @@ function cellKey(i: number, j: number, k: number): number {
  * Corners within `tol` of each other become one point, whichever side of a grid line they fall: a point is looked for
  * in its own cell, then in the 26 around it.
  */
-function weld(positions: ArrayLike<number>, tol = WELD_MM): Welded {
+export function weld(positions: ArrayLike<number>, tol = WELD_MM): Welded {
   const cells = new Map<number, number[]>();
   const points: number[] = [];
   const tris: number[] = [];
@@ -85,7 +85,7 @@ function weld(positions: ArrayLike<number>, tol = WELD_MM): Welded {
   return { points, tris, degenerate };
 }
 
-function edgeUse(tris: readonly number[]): Map<number, number> {
+export function edgeUse(tris: readonly number[]): Map<number, number> {
   const use = new Map<number, number>();
   for (let t = 0; t < tris.length; t += 3) {
     for (let k = 0; k < 3; k += 1) {

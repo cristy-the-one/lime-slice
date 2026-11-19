@@ -54,6 +54,7 @@ mcp/autosave-cleanup.test.ts
 mcp/gear-train.test.ts
 mcp/couplings.test.ts
 src/mass.test.ts
+src/mesh-holes.test.ts
 src/dynamics.test.ts
 src/escapement.test.ts
 mcp/mass.test.ts
@@ -198,6 +199,7 @@ mcp/part-a.test.ts
 mcp/project-v4.test.ts
 mcp/batch1.test.ts
 mcp/batch2.test.ts
+mcp/mesh-close-holes.test.ts
 mcp/shell-solids.test.ts
 mcp/slice-scope.test.ts
 src/paint-region.test.ts

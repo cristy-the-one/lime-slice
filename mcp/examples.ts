@@ -31,6 +31,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   object_duplicate: [{ object: "obj_1", count: 4 }],
   plate_arrange: [{ gapMm: 5 }, { dryRun: true }],
   object_split_shells: [{ object: "obj_1" }],
+  mesh_close_holes: [{ object: "obj_1" }, { object: "obj_1", maxLoopMm: 20 }],
   plate_print_order: [{ order: "sequential", clearanceMm: 5, gantryMm: 30 }],
   range_add: [{ zFromMm: 0, zToMm: 4, walls: 6 }, { zFromMm: 30, zToMm: 40, infillPercent: 60, speedMmS: 60 }],
   modifier_add: [{ kind: "box", centre: [0, 0, 5], sizeMm: [10, 10, 4], infillPercent: 80 }],
