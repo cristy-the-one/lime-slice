@@ -2,7 +2,7 @@
  * Moulding checks (src/modeling/moulding.ts). Hand-built sections with known answers, and the moulded default
  * table: the numbers are computed, and the test does not require the default to pass.
  */
-import { defaultDraftedSection, junctionDiameter, MOULD_HEIGHT_WALLS, MOULD_JUNCTION_RATIO, MOULD_MIN_DRAFT_DEG, MOULD_ROOT_RATIO, MOULD_SPACING_WALLS, mouldedDefaultRow, mouldedOnly, mouldingLines, mouldingReport, rootWidth, type MouldRib, type MouldSection } from "./moulding.ts";
+import { baseWidth, builtRootRadius, defaultDraftedSection, junctionDiameter, MOULD_HEIGHT_WALLS, MOULD_JUNCTION_RATIO, MOULD_MIN_DRAFT_DEG, MOULD_ROOT_RADIUS_MAX, MOULD_ROOT_RADIUS_MIN, MOULD_ROOT_RATIO, MOULD_SPACING_WALLS, mouldedDefaultRow, mouldedOnly, mouldingLines, mouldingReport, rootWidth, type MouldRib, type MouldSection } from "./moulding.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -30,17 +30,33 @@ const rib = (points: V3[], section: MouldSection, height: number, wall: number, 
 {
   const dia = junctionDiameter(straight(1.2), 6, 2);
   check("a 1.2 mm straight rib on a 2 mm wall has junction diameter 2.18 mm", dia !== null && near(dia, 2 + (1.2 * 1.2) / (4 * 2), 0.002), String(dia));
-  check("its root is its width", near(rootWidth(straight(1.2), 6) ?? 0, 1.2));
+  check("its foot is its width", near(rootWidth(straight(1.2), 6) ?? 0, 1.2));
+  check("its base, with no fillet, is its width", near(baseWidth(straight(1.2), 6) ?? 0, 1.2));
+  check("a straight rib's root radius is 0", near(builtRootRadius(straight(1.2), 6) ?? -1, 0));
 }
 
-// Rule 1. Equal to 0.6 passes; above it flags.
+// Rule 1. The base, fillet left out. Equal to 0.6 passes; above it flags.
 {
   const pass = mouldingReport([rib([[0, 0, 0], [10, 0, 0]], straight(1.2), 4, 2)]);
-  const root = pass.rules.find((row) => row.rule === "root")!;
-  check("1.2 mm on a 2 mm wall is ratio 0.6 and passes", near(root.worst ?? 0, 0.6) && root.pass && !pass.flags.some((f) => f.rule === "root"), JSON.stringify(root));
+  const base = pass.rules.find((row) => row.rule === "base")!;
+  check("1.2 mm on a 2 mm wall is base ratio 0.6 and passes", near(base.worst ?? 0, 0.6) && base.pass && !pass.flags.some((f) => f.rule === "base"), JSON.stringify(base));
   const flag = mouldingReport([rib([[0, 0, 0], [10, 0, 0]], straight(1.4), 4, 2)]);
-  const bad = flag.flags.find((f) => f.rule === "root");
-  check("1.4 mm on a 2 mm wall flags root 0.7 over 0.6", bad !== undefined && near(bad.value, 0.7) && bad.threshold === MOULD_ROOT_RATIO && bad.rib === 0 && bad.at.stretch === 0, JSON.stringify(flag.flags));
+  const bad = flag.flags.find((f) => f.rule === "base");
+  check("1.4 mm on a 2 mm wall flags base 0.7 over 0.6", bad !== undefined && near(bad.value, 0.7) && bad.threshold === MOULD_ROOT_RATIO && bad.rib === 0 && bad.at.stretch === 0, JSON.stringify(flag.flags));
+}
+
+// Root radius over the wall. Outside 0.25–0.5 flags; the ends of the band pass.
+{
+  const none = mouldingReport([rib([[0, 0, 0], [10, 0, 0]], straight(1.2), 4, 2)]);
+  const small = none.flags.find((f) => f.rule === "radius");
+  check("no fillet flags root radius 0 under 0.25", small !== undefined && near(small.value, 0) && small.threshold === MOULD_ROOT_RADIUS_MIN, JSON.stringify(small));
+  const low = mouldingReport([rib([[0, 0, 0], [10, 0, 0]], { profile: "drafted", width: 2, draftDeg: 1, rootRadius: 0.5 }, 4, 2)]);
+  const high = mouldingReport([rib([[0, 0, 0], [10, 0, 0]], { profile: "drafted", width: 2, draftDeg: 1, rootRadius: 1 }, 4, 2)]);
+  check("a root of 0.25 × the wall passes", low.rules.find((row) => row.rule === "radius")!.pass && !low.flags.some((f) => f.rule === "radius"), JSON.stringify(low.rules));
+  check("a root of 0.5 × the wall passes", high.rules.find((row) => row.rule === "radius")!.pass && !high.flags.some((f) => f.rule === "radius"));
+  const big = mouldingReport([rib([[0, 0, 0], [10, 0, 0]], { profile: "drafted", width: 3, draftDeg: 1, rootRadius: 1.2 }, 4, 2)]);
+  const over = big.flags.find((f) => f.rule === "radius");
+  check("a root of 0.6 × the wall flags over 0.5", over !== undefined && near(over.value, 0.6) && over.threshold === MOULD_ROOT_RADIUS_MAX, JSON.stringify(over));
 }
 
 // Rule 2. Equal to 3 passes.
@@ -108,42 +124,76 @@ const rib = (points: V3[], section: MouldSection, height: number, wall: number, 
   check("filament has no moulding key", !("moulding" in filament));
   check("resin has no moulding key", !("moulding" in resin));
   check("moulded gains the report", moulded.moulding === report);
-  check("no ribs: one pass line naming five rules", mouldingLines(report).join(" ") === "Moulding checks pass (5 rules)");
+  check("no ribs: one pass line naming six rules", mouldingLines(report).join(" ") === "Moulding checks pass (6 rules)");
 }
 
 // The question to answer first. Printed, and only asserted to be computed.
 {
-  console.log("moulded default table: width 0.6 × wall at half height, draft 1°, root half the top at this height");
-  console.log("wall  height  width  root  root/wall  over 0.6  junction/wall  over 1.2");
+  console.log("moulded default table: base is the flanks at the wall, fillet left out; radius is the root; junction is the circle");
+  console.log("wall  height  width  base  base/wall  over 0.6  radius  radius/wall  junction/wall  over 1.2");
   const rows = [2, 3].flatMap((wall) => [1, 2, 3].map((n) => mouldedDefaultRow(wall, n)));
   for (const row of rows) {
-    const overRoot = row.rootRatio === null ? "" : (row.rootRatio - MOULD_ROOT_RATIO).toFixed(4);
+    const overBase = row.baseRatio === null ? "" : (row.baseRatio - MOULD_ROOT_RATIO).toFixed(4);
     const overJoint = row.junctionRatio === null ? "" : (row.junctionRatio - MOULD_JUNCTION_RATIO).toFixed(4);
-    console.log([row.wall, row.height, row.width.toFixed(4), row.root === null ? "refused" : row.root.toFixed(4), row.rootRatio === null ? "refused" : row.rootRatio.toFixed(4), overRoot, row.junctionRatio === null ? "refused" : row.junctionRatio.toFixed(4), overJoint].join("  "));
+    console.log([row.wall, row.height, row.width.toFixed(4), row.base === null ? "refused" : row.base.toFixed(4), row.baseRatio === null ? "refused" : row.baseRatio.toFixed(4), overBase, row.radius === null ? "refused" : row.radius.toFixed(4), row.radiusRatio === null ? "refused" : row.radiusRatio.toFixed(4), row.junctionRatio === null ? "refused" : row.junctionRatio.toFixed(4), overJoint].join("  "));
   }
-  check("the six default rows are computed", rows.length === 6 && rows.every((row) => row.root !== null && row.root > 0 && row.rootRatio !== null && Number.isFinite(row.rootRatio) && row.junctionRatio !== null && Number.isFinite(row.junctionRatio)));
+  // The measured ratios, to four decimals. This locks the measurement; it does not ask the default to pass.
+  const measured: [number, number, number, number, number][] = [
+    [2, 2, 0.6175, 0.2913, 1.2332],
+    [2, 4, 0.6349, 0.2825, 1.2358],
+    [2, 6, 0.6524, 0.2738, 1.2381],
+    [3, 3, 0.6175, 0.2913, 1.2244],
+    [3, 6, 0.6349, 0.2825, 1.2272],
+    [3, 9, 0.6524, 0.2738, 1.2341],
+  ];
+  check(
+    "the six default rows match the measured base, radius and junction ratios",
+    rows.length === 6 && rows.every((row, i) => {
+      const want = measured[i]!;
+      return row.wall === want[0] && row.height === want[1] && row.baseRatio !== null && near(row.baseRatio, want[2], 5e-5) && row.radiusRatio !== null && near(row.radiusRatio, want[3], 5e-5) && row.junctionRatio !== null && near(row.junctionRatio, want[4], 5e-5);
+    }),
+    JSON.stringify(rows),
+  );
   console.log("same default, fillet sized once at 3 × wall (what the planner stores) and measured at the shorter height");
-  console.log("wall  height  filletAt  root  root/wall  junction/wall");
+  console.log("wall  height  filletAt  base/wall  radius/wall  junction/wall");
   const planned = [2, 3].flatMap((wall) => [1, 2, 3].map((n) => mouldedDefaultRow(wall, n, 3)));
   for (const row of planned) {
-    console.log([row.wall, row.height, row.filletAt, row.root === null ? "refused" : row.root.toFixed(4), row.rootRatio === null ? "refused" : row.rootRatio.toFixed(4), row.junctionRatio === null ? "refused" : row.junctionRatio.toFixed(4)].join("  "));
+    console.log([row.wall, row.height, row.filletAt, row.baseRatio === null ? "refused" : row.baseRatio.toFixed(4), row.radiusRatio === null ? "refused" : row.radiusRatio.toFixed(4), row.junctionRatio === null ? "refused" : row.junctionRatio.toFixed(4)].join("  "));
   }
-  check("the planner-fillet rows are computed", planned.length === 6 && planned.every((row) => row.rootRatio !== null && Number.isFinite(row.rootRatio) && row.junctionRatio !== null && Number.isFinite(row.junctionRatio)));
+  check("the planner-fillet rows are computed", planned.length === 6 && planned.every((row) => row.baseRatio !== null && Number.isFinite(row.baseRatio) && row.radiusRatio !== null && Number.isFinite(row.radiusRatio) && row.junctionRatio !== null && Number.isFinite(row.junctionRatio)));
 }
 
-// A thinner drafted rib than the default: the panel's all-pass case. Not a change to the default.
+// A drafted rib on a 2 mm wall, 6 mm tall. The product root (half the top) cannot pass: base ≤ 0.6 and
+// radius ≥ 0.25 ask for widths that do not overlap. A chosen root at the 0.25 floor can.
 {
-  const section = defaultDraftedSection(0.55, 6);
-  const mk = (points: V3[]): MouldRib => ({
-    points,
-    heights: [6],
-    sections: [section],
-    normals: points.map(() => up),
-    wallMm: points.map(() => 2),
-  });
-  const report = mouldingReport([mk([[-40, 0, 0], [40, 0, 0]]), mk([[0, -30, 0], [0, 30, 0]]), mk([[-40, 12.7, 0], [40, 12.7, 0]])]);
-  check("0.55 mm drafted, 6 mm tall on a 2 mm wall, passes all five rules with a crossing and a neighbour", report.rules.every((row) => row.pass) && report.flags.length === 0, JSON.stringify(report));
-  check("the pass line names the five rules", mouldingLines(report)[0] === "Moulding checks pass (5 rules)");
+  const tall = 6;
+  const measured = (report: ReturnType<typeof mouldingReport>) => report.rules.find((row) => row.rule === "base")!.worst !== null;
+  const passes = (report: ReturnType<typeof mouldingReport>) => measured(report) && report.flags.length === 0 && report.rules.every((row) => row.pass);
+  const one = (section: MouldSection) => mouldingReport([rib([[0, 0, 0], [40, 0, 0]], section, tall, 2)]);
+  const scene = (section: MouldSection) => {
+    const mk = (points: V3[]): MouldRib => ({ points, heights: [tall], sections: [section], normals: points.map(() => up), wallMm: points.map(() => 2) });
+    return mouldingReport([mk([[-40, 0, 0], [40, 0, 0]]), mk([[0, -30, 0], [0, 30, 0]]), mk([[-40, 12.7, 0], [40, 12.7, 0]])]);
+  };
+  const product = (width: number) => defaultDraftedSection(width, tall);
+  const chosen = (width: number, rootRadius: number): MouldSection => ({ profile: "drafted", width, draftDeg: 1, rootRadius });
+  let productOne = 0;
+  let productCross = 0;
+  for (let i = 20; i <= 200; i += 1) {
+    const width = i / 100;
+    if (passes(one(product(width)))) productOne += 1;
+    if (passes(scene(product(width)))) productCross += 1;
+  }
+  console.log(`product root at 6 mm on a 2 mm wall: ${productOne} single-rib widths pass, ${productCross} widths pass with a 90° crossing`);
+  const thin = one(product(0.55));
+  const thinRadius = thin.rules.find((row) => row.rule === "radius")!;
+  check("0.55 mm with the product root does not pass: its root is under 0.25 × the wall", thinRadius.pass === false && thinRadius.worst !== null && thinRadius.worst < MOULD_ROOT_RADIUS_MIN && near(thinRadius.worst, 0.1113, 5e-4), JSON.stringify(thin.rules));
+  check("no product-root width at 6 mm passes, alone or crossing another rib", productOne === 0 && productCross === 0);
+  check("1.062 mm drafted at 1°, root 0.5 mm, passes every rule on its own", passes(one(chosen(1.062, 0.5))));
+  const thicker = one(chosen(1.063, 0.5));
+  check("1.063 mm is the next thousandth and flags the junction over 1.2", thicker.flags.some((flag) => flag.rule === "junction" && flag.value > MOULD_JUNCTION_RATIO), JSON.stringify(thicker.flags));
+  check("0.623 mm drafted at 1°, root 0.5 mm, still passes with a 90° crossing and a neighbour", passes(scene(chosen(0.623, 0.5))));
+  const crowded = scene(chosen(0.624, 0.5));
+  check("0.624 mm with that crossing flags the junction over 1.2", crowded.flags.some((flag) => flag.rule === "junction" && flag.value > MOULD_JUNCTION_RATIO), JSON.stringify(crowded.flags));
 }
 
 if (failed) {

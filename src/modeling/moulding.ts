@@ -14,8 +14,11 @@ import { ribShape, type RibProfile, type RibShape } from "./rib-net.ts";
 type V3 = [number, number, number];
 type P2 = [number, number];
 
-/** Root thickness over the local wall. Flag above this (sink marks). */
+/** Base thickness, where the flanks meet the wall, over the local wall. The root fillet is not part of it. Flag above this (sink marks). */
 export const MOULD_ROOT_RATIO = 0.6;
+/** Root radius over the local wall. Flag outside this band: a fillet that is too small or too big. */
+export const MOULD_ROOT_RADIUS_MIN = 0.25;
+export const MOULD_ROOT_RADIUS_MAX = 0.5;
 /** Rib height over the local wall. Flag above this. */
 export const MOULD_HEIGHT_WALLS = 3;
 /** Draft of a flank along the pull, degrees. Flag under this. */
@@ -25,8 +28,8 @@ export const MOULD_JUNCTION_RATIO = 1.2;
 /** Clear gap between parallel ribs, in wall thicknesses (the mould steel between them). Flag under this. */
 export const MOULD_SPACING_WALLS = 2;
 
-/** The five rules, in the order the report lists them. An undercut is a flag of the draft rule, not a sixth rule. */
-export const MOULD_RULES = ["root", "height", "draft", "junction", "spacing"] as const;
+/** The rules, in the order the report lists them. An undercut is a flag of the draft rule, not its own rule. */
+export const MOULD_RULES = ["base", "radius", "height", "draft", "junction", "spacing"] as const;
 export type MouldRuleId = (typeof MOULD_RULES)[number];
 export type MouldFlagRule = MouldRuleId | "undercut";
 
@@ -71,7 +74,8 @@ export interface MouldFlag {
 
 export interface MouldRule {
   rule: MouldRuleId;
-  threshold: number;
+  /** One limit, or the two ends of a band (root radius). */
+  threshold: number | [number, number];
   /** The worst number for the rule, or null when the plan has nothing it applies to. */
   worst: number | null;
   pass: boolean;
@@ -130,8 +134,26 @@ function shapeOf(section: MouldSection, height: number): { shape: RibShape; prof
 }
 
 /**
- * Thickness where the rib meets the wall: the widest point of the outline within the fillet's height.
- * A drafted fillet's foot is that point; a straight rib is its own width.
+ * Thickness at the base, where the flanks meet the wall, with the root fillet left out.
+ * A drafted flank hits the wall at half-width `width/2 + height·tan(draft)/2`; a straight flank at `width/2`.
+ * The fillet's extra material is the junction circle (rule 4) and the root radius, not this number.
+ */
+export function baseWidth(section: MouldSection, height: number): number | null {
+  const built = shapeOf(section, height);
+  if (!built) return null;
+  const t = Math.tan((built.profile.draftDeg * Math.PI) / 180);
+  return built.profile.width + height * t;
+}
+
+/** The root radius the section is built with, mm. Straight is 0 unless one was given. */
+export function builtRootRadius(section: MouldSection, height: number): number | null {
+  const built = shapeOf(section, height);
+  return built ? built.profile.rootRadius : null;
+}
+
+/**
+ * Width of the foot on the wall, fillet included: the widest point of the outline within the fillet's height.
+ * Spacing uses it (the mould steel is thinnest there). Rule 1 does not.
  */
 export function rootWidth(section: MouldSection, height: number): number | null {
   const built = shapeOf(section, height);
@@ -245,7 +267,12 @@ interface Stretch {
   height: number;
   section: MouldSection;
   wall: number;
-  root: number;
+  /** Base width, flanks at the wall, fillet left out. */
+  base: number;
+  /** Root radius the section is built with, mm. */
+  radius: number;
+  /** Foot width, fillet included, for the steel between parallel ribs. */
+  foot: number;
 }
 
 function stretchesOf(ribs: readonly MouldRib[]): Stretch[] {
@@ -263,9 +290,11 @@ function stretchesOf(ribs: readonly MouldRib[]): Stretch[] {
       const wb = rib.wallMm[i + 1] ?? wa;
       const wall = Math.min(wa > 0 ? wa : Infinity, wb > 0 ? wb : Infinity);
       if (!(height > 0) || !(section.width > 0) || !(wall > 0) || wall === Infinity) continue;
-      const root = rootWidth(section, height);
-      if (root === null) continue;
-      out.push({ rib: ribIndex, stretch: i, a, b, dir, normal, height, section, wall, root });
+      const base = baseWidth(section, height);
+      const radius = builtRootRadius(section, height);
+      const foot = rootWidth(section, height);
+      if (base === null || radius === null || foot === null) continue;
+      out.push({ rib: ribIndex, stretch: i, a, b, dir, normal, height, section, wall, base, radius, foot });
     }
   });
   return out;
@@ -310,8 +339,13 @@ function closest(a0: V3, a1: V3, b0: V3, b1: V3): { dist: number; pa: V3; pb: V3
 
 const mid = (a: V3, b: V3): V3 => mul(add(a, b), 0.5);
 
-function rule(id: MouldRuleId, threshold: number, worst: number | null, pass: boolean): MouldRule {
+function rule(id: MouldRuleId, threshold: number | [number, number], worst: number | null, pass: boolean): MouldRule {
   return { rule: id, threshold, worst: worst === null ? null : q4(worst), pass };
+}
+
+/** How far a root-radius ratio sits inside the band. Negative when it is outside. */
+function radiusMargin(ratio: number): number {
+  return Math.min(ratio - MOULD_ROOT_RADIUS_MIN, MOULD_ROOT_RADIUS_MAX - ratio);
 }
 
 /**
@@ -321,11 +355,14 @@ function rule(id: MouldRuleId, threshold: number, worst: number | null, pass: bo
 export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): MouldingReport {
   const stretches = stretchesOf(ribs);
   const flags: MouldFlag[] = [];
-  let rootWorst: number | null = null;
+  let baseWorst: number | null = null;
+  let radiusWorst: number | null = null;
+  let radiusWorstMargin = Infinity;
   let heightWorst: number | null = null;
   let draftWorst: number | null = null;
   let junctionWorst: number | null = null;
-  const rootOf = new Map<number, { value: number; at: MouldAt }>();
+  const baseOf = new Map<number, { value: number; at: MouldAt }>();
+  const radiusOf = new Map<number, { value: number; at: MouldAt }>();
   const heightOf = new Map<number, { value: number; at: MouldAt }>();
   const draftOf = new Map<number, { value: number; at: MouldAt }>();
   const underOf = new Map<number, { value: number; at: MouldAt }>();
@@ -338,9 +375,16 @@ export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): Mou
 
   for (const s of stretches) {
     const at: MouldAt = { stretch: s.stretch, point: r4(mid(s.a, s.b)) };
-    const rootRatio = s.root / s.wall;
-    if (rootWorst === null || rootRatio > rootWorst) rootWorst = rootRatio;
-    keep(rootOf, s.rib, rootRatio, at, (a, b) => a > b);
+    const baseRatio = s.base / s.wall;
+    if (baseWorst === null || baseRatio > baseWorst) baseWorst = baseRatio;
+    keep(baseOf, s.rib, baseRatio, at, (a, b) => a > b);
+    const radiusRatio = s.radius / s.wall;
+    const margin = radiusMargin(radiusRatio);
+    if (margin < radiusWorstMargin) {
+      radiusWorstMargin = margin;
+      radiusWorst = radiusRatio;
+    }
+    keep(radiusOf, s.rib, radiusRatio, at, (a, b) => radiusMargin(a) < radiusMargin(b));
     const heightRatio = s.height / s.wall;
     if (heightWorst === null || heightRatio > heightWorst) heightWorst = heightRatio;
     keep(heightOf, s.rib, heightRatio, at, (a, b) => a > b);
@@ -372,7 +416,7 @@ export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): Mou
       if (parallel) {
         const overlap = overlapLen(p, q);
         if (overlap < 1) continue;
-        const gap = hit.dist - p.root / 2 - q.root / 2;
+        const gap = hit.dist - p.foot / 2 - q.foot / 2;
         const wall = Math.min(p.wall, q.wall);
         const ratio = Math.max(0, gap) / wall;
         if (spacingWorst === null || ratio < spacingWorst) spacingWorst = ratio;
@@ -383,7 +427,7 @@ export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): Mou
         }
         continue;
       }
-      const touch = p.root / 2 + q.root / 2 + 0.5;
+      const touch = p.foot / 2 + q.foot / 2 + 0.5;
       if (hit.dist > touch) continue;
       const psi = (angle * Math.PI) / 180 / 2;
       const scale = 1 / Math.sin(psi);
@@ -402,7 +446,11 @@ export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): Mou
   const push = (ruleId: MouldFlagRule, rib: number, row: { value: number; at: MouldAt }, threshold: number) => {
     flags.push({ rule: ruleId, rib, at: row.at, value: q4(row.value), threshold });
   };
-  for (const [rib, row] of rootOf) if (row.value > MOULD_ROOT_RATIO) push("root", rib, row, MOULD_ROOT_RATIO);
+  for (const [rib, row] of baseOf) if (row.value > MOULD_ROOT_RATIO) push("base", rib, row, MOULD_ROOT_RATIO);
+  for (const [rib, row] of radiusOf) {
+    if (row.value < MOULD_ROOT_RADIUS_MIN) push("radius", rib, row, MOULD_ROOT_RADIUS_MIN);
+    else if (row.value > MOULD_ROOT_RADIUS_MAX) push("radius", rib, row, MOULD_ROOT_RADIUS_MAX);
+  }
   for (const [rib, row] of heightOf) if (row.value > MOULD_HEIGHT_WALLS) push("height", rib, row, MOULD_HEIGHT_WALLS);
   for (const [rib, row] of draftOf) push("draft", rib, row, MOULD_MIN_DRAFT_DEG);
   for (const [rib, row] of underOf) push("undercut", rib, row, 0);
@@ -412,7 +460,8 @@ export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): Mou
   flags.sort((a, b) => a.rib - b.rib || a.rule.localeCompare(b.rule) || a.at.stretch - b.at.stretch);
   return {
     rules: [
-      rule("root", MOULD_ROOT_RATIO, rootWorst, rootWorst === null || rootWorst <= MOULD_ROOT_RATIO),
+      rule("base", MOULD_ROOT_RATIO, baseWorst, baseWorst === null || baseWorst <= MOULD_ROOT_RATIO),
+      rule("radius", [MOULD_ROOT_RADIUS_MIN, MOULD_ROOT_RADIUS_MAX], radiusWorst, radiusWorst === null || radiusWorstMargin >= -1e-9),
       rule("height", MOULD_HEIGHT_WALLS, heightWorst, heightWorst === null || heightWorst <= MOULD_HEIGHT_WALLS),
       rule("draft", MOULD_MIN_DRAFT_DEG, draftWorst, draftWorst === null || draftWorst >= MOULD_MIN_DRAFT_DEG),
       rule("junction", MOULD_JUNCTION_RATIO, junctionWorst, junctionWorst === null || junctionWorst <= MOULD_JUNCTION_RATIO),
@@ -439,7 +488,8 @@ const fmt = (n: number) => {
 function flagLine(flag: MouldFlag): string {
   const where = flag.at.joint === "crossing" ? `, crossing rib ${flag.at.meets! + 1}` : flag.at.joint === "tee" ? `, tee with rib ${flag.at.meets! + 1}` : flag.rule === "spacing" && flag.at.meets !== undefined ? `, beside rib ${flag.at.meets + 1}` : `, stretch ${flag.at.stretch + 1}`;
   const rib = `Rib ${flag.rib + 1}${where}`;
-  if (flag.rule === "root") return `${rib}: root ${fmt(flag.value)} × the wall, over ${fmt(flag.threshold)}`;
+  if (flag.rule === "base") return `${rib}: base ${fmt(flag.value)} × the wall, over ${fmt(flag.threshold)}`;
+  if (flag.rule === "radius") return `${rib}: root radius ${fmt(flag.value)} × the wall, ${flag.value < MOULD_ROOT_RADIUS_MIN ? "under" : "over"} ${fmt(flag.threshold)}`;
   if (flag.rule === "height") return `${rib}: height ${fmt(flag.value)} × the wall, over ${fmt(flag.threshold)}`;
   if (flag.rule === "draft") return `${rib}: draft ${fmt(flag.value)}°, under ${fmt(flag.threshold)}°`;
   if (flag.rule === "undercut") return `${rib}: flank faces against the pull (draft ${fmt(flag.value)}°)`;
@@ -461,14 +511,19 @@ export interface DefaultRow {
   /** Fillet sized at this height, mm (the height `default_drafted` was given). */
   filletAt: number;
   width: number;
-  root: number | null;
-  rootRatio: number | null;
+  /** Base width, flanks at the wall, fillet left out. */
+  base: number | null;
+  baseRatio: number | null;
+  /** Root radius the default section is built with. */
+  radius: number | null;
+  radiusRatio: number | null;
   junctionRatio: number | null;
 }
 
 /**
- * Rule 1 and rule 4 for today's moulded default: width 0.6 × the wall at half height, draft 1°, root half the
- * top. `filletAt` sizes that root; the outline is then measured at `height`. The product default is not changed.
+ * Today's moulded default, measured: width 0.6 × the wall at half height, draft 1°, root half the top.
+ * Base is the flanks at the wall, fillet left out. `filletAt` sizes the root; the outline is measured at `height`.
+ * The product default is not changed.
  */
 export function mouldedDefaultRow(wall: number, heightOverWall: number, filletOverWall = heightOverWall): DefaultRow {
   const height = wall * heightOverWall;
@@ -476,7 +531,18 @@ export function mouldedDefaultRow(wall: number, heightOverWall: number, filletOv
   const width = Math.max(0.4, 0.6 * wall);
   const sized = defaultDraftedSection(width, filletAt);
   const section: MouldSection = { ...sized, width };
-  const root = rootWidth(section, height);
+  const base = baseWidth(section, height);
+  const radius = builtRootRadius(section, height);
   const dia = junctionDiameter(section, height, wall);
-  return { wall, height, filletAt, width, root, rootRatio: root === null ? null : root / wall, junctionRatio: dia === null ? null : dia / wall };
+  return {
+    wall,
+    height,
+    filletAt,
+    width,
+    base,
+    baseRatio: base === null ? null : base / wall,
+    radius,
+    radiusRatio: radius === null ? null : radius / wall,
+    junctionRatio: dia === null ? null : dia / wall,
+  };
 }

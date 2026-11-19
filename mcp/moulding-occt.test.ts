@@ -72,7 +72,11 @@ const report = moulded.plan?.moulding as Reply | undefined;
 const rules = (report?.rules ?? []) as Reply[];
 const flags = (report?.flags ?? []) as Reply[];
 const ribs = (moulded.plan?.ribs ?? []) as Reply[];
-check("moulded plan.moulding has the five rules", rules.length === 5 && rules.every((row) => typeof row.rule === "string" && typeof row.threshold === "number" && "pass" in row), JSON.stringify(rules));
+check(
+  "moulded plan.moulding has the six rules, and the radius band is 0.25 to 0.5",
+  rules.length === 6 && rules.every((row) => typeof row.rule === "string" && "pass" in row) && rules.filter((row) => row.rule !== "radius").every((row) => typeof row.threshold === "number") && JSON.stringify(rules.find((row) => row.rule === "radius")?.threshold) === JSON.stringify([0.25, 0.5]),
+  JSON.stringify(rules),
+);
 check(
   "each flag names a real rib, with a number and a threshold",
   flags.every((flag) => Number.isInteger(flag.rib) && flag.rib >= 0 && flag.rib < ribs.length && typeof flag.rule === "string" && flag.at && typeof flag.value === "number" && typeof flag.threshold === "number"),
