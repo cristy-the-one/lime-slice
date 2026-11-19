@@ -45,6 +45,7 @@
 
 mod baseline;
 mod field;
+mod frequency;
 mod loose;
 mod profile;
 mod select;
@@ -205,6 +206,10 @@ pub enum Goal {
     Budget { volume_mm3: f64 },
     /// Keep adding while a rib pays: see [`BALANCED_FLOOR`].
     Balanced,
+    /// The lowest natural frequency, ribbed over bare, at least this.
+    /// A plan has one goal: this does not carry a stiffness target or a
+    /// budget, and a request without it plans as a stiffness goal.
+    Frequency { factor: f64 },
 }
 
 /// Tuning, with defaults that need no changing.
@@ -477,6 +482,21 @@ pub struct RibPlan {
     /// Resin only: the pockets the ribs closed, and the notches that open them.
     /// The reported stiffness is the notched ribs. Absent for filament and moulded.
     pub vents: Option<Venting>,
+    /// Lowest natural frequency, Hz, bare then ribbed, on [`RibPlan::mesh`].
+    /// Absent on a stiffness plan.
+    pub frequency_hz: Option<FrequencyHz>,
+    /// Ribbed over bare lowest frequency. Absent on a stiffness plan.
+    pub frequency_factor: Option<f64>,
+    /// Empty on a stiffness plan. A frequency plan records that the loads
+    /// were not part of the goal.
+    pub notes: Vec<String>,
+}
+
+/// Bare and ribbed lowest natural frequency, Hz.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrequencyHz {
+    pub bare: f64,
+    pub ribbed: f64,
 }
 
 /// Why a rib end was left in mid-wall.
@@ -650,6 +670,9 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     };
     let started = Instant::now();
     check(req)?;
+    if matches!(req.goal, Goal::Frequency { .. }) {
+        return frequency::plan(req, &rep, started);
+    }
     let mut stats = PlanStats {
         input_triangles: req.mesh.triangles.len(),
         ..PlanStats::default()
@@ -697,7 +720,10 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             ribbed: bare,
             stiffness_factor: 1.0,
             case_factors: vec![1.0; bare0.len()],
-            case_deflection_mm: bare0.iter().map(|r| [r.max_deflection, r.max_deflection]).collect(),
+            case_deflection_mm: bare0
+                .iter()
+                .map(|r| [r.max_deflection, r.max_deflection])
+                .collect(),
             worst_trace: Vec::new(),
             goal_met: false,
             thickening: None,
@@ -714,6 +740,9 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 mouse_hole_factor: 1.0,
                 pockets: Vec::new(),
             }),
+            frequency_hz: None,
+            frequency_factor: None,
+            notes: Vec::new(),
         }
     };
     if rep.cancelled() {
@@ -949,6 +978,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
             Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
             Goal::Balanced => outcome.goal_met,
+            // A frequency plan returns before selection.
+            Goal::Frequency { .. } => false,
         };
         // A budget is kept by the clean count too: the ribs cut into the
         // input mesh run through vertices snapped within a tenth of an edge,
@@ -1169,6 +1200,9 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         mesh: clean.mesh,
         stats,
         vents,
+        frequency_hz: None,
+        frequency_factor: None,
+        notes: Vec::new(),
     })
 }
 
@@ -1555,6 +1589,17 @@ fn check(req: &RibPlanRequest) -> Result<(), SimError> {
         }
         Goal::Budget { volume_mm3 } if !(volume_mm3.is_finite() && volume_mm3 >= 0.0) => {
             Err(SimError::new("A budget must not be below zero."))
+        }
+        Goal::Frequency { factor } => {
+            if !(factor.is_finite() && factor >= 1.0) {
+                return Err(SimError::new("A frequency goal must be 1 or more."));
+            }
+            match req.material.density {
+                Some(d) if d.is_finite() && d > 0.0 => Ok(()),
+                _ => Err(SimError::new(
+                    "A frequency goal needs the material's density.",
+                )),
+            }
         }
         _ => Ok(()),
     }
