@@ -1,5 +1,4 @@
 /** How many open edges a plate mesh has, for the object panel's "Close holes" row. Counted once per mesh, off the draw. */
-import { edgeReport } from "../mesh-check.ts";
 
 const counts = new WeakMap<Float32Array, number>();
 /** Past this many triangles the count is not worked out for the panel: it would hold the window up. */
@@ -14,10 +13,13 @@ export function openEdgesOf(sourcePos: Float32Array, counted: () => void): numbe
   if (known !== undefined) return known;
   counts.set(sourcePos, 0);
   if (sourcePos.length <= LIMIT) {
+    // The counting code is loaded here, not with the window's first script.
     setTimeout(() => {
-      const open = edgeReport(sourcePos, 0).open;
-      counts.set(sourcePos, open);
-      if (open > 0) counted();
+      void import("../mesh-check.ts").then(({ edgeReport }) => {
+        const open = edgeReport(sourcePos, 0).open;
+        counts.set(sourcePos, open);
+        if (open > 0) counted();
+      });
     }, 0);
   }
   return 0;

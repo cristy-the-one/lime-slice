@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { closeHoles, edgeReport } from "./mesh-check.ts";
+import { edgeReport } from "./mesh-check.ts";
+import { closeHoles } from "./mesh-holes.ts";
 
 type V = [number, number, number];
 

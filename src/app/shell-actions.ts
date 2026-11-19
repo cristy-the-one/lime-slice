@@ -1,6 +1,5 @@
 /** Turn one object into plate objects: a STEP file's solids, or a mesh's disconnected shells. They keep the bed position they already have. */
 import { placeObject, replaceWithShells, replaceWithSolids, withMendedMesh, type PlateObject, type SolidPiece } from "../plate.ts";
-import { closeHoles } from "../mesh-check.ts";
 import { shellGroups, takeGroups } from "../mesh-shells.ts";
 import { pieceFileName, separateBy, solidNames, stepSolidHint } from "../step-solids.ts";
 import { pushToast } from "../ui/toasts.ts";
@@ -111,7 +110,9 @@ function land(next: typeof state.plate, from: PlateObject, group?: () => void) {
  * Close the holes of `id`'s mesh, or the selection's: one undo step. The object stays where it is; it becomes a mesh,
  * so a STEP's solid and the paint on it go. False when there was nothing to close.
  */
-export function closeObjectHoles(id?: string | null): boolean {
+export async function closeObjectHoles(id?: string | null): Promise<boolean> {
+  // The filling code is loaded on first use: it stays out of what every start of the window reads.
+  const { closeHoles } = await import("../mesh-holes.ts");
   fx.commitModel?.();
   noteEdit();
   syncPlateFromState();

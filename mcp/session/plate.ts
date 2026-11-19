@@ -20,7 +20,7 @@ import { GLOBAL_WORKPLANE, type Workplane } from "../../src/workplane.ts";
 import type { FilamentRecord, PrinterRecord } from "../../src/ui/machine-library.ts";
 import { ProtocolError } from "../engine.ts";
 import { stlBytes } from "../request.ts";
-import { closeHoles } from "../../src/mesh-check.ts";
+import { closeHoles } from "../../src/mesh-holes.ts";
 import { shellGroups, takeGroups } from "../../src/mesh-shells.ts";
 import { matchShellSolids, type SolidBounds } from "../shell-solids.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../../src/step-solids.ts";
