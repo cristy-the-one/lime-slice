@@ -381,12 +381,17 @@ async fn pareto_model(payload: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Reading a large STEP file takes seconds to minutes, so it runs off the window's thread.
 #[tauri::command]
-fn preview_mesh(payload: String) -> Result<String, String> {
-    let req: SliceRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let bytes = base64_decode(&req.data_b64)?;
-    let preview = mesh_preview_tol(&req.filename, &bytes, req.step_tolerance_mm)?;
-    serde_json::to_string(&preview).map_err(|e| e.to_string())
+async fn preview_mesh(payload: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let req: SliceRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let bytes = base64_decode(&req.data_b64)?;
+        let preview = mesh_preview_tol(&req.filename, &bytes, req.step_tolerance_mm)?;
+        serde_json::to_string(&preview).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Open CASCADE work is synchronous. Run it off the UI thread.

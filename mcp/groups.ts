@@ -22,7 +22,7 @@ export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
   supports: { holds: "the sliced support trees: read, prune, and grow", tools: ["support_trees", "support_edit"] },
   plate: {
     holds: "more plate work: duplicate, arrange, split shells, print order, height ranges, modifiers, overrides",
-    tools: ["tandem_pull", "object_duplicate", "plate_arrange", "object_split_shells", "plate_print_order", "range_add", "modifier_add", "overrides_list", "override_remove"],
+    tools: ["tandem_pull", "object_duplicate", "plate_arrange", "object_split_shells", "mesh_close_holes", "plate_print_order", "range_add", "modifier_add", "overrides_list", "override_remove"],
   },
   layers: {
     holds: "the sliced layers and G-code in detail, and layer actions",

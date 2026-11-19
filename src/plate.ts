@@ -759,6 +759,31 @@ export function withPieceMesh(plate: PlateState, id: string, mesh: { fileName: s
   return { ...plate, objects };
 }
 
+/**
+ * Object `id` takes its own mesh mended (`closeHoles`): `sourcePos` in the frame its mesh already had. Where it sits and
+ * its settings stay. Its file becomes an STL of those triangles, so the STEP, the Model tree and the paint, which were
+ * the old mesh's, go.
+ */
+export function withMendedMesh(plate: PlateState, id: string, sourcePos: Float32Array): PlateState | null {
+  const parent = plate.objects.find((obj) => obj.id === id);
+  if (!parent) return null;
+  const fileName = `${parent.fileName.replace(/\.(stl|3mf|step|stp)$/i, "")}.stl`;
+  // The file holds the mesh where the old file had it: the read lowered it by the seat, and the slicer lowers it again.
+  const seat = meshSeat(parent.bytes) ?? 0;
+  const raw = new Float32Array(sourcePos);
+  if (seat !== 0) for (let i = 2; i < raw.length; i += 3) raw[i] = raw[i]! + seat;
+  const bytes = encodeStl(raw, fileName);
+  setMeshSeat(bytes, seat);
+  const objects = plate.objects.map((obj) => {
+    if (obj.id !== id) return obj;
+    const { brep: _brep, modelTree: _tree, ...rest } = obj;
+    const next: PlateObject = { ...rest, fileName, bytes, sourcePos, supportEdits: [], supportPaint: [], seamPaint: [], reinforcement: [] };
+    hold(next);
+    return next;
+  });
+  return { ...plate, objects };
+}
+
 /** Every object's placed triangles, in plate order, so one 3MF mesh can carry the whole plate. */
 export function platePlacedPositions(objects: readonly PlateObject[], bedX: number, bedY: number): Float32Array {
   const parts = objects.map((obj) => placeObject(obj, bedX, bedY).positions);

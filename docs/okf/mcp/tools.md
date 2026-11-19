@@ -288,6 +288,10 @@ After two objects are on the plate. Packs them on the bed. dryRun moves nothing.
 
 After mesh_import of a mesh with separate shells, or a STEP of several solids. Each shell or solid becomes an object. A committed model of several solids gives each object only its own solid, the one whose box is that shell, so a later join, describe, or STEP export sees that solid alone. Then plate_arrange.
 
+### mesh_close_holes
+
+After mesh_import of a mesh that is not closed. Mends cracks where edges meet, removes doubled triangles and loose flaps, then fills every loop of open edges, and replaces the object's mesh with the result. The object keeps its id, name, position and settings. Its paint, support edits, reinforcement and Model solid are dropped, because they belonged to the old triangles. Edges shared by more than two triangles are not mended; nonManifold counts them. maxLoopMm leaves a longer loop open. The reply gives holes, added, removed, openBefore, openAfter, nonManifold, largestLoopMm, skipped and a summary sentence. A mesh with nothing to mend is left unchanged and the reply says so. Then slice_start.
+
 ### plate_print_order
 
 After the plate is placed. together or sequential. A tight pair is named. Then slice_start.

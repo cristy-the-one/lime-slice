@@ -11,6 +11,10 @@
 //! Component definitions are not also emitted at the origin. Open shells, faceted
 //! breps, and AP242 tessellated solids are rejected with a message instead of a panic.
 //!
+//! One exception: a mesh that a converter wrote as STEP (surface shells of flat faces
+//! with straight edges, and no solid) is read facet by facet before either mesher sees
+//! it, open edges and all, as an STL would be.
+//!
 //! Chord tolerance is in millimetres of the part. It is converted into file units
 //! after the length-unit scale is known, and clamped so it stays above truck's
 //! internal 1e-6 floor.
@@ -105,6 +109,8 @@ pub struct StepTimings {
     pub faces: usize,
     pub ear_faces: usize,
     pub triangles: usize,
+    /// Set when the file was a converted mesh in surface shells, read facet by facet: the edges only one facet uses.
+    pub open_edges: Option<usize>,
 }
 
 pub fn load_step(bytes: &[u8], tolerance_mm: f64) -> Result<Mesh, String> {
@@ -116,6 +122,16 @@ pub fn load_step_timed(bytes: &[u8], tolerance_mm: f64) -> Result<(Mesh, StepTim
     let total = Instant::now();
     let mut timings = StepTimings::default();
     let tol_mm = resolve_step_tolerance(tolerance_mm)?;
+    // A converted mesh has no solid for a kernel to find. Its facets are read as they are, as an STL's would be.
+    // Any trouble on the way leaves the file to the usual readers and their messages.
+    if faceted_surfaces(bytes) {
+        if let Ok(mesh) = load_facets(bytes, &mut timings) {
+            timings.triangles = mesh.triangles.len();
+            timings.total_ms = ms_since(total);
+            return Ok((mesh, timings));
+        }
+        timings = StepTimings::default();
+    }
     if let Some((mesher, _)) = MESHER.get() {
         let triangles = mesher(bytes, tol_mm)?;
         if triangles.is_empty() || triangles.iter().flatten().flatten().any(|v| !v.is_finite()) {
@@ -148,7 +164,7 @@ pub fn load_step_timed(bytes: &[u8], tolerance_mm: f64) -> Result<(Mesh, StepTim
     let table = Table::from_data_section(section);
     timings.table_ms = ms_since(table_at);
     let topo = Instant::now();
-    let emits = collect_emits(&entities)?;
+    let emits = collect_emits(&entities, false)?;
     timings.topology_ms = ms_since(topo);
     timings.shells = emits.len();
     // Each shell is independent. Truck already threads the faces of one shell;
@@ -401,9 +417,11 @@ struct World<'a> {
     reps: &'a HashMap<u64, (Vec<u64>, u64)>,
     children: &'a HashMap<u64, Vec<(u64, Option<u64>)>>,
     voids: &'a HashSet<u64>,
+    /// Also take the shells of surface models, open ones included.
+    surfaces: bool,
 }
 
-fn collect_emits(entities: &HashMap<u64, Ent>) -> Result<Vec<Emit>, String> {
+fn collect_emits(entities: &HashMap<u64, Ent>, surfaces: bool) -> Result<Vec<Emit>, String> {
     let mut reps = HashMap::new();
     for (id, ent) in entities {
         if let Some(info) = shape_rep(ent) {
@@ -457,6 +475,7 @@ fn collect_emits(entities: &HashMap<u64, Ent>) -> Result<Vec<Emit>, String> {
         reps: &reps,
         children: &children,
         voids: &voids,
+        surfaces,
     };
     let mut out = Vec::new();
     let mut path = Vec::new();
@@ -465,6 +484,9 @@ fn collect_emits(entities: &HashMap<u64, Ent>) -> Result<Vec<Emit>, String> {
     }
     if !out.is_empty() {
         return Ok(out);
+    }
+    if surfaces {
+        return Err("STEP file has no surface shells".into());
     }
     let mut closed: Vec<u64> = entities
         .iter()
@@ -525,7 +547,7 @@ fn walk(
             }
             continue;
         }
-        for shell in solid_shells(world.entities, *item) {
+        for shell in solid_shells(world.entities, *item, world.surfaces) {
             if world.voids.contains(&shell.id) {
                 continue;
             }
@@ -551,10 +573,19 @@ struct SolidShell {
     flip: bool,
 }
 
-fn solid_shells(entities: &HashMap<u64, Ent>, item: u64) -> Vec<SolidShell> {
+fn solid_shells(entities: &HashMap<u64, Ent>, item: u64, surfaces: bool) -> Vec<SolidShell> {
     let Some(ent) = entities.get(&item) else {
         return Vec::new();
     };
+    if surfaces {
+        if let Some(params) = rec(ent, "SHELL_BASED_SURFACE_MODEL") {
+            let ids = params.get(1).map(refs).unwrap_or_default();
+            return ids.into_iter().map(|id| SolidShell { id, flip: false }).collect();
+        }
+        if has(ent, "OPEN_SHELL") {
+            return vec![SolidShell { id: item, flip: false }];
+        }
+    }
     if let Some(params) = rec(ent, "MANIFOLD_SOLID_BREP") {
         return shell_from(entities, params.get(1), false);
     }
@@ -1779,6 +1810,170 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 fn mul_s(a: [f64; 3], scale: f64) -> [f64; 3] {
     [a[0] * scale, a[1] * scale, a[2] * scale]
+}
+
+/// Whether the file is a mesh a converter wrote as STEP: surface shells of flat faces with straight edges, and no
+/// solid. One pass over the entity names, outside quoted text.
+fn faceted_surfaces(bytes: &[u8]) -> bool {
+    const SOLIDS: [&[u8]; 4] = [
+        b"MANIFOLD_SOLID_BREP",
+        b"BREP_WITH_VOIDS",
+        b"FACETED_BREP",
+        b"TESSELLATED_SOLID",
+    ];
+    const CURVES: [&[u8]; 12] = [
+        b"CIRCLE",
+        b"ELLIPSE",
+        b"HYPERBOLA",
+        b"PARABOLA",
+        b"POLYLINE",
+        b"PCURVE",
+        b"TRIMMED_CURVE",
+        b"COMPOSITE_CURVE",
+        b"OFFSET_CURVE_3D",
+        b"SURFACE_CURVE",
+        b"SEAM_CURVE",
+        b"INTERSECTION_CURVE",
+    ];
+    const QUOTE: u8 = 0x27;
+    let within = |name: &[u8], part: &[u8]| name.windows(part.len()).any(|w| w == part);
+    let mut shells = false;
+    let mut planes = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == QUOTE {
+            i += 1;
+            while i < bytes.len() && bytes[i] != QUOTE {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if !c.is_ascii_uppercase() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && (bytes[i].is_ascii_uppercase() || bytes[i].is_ascii_digit() || bytes[i] == b'_') {
+            i += 1;
+        }
+        let name = &bytes[start..i];
+        while bytes.get(i) == Some(&b' ') {
+            i += 1;
+        }
+        if bytes.get(i) != Some(&b'(') {
+            continue;
+        }
+        if name == b"SHELL_BASED_SURFACE_MODEL" {
+            shells = true;
+        } else if name == b"PLANE" {
+            planes = true;
+        } else if SOLIDS.contains(&name)
+            || CURVES.contains(&name)
+            || name.ends_with(b"_SURFACE")
+            || name.starts_with(b"SURFACE_OF_")
+            || within(name, b"B_SPLINE")
+            || within(name, b"BEZIER")
+        {
+            return false;
+        }
+    }
+    shells && planes
+}
+
+/// The facets of a converted mesh, each flat face cut into triangles along its own corners.
+fn load_facets(bytes: &[u8], timings: &mut StepTimings) -> Result<Mesh, String> {
+    let read = Instant::now();
+    let text = step_text(bytes)?;
+    timings.read_ms = ms_since(read);
+    let parse = Instant::now();
+    let exchange = parser::parse(&text)
+        .map_err(|err| format!("STEP file could not be parsed: {}", brief(&err.to_string())))?;
+    timings.parse_ms = ms_since(parse);
+    let section = exchange.data.first().ok_or("STEP file has no DATA section")?;
+    let index = Instant::now();
+    let entities = index_entities(section);
+    timings.index_ms = ms_since(index);
+    let topo = Instant::now();
+    let emits = collect_emits(&entities, true)?;
+    timings.topology_ms = ms_since(topo);
+    timings.shells = emits.len();
+    let tess = Instant::now();
+    let mut triangles = Vec::new();
+    let mut uses: HashMap<u64, u32> = HashMap::new();
+    for emit in &emits {
+        let flip = emit.flip ^ (emit.xform.det() < 0.0);
+        let before = triangles.len();
+        timings.faces += shell_facets(&entities, emit.shell, &mut uses, &mut triangles)
+            .ok_or("STEP face is not a plain facet")?;
+        for tri in &mut triangles[before..] {
+            *tri = tri.map(|p| emit.xform.apply([p[0] * emit.scale, p[1] * emit.scale, p[2] * emit.scale]));
+            if flip {
+                tri.swap(1, 2);
+            }
+        }
+    }
+    triangles.retain(|tri| finite(tri) && !degenerate(tri));
+    timings.tessellate_ms = ms_since(tess);
+    if triangles.is_empty() {
+        return Err("STEP file tessellated to an empty mesh".into());
+    }
+    timings.open_edges = Some(uses.values().filter(|&&n| n == 1).count());
+    Ok(Mesh { triangles })
+}
+
+/// Adds the triangles of one shell's faces, in file units, counts each edge's uses, and returns the faces read.
+/// `None` when a face is anything but one loop of straight edges.
+fn shell_facets(
+    entities: &HashMap<u64, Ent>,
+    shell: u64,
+    uses: &mut HashMap<u64, u32>,
+    out: &mut Vec<[[f64; 3]; 3]>,
+) -> Option<usize> {
+    let ent = entities.get(&shell)?;
+    let faces = rec(ent, "OPEN_SHELL").or_else(|| rec(ent, "CLOSED_SHELL"))?.get(1).map(refs)?;
+    for face in &faces {
+        let params = rec(entities.get(face)?, "ADVANCED_FACE")?;
+        let [bound] = refs(params.get(1)?)[..] else {
+            return None;
+        };
+        let same_sense = params.get(3).and_then(as_bool).unwrap_or(true);
+        let ent = entities.get(&bound)?;
+        let params = rec(ent, "FACE_BOUND").or_else(|| rec(ent, "FACE_OUTER_BOUND"))?;
+        let forward = params.get(2).and_then(as_bool).unwrap_or(true);
+        let edge_loop = entities.get(&as_entity(params.get(1)?)?)?;
+        let mut ring: Vec<[f64; 3]> = Vec::new();
+        for oriented in refs(rec(edge_loop, "EDGE_LOOP")?.get(1)?) {
+            let params = rec(entities.get(&oriented)?, "ORIENTED_EDGE")?;
+            let edge = as_entity(params.get(3)?)?;
+            let along = params.get(4).and_then(as_bool).unwrap_or(true);
+            let params = rec(entities.get(&edge)?, "EDGE_CURVE")?;
+            let start = as_entity(params.get(if along { 1 } else { 2 })?)?;
+            let vertex = rec(entities.get(&start)?, "VERTEX_POINT")?;
+            let point = point_of(entities, as_entity(vertex.get(1)?)?, 1.0)?;
+            *uses.entry(edge).or_default() += 1;
+            if ring.last() != Some(&point) {
+                ring.push(point);
+            }
+        }
+        if ring.len() > 1 && ring.first() == ring.last() {
+            ring.pop();
+        }
+        if flat_loop(&ring) {
+            continue;
+        }
+        if !forward {
+            ring.reverse();
+        }
+        for mut tri in ear_clip(&ring) {
+            if !same_sense {
+                tri.swap(1, 2);
+            }
+            out.push(tri);
+        }
+    }
+    Some(faces.len())
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ import { GLOBAL_WORKPLANE, type Workplane } from "../../src/workplane.ts";
 import type { FilamentRecord, PrinterRecord } from "../../src/ui/machine-library.ts";
 import { ProtocolError } from "../engine.ts";
 import { stlBytes } from "../request.ts";
+import { closeHoles } from "../../src/mesh-holes.ts";
 import { shellGroups, takeGroups } from "../../src/mesh-shells.ts";
 import { matchShellSolids, type SolidBounds } from "../shell-solids.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../../src/step-solids.ts";
@@ -762,6 +763,45 @@ async function splitShells(this: Session, id: string): Promise<Record<string, un
   return { ok: true, objects: made, shells: pieces.length, label: "Separate shells" };
 }
 
+/** Closes the holes of one object's mesh. The mended triangles replace its mesh in the frame it already has, so its pose and settings hold. */
+async function closeMeshHoles(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const obj = typeof input.object === "string" ? this.find(input.object) : this.selectedObject();
+  if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+  const maxLoopMm = input.maxLoopMm;
+  if (maxLoopMm !== undefined && (typeof maxLoopMm !== "number" || !Number.isFinite(maxLoopMm) || maxLoopMm <= 0)) {
+    return refuse("bad-argument", "maxLoopMm is the longest loop to fill, in mm, and must be a number above 0.");
+  }
+  const { positions, report } = closeHoles(obj.source, typeof maxLoopMm === "number" ? { maxLoopMm } : {});
+  const identity = { object: obj.id, name: obj.name, ...report };
+  if (report.holes === 0 && report.removed === 0) {
+    return { ok: true, ...identity, changed: false, summary: report.openBefore > 0 ? `Nothing was changed. ${report.openBefore} edges are open and no loop could be filled.` : "Nothing was changed. The mesh has no holes." };
+  }
+  this.remember("Close holes");
+  const fileName = `${obj.fileName.replace(/\.(stl|3mf|step|stp)$/i, "") || obj.name}.stl`;
+  obj.source = positions;
+  obj.bytes = stlBytes(positions, fileName);
+  obj.fileName = fileName;
+  obj.triangles = positions.length / 9;
+  // The old triangles, and the STEP solid they came from, no longer describe this mesh.
+  obj.tree = null;
+  obj.solid = null;
+  obj.probes = new Map();
+  obj.platedNode = null;
+  delete obj.brep;
+  delete obj.treeStale;
+  delete obj.commitWarning;
+  obj.supportEdits = [];
+  obj.supportPaint = [];
+  obj.seamPaint = [];
+  obj.reinforcement = [];
+  const parts: string[] = [];
+  if (report.holes > 0) parts.push(`Closed ${report.holes} hole${report.holes === 1 ? "" : "s"} with ${report.added} triangle${report.added === 1 ? "" : "s"}.`);
+  if (report.removed > 0) parts.push(`Removed ${report.removed} doubled or loose triangle${report.removed === 1 ? "" : "s"}.`);
+  parts.push(report.openAfter === 0 ? "No edges are open." : `${report.openAfter} edge${report.openAfter === 1 ? " is" : "s are"} still open.`);
+  if (report.nonManifold > 0) parts.push(`${report.nonManifold} edges are shared by more than two triangles and were not mended.`);
+  return { ok: true, ...identity, changed: true, label: "Close holes", summary: parts.join(" ") };
+}
+
 function asBed(this: Session, obj: PlateObject): SliceObject {
   return {
     id: obj.id,
@@ -897,6 +937,7 @@ export const plateMethods = {
   shellSolids,
   keepShellSolid,
   splitShells,
+  closeMeshHoles,
   asBed,
   plateArrange,
   plateCollisions,
@@ -913,6 +954,7 @@ export const plateHandlers: Record<string, ToolHandler> = {
   object_remove: (s, input) => (Array.isArray(input.objects) ? (input.object !== undefined ? refuse("conflicting-arguments", "object_remove takes object or objects, not both.") : s.objectRemove(input.objects.map(String))) : typeof input.object === "string" ? s.objectRemove(input.object) : refuse("missing-argument", "object_remove needs object, or objects for several.")),
   object_duplicate: (s, input) => s.objectDuplicate(input),
   object_split_shells: (s, input) => s.splitShells(String(input.object)),
+  mesh_close_holes: (s, input) => s.closeMeshHoles(input),
   plate_arrange: (s, input) => s.plateArrange(input),
   plate_print_order: (s, input) => s.printOrderSet(input),
 };
