@@ -17,6 +17,7 @@ import { filamentCost, filamentGrams, velocityCapWarning } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
 import { featureRows, featureTableMarkup } from "../ui/legend";
 import { shellCount } from "../mesh-shells";
+import { openEdgesOf } from "./hole-count";
 import { separateBy, stepSolidHint } from "../step-solids";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
@@ -767,6 +768,22 @@ export function fitObjectTools() {
 
 if (typeof window !== "undefined") window.addEventListener("resize", () => fitObjectTools());
 
+/** The placement fields drawn again where they stand, when something they show was worked out after the draw. */
+function refreshObjectPlace() {
+  const slot = document.querySelector<HTMLElement>('[data-slot="objectPlace"]');
+  // A field being typed in is left alone: the next draw of the panel shows the row.
+  if (!slot || slot.contains(document.activeElement)) return;
+  slot.innerHTML = objectPlaceHtml();
+}
+
+/** A row to close the holes of the selected mesh, once its open edges have been counted and there are some. */
+function closeHolesHtml(): string {
+  const open = state.sourcePos ? openEdgesOf(state.sourcePos, refreshObjectPlace) : 0;
+  if (open === 0) return "";
+  const tip = `${open} ${open === 1 ? "edge" : "edges"} of this mesh are open: holes the slicer has to guess across. This fills them. The object stays where it is and becomes a mesh.`;
+  return `<div class="separate-row" data-tip="${escapeHtml(tip)}"><button class="btn" id="closeHoles" type="button" aria-label="Close holes">Close holes · ${open} open ${open === 1 ? "edge" : "edges"}</button></div>`;
+}
+
 function separateShellsHtml(): string {
   const mesh = state.mesh;
   const solids = mesh && isStepName(mesh.name) ? stepSolidHint(mesh.bytes) : 0;
@@ -969,6 +986,7 @@ function objectPlaceHtml(): string {
     ${pivotChainHtml(selected)}
     <label class="row setting" data-label="settle on the bed" data-keywords="rest flat contact rotate snap collide" data-tip="While you turn the part with the rotate rings, snap it to the flat face that touches the bed most, near the angle you hold."><span class="row-label">Settle on the bed</span><input id="settleOn" type="checkbox" class="switch" role="switch" ${settleOn() ? "checked" : ""}/></label>
     ${separateShellsHtml()}
+    ${closeHolesHtml()}
     ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label" data-tip="Largest gap between a curved STEP surface and its triangles, in mm">STEP chord</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
   `;
 }

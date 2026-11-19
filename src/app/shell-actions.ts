@@ -1,5 +1,6 @@
 /** Turn one object into plate objects: a STEP file's solids, or a mesh's disconnected shells. They keep the bed position they already have. */
-import { placeObject, replaceWithShells, replaceWithSolids, type PlateObject, type SolidPiece } from "../plate.ts";
+import { placeObject, replaceWithShells, replaceWithSolids, withMendedMesh, type PlateObject, type SolidPiece } from "../plate.ts";
+import { closeHoles } from "../mesh-check.ts";
 import { shellGroups, takeGroups } from "../mesh-shells.ts";
 import { pieceFileName, separateBy, solidNames, stepSolidHint } from "../step-solids.ts";
 import { pushToast } from "../ui/toasts.ts";
@@ -104,6 +105,33 @@ function land(next: typeof state.plate, from: PlateObject, group?: () => void) {
   flushEdit();
   fx.followSelection?.();
   if (painted) pushToast("Paint on this object was cleared.", "info");
+}
+
+/**
+ * Close the holes of `id`'s mesh, or the selection's: one undo step. The object stays where it is; it becomes a mesh,
+ * so a STEP's solid and the paint on it go. False when there was nothing to close.
+ */
+export function closeObjectHoles(id?: string | null): boolean {
+  fx.commitModel?.();
+  noteEdit();
+  syncPlateFromState();
+  const obj = state.plate.objects.find((item) => item.id === (id ?? state.plate.selectedId));
+  if (!obj) {
+    flushEdit();
+    return false;
+  }
+  const { positions, report } = closeHoles(obj.sourcePos);
+  const still = report.openAfter > 0 ? ` ${report.openAfter} ${report.openAfter === 1 ? "edge is" : "edges are"} still open.` : "";
+  const next = report.holes > 0 || report.removed > 0 ? withMendedMesh(state.plate, obj.id, positions) : null;
+  if (!next) {
+    flushEdit();
+    pushToast(report.openBefore === 0 ? `${obj.name} has no open edges.` : `No hole of ${obj.name} could be closed.${still}`, "info");
+    return false;
+  }
+  land(next, obj);
+  const took = report.removed > 0 ? ` ${report.removed} doubled or loose triangles were taken out.` : "";
+  pushToast(`Closed ${report.holes} ${report.holes === 1 ? "hole" : "holes"} in ${obj.name} with ${report.added} ${report.added === 1 ? "triangle" : "triangles"}.${took}${still}`, report.openAfter > 0 ? "warn" : "info");
+  return true;
 }
 
 Object.assign(fx, { separateShells });
