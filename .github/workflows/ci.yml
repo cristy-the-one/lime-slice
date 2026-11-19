@@ -443,6 +443,8 @@ jobs:
           # Folded walls, opt-in: the synthetic cover and open box through ribs_plan {wall.folded:true},
           # against the sliced Stress study (solid infill, six walls).
           node --experimental-strip-types mcp/folded-shell-occt.test.ts
+          # Moulding report on a small synthetic shelled box. Kept here so the shared Open CASCADE job stays within its 25 minutes.
+          node --experimental-strip-types mcp/moulding-occt.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:
