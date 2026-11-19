@@ -69,6 +69,8 @@ export interface AutoRibsCard {
   /** Taken faces clicked off again. */
   excluded: number[];
   justThis: boolean;
+  /** Also take thin faces across a sharp edge. Off unless the panel's box is checked. */
+  folded: boolean;
   amount: Amount;
   holds: StudyHold[];
   /** Today's one load. Empty when `cases` holds two or more. */
@@ -86,7 +88,7 @@ export interface AutoRibsCard {
 }
 
 export function newAutoRibsCard(): AutoRibsCard {
-  return { picked: [], excluded: [], justThis: false, amount: { kind: "slider", stop: 0 }, holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" }, ifMissed: "refuse" };
+  return { picked: [], excluded: [], justThis: false, folded: false, amount: { kind: "slider", stop: 0 }, holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" }, ifMissed: "refuse" };
 }
 
 /** A card read back from a stored row (`auto.panel`), every field checked; null when it is not one. */
@@ -101,6 +103,7 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
     picked: ints(row.picked),
     excluded: ints(row.excluded),
     justThis: row.justThis === true,
+    folded: row.folded === true,
     amount: row.amount && typeof row.amount === "object" ? (row.amount as Amount) : fresh.amount,
     holds: Array.isArray(row.holds) ? row.holds : [],
     loads: Array.isArray(row.loads) ? row.loads : [],
@@ -441,7 +444,8 @@ export function wallLine(report: RibWallReport | null, faces: number): string {
   const t = report.thickness;
   const thick = t.minMm === t.maxMm || Math.abs(t.maxMm - t.minMm) < 0.05 ? `${fmt(t.medianMm, 1)} mm` : `${fmt(t.medianMm, 1)} mm (${fmt(t.minMm, 1)}–${fmt(t.maxMm, 1)})`;
   const n = report.faces.taken.length;
-  return `${n} face${n === 1 ? "" : "s"} · ${fmt(report.areaMm2, 0)} mm² · wall ${thick}`;
+  const side = report.faces.folded?.length ? ", including side walls" : "";
+  return `${n} face${n === 1 ? "" : "s"}${side} · ${fmt(report.areaMm2, 0)} mm² · wall ${thick}`;
 }
 
 /**
