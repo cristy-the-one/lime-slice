@@ -224,6 +224,7 @@ const TOOL_TITLES: Partial<Record<ModelTool, string>> = {
   check: "Check",
   pattern: "Pattern",
   mirror: "Mirror",
+  draft: "Draft",
 };
 
 function toolTitle(next: ModelTool): string {
@@ -1015,6 +1016,9 @@ function toggleTool(next: ModelTool, editing = false) {
   if (next === "shell" && !editing) setShellClosed(false);
   // --- A2 shell: open faces are face picks. ---
   if (next === "shell" && document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
+    document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
+  }
+  if (next === "draft" && document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
     document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
   }
   // Keep the tool object is asked per op: it opens off.
@@ -2037,6 +2041,13 @@ function refreshApply() {
     button.disabled = waiting || !face || distance === 0 || !probeOk || (!!edit && !!hooks?.editUnchanged());
     return;
   }
+  if (tool === "draft") {
+    const angle = num("#modelDraft");
+    const face = picks.some((pick) => pick.kind === "face");
+    const probeOk = !!probe && probe.phase === "done" && probe.ok;
+    button.disabled = waiting || !face || angle === 0 || angle < -30 || angle > 30 || !probeOk || (!!edit && !!hooks?.editUnchanged());
+    return;
+  }
   // --- A5. A step's edges need no pick: Apply waits on that step and the dry-run. ---
   const current = tool;
   const stepBlend = (current === "fillet" || current === "chamfer") && edgeSource === "step";
@@ -2125,6 +2136,14 @@ function refreshNote() {
       bad = status?.bad ?? false;
     }
     // --- end A4 ---
+  } else if (tool === "draft") {
+    if (!picks.some((pick) => pick.kind === "face")) text = "Pick a wall.";
+    else if (num("#modelDraft") === 0) text = "Type an angle. Positive opens the walls toward the pull, so the part releases.";
+    else {
+      const status = probeNote("draft", probe);
+      text = status?.text ?? "";
+      bad = status?.bad ?? false;
+    }
   } else if (tool === "hole" && holePointCount != null) {
     // --- F4. The group is what the kernel checks, so the note is the group's. ---
     const status = probeNote("group", probe);
