@@ -496,7 +496,8 @@ let boxObject = "";
 // ===== 5c. ribs_apply {verify:true} with two load cases. A 64 × 40 × 14 box: four sliced studies on the
 // 120 × 70 box would run this job past its 25 minutes (the one-case study there took about 200 s).
 // The point load is a 20 N force in a box over the middle of the inner floor. A sphere centred on that
-// face (z 2) also covered the outer bottom, and the sliced study then barely moved the floor. =====
+// face (z 2) also covers the outer bottom. The verify study reads the stored place back; if that read
+// drops it, the sliced study loads a sliver at the part's max X and the floor barely moves. =====
 {
   const [sx, sy, sz] = [64, 40, 14];
   const object = await shellBox(sx, sy, sz);

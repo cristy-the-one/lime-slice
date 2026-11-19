@@ -6,6 +6,7 @@ import { oneObjectPlate, revivePlate, snapPlate } from "../plate.ts";
 import { defaultProfile } from "../profiles.ts";
 import { DEFAULT_PRESET } from "../presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject } from "../project.ts";
+import { stressMethods } from "../../mcp/session/stress.ts";
 import { provisionalCards } from "./cards.ts";
 import { LABEL, NOT_HELD } from "./label.ts";
 import { loadArrow } from "./arrow.ts";
@@ -269,6 +270,13 @@ eq("one size says nothing", checkSentence(null), "");
   copy.holds[1]!.faces.push(9);
   eq("a clone shares nothing with its source", read!.holds[1]!.faces, [1, 2]);
   eq("the data module does not import the study module at run time", /^import (?!type).*\.\/study\.ts/m.test(readFileSync(join("src", "sim", "study-data.ts"), "utf8")), false);
+}
+
+// ribs_apply verify reads a stored load back. A place has to survive that read, or the sliced study drops it.
+{
+  const stored = { kind: "force" as const, faces: [] as number[], magnitude: 20, direction: [0, 0, -1] as [number, number, number], place: { box: { min: [-12, -10, 1.2] as [number, number, number], max: [12, 10, 3.2] as [number, number, number] } } };
+  const again = stressMethods.readLoads.call(null as never, [stored]);
+  eq("a stored place is still the load", again, [stored]);
 }
 
 if (failed) {
