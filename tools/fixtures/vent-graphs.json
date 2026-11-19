@@ -1,0 +1,185 @@
+{
+  "widthMm": 2,
+  "minLengthMm": 2,
+  "opening": [0, 0, 1],
+  "cases": [
+    {
+      "name": "square",
+      "ribs": [
+        { "points": [[0, 0, 0], [10, 0, 0]] },
+        { "points": [[10, 0, 0], [10, 10, 0]] },
+        { "points": [[10, 10, 0], [0, 10, 0]] },
+        { "points": [[0, 10, 0], [0, 0, 0]] }
+      ],
+      "builds": [
+        { "axis": [0, 0, 1], "cups": true, "closed": 1, "pockets": [{ "rib": 0, "at": [5, 0, 0], "sizeMm": 0.75 }], "unvented": [] },
+        { "axis": [0, 0, -1], "cups": false, "closed": 1, "pockets": [], "unvented": [] },
+        { "axis": [0.3, 0.2, 0.93], "cups": true, "closed": 1, "pockets": [{ "rib": 0, "at": [5, 0, 0], "sizeMm": 0.75 }], "unvented": [] }
+      ]
+    },
+    {
+      "name": "square with a gap",
+      "ribs": [
+        { "points": [[0, 0, 0], [10, 0, 0]] },
+        { "points": [[10, 0, 0], [10, 10, 0]] },
+        { "points": [[10, 10, 0], [0, 10, 0]] }
+      ],
+      "builds": [
+        { "axis": [0, 0, 1], "cups": true, "closed": 0, "pockets": [], "unvented": [] },
+        { "axis": [0, 0, -1], "cups": false, "closed": 0, "pockets": [], "unvented": [] }
+      ]
+    },
+    {
+      "name": "two squares sharing a rib",
+      "ribs": [
+        { "points": [[0, 0, 0], [10, 0, 0]] },
+        { "points": [[10, 0, 0], [10, 10, 0]] },
+        { "points": [[10, 10, 0], [0, 10, 0]] },
+        { "points": [[0, 10, 0], [0, 0, 0]] },
+        { "points": [[10, 0, 0], [20, 0, 0]] },
+        { "points": [[20, 0, 0], [20, 10, 0]] },
+        { "points": [[20, 10, 0], [10, 10, 0]] }
+      ],
+      "builds": [
+        {
+          "axis": [0, 0, 1],
+          "cups": true,
+          "closed": 2,
+          "pockets": [
+            { "rib": 0, "at": [5, 0, 0], "sizeMm": 0.75 },
+            { "rib": 4, "at": [15, 0, 0], "sizeMm": 0.75 }
+          ],
+          "unvented": []
+        },
+        { "axis": [0, 0, -1], "cups": false, "closed": 2, "pockets": [], "unvented": [] }
+      ]
+    },
+    {
+      "name": "crossed pair in a rising border",
+      "ribs": [
+        { "points": [[0, 10, 0], [20, 10, 0]] },
+        { "points": [[10, 0, 0], [10, 20, 0]] }
+      ],
+      "borders": [
+        { "points": [[0, 0, 0], [20, 0, 0], [20, 20, 0], [0, 20, 0], [0, 0, 0]], "kind": "rises" }
+      ],
+      "builds": [
+        {
+          "axis": [0, 0, 1],
+          "cups": true,
+          "closed": 4,
+          "pockets": [],
+          "unvented": [
+            { "at": [5, 5, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [5, 15, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [15, 5, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [15, 15, 0], "message": "the part itself cups here; ribs cannot vent it" }
+          ]
+        },
+        { "axis": [0, 0, -1], "cups": false, "closed": 4, "pockets": [], "unvented": [] },
+        { "axis": [0.3, 0.2, 0.93], "cups": true, "closed": 4, "pockets": [], "unventedSame": true }
+      ]
+    },
+    {
+      "name": "cell with a through hole",
+      "ribs": [
+        { "points": [[0, 0, 0], [10, 0, 0]] },
+        { "points": [[10, 0, 0], [10, 10, 0]] },
+        { "points": [[10, 10, 0], [0, 10, 0]] },
+        { "points": [[0, 10, 0], [0, 0, 0]] }
+      ],
+      "borders": [
+        { "points": [[4, 4, 0], [6, 4, 0], [6, 6, 0], [4, 6, 0], [4, 4, 0]], "kind": "hole" }
+      ],
+      "builds": [
+        { "axis": [0, 0, 1], "cups": true, "closed": 0, "pockets": [], "unvented": [] },
+        { "axis": [0, 0, -1], "cups": false, "closed": 0, "pockets": [], "unvented": [] }
+      ]
+    },
+    {
+      "name": "loose end",
+      "ribs": [
+        { "points": [[0, 0, 0], [10, 0, 0]], "ends": ["free", "closed"] },
+        { "points": [[10, 0, 0], [10, 10, 0]] },
+        { "points": [[10, 10, 0], [0, 10, 0]] },
+        { "points": [[0, 10, 0], [0, 0, 0]] }
+      ],
+      "builds": [
+        { "axis": [0, 0, 1], "cups": true, "closed": 0, "pockets": [], "unvented": [] },
+        { "axis": [0, 0, -1], "cups": false, "closed": 0, "pockets": [], "unvented": [] }
+      ]
+    },
+    {
+      "name": "open edge",
+      "ribs": [
+        { "points": [[10, 0, 0], [10, 10, 0]] },
+        { "points": [[10, 10, 0], [0, 10, 0]] },
+        { "points": [[0, 10, 0], [0, 0, 0]] }
+      ],
+      "borders": [
+        { "points": [[0, 0, 0], [10, 0, 0]], "kind": "open" }
+      ],
+      "builds": [
+        { "axis": [0, 0, 1], "cups": true, "closed": 0, "pockets": [], "unvented": [] },
+        { "axis": [0, 0, -1], "cups": false, "closed": 0, "pockets": [], "unvented": [] }
+      ]
+    },
+    {
+      "name": "rib ending on a hold",
+      "ribs": [
+        { "points": [[0, 0, 0], [10, 0, 0]], "ends": ["hold", "closed"] },
+        { "points": [[10, 0, 0], [10, 10, 0]] },
+        { "points": [[10, 10, 0], [0, 10, 0]] },
+        { "points": [[0, 10, 0], [0, 0, 0]] }
+      ],
+      "builds": [
+        { "axis": [0, 0, 1], "cups": true, "closed": 1, "pockets": [{ "rib": 0, "at": [5, 0, 0], "sizeMm": 0.75 }], "unvented": [] },
+        { "axis": [0, 0, -1], "cups": false, "closed": 1, "pockets": [], "unvented": [] }
+      ]
+    },
+    {
+      "name": "near-miss end",
+      "ribs": [
+        { "points": [[0, 0, 0], [9.99, 0, 0]] },
+        { "points": [[10, 0, 0], [10, 10, 0]] },
+        { "points": [[10, 10, 0], [0, 10, 0]] },
+        { "points": [[0, 10, 0], [0, 0, 0]] }
+      ],
+      "builds": [
+        { "axis": [0, 0, 1], "cups": true, "closed": 1, "pockets": [{ "rib": 0, "at": [5, 0, 0], "sizeMm": 0.75 }], "unvented": [] },
+        { "axis": [0, 0, -1], "cups": false, "closed": 1, "pockets": [], "unvented": [] }
+      ]
+    },
+    {
+      "name": "stretch too short",
+      "widthMm": 2,
+      "minLengthMm": 2,
+      "ribs": [
+        { "points": [[0, 0, 0], [2, 0, 0]] },
+        { "points": [[2, 0, 0], [2, 2, 0]] },
+        { "points": [[2, 2, 0], [0, 2, 0]] },
+        { "points": [[0, 2, 0], [0, 0, 0]] }
+      ],
+      "builds": [
+        {
+          "axis": [0, 0, 1],
+          "cups": true,
+          "closed": 1,
+          "pockets": [],
+          "unvented": [{ "at": [1, 1, 0], "message": "no boundary rib is long enough for a vent" }]
+        }
+      ]
+    },
+    {
+      "name": "folded overlap",
+      "ribs": [
+        { "points": [[0, 5, 0], [10, 5, 0]] },
+        { "points": [[5, 0, 5], [5, 10, 5]] }
+      ],
+      "builds": [
+        { "axis": [0, 0, 1], "cups": true, "closed": 0, "pockets": [], "unvented": [], "note": true },
+        { "axis": [0, 0, -1], "cups": false, "closed": 0, "pockets": [], "unvented": [], "note": true }
+      ]
+    }
+  ]
+}

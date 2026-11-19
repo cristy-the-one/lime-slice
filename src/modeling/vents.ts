@@ -1,38 +1,56 @@
 /**
- * Vent notches for resin (docs/plan-auto-ribs.md, the resin row). A pocket is a cell of the rib network
- * drawn on the wall, closed all round by ribs or by borders where a side wall stands. It cups when that
- * cell's opening faces the build platform.
+ * Vent notches for resin (docs/plan-auto-ribs.md, the resin row). A pocket is a cell of the rib
+ * network on the wall, closed all round by ribs or by borders where a side wall stands.
  *
- * Formlabs, "Preventing suction cups in PreForm": "Pointing the opening of the cavity face upward in
- * PreForm traps air between the part and the resin tank as the build platform lowers the cavity against
- * the bottom of the resin tank." The opening has to face the platform to cup, and face the tank to drain.
- * Here the build axis points away from the plate, toward where each new layer is laid (the tank side). A
- * pocket cups when its opening points against that axis.
+ * Formlabs, "Preventing suction cups in PreForm": "Pointing the opening of the cavity face upward
+ * in PreForm traps air between the part and the resin tank as the build platform lowers the cavity
+ * against the bottom of the resin tank." The air is trapped between the part and the tank, so the
+ * opening that cups is the one that faces the tank. `buildAxis` points from the platform toward the
+ * tank, the direction each new layer is added. A pocket cups when the side its ribs stand on points
+ * along that axis.
  *
- * The notch is one full-height gap per cupping pocket, `RESIN_VENT_MM` wide. Formlabs, Form 4 design
- * specifications: "Minimum drain hole diameter. Recommended: 0.75 mm/750 micron diameter." The printer
- * record has no XY pixel, so the gap is that figure and is not rounded. A root hole under a continuous
- * rib top is not a ribNet section (a height is the whole stretch), so the notch is a gap in the run.
+ * The notch is one full-height gap per cupping pocket, {@link RESIN_VENT_MM} wide, at the middle of
+ * a rib stretch it shares with a cell that drains. Formlabs, Form 4 design specifications: "Minimum
+ * drain hole diameter. Recommended: 0.75 mm/750 micron diameter." A root hole under a continuous rib
+ * top is not a ribNet section: a height is the whole stretch, and the shortest height is 0.1 mm.
  *
- * The arrangement is the ribs' chords projected onto the plane of the opening. A flat wall is that plane.
- * A curved wall is read by its chords, not by a geodesic arrangement.
+ * A wall whose chords, projected along the opening, cross while staying apart in space is a fold.
+ * Side-wall ribs would land on floor ribs, so venting is left undone and the note says so.
  */
+import { turnDir, type Affine } from "../model-space.ts";
 
 /** Formlabs' minimum drain hole, mm. Form 4 design specifications, "Minimum drain hole diameter". */
 export const RESIN_VENT_MM = 0.75;
 
-export type V3 = readonly [number, number, number];
-export type EndKind = "closed" | "free";
+/** A cupping cell that can only reach cells walled in by side walls. */
+export const PART_CUPS = "the part itself cups here; ribs cannot vent it";
 
-/** One rib run. A free end drains every cell that touches it. Omitted ends are closed. */
+/** A cupping cell has a way out, but no boundary rib can hold the gap. */
+export const TOO_SHORT = "no boundary rib is long enough for a vent";
+
+/** Projection of a folded wall overlaps itself. */
+export const FOLDED_NOTE = "This wall's projection overlaps itself, so a rib on one face would land on a rib on another. Venting is left undone.";
+
+/** Resin, and the caller did not give a build axis. */
+export const NO_RESIN_PRINTER = "The plate has no resin printer, so the build direction is the part as it sits, +Z.";
+
+/** Resin, and the caller gave a build axis. */
+export const GIVEN_AXIS = "Build direction is the one given, in the plate frame, turned into the wall's frame.";
+
+export type V3 = readonly [number, number, number];
+export type EndKind = "closed" | "free" | "hold" | "gap";
+
+/** One rib run. A free end drains the cell. A hold or a gap end does not. Omitted ends are closed. */
 export interface VentRib {
   points: readonly V3[];
   ends?: readonly [EndKind, EndKind];
+  /** Rib width, mm. Ends within half of this of another rib or a border are joined. */
+  widthMm?: number;
 }
 
 /**
- * A wall border in the same drawing. `rises` is a side wall, and it closes a cell. `open` is the part's
- * edge. `hole` is a hole in the wall. Neither closes a cell.
+ * A wall border in the same drawing. `rises` is a side wall, and it closes a cell. `open` is the
+ * part's edge. `hole` is a through hole. An open edge or a hole drains the cell.
  */
 export interface VentBorder {
   points: readonly V3[];
@@ -44,10 +62,12 @@ export interface VentInput {
   borders?: readonly VentBorder[];
   /** The side the ribs stand on. */
   opening: V3;
-  /** Away from the plate, toward the tank. Default +Z. */
+  /** From the platform toward the tank. Default +Z. */
   buildAxis?: V3;
   /** The printer's XY pixel, mm. Absent: the vent is exactly {@link RESIN_VENT_MM}. */
   pixelMm?: number;
+  /** Shortest rib piece a notch may leave, mm. */
+  minLengthMm?: number;
 }
 
 /** One notch: the rib it cuts, the point the gap is centred on, and the gap. */
@@ -57,18 +77,48 @@ export interface VentPocket {
   sizeMm: number;
 }
 
-export interface VentReport {
-  /** The opening faces the build platform, so a closed cell cups. */
-  cups: boolean;
-  pockets: VentPocket[];
-  sizeMm: number;
+export interface VentUnvented {
+  at: [number, number, number];
+  message: string;
 }
+
+export interface VentReport {
+  /** The ribs' side points along the build axis, so a closed cell cups. */
+  cups: boolean;
+  /** Geometrically sealed cells, whether or not the direction cups. */
+  closed: number;
+  pockets: VentPocket[];
+  unvented: VentUnvented[];
+  sizeMm: number;
+  note?: string;
+}
+
+/** One run of a wall loop, already in the wall frame. */
+export interface VentLoopSpan {
+  class: "joined" | "free";
+  from: V3;
+  to: V3;
+  /** The run, corner by corner. A closed loop of one class ends where it starts; `from` and `to` are then the same point. */
+  points?: readonly V3[];
+}
+
+/** A wall loop. `hole` is every loop but the longest, which is the outer border. */
+export interface VentLoop {
+  hole: boolean;
+  spans: readonly VentLoopSpan[];
+}
+
+export type RibProcessName = "filament" | "resin" | "moulded";
+
+const WELD = 1e-4;
+const AREA = 1e-3;
+const CUP = 1e-6;
+/** A projected crossing whose 3D ends stay this far apart is a fold, not a joint. */
+const OVERLAP_MM = 1;
+const CLEAR_EXTRA = 0.5;
 
 type Kind = "rib" | "rises" | "open" | "hole";
 type V2 = [number, number];
-
-const SNAP = 1e-4;
-const AREA = 1e-3;
 
 const sub = (a: V3, b: V3): [number, number, number] => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -83,6 +133,7 @@ const dist2 = (a: V2, b: V2) => {
   const y = a[1] - b[1];
   return x * x + y * y;
 };
+const lerp3 = (a: V3, b: V3, t: number): [number, number, number] => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 
 /** Area-weighted normal of a wall mesh. The side the ribs stand on, before the rib side flips it. */
 export function meshOpening(vertices: readonly (readonly number[])[], triangles: readonly (readonly number[])[]): [number, number, number] | null {
@@ -108,13 +159,79 @@ export function ventSizeMm(pixelMm?: number): number {
   return Math.ceil((RESIN_VENT_MM - 1e-9) / pixelMm) * pixelMm;
 }
 
+/**
+ * The resin fields of a rib-plan request. The panel and `ribs_plan` both call this, so the same wall
+ * asks for the same pockets. `plateAxis` is in the plate frame (omitted: +Z, the part as it sits);
+ * it is turned into the wall frame by the plate orientation and the pose, and the printer's own
+ * direction is not used. Filament and moulded get nothing.
+ */
+export function ventBodyOf(process: RibProcessName, frame: { orient: readonly number[]; pose: Affine }, loops: readonly VentLoop[], plateAxis?: V3 | null): { vent: true; buildAxis: [number, number, number]; borders: VentBorder[] } | Record<string, never> {
+  if (process !== "resin") return {};
+  return { vent: true, buildAxis: plateToWall(frame.orient, frame.pose, plateAxis ?? [0, 0, 1]), borders: bordersOf(loops) };
+}
+
+/** Plate-frame direction into the wall frame: the plate axes are the rows of `orient`, then the pose. */
+export function plateToWall(orient: readonly number[], pose: Affine, plateAxis: V3): [number, number, number] {
+  const row = (k: number): V3 => [orient[3 * k] ?? 0, orient[3 * k + 1] ?? 0, orient[3 * k + 2] ?? 0];
+  const [x, y, z] = [row(0), row(1), row(2)];
+  const inPart: [number, number, number] = [
+    plateAxis[0] * x[0] + plateAxis[1] * y[0] + plateAxis[2] * z[0],
+    plateAxis[0] * x[1] + plateAxis[1] * y[1] + plateAxis[2] * z[1],
+    plateAxis[0] * x[2] + plateAxis[1] * y[2] + plateAxis[2] * z[2],
+  ];
+  const turned = turnDir(pose, inPart);
+  return [turned[0], turned[1], turned[2]];
+}
+
+function spanPoints(span: VentLoopSpan): [number, number, number][] {
+  const source = span.points && span.points.length >= 2 ? span.points : [span.from, span.to];
+  const out: [number, number, number][] = [];
+  for (const p of source) {
+    const last = out[out.length - 1];
+    if (!last || last[0] !== p[0] || last[1] !== p[1] || last[2] !== p[2]) out.push([p[0], p[1], p[2]]);
+  }
+  return out;
+}
+
+function bordersOf(loops: readonly VentLoop[]): VentBorder[] {
+  const out: VentBorder[] = [];
+  for (const loop of loops) {
+    if (loop.spans.length === 0) continue;
+    if (loop.hole) {
+      const points: [number, number, number][] = [];
+      for (const span of loop.spans) {
+        for (const p of spanPoints(span)) {
+          const last = points[points.length - 1];
+          if (!last || last[0] !== p[0] || last[1] !== p[1] || last[2] !== p[2]) points.push(p);
+        }
+      }
+      const first = points[0];
+      const last = points[points.length - 1];
+      if (first && last && (first[0] !== last[0] || first[1] !== last[1] || first[2] !== last[2])) points.push([first[0], first[1], first[2]]);
+      if (points.length >= 2) out.push({ points, kind: "hole" });
+      continue;
+    }
+    for (const span of loop.spans) {
+      const points = spanPoints(span);
+      if (points.length < 2) continue;
+      out.push({ points, kind: span.class === "joined" ? "rises" : "open" });
+    }
+  }
+  return out;
+}
+
 interface Seg {
   a: V2;
   b: V2;
+  a3: [number, number, number];
+  b3: [number, number, number];
   kind: Kind;
   rib: number;
   looseA: boolean;
   looseB: boolean;
+  gapA: boolean;
+  gapB: boolean;
+  width: number;
 }
 
 interface Half {
@@ -125,24 +242,136 @@ interface Half {
   rib: number;
 }
 
-/** Closed cells that cup, and one vent each. No pockets when the opening faces the tank. */
+interface Edge {
+  a: number;
+  b: number;
+  kind: Kind;
+  rib: number;
+  a3: [number, number, number];
+  b3: [number, number, number];
+  width: number;
+}
+
+interface Face {
+  id: number;
+  halves: Half[];
+  ring: number[];
+  open: boolean;
+  sealed: boolean;
+  at2: V2;
+  at3: [number, number, number];
+}
+
+interface Link {
+  face: number;
+  edge: number;
+  rib: number;
+}
+
+/** Closed cells, and one vent each for the cupping cells that can drain through a notch. */
 export function ventPockets(input: VentInput): VentReport {
   const sizeMm = ventSizeMm(input.pixelMm);
+  const minLength = input.minLengthMm ?? 0;
   const opening = unit(input.opening);
   const build = unit(input.buildAxis ?? [0, 0, 1]);
-  if (!opening || !build) return { cups: false, pockets: [], sizeMm };
-  // The platform is behind the build axis. An opening that points that way faces the platform.
-  const cups = dot(opening, build) < -1e-6;
-  if (!cups) return { cups: false, pockets: [], sizeMm };
-  const pockets = closedPockets(input, opening, build, sizeMm);
-  return { cups: true, pockets, sizeMm };
+  const empty = (cups: boolean, note?: string): VentReport => ({ cups, closed: 0, pockets: [], unvented: [], sizeMm, ...(note ? { note } : {}) });
+  if (!opening || !build) return empty(false);
+  const cups = dot(opening, build) > CUP;
+  const axis = Math.abs(opening[0]) < 0.9 ? ([1, 0, 0] as const) : ([0, 1, 0] as const);
+  const u = unit(cross(axis, opening));
+  if (!u) return empty(cups);
+  const v = cross(opening, u);
+  const origin = firstPoint(input) ?? [0, 0, 0];
+  const project = (p: V3): V2 => {
+    const d = sub(p, origin);
+    return [dot(d, u), dot(d, v)];
+  };
+  const segs: Seg[] = [];
+  const push = (points: readonly V3[], kind: Kind, rib: number, looseA: boolean, looseB: boolean, gapA: boolean, gapB: boolean, width: number) => {
+    for (let i = 1; i < points.length; i += 1) {
+      const p = points[i - 1]!;
+      const q = points[i]!;
+      const a3: [number, number, number] = [p[0], p[1], p[2]];
+      const b3: [number, number, number] = [q[0], q[1], q[2]];
+      const a = project(a3);
+      const b = project(b3);
+      if (dist2(a, b) < WELD * WELD) continue;
+      segs.push({ a, b, a3, b3, kind, rib, looseA: i === 1 && looseA, looseB: i === points.length - 1 && looseB, gapA: i === 1 && gapA, gapB: i === points.length - 1 && gapB, width });
+    }
+  };
+  input.ribs.forEach((rib, i) => push(rib.points, "rib", i, rib.ends?.[0] === "free", rib.ends?.[1] === "free", rib.ends?.[0] === "gap", rib.ends?.[1] === "gap", rib.widthMm ?? 0));
+  for (const border of input.borders ?? []) push(border.points, border.kind, -1, false, false, false, false, 0);
+  if (segs.length === 0) return empty(cups);
+  if (selfOverlaps(segs)) return empty(cups, FOLDED_NOTE);
+  joinEnds(segs);
+  const pieces = splitSegs(segs);
+  const built = buildGraph(pieces);
+  if (!built) return empty(cups);
+  const faces = walkFaces(built);
+  markHoles(faces, built);
+  drainThroughGaps(faces, built);
+  const sealed = faces.filter((face) => face.sealed);
+  if (!cups) return { cups: false, closed: sealed.length, pockets: [], unvented: [], sizeMm };
+  const adj = adjacency(faces, built.edges);
+  const openIds = faces.filter((face) => face.open).map((face) => face.id);
+  const reach = reachable(openIds, adj);
+  const parent = new Map<number, Link>();
+  const seen = new Set(openIds);
+  const order: number[] = [];
+  const queue = [...openIds];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    const links = [...(adj[id] ?? [])].sort((a, b) => a.rib - b.rib || a.edge - b.edge);
+    for (const link of links) {
+      if (seen.has(link.face)) continue;
+      seen.add(link.face);
+      parent.set(link.face, { face: id, edge: link.edge, rib: link.rib });
+      order.push(link.face);
+      queue.push(link.face);
+    }
+  }
+  const draining = new Set(openIds);
+  const vented = new Set<number>();
+  const pockets: VentPocket[] = [];
+  const taken: { rib: number; at: V2 }[] = [];
+  const gaps = new Map<number, [number, number][]>();
+  for (const id of order) {
+    if (!sealed.some((face) => face.id === id)) continue;
+    const pref = parent.get(id);
+    const links = [...(adj[id] ?? [])].filter((link) => draining.has(link.face)).sort((a, b) => a.rib - b.rib || a.edge - b.edge);
+    if (pref && draining.has(pref.face)) {
+      const at = links.findIndex((link) => link.edge === pref.edge && link.face === pref.face);
+      if (at > 0) links.unshift(links.splice(at, 1)[0]!);
+    }
+    for (const link of links) {
+      const placed = placeNotch(built, link, sizeMm, minLength, taken, gaps);
+      if (!placed) continue;
+      pockets.push({ rib: placed.rib, at: placed.at, sizeMm });
+      taken.push({ rib: placed.rib, at: placed.flat });
+      const list = gaps.get(placed.rib) ?? [];
+      list.push(placed.span);
+      gaps.set(placed.rib, list);
+      draining.add(id);
+      vented.add(id);
+      break;
+    }
+  }
+  const unvented: VentUnvented[] = [];
+  for (const face of sealed) {
+    if (!reach.has(face.id)) unvented.push({ at: face.at3, message: PART_CUPS });
+    else if (!vented.has(face.id)) unvented.push({ at: face.at3, message: TOO_SHORT });
+  }
+  unvented.sort((a, b) => a.at[0] - b.at[0] || a.at[1] - b.at[1] || a.at[2] - b.at[2]);
+  pockets.sort((a, b) => a.rib - b.rib || a.at[0] - b.at[0] || a.at[1] - b.at[1]);
+  return { cups: true, closed: sealed.length, pockets, unvented, sizeMm };
 }
 
 /**
- * Cut each vent out of its rib. A vent is a gap of its size, centred on `at`, kept off the rib's ends
- * when the rib is long enough. Gap ends are free. Pieces shorter than the snap are dropped.
+ * Cut each vent out of its rib. The gap is centred on `at`. Its new ends are gaps: they open only
+ * into the cell on the other side of the rib, and a later read must not treat them as loose ends.
+ * A cut that would leave a piece shorter than `minLengthMm` is not made.
  */
-export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket[]): VentRib[] {
+export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket[], minLengthMm = 0): VentRib[] {
   const cuts = new Map<number, V3[]>();
   for (const pocket of pockets) {
     const list = cuts.get(pocket.rib) ?? [];
@@ -153,70 +382,102 @@ export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket
   ribs.forEach((rib, i) => {
     const at = cuts.get(i);
     if (!at?.length) {
-      out.push({ points: rib.points.map((p) => [p[0], p[1], p[2]]), ...(rib.ends ? { ends: rib.ends } : {}) });
+      out.push({ points: rib.points.map((p) => [p[0], p[1], p[2]]), ...(rib.ends ? { ends: [rib.ends[0], rib.ends[1]] as [EndKind, EndKind] } : {}), ...(rib.widthMm !== undefined ? { widthMm: rib.widthMm } : {}) });
       return;
     }
-    out.push(...splitRib(rib, at, pockets.find((p) => p.rib === i)?.sizeMm ?? RESIN_VENT_MM));
+    out.push(...splitRib(rib, at, pockets.find((p) => p.rib === i)?.sizeMm ?? RESIN_VENT_MM, minLengthMm));
   });
   return out;
 }
 
-function closedPockets(input: VentInput, opening: [number, number, number], build: [number, number, number], sizeMm: number): VentPocket[] {
-  const axis = Math.abs(opening[0]) < 0.9 ? ([1, 0, 0] as const) : ([0, 1, 0] as const);
-  const u = unit(cross(axis, opening));
-  if (!u) return [];
-  const v = cross(opening, u);
-  const origin = firstPoint(input) ?? [0, 0, 0];
-  const project = (p: V3): V2 => {
-    const d = sub(p, origin);
-    return [dot(d, u), dot(d, v)];
-  };
-  const lift = (q: V2): [number, number, number] => [origin[0] + q[0] * u[0] + q[1] * v[0], origin[1] + q[0] * u[1] + q[1] * v[1], origin[2] + q[0] * u[2] + q[1] * v[2]];
-  const segs: Seg[] = [];
-  const push = (points: readonly V3[], kind: Kind, rib: number, looseA: boolean, looseB: boolean) => {
-    for (let i = 1; i < points.length; i += 1) {
-      const a = project(points[i - 1]!);
-      const b = project(points[i]!);
-      if (dist2(a, b) < SNAP * SNAP) continue;
-      const last = i === points.length - 1;
-      segs.push({ a, b, kind, rib, looseA: i === 1 && looseA, looseB: last && looseB });
+function selfOverlaps(segs: Seg[]): boolean {
+  for (let i = 0; i < segs.length; i += 1) {
+    for (let j = i + 1; j < segs.length; j += 1) {
+      const hit = intersect(segs[i]!, segs[j]!);
+      if (!hit) continue;
+      if (hit.t <= 1e-6 && hit.u <= 1e-6) continue;
+      if (hit.t <= 1e-6 && hit.u >= 1 - 1e-6) continue;
+      if (hit.t >= 1 - 1e-6 && hit.u <= 1e-6) continue;
+      if (hit.t >= 1 - 1e-6 && hit.u >= 1 - 1e-6) continue;
+      const p = lerp3(segs[i]!.a3, segs[i]!.b3, hit.t);
+      const q = lerp3(segs[j]!.a3, segs[j]!.b3, hit.u);
+      if (len(sub(p, q)) > OVERLAP_MM) return true;
+    }
+  }
+  return false;
+}
+
+/** An end that stops within half its rib's width of another rib or a border is extended onto it. */
+function joinEnds(segs: Seg[]): void {
+  const move = (seg: Seg, atStart: boolean, q: V2, q3: [number, number, number]) => {
+    if (atStart) {
+      seg.a = q;
+      seg.a3 = q3;
+    } else {
+      seg.b = q;
+      seg.b3 = q3;
     }
   };
-  input.ribs.forEach((rib, i) => push(rib.points, "rib", i, rib.ends?.[0] === "free", rib.ends?.[1] === "free"));
-  for (const border of input.borders ?? []) push(border.points, border.kind, -1, false, false);
-  const pieces = splitSegs(segs);
-  if (pieces.length === 0) return [];
-  const keyOf = (q: V2) => `${Math.round(q[0] / SNAP)}:${Math.round(q[1] / SNAP)}`;
+  for (let i = 0; i < segs.length; i += 1) {
+    if (segs[i]!.kind !== "rib") continue;
+    const reach = segs[i]!.width / 2;
+    if (!(reach > WELD)) continue;
+    for (const atStart of [true, false]) {
+      const p = atStart ? segs[i]!.a : segs[i]!.b;
+      let best: { d: number; q: V2; q3: [number, number, number] } | null = null;
+      for (let j = 0; j < segs.length; j += 1) {
+        if (j === i) continue;
+        const other = segs[j]!;
+        const hit = closest(p, other.a, other.b);
+        if (hit.d > reach || hit.d <= WELD) continue;
+        if (!best || hit.d < best.d) best = { d: hit.d, q: hit.q, q3: lerp3(other.a3, other.b3, hit.t) };
+      }
+      if (best) move(segs[i]!, atStart, best.q, best.q3);
+    }
+  }
+}
+
+function closest(p: V2, a: V2, b: V2): { q: V2; d: number; t: number } {
+  const abx = b[0] - a[0];
+  const aby = b[1] - a[1];
+  const ab2 = abx * abx + aby * aby;
+  const t = ab2 < 1e-18 ? 0 : Math.min(1, Math.max(0, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / ab2));
+  const q: V2 = [a[0] + abx * t, a[1] + aby * t];
+  return { q, d: Math.hypot(p[0] - q[0], p[1] - q[1]), t };
+}
+
+function buildGraph(pieces: Seg[]): { xy: V2[]; xyz: [number, number, number][]; edges: Edge[]; loose: Set<number>; gap: Set<number>; out: Half[][] } | null {
+  if (pieces.length === 0) return null;
+  const keyOf = (q: V2) => `${Math.round(q[0] / WELD)}:${Math.round(q[1] / WELD)}`;
   const xy: V2[] = [];
+  const xyz: [number, number, number][] = [];
   const idOf = new Map<string, number>();
-  const vid = (q: V2) => {
+  const vid = (q: V2, q3: [number, number, number]) => {
     const key = keyOf(q);
     const had = idOf.get(key);
     if (had !== undefined) return had;
     const id = xy.length;
     xy.push(q);
+    xyz.push(q3);
     idOf.set(key, id);
     return id;
   };
   const loose = new Set<number>();
-  interface Edge {
-    a: number;
-    b: number;
-    kind: Kind;
-    rib: number;
-  }
+  const gap = new Set<number>();
   const edges: Edge[] = [];
   const seenEdge = new Set<string>();
   for (const seg of pieces) {
-    const a = vid(seg.a);
-    const b = vid(seg.b);
+    const a = vid(seg.a, seg.a3);
+    const b = vid(seg.b, seg.b3);
     if (a === b) continue;
     if (seg.looseA) loose.add(a);
     if (seg.looseB) loose.add(b);
-    const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+    if (seg.gapA) gap.add(a);
+    if (seg.gapB) gap.add(b);
+    const key = a < b ? `${a}:${b}:${seg.kind}:${seg.rib}` : `${b}:${a}:${seg.kind}:${seg.rib}`;
     if (seenEdge.has(key)) continue;
     seenEdge.add(key);
-    edges.push({ a, b, kind: seg.kind, rib: seg.rib });
+    edges.push({ a, b, kind: seg.kind, rib: seg.rib, a3: xyz[a]!, b3: xyz[b]!, width: seg.width });
   }
   const out: Half[][] = xy.map(() => []);
   edges.forEach((edge, i) => {
@@ -225,88 +486,252 @@ function closedPockets(input: VentInput, opening: [number, number, number], buil
   });
   const ang = (h: Half) => Math.atan2(xy[h.to]![1] - xy[h.from]![1], xy[h.to]![0] - xy[h.from]![0]);
   for (const list of out) list.sort((p, q) => ang(p) - ang(q) || p.edge - q.edge);
+  return { xy, xyz, edges, loose, gap, out };
+}
+
+/** A gap opens only the two cells on either side of that rib, and only into each other. */
+function drainThroughGaps(faces: Face[], built: { edges: Edge[]; gap: Set<number> }): void {
+  const users: number[][] = built.edges.map(() => []);
+  for (const face of faces) {
+    const seen = new Set<number>();
+    for (const half of face.halves) {
+      if (seen.has(half.edge)) continue;
+      seen.add(half.edge);
+      users[half.edge]!.push(face.id);
+    }
+  }
+  const adj: number[][] = faces.map(() => []);
+  built.edges.forEach((edge, index) => {
+    if (!built.gap.has(edge.a) && !built.gap.has(edge.b)) return;
+    const ids = [...new Set(users[index] ?? [])];
+    for (const a of ids) {
+      for (const b of ids) {
+        if (a !== b) adj[a]!.push(b);
+      }
+    }
+  });
+  const open = new Set(faces.filter((face) => face.open).map((face) => face.id));
+  const queue = [...open];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const next of adj[id] ?? []) {
+      if (open.has(next)) continue;
+      open.add(next);
+      queue.push(next);
+    }
+  }
+  for (const face of faces) {
+    if (!open.has(face.id) || !face.sealed) continue;
+    face.sealed = false;
+    face.open = true;
+  }
+}
+
+function walkFaces(built: { xy: V2[]; xyz: [number, number, number][]; edges: Edge[]; loose: Set<number>; out: Half[][] }): Face[] {
+  const { xy, xyz, loose, out } = built;
   const nextOf = (h: Half): Half => {
-    const list = out[h.to]!;
+    const list = out[h.to] ?? [];
     let i = list.findIndex((row) => row.edge === h.edge);
     if (i < 0) i = 0;
     return list[(i - 1 + list.length) % list.length]!;
   };
   const used = new Set<string>();
-  const pockets: VentPocket[] = [];
-  const taken: { rib: number; at: V2 }[] = [];
+  const faces: Face[] = [];
   for (const list of out) {
     for (const start of list) {
       const startKey = `${start.from}:${start.edge}`;
       if (used.has(startKey)) continue;
-      const face: Half[] = [];
+      const halves: Half[] = [];
       let h = start;
       let guard = 0;
       let closed = false;
-      while (guard++ < edges.length * 2 + 4) {
+      while (guard++ < built.edges.length * 2 + 4) {
         const key = `${h.from}:${h.edge}`;
         if (used.has(key)) break;
         used.add(key);
-        face.push(h);
+        halves.push(h);
         h = nextOf(h);
         if (h.from === start.from && h.edge === start.edge) {
           closed = true;
           break;
         }
       }
-      if (!closed || face.length < 3) continue;
+      if (!closed || halves.length < 3) continue;
       let area = 0;
-      for (const row of face) {
+      for (const row of halves) {
         const p = xy[row.from]!;
         const q = xy[row.to]!;
         area += p[0] * q[1] - q[0] * p[1];
       }
-      if (area < AREA) continue;
-      if (face.some((row) => row.kind !== "rib" && row.kind !== "rises")) continue;
-      if (face.some((row) => loose.has(row.from))) continue;
-      const vent = chooseVent(face, xy, build, u, v, origin, sizeMm, taken);
-      if (!vent) continue;
-      taken.push({ rib: vent.rib, at: vent.flat });
-      pockets.push({ rib: vent.rib, at: lift(vent.flat), sizeMm });
+      if (Math.abs(area) < AREA) continue;
+      const ring = halves.map((row) => row.from);
+      let sx = 0;
+      let sy = 0;
+      const at3: [number, number, number] = [0, 0, 0];
+      for (const id of ring) {
+        sx += xy[id]![0];
+        sy += xy[id]![1];
+        at3[0] += xyz[id]![0];
+        at3[1] += xyz[id]![1];
+        at3[2] += xyz[id]![2];
+      }
+      const n = ring.length;
+      at3[0] /= n;
+      at3[1] /= n;
+      at3[2] /= n;
+      const bounded = area > 0;
+      const drains = halves.some((row) => row.kind === "open" || row.kind === "hole") || halves.some((row) => loose.has(row.from));
+      const wall = halves.every((row) => row.kind === "rib" || row.kind === "rises");
+      faces.push({
+        id: faces.length,
+        halves,
+        ring,
+        open: !bounded || drains || !wall,
+        sealed: bounded && wall && !drains,
+        at2: [sx / n, sy / n],
+        at3,
+      });
     }
   }
-  return pockets;
+  return faces;
 }
 
-function chooseVent(face: Half[], xy: V2[], build: V3, u: V3, v: V3, origin: V3, sizeMm: number, taken: { rib: number; at: V2 }[]): { rib: number; flat: V2 } | null {
-  const drain = (q: V2) => {
-    const p = [origin[0] + q[0] * u[0] + q[1] * v[0], origin[1] + q[0] * u[1] + q[1] * v[1], origin[2] + q[0] * u[2] + q[1] * v[2]] as const;
-    return dot(p, build);
-  };
-  const rows = face
-    .filter((row) => row.kind === "rib" && row.rib >= 0)
-    .map((row) => {
-      const a = xy[row.from]!;
-      const b = xy[row.to]!;
-      const span = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      return { row, a, b, span, low: Math.min(drain(a), drain(b)) };
-    })
-    .sort((p, q) => p.low - q.low || q.span - p.span || p.row.rib - q.row.rib || p.row.edge - q.row.edge);
-  for (const row of rows) {
-    const flat = place(row.a, row.b, drain, sizeMm);
-    if (taken.some((cut) => cut.rib === row.row.rib && Math.hypot(cut.at[0] - flat[0], cut.at[1] - flat[1]) < sizeMm)) continue;
-    return { rib: row.row.rib, flat };
+/** A through hole lying inside a sealed cell drains that cell. The hole loop itself is not a pocket. */
+function markHoles(faces: Face[], built: { xy: V2[]; edges: Edge[] }): void {
+  const holes = faces.filter((face) => face.halves.every((row) => row.kind === "hole") && face.halves.length >= 3);
+  for (const hole of holes) {
+    const q = hole.at2;
+    for (const face of faces) {
+      if (!face.sealed || face.id === hole.id) continue;
+      if (inside(face.ring.map((id) => built.xy[id]!), q)) {
+        face.sealed = false;
+        face.open = true;
+      }
+    }
   }
-  return null;
 }
 
-/** The notch centre: the low end of the edge, held inside it by half the gap. A level edge uses its middle. */
-function place(a: V2, b: V2, drain: (q: V2) => number, sizeMm: number): V2 {
-  const span = Math.hypot(b[0] - a[0], b[1] - a[1]);
-  const mid: V2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-  if (span < 1e-9) return mid;
-  const da = drain(a);
-  const db = drain(b);
-  if (Math.abs(da - db) < 1e-6) return mid;
-  const low = da < db ? a : b;
-  const high = da < db ? b : a;
-  const inset = Math.min(span / 2, sizeMm / 2 + 0.05);
-  const t = inset / span;
-  return [low[0] + (high[0] - low[0]) * t, low[1] + (high[1] - low[1]) * t];
+function inside(poly: V2[], q: V2): boolean {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i += 1) {
+    const pi = poly[i]!;
+    const pj = poly[j]!;
+    if (pi[1] > q[1] !== pj[1] > q[1] && q[0] < ((pj[0] - pi[0]) * (q[1] - pi[1])) / (pj[1] - pi[1] + 0) + pi[0]) c = !c;
+  }
+  return c;
+}
+
+function adjacency(faces: Face[], edges: Edge[]): Link[][] {
+  const users: number[][] = edges.map(() => []);
+  for (const face of faces) {
+    const seen = new Set<number>();
+    for (const half of face.halves) {
+      if (seen.has(half.edge)) continue;
+      seen.add(half.edge);
+      users[half.edge]!.push(face.id);
+    }
+  }
+  const adj: Link[][] = faces.map(() => []);
+  users.forEach((ids, edge) => {
+    const rib = edges[edge]!.rib;
+    if (rib < 0 || edges[edge]!.kind !== "rib") return;
+    const unique = [...new Set(ids)];
+    if (unique.length < 2) return;
+    for (const a of unique) {
+      for (const b of unique) {
+        if (a === b) continue;
+        adj[a]!.push({ face: b, edge, rib });
+      }
+    }
+  });
+  return adj;
+}
+
+function reachable(roots: number[], adj: Link[][]): Set<number> {
+  const seen = new Set(roots);
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const link of adj[id] ?? []) {
+      if (seen.has(link.face)) continue;
+      seen.add(link.face);
+      queue.push(link.face);
+    }
+  }
+  return seen;
+}
+
+function placeNotch(built: { xy: V2[]; edges: Edge[] }, link: Link, sizeMm: number, minLength: number, taken: { rib: number; at: V2 }[], gaps: Map<number, [number, number][]>): { rib: number; at: [number, number, number]; flat: V2; span: [number, number] } | null {
+  const edge = built.edges[link.edge];
+  if (!edge || edge.rib < 0) return null;
+  const span = Math.hypot(edge.b3[0] - edge.a3[0], edge.b3[1] - edge.a3[1], edge.b3[2] - edge.a3[2]);
+  const clear = edge.width / 2 + CLEAR_EXTRA;
+  // The gap sits at the middle, so each end of the stretch stays half a width plus 0.5 mm clear of it.
+  if (span / 2 - sizeMm / 2 < clear - 1e-6) return null;
+  const at = lerp3(edge.a3, edge.b3, 0.5);
+  const pa = built.xy[edge.a]!;
+  const pb = built.xy[edge.b]!;
+  const flat: V2 = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2];
+  if (taken.some((cut) => cut.rib === edge.rib && Math.hypot(cut.at[0] - flat[0], cut.at[1] - flat[1]) < sizeMm)) return null;
+  const total = built.edges.filter((row) => row.rib === edge.rib).reduce((sum, row) => sum + Math.hypot(row.b3[0] - row.a3[0], row.b3[1] - row.a3[1], row.b3[2] - row.a3[2]), 0);
+  const s = arcTo(built.edges, link.edge) + span / 2;
+  const lo = s - sizeMm / 2;
+  const hi = s + sizeMm / 2;
+  const existing = gaps.get(edge.rib) ?? [];
+  if (!piecesFit(total, [...existing, [lo, hi]], minLength)) return null;
+  return { rib: edge.rib, at, flat, span: [lo, hi] };
+}
+
+function arcTo(edges: Edge[], index: number): number {
+  const rib = edges[index]!.rib;
+  const ofRib = edges.map((row, i) => ({ row, i })).filter((item) => item.row.rib === rib);
+  if (ofRib.length === 1) return 0;
+  const byVert = new Map<string, { i: number; length: number }[]>();
+  const key = (p: [number, number, number]) => `${Math.round(p[0] / WELD)}:${Math.round(p[1] / WELD)}:${Math.round(p[2] / WELD)}`;
+  for (const item of ofRib) {
+    const length = Math.hypot(item.row.b3[0] - item.row.a3[0], item.row.b3[1] - item.row.a3[1], item.row.b3[2] - item.row.a3[2]);
+    for (const p of [item.row.a3, item.row.b3]) {
+      const list = byVert.get(key(p)) ?? [];
+      list.push({ i: item.i, length });
+      byVert.set(key(p), list);
+    }
+  }
+  // A vertex used once is an end of the rib. Walk from the end with the smaller key so the
+  // parameter is stable, and measure up to this edge.
+  const ends: string[] = [];
+  for (const [k, list] of byVert) if (list.length === 1) ends.push(k);
+  ends.sort();
+  const start = ends[0];
+  if (!start) return 0;
+  let cursor = start;
+  let run = 0;
+  const seen = new Set<number>();
+  for (let guard = 0; guard < ofRib.length + 2; guard += 1) {
+    const next = (byVert.get(cursor) ?? []).find((item) => !seen.has(item.i));
+    if (!next) break;
+    seen.add(next.i);
+    if (next.i === index) return run;
+    run += next.length;
+    const row = edges[next.i]!;
+    const a = key(row.a3);
+    cursor = a === cursor ? key(row.b3) : a;
+  }
+  return 0;
+}
+
+function piecesFit(total: number, gaps: [number, number][], minLength: number): boolean {
+  const merged: [number, number][] = [];
+  for (const gap of [...gaps].sort((a, b) => a[0] - b[0])) {
+    const last = merged.at(-1);
+    if (last && gap[0] <= last[1] + WELD) last[1] = Math.max(last[1], gap[1]);
+    else merged.push([gap[0], gap[1]]);
+  }
+  let cursor = 0;
+  for (const gap of merged) {
+    if (gap[0] - cursor < minLength - 1e-6) return false;
+    cursor = gap[1];
+  }
+  return total - cursor >= minLength - 1e-6;
 }
 
 function splitSegs(segs: Seg[]): Seg[] {
@@ -328,14 +753,25 @@ function splitSegs(segs: Seg[]): Seg[] {
       if (t1 - t0 < 1e-8) continue;
       const a: V2 = [seg.a[0] + (seg.b[0] - seg.a[0]) * t0, seg.a[1] + (seg.b[1] - seg.a[1]) * t0];
       const b: V2 = [seg.a[0] + (seg.b[0] - seg.a[0]) * t1, seg.a[1] + (seg.b[1] - seg.a[1]) * t1];
-      if (dist2(a, b) < SNAP * SNAP) continue;
-      out.push({ a, b, kind: seg.kind, rib: seg.rib, looseA: k === 1 && seg.looseA, looseB: k === ts.length - 1 && seg.looseB });
+      if (dist2(a, b) < WELD * WELD) continue;
+      out.push({
+        a,
+        b,
+        a3: lerp3(seg.a3, seg.b3, t0),
+        b3: lerp3(seg.a3, seg.b3, t1),
+        kind: seg.kind,
+        rib: seg.rib,
+        looseA: k === 1 && seg.looseA,
+        looseB: k === ts.length - 1 && seg.looseB,
+        gapA: k === 1 && seg.gapA,
+        gapB: k === ts.length - 1 && seg.gapB,
+        width: seg.width,
+      });
     }
   });
   return out;
 }
 
-/** Proper crossing, or an end of one lying on the other. Parallel overlaps are left alone. */
 function intersect(p: Seg, q: Seg): { t: number; u: number } | null {
   const rx = p.b[0] - p.a[0];
   const ry = p.b[1] - p.a[1];
@@ -356,7 +792,7 @@ function intersect(p: Seg, q: Seg): { t: number; u: number } | null {
       if (t <= 1e-6 || t >= 1 - 1e-6) return null;
       const dx = a[0] + abx * t - c[0];
       const dy = a[1] + aby * t - c[1];
-      return dx * dx + dy * dy < SNAP * SNAP ? t : null;
+      return dx * dx + dy * dy < WELD * WELD ? t : null;
     };
     const t = on(p.a, p.b, q.a);
     if (t !== null) return { t, u: 0 };
@@ -374,10 +810,10 @@ function intersect(p: Seg, q: Seg): { t: number; u: number } | null {
   return { t: Math.min(1, Math.max(0, t)), u: Math.min(1, Math.max(0, u)) };
 }
 
-function splitRib(rib: VentRib, centers: readonly V3[], size: number): VentRib[] {
+function splitRib(rib: VentRib, centers: readonly V3[], size: number, minLength: number): VentRib[] {
   const pts = rib.points;
   const total = polyLength(pts);
-  if (total < SNAP) return [];
+  if (total < WELD) return [];
   const gaps: [number, number][] = [];
   for (const at of centers) {
     const s = paramOf(pts, at);
@@ -385,28 +821,31 @@ function splitRib(rib: VentRib, centers: readonly V3[], size: number): VentRib[]
     const half = size / 2;
     const lo = Math.max(0, s - half);
     const hi = Math.min(total, s + half);
-    if (hi - lo < SNAP) continue;
+    if (hi - lo < WELD) continue;
     gaps.push([lo, hi]);
+  }
+  if (!piecesFit(total, gaps, minLength)) {
+    return [{ points: pts.map((p) => [p[0], p[1], p[2]]), ...(rib.ends ? { ends: [rib.ends[0], rib.ends[1]] as [EndKind, EndKind] } : {}), ...(rib.widthMm !== undefined ? { widthMm: rib.widthMm } : {}) }];
   }
   gaps.sort((a, b) => a[0] - b[0]);
   const merged: [number, number][] = [];
   for (const gap of gaps) {
     const last = merged.at(-1);
-    if (last && gap[0] <= last[1] + SNAP) last[1] = Math.max(last[1], gap[1]);
+    if (last && gap[0] <= last[1] + WELD) last[1] = Math.max(last[1], gap[1]);
     else merged.push([gap[0], gap[1]]);
   }
   const spans: [number, number][] = [];
   let cursor = 0;
   for (const gap of merged) {
-    if (gap[0] - cursor > SNAP) spans.push([cursor, gap[0]]);
+    if (gap[0] - cursor > WELD) spans.push([cursor, gap[0]]);
     cursor = gap[1];
   }
-  if (total - cursor > SNAP) spans.push([cursor, total]);
+  if (total - cursor > WELD) spans.push([cursor, total]);
   return spans.map((span, i) => {
     const points = sample(pts, span[0], span[1]);
-    const start = i === 0 ? (rib.ends?.[0] ?? "closed") : "free";
-    const end = i === spans.length - 1 ? (rib.ends?.[1] ?? "closed") : "free";
-    return { points, ends: [start, end] as [EndKind, EndKind] };
+    const start: EndKind = i === 0 ? (rib.ends?.[0] ?? "closed") : "gap";
+    const end: EndKind = i === spans.length - 1 ? (rib.ends?.[1] ?? "closed") : "gap";
+    return { points, ends: [start, end] as [EndKind, EndKind], ...(rib.widthMm !== undefined ? { widthMm: rib.widthMm } : {}) };
   });
 }
 
@@ -426,7 +865,7 @@ function paramOf(pts: readonly V3[], at: V3): number | null {
     const ab = sub(b, a);
     const ab2 = dot(ab, ab);
     const t = ab2 < 1e-18 ? 0 : Math.min(1, Math.max(0, dot(sub(at, a), ab) / ab2));
-    const q: [number, number, number] = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+    const q = lerp3(a, b, t);
     const d = len(sub(at, q));
     if (d < best) {
       best = d;
@@ -443,7 +882,7 @@ function sample(pts: readonly V3[], lo: number, hi: number): [number, number, nu
   for (let i = 1; i < pts.length; i += 1) {
     const step = len(sub(pts[i]!, pts[i - 1]!));
     const next = run + step;
-    if (next > lo + SNAP && next < hi - SNAP) out.push([pts[i]![0], pts[i]![1], pts[i]![2]]);
+    if (next > lo + WELD && next < hi - WELD) out.push([pts[i]![0], pts[i]![1], pts[i]![2]]);
     run = next;
   }
   out.push(pointAt(pts, hi));
@@ -458,7 +897,7 @@ function pointAt(pts: readonly V3[], s: number): [number, number, number] {
     const step = len(sub(b, a));
     if (run + step >= s - 1e-9 || i === pts.length - 1) {
       const t = step < 1e-12 ? 0 : Math.min(1, Math.max(0, (s - run) / step));
-      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+      return lerp3(a, b, t);
     }
     run += step;
   }

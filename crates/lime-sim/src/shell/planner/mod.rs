@@ -69,7 +69,7 @@ use super::{
 
 pub use profile::{choose_profile, FlangeShape, Process, ProfileRules, RibProfile};
 pub use trace::Family;
-pub use vents::{vent_pockets, BorderKind, BorderRun, RibRun, VentPocket, VentPockets, Venting, RESIN_VENT_MM};
+pub use vents::{vent_pockets, BorderKind, BorderRun, EndKind, RibRun, VentPocket, VentPockets, Venting, PART_CUPS, RESIN_VENT_MM};
 
 /// The default load when none is given: 1 kPa on every triangle, along
 /// its normal. Only ratios matter for planning.
@@ -288,12 +288,15 @@ pub struct RibPlanRequest {
     /// Cut a vent through each pocket the ribs close, when the part is resin.
     /// Filament and moulded leave this false, and the plan is unchanged.
     pub vent: bool,
-    /// Away from the plate, toward the tank. Default +Z. A pocket cups when
-    /// the side the ribs stand on points against this.
+    /// Plate frame, from the platform toward the tank. Default +Z, the part as
+    /// it sits. A pocket cups when the side the ribs stand on points along this.
     pub build_axis: [f64; 3],
     /// The wall's outer border is a side wall, so it closes a cell. A free
     /// edge, and every hole, stays open. Filament and moulded leave this false.
+    /// Ignored when [`RibPlanRequest::borders`] is not empty.
     pub rising_border: bool,
+    /// Wall borders in the wall frame. Empty uses [`RibPlanRequest::rising_border`].
+    pub borders: Vec<(Vec<[f64; 3]>, vents::BorderKind)>,
 }
 
 impl RibPlanRequest {
@@ -315,6 +318,7 @@ impl RibPlanRequest {
             vent: false,
             build_axis: [0.0, 0.0, 1.0],
             rising_border: false,
+            borders: Vec::new(),
         }
     }
 }
@@ -737,8 +741,9 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 size_mm: RESIN_VENT_MM,
                 factor_before: 1.0,
                 factor_after: 1.0,
-                mouse_hole_factor: 1.0,
                 pockets: Vec::new(),
+                unvented: Vec::new(),
+                note: None,
             }),
             frequency_hz: None,
             frequency_factor: None,
@@ -1022,22 +1027,33 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     let vents = if req.vent {
         let before = clean.factor;
         let build = crate::units::normalize(req.build_axis).unwrap_or([0.0, 0.0, 1.0]);
-        let loose_ends: Vec<(usize, usize)> = closed.loose.iter().map(|&(rib, end, _)| (rib, end)).collect();
-        let border_lines = rising_borders(&s0, req.rising_border);
+        // A budget end is loose. A hold, and an end stopped by a boss or a zone, closes the cell.
+        let loose_ends: Vec<(usize, usize)> = closed
+            .loose
+            .iter()
+            .filter(|&&(_, _, reason)| reason == LooseEndReason::Budget)
+            .map(|&(rib, end, _)| (rib, end))
+            .collect();
+        let generated = if req.borders.is_empty() { rising_borders(&s0, req.rising_border) } else { Vec::new() };
+        let border_lines: &[(Vec<[f64; 3]>, vents::BorderKind)] = if req.borders.is_empty() { &generated } else { &req.borders };
         let border_runs: Vec<vents::BorderRun<'_>> = border_lines
             .iter()
             .map(|(pts, kind)| vents::BorderRun { points: pts, kind: *kind })
             .collect();
         let found = match vents::opening_of(&req.mesh, req.rules.side) {
-            Some(opening) => vents::find(&closed.ribs, &loose_ends, &border_runs, opening, build),
-            None => vents::VentPockets { cups: false, size_mm: RESIN_VENT_MM, pockets: Vec::new() },
+            Some(opening) => vents::find(&closed.ribs, &loose_ends, &border_runs, opening, build, req.rules.min_length),
+            None => vents::VentPockets {
+                cups: false,
+                closed: 0,
+                size_mm: RESIN_VENT_MM,
+                pockets: Vec::new(),
+                unvented: Vec::new(),
+                note: None,
+            },
         };
-        let (after, mouse, pockets) = if found.pockets.is_empty() {
-            (before, before, found.pockets)
+        let (after, pockets) = if found.pockets.is_empty() {
+            (before, found.pockets)
         } else {
-            let mouse_ribs = vents::mouse_hole(&closed.ribs, &found.pockets);
-            let mouse_clean = clean_solve(req, &s0, &cases0, &mouse_ribs)?;
-            stats.solves += 2;
             let loose_pts: Vec<([f64; 3], LooseEndReason)> = closed
                 .loose
                 .iter()
@@ -1047,7 +1063,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                     (p, reason)
                 })
                 .collect();
-            let (notched, pockets) = vents::notch(&closed.ribs, &found.pockets);
+            let (mut notched, pockets) = vents::notch(&closed.ribs, &found.pockets, req.rules.min_length);
+            vents::seat_gaps(&s0, &mut notched, req.rules.min_length);
             closed.loose = remap_loose(&loose_pts, &notched);
             closed.ribs = notched;
             clean = clean_solve(req, &s0, &cases0, &closed.ribs)?;
@@ -1057,15 +1074,25 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
                 Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
                 Goal::Balanced => goal_met,
+                // A frequency plan returns before the vent block.
+                Goal::Frequency { .. } => false,
             };
-            (clean.factor, mouse_clean.factor, pockets)
+            // pocket.rib indexes the ribs this plan returns. A piece that did not embed is omitted.
+            let pockets = pockets
+                .into_iter()
+                .filter_map(|p| {
+                    clean.kept.iter().position(|&i| i == p.rib).map(|rib| vents::VentPocket { rib, at: p.at, size_mm: p.size_mm })
+                })
+                .collect();
+            (clean.factor, pockets)
         };
         Some(Venting {
             size_mm: found.size_mm,
             factor_before: before,
             factor_after: after,
-            mouse_hole_factor: mouse,
             pockets,
+            unvented: found.unvented,
+            note: found.note,
         })
     } else {
         None

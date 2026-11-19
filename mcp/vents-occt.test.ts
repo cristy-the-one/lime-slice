@@ -1,18 +1,22 @@
 /**
- * Resin vent notches on a synthetic shelled box, through ribs_plan against real Open CASCADE.
- * The floor's ribs stand upward. buildAxis [0,0,-1] points that opening at the platform, so the
- * closed cells are vented and ribs_apply builds the notched ribNet. With no buildAxis the build is
- * the part as it sits (+Z, toward the tank), so nothing cups, and the note says the plate has no
- * resin printer. Filament and moulded on the same wall have no vents key.
+ * Resin vent notches through ribs_plan against real Open CASCADE.
+ *
+ * The floor of an open box is walled in all round. With the part sitting +Z, that
+ * opening faces the tank, so the plan reports that the part itself cups and cuts
+ * nothing. A side wall has a free rim at the open top: buildAxis along its opening
+ * (plate frame) vents it, and the opposite axis, facing the platform, cups nothing.
+ * The gap is measured on the ribs the solid is built from, then ribs_apply builds them.
+ *
+ * Filament and moulded omit vents. A buildAxis on either is refused.
+ * This machine has no Open CASCADE; the folded-shell job is the proof.
  * Skips without LIME_OCCT_BRIDGE; fails in CI when it is unset.
- * Kept in the folded-shell job: a box plan is too heavy for the shared Open CASCADE job.
  */
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ventPockets } from "../src/modeling/vents.ts";
+import { GIVEN_AXIS, NO_RESIN_PRINTER, PART_CUPS } from "../src/modeling/vents.ts";
 import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import { Session } from "./session.ts";
 
@@ -55,62 +59,99 @@ async function waitJob(job: string): Promise<Reply> {
   }
 }
 
+function gapMm(ribs: Reply[]): number {
+  const ends: number[][] = [];
+  for (const rib of ribs) {
+    const points = rib.points as number[][] | undefined;
+    if (!points || points.length < 2) continue;
+    ends.push(points[0]!, points[points.length - 1]!);
+  }
+  let best = -1;
+  for (let i = 0; i < ends.length; i += 1) {
+    for (let j = i + 1; j < ends.length; j += 1) {
+      const a = ends[i]!;
+      const b = ends[j]!;
+      const d = Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!);
+      if (d > 0.2 && d < 2 && (best < 0 || Math.abs(d - 0.75) < Math.abs(best - 0.75))) best = d;
+    }
+  }
+  return best;
+}
+
 const object = String((await call("solid_new", { primitive: "box", dx: 64, dy: 40, dz: 16 })).object);
 const shelled = await call("model_apply", { object, probe: true, op: { kind: "shell", thickness: 2, openFaces: [{ normal: [0, 0, 1] }] } });
 if (shelled.ok !== true) throw new Error(`shell: ${JSON.stringify(shelled).slice(0, 300)}`);
 
-const wall = { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } };
+const floor = { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } };
+const side = { face: { normal: [-1, 0, 0], nearPoint: [62, 20, 8] } };
 const goal = { budgetMm3: 2500 };
+
 const t0 = Date.now();
-const resinJob = String((await call("ribs_plan", { object, wall, process: "resin", goal, baselines: false, buildAxis: [0, 0, -1] })).job);
-const resin = await waitJob(resinJob);
-const resinS = (Date.now() - t0) / 1000;
+const floorJob = String((await call("ribs_plan", { object, wall: floor, process: "resin", goal, baselines: false })).job);
+const floorPlan = await waitJob(floorJob);
+const floorS = (Date.now() - t0) / 1000;
+
 const t1 = Date.now();
-const upright = await waitJob(String((await call("ribs_plan", { object, wall, process: "resin", goal, baselines: false })).job));
-const uprightS = (Date.now() - t1) / 1000;
+const sideJob = String((await call("ribs_plan", { object, wall: side, process: "resin", goal, baselines: false, buildAxis: [-1, 0, 0] })).job);
+const sidePlan = await waitJob(sideJob);
+const sideS = (Date.now() - t1) / 1000;
+
 const t2 = Date.now();
-const filament = await waitJob(String((await call("ribs_plan", { object, wall, process: "filament", goal, baselines: false })).job));
-const filamentS = (Date.now() - t2) / 1000;
-const moulded = await waitJob(String((await call("ribs_plan", { object, wall, process: "moulded", goal, baselines: false })).job));
+const platform = await waitJob(String((await call("ribs_plan", { object, wall: side, process: "resin", goal, baselines: false, buildAxis: [1, 0, 0] })).job));
+const platformS = (Date.now() - t2) / 1000;
 
-const vents = resin.plan?.vents as Reply | undefined;
-const pockets = (vents?.pockets ?? []) as Reply[];
-const ribs = (resin.plan?.ribs ?? []) as Reply[];
-check("the resin plan finishes and lists its vents", resin.ok === true && vents !== undefined && Array.isArray(pockets), JSON.stringify(resin).slice(0, 400));
-check("every closed cell that faces the platform is vented at 0.75 mm", pockets.length > 0 && pockets.every((p) => p.sizeMm === 0.75 && Array.isArray(p.at) && p.at.length === 3), JSON.stringify(vents).slice(0, 500));
+const t3 = Date.now();
+const filament = await waitJob(String((await call("ribs_plan", { object, wall: floor, process: "filament", goal, baselines: false })).job));
+const filamentS = (Date.now() - t3) / 1000;
+const moulded = await waitJob(String((await call("ribs_plan", { object, wall: floor, process: "moulded", goal, baselines: false })).job));
+const refused = await call("ribs_plan", { object, wall: floor, process: "filament", goal, baselines: false, buildAxis: [0, 0, 1] });
+
+const floorVents = floorPlan.plan?.vents as Reply | undefined;
+const floorNotes = (floorPlan.plan?.notes ?? floorPlan.notes ?? []) as string[];
+check("the floor plan finishes", floorPlan.ok === true && floorVents !== undefined, JSON.stringify(floorPlan).slice(0, 400));
+check("the default note says the plate has no resin printer", floorNotes.some((note) => note === NO_RESIN_PRINTER) || String(floorVents?.note ?? "").includes("no resin printer"), JSON.stringify(floorNotes));
 check(
-  "the reported stiffness is the notched ribs, and a gap costs at least as much as a lowered stretch",
-  typeof vents?.factorBefore === "number" && typeof vents?.factorAfter === "number" && vents.factorAfter <= vents.factorBefore + 1e-4 && vents.mouseHoleFactor + 1e-4 >= vents.factorAfter && Math.abs(resin.plan.stiffnessFactor - vents.factorAfter) < 1e-3,
-  JSON.stringify({ before: vents?.factorBefore, after: vents?.factorAfter, mouse: vents?.mouseHoleFactor, reported: resin.plan?.stiffnessFactor }),
+  "a floor walled all round is not notched",
+  Array.isArray(floorVents?.pockets) && floorVents.pockets.length === 0 && Array.isArray(floorVents?.unvented) && floorVents.unvented.some((item: Reply) => item.message === PART_CUPS),
+  JSON.stringify(floorVents).slice(0, 500),
 );
-check("a given build axis is the direction the note names", vents?.note === "Build direction is the one given.");
 
-const drained = ventPockets({
-  ribs: ribs.map((rib) => ({ points: rib.points, ends: rib.ends?.[0] === "free" || rib.ends?.[1] === "free" ? ["free", "free"] : undefined })),
-  opening: [0, 0, 1],
-  buildAxis: [0, 0, -1],
-});
-check("the notched ribs, read on their own, close no cupping cell", drained.pockets.length === 0, JSON.stringify(drained.pockets).slice(0, 300));
+const vents = sidePlan.plan?.vents as Reply | undefined;
+const pockets = (vents?.pockets ?? []) as Reply[];
+const ribs = (sidePlan.plan?.ribs ?? []) as Reply[];
+const sideNotes = (sidePlan.plan?.notes ?? sidePlan.notes ?? []) as string[];
+check("the side wall, opening toward the tank, is vented", sidePlan.ok === true && pockets.length > 0 && pockets.every((p) => p.sizeMm === 0.75), JSON.stringify(vents).slice(0, 500));
+check("the note names the given plate-frame axis", sideNotes.some((note) => note === GIVEN_AXIS), JSON.stringify(sideNotes));
+const measured = gapMm(ribs);
+check("a 0.75 mm gap is still open in the ribs the solid is built from", measured > 0.7 && measured < 1.2, String(measured));
+check(
+  "the reported stiffness is the notched solve",
+  typeof vents?.factorBefore === "number" && typeof vents?.factorAfter === "number" && vents.factorAfter <= vents.factorBefore + 1e-4 && Math.abs(sidePlan.plan.stiffnessFactor - vents.factorAfter) < 1e-3,
+  JSON.stringify({ before: vents?.factorBefore, after: vents?.factorAfter, reported: sidePlan.plan?.stiffnessFactor }),
+);
+for (const pocket of pockets) {
+  check(`pocket.rib ${pocket.rib} indexes a returned rib`, typeof pocket.rib === "number" && pocket.rib >= 0 && pocket.rib < ribs.length, JSON.stringify(pocket));
+}
 
-const built = await call("ribs_apply", { job: resinJob });
-check("the notched ribNet builds", built.ok === true && Number(built.paths) >= ribs.length, JSON.stringify(built).slice(0, 400));
+const built = await call("ribs_apply", { job: sideJob });
+check("the notched ribNet builds", built.ok === true && Number(built.paths) >= 1, JSON.stringify(built).slice(0, 400));
 
-const up = upright.plan?.vents as Reply | undefined;
-check("the same floor with the default build, toward the tank, cups nothing", upright.ok === true && Array.isArray(up?.pockets) && up.pockets.length === 0, JSON.stringify(up).slice(0, 300));
-check("the note says the plate has no resin printer", typeof up?.note === "string" && String(up.note).includes("no resin printer"));
+const away = platform.plan?.vents as Reply | undefined;
+check("the same wall facing the platform cups nothing", platform.ok === true && Array.isArray(away?.pockets) && away.pockets.length === 0 && (away.unvented ?? []).length === 0, JSON.stringify(away).slice(0, 300));
 
 check("filament has no vents key", filament.ok === true && filament.plan && !("vents" in filament.plan));
 check("moulded has no vents key", moulded.ok === true && moulded.plan && !("vents" in moulded.plan) && "moulding" in moulded.plan);
+check("filament refuses a build axis", refused.ok === false && String(refused.reason ?? refused.message ?? "").includes("resin"), JSON.stringify(refused).slice(0, 300));
 const filamentKeys = Object.keys(filament.plan ?? {}).sort();
 const mouldedKeys = Object.keys(moulded.plan ?? {}).filter((key) => key !== "moulding").sort();
-const resinKeys = Object.keys(resin.plan ?? {}).filter((key) => key !== "vents").sort();
-check("aside from vents and moulding, the plan keys match", JSON.stringify(filamentKeys) === JSON.stringify(mouldedKeys) && JSON.stringify(filamentKeys) === JSON.stringify(resinKeys), JSON.stringify({ filamentKeys, mouldedKeys, resinKeys }));
-console.log(`vents-occt: resin ${resinS.toFixed(1)} s, ${pockets.length} pockets, ${ribs.length} ribs, before ${vents?.factorBefore} after ${vents?.factorAfter} mouse ${vents?.mouseHoleFactor}; upright ${uprightS.toFixed(1)} s; filament ${filamentS.toFixed(1)} s`);
+const resinKeys = Object.keys(floorPlan.plan ?? {}).filter((key) => key !== "vents" && key !== "notes").sort();
+check("aside from vents, notes and moulding, the plan keys match", JSON.stringify(filamentKeys) === JSON.stringify(mouldedKeys) && JSON.stringify(filamentKeys) === JSON.stringify(resinKeys), JSON.stringify({ filamentKeys, mouldedKeys, resinKeys }));
+
+console.log(`vents-occt: floor ${floorS.toFixed(1)} s (part cups), side ${sideS.toFixed(1)} s, ${pockets.length} pockets, gap ${measured.toFixed(3)} mm, before ${vents?.factorBefore} after ${vents?.factorAfter}; platform ${platformS.toFixed(1)} s; filament ${filamentS.toFixed(1)} s`);
 
 if (failed) {
   console.error(`vents-occt: ${failed} failed`);
   process.exit(1);
 }
 console.log("vents-occt: ok");
-// The engine worker keeps the process alive. The folded-shell step is 25 minutes, so exit as the other OCCT tests do.
 process.exit(0);

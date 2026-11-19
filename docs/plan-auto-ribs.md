@@ -200,7 +200,7 @@ The default follows the process and the print pose. For example, there is no T-r
 ### 7.6 Printability
 
 - **Filament, flat bed and 45° belt**: after planning, `model_check` runs in the current pose. Rib ends are tapered so they start from the wall, not in the air. A rib whose top would be an unsupported ceiling in this pose is reported, with the choice to drop it or keep it.
-- **Resin**: closed pockets between ribs facing the build plate are reported (cupping). Vent notches are listed for later.
+- **Resin**: a pocket cups when the side its ribs stand on points along the build axis, toward the resin tank. A 0.75 mm full-height gap opens it to a cell that drains. A pocket the part itself closes is reported and not cut.
 - **Moulded** is a size preset only (thickness ratio, draft); no sink or flow check.
 
 ## 8. Steps, each its own PR

@@ -255,6 +255,10 @@ export function bindAutoRibs() {
       const own = buildDirection(obj?.orient ?? [1, 0, 0, 0, 1, 0, 0, 0, 1], p?.kind === "belt" ? p.belt : null);
       return turnDir(openPose(), own);
     },
+    plate() {
+      const obj = openObject();
+      return { orient: obj?.orient ?? [1, 0, 0, 0, 1, 0, 0, 0, 1], pose: openPose() };
+    },
     stress() {
       const sim = openObject()?.sim;
       return sim ? { holds: sim.holds, loads: sim.loads } : null;

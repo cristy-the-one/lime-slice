@@ -13,6 +13,7 @@
  * the solid's mesh is posed into it first, so points read and typed, zones and ribNet's paths agree.
  */
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
+import { GIVEN_AXIS, NO_RESIN_PRINTER, ventBodyOf } from "../../src/modeling/vents.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
@@ -71,14 +72,6 @@ const rv = (p: readonly number[]): V3 => [r(p[0]!, 4), r(p[1]!, 4), r(p[2]!, 4)]
 
 function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-/** The outer border closes a cell only when a side wall stands on it. A hole never does. */
-function risingBorder(wall: RibWall): boolean {
-  const loops = wall.report.loops;
-  if (loops.length === 0) return false;
-  const longest = loops.reduce((best, loop) => (loop.lengthMm > best.lengthMm ? loop : best));
-  return longest.class === "joined";
 }
 
 /** A build direction: three finite numbers, not all zero. */
@@ -331,7 +324,8 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   if ("reason" in goal) return refuse("bad-goal", String(goal.reason));
   const process: RibProcess = input.process === "resin" || input.process === "moulded" ? input.process : "filament";
   const givenAxis = input.buildAxis === undefined ? null : readBuildAxis(input.buildAxis);
-  if (process === "resin" && input.buildAxis !== undefined && !givenAxis) return refuse("bad-argument", "buildAxis is the build direction, away from the plate: three numbers, not all zero.");
+  if (input.buildAxis !== undefined && process !== "resin") return refuse("bad-argument", "buildAxis is only read when process is resin. It is the build direction in the plate frame.");
+  if (process === "resin" && input.buildAxis !== undefined && !givenAxis) return refuse("bad-argument", "buildAxis is the build direction in the plate frame, from the platform toward the tank: three numbers, not all zero.");
   let pull: V3 | null = null;
   if (process === "moulded" && input.pull !== undefined) {
     pull = readPull(input.pull);
@@ -408,8 +402,9 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     options: { baselines: input.baselines !== false },
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
     ...(sentLoads.caseWeights ? { caseWeights: sentLoads.caseWeights } : {}),
-    // Only resin. The echoed request is the caller's input, so filament and moulded bodies stay as they were.
-    ...(process === "resin" ? { vent: true, buildAxis: givenAxis ?? build, risingBorder: risingBorder(wall) } : {}),
+    // Only resin. The panel builds this with the same function, so the same wall asks for the same pockets.
+    // Filament and moulded get nothing, and their bodies stay as they were.
+    ...ventBodyOf(process, { orient: obj.orient, pose: typed.pose }, wall.loops.map((loop, i) => ({ hole: wall.report.loops[i]?.hole === true, spans: loop.spans.map((span) => ({ class: span.class, from: span.from, to: span.to, points: span.points })) })), givenAxis),
   };
   if (!this.engine.ribPlanStart || !this.engine.ribPlanPoll || !this.engine.ribPlanCancel) return refuse("solver-unavailable", "This engine has no rib planner. Rebuild the in-process engine.");
   stage("planning: starting", 0.05);
@@ -523,13 +518,17 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     looseEnds: ((result.looseEnds as Row[] | undefined) ?? []).map((row) => ({ rib: row.rib, end: row.end, point: Array.isArray(row.point) ? rv(row.point as number[]) : null, reason: row.reason })),
     stats: result.stats,
   };
-  if (process === "resin" && result.vents && typeof result.vents === "object") {
-    const vents = result.vents as Row;
+  if (process === "resin") {
+    const vents = result.vents && typeof result.vents === "object" ? (result.vents as Row) : null;
     // The plate's printer is a filament printer. The Form 4 is export-only, so it is never the plate's printer.
-    const note = givenAxis
-      ? "Build direction is the one given."
-      : "The plate has no resin printer, so the build direction is the part as it sits, away from the plate.";
-    plan.vents = { ...vents, note };
+    const planNotes = [givenAxis ? GIVEN_AXIS : NO_RESIN_PRINTER];
+    if (typeof vents?.note === "string") planNotes.push(vents.note);
+    for (const item of (vents?.unvented as Row[] | undefined) ?? []) {
+      if (typeof item.message === "string") planNotes.push(item.message);
+    }
+    notes.push(...planNotes);
+    plan.notes = planNotes;
+    if (vents) plan.vents = vents;
   }
   if (process === "moulded") {
     const mesh = wall.request.mesh;

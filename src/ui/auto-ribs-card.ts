@@ -16,9 +16,11 @@
  * State and sentences: src/auto-ribs.ts. The app side (solid, worker, apply, picks): src/app/model/auto-ribs.ts.
  */
 import { Check, X, createElement } from "lucide";
+import type { Affine } from "../model-space.ts";
 import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
+import { plateToWall, ventBodyOf, type VentLoop } from "../modeling/vents.ts";
 import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
 import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
@@ -105,8 +107,10 @@ export interface AutoRibsHost {
   densityGCm3(): number;
   nozzleMm(): number;
   printerName(): string;
-  /** The printer's build direction in the panel's frame. */
+  /** The printer's build direction in the panel's frame. Filament flanges use it. Resin vents do not. */
   build(): V3;
+  /** The plate orientation and the part's pose, so a resin build axis turns the same way for the panel and ribs_plan. */
+  plate(): { orient: readonly number[]; pose: Affine };
   /** The object's Stress setup, when it has one. */
   stress(): { holds: StudyHold[]; loads: StudyLoad[] } | null;
   /** Other objects on the plate, for an obstacle. */
@@ -624,8 +628,22 @@ export async function autoRibsPrimary() {
 
 function planStale(): boolean {
   const axis = JSON.stringify(ranWith?.body.buildAxis ?? null);
-  const now = JSON.stringify(ranWith?.process === "resin" ? (buildOverride ?? host?.build() ?? null) : null);
+  const now = JSON.stringify(resinAxis());
   return !!ranWith && (ranWith.key !== readKey() || JSON.stringify(ranWith.goal) !== JSON.stringify(currentGoal()) || JSON.stringify(ranWith.body.rules) !== JSON.stringify(bodyRules(ranWith.wall)) || axis !== now);
+}
+
+/** The resin build axis in the wall frame. Plate +Z unless the test named one. Filament plans carry none. */
+function resinAxis(): V3 | null {
+  if (!host || ranWith?.process !== "resin") return null;
+  const frame = host.plate();
+  return plateToWall(frame.orient, frame.pose, buildOverride ?? [0, 0, 1]);
+}
+
+function ventLoops(wall: RibWall): VentLoop[] {
+  return wall.loops.map((loop, i) => ({
+    hole: wall.report.loops[i]?.hole === true,
+    spans: loop.spans.map((span) => ({ class: span.class, from: span.from, to: span.to, points: span.points })),
+  }));
 }
 
 function currentGoal(): PlanGoal {
@@ -666,8 +684,8 @@ async function startRun() {
   const material = host.material();
   materialNote = material?.note ?? "";
   const asked = loadRequest(card.loads, card.cases);
-  const buildAxis = buildOverride ?? host.build();
-  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}), ...(card.ribs.process === "resin" ? { vent: true, buildAxis } : {}) };
+  const vent = ventBodyOf(card.ribs.process, host.plate(), ventLoops(wall), buildOverride);
+  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}), ...vent };
 
   generation += 1;
   const mine = generation;
@@ -1002,9 +1020,11 @@ function paintResult() {
   const vents = $<HTMLElement>("#autoRibsVents");
   if (vents) {
     const n = plan.vents?.pockets.length ?? 0;
-    const show = ranWith?.process === "resin" && n > 0;
+    const unvented = plan.vents?.unvented ?? [];
+    const sentence = n > 0 ? `${n} pocket${n === 1 ? "" : "s"} vented` : (unvented[0]?.message ?? "");
+    const show = ranWith?.process === "resin" && sentence.length > 0;
     vents.hidden = !show;
-    vents.textContent = show ? `${n} pocket${n === 1 ? "" : "s"} vented` : "";
+    vents.textContent = show ? sentence : "";
   }
   const moulding = $<HTMLElement>("#autoRibsMoulding");
   const mouldingList = $<HTMLElement>("#autoRibsMouldingList");

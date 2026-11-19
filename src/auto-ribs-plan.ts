@@ -108,16 +108,16 @@ export interface RibPlanResult {
   caseFactors?: number[];
   caseDeflectionMm?: { bare: number; ribbed: number }[];
   /**
-   * Resin only. The pockets the ribs closed, and one gap each. Filament and moulded leave it off.
-   * The stand-in's factors are its own; the engine's are the notched solve and the mouse-hole measurement.
+   * Resin only. The pockets the ribs closed, and one full-height gap each. Filament and moulded leave it off.
+   * The stand-in's factors are its own; the engine's are the notched solve.
    */
   vents?: {
     sizeMm: number;
     factorBefore: number;
     factorAfter: number;
-    mouseHoleFactor: number;
     notch: "gap";
     pockets: { rib: number; at: V3; sizeMm: number }[];
+    unvented?: { at: V3; message: string }[];
     note?: string;
   };
 }
@@ -166,8 +166,10 @@ export interface RibPlanBody {
   caseWeights?: number[];
   /** Resin only. The engine cuts a vent through each pocket the ribs close. */
   vent?: boolean;
-  /** Away from the plate, toward the tank. Resin only; omitted is +Z. */
+  /** Plate frame, from the platform toward the tank, turned into the wall frame. Resin only; omitted is plate +Z. */
   buildAxis?: V3;
+  /** Wall borders in the wall frame. The panel and ribs_plan send the same list. */
+  borders?: { points: readonly (readonly [number, number, number])[]; kind: "rises" | "open" | "hole" }[];
 }
 
 export type PlanReply = { ok: true; plan: RibPlanResult } | { ok: false; reason: string };
@@ -314,9 +316,9 @@ function ventsOf(value: unknown): Pick<RibPlanResult, "vents"> {
       sizeMm: num(row.sizeMm, 0.75),
       factorBefore: num(row.factorBefore),
       factorAfter: num(row.factorAfter),
-      mouseHoleFactor: num(row.mouseHoleFactor),
       notch: "gap",
       pockets,
+      unvented: (Array.isArray(row.unvented) ? (row.unvented as Row[]) : []).map((item) => ({ at: v3(item.at), message: typeof item.message === "string" ? item.message : "" })),
       ...(typeof row.note === "string" ? { note: row.note } : {}),
     },
   };
@@ -578,20 +580,26 @@ function crossed(pool: Candidate[]): Candidate[] {
 function standInVents(body: RibPlanBody, ribs: PlannedRib[], factor: number): NonNullable<RibPlanResult["vents"]> {
   const opening = meshOpening(body.request.mesh.vertices, body.request.mesh.triangles);
   const report = opening
-    ? ventPockets({ ribs: ribs.map((rib) => ({ points: rib.points })), opening, buildAxis: body.buildAxis ?? [0, 0, 1] })
-    : { cups: false, pockets: [] as VentPocket[], sizeMm: 0.75 };
+    ? ventPockets({
+        ribs: ribs.map((rib) => ({ points: rib.points, widthMm: rib.width })),
+        borders: body.borders,
+        opening,
+        buildAxis: body.buildAxis ?? [0, 0, 1],
+        minLengthMm: body.rules.minLength,
+      })
+    : { cups: false, closed: 0, pockets: [] as VentPocket[], unvented: [], sizeMm: 0.75 };
   return {
     sizeMm: report.sizeMm,
     factorBefore: factor,
     factorAfter: factor,
-    mouseHoleFactor: factor,
     notch: "gap",
-    pockets: report.pockets.map((pocket) => ({ rib: pocket.rib, at: [pocket.at[0], pocket.at[1], pocket.at[2]], sizeMm: pocket.sizeMm })),
-    note: "Stand-in: the pockets are the rib drawing. The stiffness of the notched ribs is the engine's.",
+    pockets: report.pockets.map((pocket) => ({ rib: pocket.rib, at: [pocket.at[0], pocket.at[1], pocket.at[2]] as V3, sizeMm: pocket.sizeMm })),
+    unvented: report.unvented.map((item) => ({ at: [item.at[0], item.at[1], item.at[2]] as V3, message: item.message })),
+    note: report.note ?? "Stand-in: the pockets are the rib drawing. The stiffness of the notched ribs is the engine's.",
   };
 }
 
-function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[]): PlannedRib[] {
+function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[], minLengthMm = 0): PlannedRib[] {
   const out: PlannedRib[] = [];
   ribs.forEach((rib, i) => {
     const cuts = pockets.filter((pocket) => pocket.rib === i);
@@ -599,7 +607,7 @@ function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[]): Plann
       out.push(rib);
       return;
     }
-    const parts = notchRibs([{ points: rib.points }], cuts.map((cut) => ({ rib: 0, at: cut.at, sizeMm: cut.sizeMm })));
+    const parts = notchRibs([{ points: rib.points, widthMm: rib.width }], cuts.map((cut) => ({ rib: 0, at: cut.at, sizeMm: cut.sizeMm })), minLengthMm);
     for (const part of parts) {
       const points = part.points.map((p) => [p[0], p[1], p[2]] as V3);
       const heights = points.slice(1).map(() => rib.heights[0] ?? rib.height);
@@ -673,7 +681,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           return { points: row.points, heights: row.heights, width, height: Math.max(...row.heights), sections: row.heights.map(() => (drafted ? { profile: "drafted" as const, width, draftDeg: 1, rootRadius: draftedRoot } : { profile, width })), lengthMm: r3(length), volumeMm3: r3(volumeOf(row.points, row.heights, width)), gain: 0.1 };
         });
         const vents = body.vent ? standInVents(body, ribs, r3(factor)) : undefined;
-        if (vents && vents.pockets.length > 0) ribs = notchPlanned(ribs, vents.pockets);
+        if (vents && vents.pockets.length > 0) ribs = notchPlanned(ribs, vents.pockets, body.rules.minLength);
         const volume = totals().ribVolumeMm3;
         const thin = set.beatsNeither ? 0.8 : 1.9;
         const gridShare = set.beatsNeither ? 0.9 : 1.35;

@@ -252,8 +252,28 @@ pub struct RibPlanBody {
     #[serde(default, rename = "buildAxis")]
     pub build_axis: Option<[f64; 3]>,
     /// The wall's outer border is a side wall. Omitted: the edge is open.
+    /// Ignored when `borders` is not empty.
     #[serde(default, rename = "risingBorder")]
     pub rising_border: bool,
+    /// Wall borders in the wall frame. Each is `{ points, kind }` with kind
+    /// `rises`, `open` or `hole`. Empty uses `risingBorder`.
+    #[serde(default)]
+    pub borders: Vec<WireBorder>,
+}
+
+/// One border of the wall the vents are drawn on.
+#[derive(Clone, Debug, Deserialize)]
+pub struct WireBorder {
+    pub points: Vec<[f64; 3]>,
+    pub kind: WireBorderKind,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WireBorderKind {
+    Rises,
+    Open,
+    Hole,
 }
 
 /// The default material: a PETG-like placeholder. Only ratios matter for
@@ -557,6 +577,18 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
             axis
         },
         rising_border: body.rising_border,
+        borders: body
+            .borders
+            .iter()
+            .map(|border| {
+                let kind = match border.kind {
+                    WireBorderKind::Rises => lime_sim::shell::planner::BorderKind::Rises,
+                    WireBorderKind::Open => lime_sim::shell::planner::BorderKind::Open,
+                    WireBorderKind::Hole => lime_sim::shell::planner::BorderKind::Hole,
+                };
+                (border.points.clone(), kind)
+            })
+            .collect(),
     })
 }
 
@@ -719,13 +751,17 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "sizeMm": r6(vents.size_mm),
             "factorBefore": r6(vents.factor_before),
             "factorAfter": r6(vents.factor_after),
-            "mouseHoleFactor": r6(vents.mouse_hole_factor),
             "notch": "gap",
             "pockets": vents.pockets.iter().map(|p| json!({
                 "rib": p.rib,
                 "at": p6(&p.at),
                 "sizeMm": r6(p.size_mm),
             })).collect::<Vec<_>>(),
+            "unvented": vents.unvented.iter().map(|item| json!({
+                "at": p6(&item.at),
+                "message": item.message,
+            })).collect::<Vec<_>>(),
+            "note": vents.note,
         });
     }
     // Only a worst-case plan has one, and the tool asks for weighted plans.
