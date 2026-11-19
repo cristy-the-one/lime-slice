@@ -172,6 +172,11 @@ check("planned anyway: the readout leads with it", wallReadout(substituted, 1).s
 check("the panel offers its own way to plan without it", EVEN_PRESSURE_OFFER.includes("Plan without it"));
 eq("the choice is kept with the card", cardFromStored({ ...newAutoRibsCard(), picked: [1], ifMissed: "evenPressure" })?.ifMissed, "evenPressure");
 eq("refusing is the default", newAutoRibsCard().ifMissed, "refuse");
+eq("side walls are off", newAutoRibsCard().folded, false);
+eq("a stored check comes back on", cardFromStored({ ...newAutoRibsCard(), picked: [6], folded: true })?.folded, true);
+const without = { ...newAutoRibsCard(), picked: [6] } as Partial<ReturnType<typeof newAutoRibsCard>>;
+delete without.folded;
+eq("a stored card without the check stays off", cardFromStored(without)?.folded, false);
 
 // --- After Apply.
 eq("measured on the solid", measuredLine(100000, 107600, 1.24), "Added 9.4 g (7.6 % of the part), measured on the solid: 7,600 mm³.");

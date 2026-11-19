@@ -264,3 +264,7 @@ It treats a stiff patch as something the extractor can already emit. The extract
 - A second solve with the pressure scaled so the forces match. The area correction in sections 1 and 3 is a scale.
 - The planner's thickening and grid baselines. They were turned off so the plan time is the planner itself.
 - A company part. Buckling, vibration, and any load other than uniform pressure on the floor or the belly.
+
+## The reference the CI test uses
+
+The numbers above compare the shell to a Tet10 solid. The test in CI cannot. Continuum mode (`representation: "smear"`) only meshes a generated beam and refuses any other solid as open, so `mcp/folded-shell-occt.test.ts` compares the bare shell to the sliced Stress study of the same part: solid infill, six walls, the same isotropic card (E 1700 MPa, ν 0.35). On that reference the folded shell is +9.2% on the cover and +1.0% on the open box, and the one-wall shell is −35.1% and −46.6%. The boss patch is −6.2%. The test has its own job, with the same Open CASCADE setup as the shared MCP job and its own 25-minute limit.

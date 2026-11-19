@@ -739,7 +739,7 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-auto-ribs .ar-step { margin-bottom: var(--space-3); }
 .model-auto-ribs .ar-step > legend { display: flex; align-items: center; gap: 6px; font-size: var(--fs-2); color: var(--text); font-weight: 600; margin-bottom: 2px; }
 .model-auto-ribs .ar-wall-line { color: var(--text); font-variant-numeric: tabular-nums; }
-.model-auto-ribs .ar-wall-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.model-auto-ribs .ar-wall-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
 .model-auto-ribs .ar-small { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-1); }
 .model-auto-ribs .ar-warnings, .model-auto-ribs .ar-lines { margin: 0 0 var(--space-2); padding-left: 1.1em; color: var(--text-dim); font-size: var(--fs-1); line-height: 1.4; }
 .model-auto-ribs .ar-warnings { color: var(--warn); }

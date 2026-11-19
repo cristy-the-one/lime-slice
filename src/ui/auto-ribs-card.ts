@@ -4,7 +4,8 @@
  * there is a plan to apply, then Apply; Enter presses it, Esc stops a running plan or ends a pick before it closes.
  *
  * 1. Wall: a click takes the face and its smooth continuations (`wallFaces`); a taken face clicked again comes off;
- *    "Just this face" takes clicks alone. Hovering shows what a click would take.
+ *    "Just this face" takes clicks alone. "Include side walls (folded)" is off unless checked, and then a thin face
+ *    across a sharp edge joins the wall. Hovering shows what a click would take.
  * 2. Plan: a background job (src/auto-ribs-plan.ts): the stage and a bar that never goes back, each rib drawn on the wall
  *    as it is chosen, the running totals, Stop for the plan so far.
  * 3. The plan: gain and cost, the goal not met, the comparisons, the relative note; a rib list to light or take out.
@@ -208,6 +209,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
       <p class="model-note ar-wall-line" id="autoRibsWallLine" role="status"></p>
       <div class="ar-wall-row">
         <label class="model-keep" data-tip="Take only the faces you click, not the faces that continue them smoothly"><input id="autoRibsJustThis" type="checkbox"> Just this face</label>
+        <label class="model-keep" data-tip="Also take thin faces across a sharp edge, such as a cover's side walls. Off, a sharp edge stops the wall."><input id="autoRibsFolded" type="checkbox"> Include side walls (folded)</label>
         <button class="btn ar-small" id="autoRibsWallClear" type="button" hidden>Clear</button>
       </div>
       <ul class="ar-warnings" id="autoRibsWarnings" aria-label="About the wall"></ul>
@@ -510,7 +512,15 @@ function takenFaces(): number[] {
   if (read?.wall && read.key === readKey()) return read.wall.faces;
   const solid = host?.solid();
   if (!solid || card.picked.length === 0) return [];
-  return wallFaces({ positions: solid.positions, faceOf: solid.faceOf }, { picked: card.picked, grow: !card.justThis, excludeFaces: card.excluded }).faces;
+  return wallFaces({ positions: solid.positions, faceOf: solid.faceOf }, { picked: card.picked, excludeFaces: card.excluded, ...growthOptions() }).faces;
+}
+
+/** Growth for the wall read, the hover and the local face list. Folded is passed only when the box is on. */
+function growthOptions(): { grow?: false; folded?: true } {
+  return {
+    ...(card.justThis ? { grow: false } : {}),
+    ...(card.folded && !card.justThis ? { folded: true } : {}),
+  };
 }
 
 function wallOptions(): RibWallOptions | null {
@@ -520,7 +530,7 @@ function wallOptions(): RibWallOptions | null {
   const asked = loadRequest(card.loads, card.cases);
   return {
     picked: card.picked,
-    ...(card.justThis ? { grow: false } : {}),
+    ...growthOptions(),
     ...(card.excluded.length ? { excludeFaces: card.excluded } : {}),
     zones: zones.inputs,
     holds: card.holds,
@@ -532,7 +542,7 @@ function wallOptions(): RibWallOptions | null {
 
 function readKey(): string {
   const solid = host?.solid();
-  return JSON.stringify([solid?.key ?? "", card.picked, card.excluded, card.justThis, card.zones, card.holds, card.loads, card.cases ?? null, card.ifMissed]);
+  return JSON.stringify([solid?.key ?? "", card.picked, card.excluded, card.justThis, card.folded, card.zones, card.holds, card.loads, card.cases ?? null, card.ifMissed]);
 }
 
 function queueRead(wait: number) {
@@ -790,6 +800,7 @@ function writeFields() {
     if (input) input.checked = on;
   };
   check("#autoRibsJustThis", card.justThis);
+  check("#autoRibsFolded", card.folded);
   check("#autoRibsRimOn", card.holeRim.on);
   set("#autoRibsRimMm", String(card.holeRim.mm));
   set("#autoRibsProcess", card.ribs.process);
@@ -1442,7 +1453,7 @@ function onCanvasMove(ev: PointerEvent) {
     if (face == null || !solid) hoverWall = [];
     else {
       const taken = takenFaces();
-      hoverWall = taken.includes(face) ? [face] : wallFaces({ positions: solid.positions, faceOf: solid.faceOf }, { picked: [face], grow: !card.justThis }).faces;
+      hoverWall = taken.includes(face) ? [face] : wallFaces({ positions: solid.positions, faceOf: solid.faceOf }, { picked: [face], ...growthOptions() }).faces;
     }
     const canvas = document.querySelector<HTMLElement>("#model");
     if (canvas) canvas.dataset.autoRibsHover = hoverWall.join(" ");
@@ -1772,6 +1783,10 @@ function onInput(ev: Event) {
     card = { ...card, justThis: target.checked };
     return changed();
   }
+  if (target.id === "autoRibsFolded" && target instanceof HTMLInputElement) {
+    card = { ...card, folded: target.checked };
+    return changed();
+  }
   if (target.id === "autoRibsRimOn" && target instanceof HTMLInputElement) {
     card = { ...card, holeRim: { ...card.holeRim, on: target.checked } };
     return paint();
@@ -1920,6 +1935,7 @@ function wallExtent(): number {
 // --- For tests: the panel's state, read from the page (window.__limeAutoRibs).
 (globalThis as { __limeAutoRibs?: unknown }).__limeAutoRibs = {
   card: () => card,
+  wall: () => (read?.wall ? { faces: read.wall.faces, folded: read.wall.report.faces.folded ?? [] } : null),
   run: () => ({ phase: run.phase, stage: run.stage, fraction: run.fraction, ribs: run.ribs.length, plan: run.plan ? { ribs: run.plan.ribs.length, stoppedEarly: run.plan.stoppedEarly } : null, removed: run.removed }),
   body: () => ranWith?.body ?? null,
   plan: () => run.plan,
