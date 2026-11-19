@@ -108,8 +108,10 @@ export interface RibPlanResult {
 }
 
 /**
- * The stand-in's per-case result for two or more weights. The heaviest case takes the combined factor; a lighter case
- * takes a share of the gain in proportion to its weight. One weight, or none, is not a case list.
+ * The browser stand-in's per-case result, for the panel test only. `fakePlanSource` uses it so a run with two weights
+ * can show a factor per case without the engine. The heaviest case takes the combined factor; a lighter case takes a
+ * share of the gain in proportion to its weight. These are not the planner's `caseFactors`. One weight, or none, is
+ * not a case list.
  */
 export function caseOutcomes(combined: number, bareMm: number, weights: readonly number[]): { factor: number; bareMm: number; ribbedMm: number }[] {
   if (weights.length < 2) return [];

@@ -190,7 +190,7 @@ eq("ribs_plan's request gives its wall", cardFromRibNet({ kind: "ribNet", auto: 
 eq("a typed network has no request", cardFromRibNet({ kind: "ribNet" }), null);
 eq("a stored card that is not one", cardFromStored({ zones: [] }), null);
 
-// --- The request the panel's cases build: the same shape ribs_plan sends. One load stays `loads` alone.
+// --- The request the panel's cases build. One load stays `loads` alone. A blank name is Case N, as ribs_plan names one.
 const force = { kind: "force" as const, faces: [6], magnitude: 10, direction: [0, 0, -1] as [number, number, number] };
 const pressure = { kind: "pressure" as const, faces: [6], magnitude: 0.01, direction: [0, 0, -1] as [number, number, number] };
 eq("one load: loads only, no cases and no weights", loadRequest([force], undefined), { loads: [force] });
@@ -198,6 +198,7 @@ eq("a single case stays the one load", loadRequest([force], [{ name: "only", wei
 const two = loadRequest([], [{ name: "spread", weight: 1, loads: [pressure] }, { name: "point", weight: 4, loads: [force] }]);
 eq("two cases: loadCases and caseWeights, and no loads beside them", two, { loads: [], loadCases: [{ name: "spread", loads: [pressure] }, { name: "point", loads: [force] }], caseWeights: [1, 4] });
 eq("a weight that is not above zero is 1", loadRequest([], [{ name: "a", weight: 0, loads: [force] }, { name: "b", weight: -2, loads: [pressure] }]).caseWeights, [1, 1]);
+eq("a blank name is Case N", loadRequest([], [{ name: "  ", weight: 1, loads: [pressure] }, { name: "", weight: 2, loads: [force] }]).loadCases?.map((row) => row.name), ["Case 1", "Case 2"]);
 const kept = [{ name: "spread", weight: 1, loads: [pressure] }, { name: "point", weight: 4, loads: [force] }];
 const back = cardFromStored({ ...newAutoRibsCard(), picked: [6], loads: [], cases: kept });
 eq("two cases come back with the card", back?.cases, kept);

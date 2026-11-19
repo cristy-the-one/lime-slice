@@ -113,15 +113,16 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
 }
 
 /**
- * What the panel sends for its loads, and what ribs_plan sends for the same cases: one load is `loads` alone, and two
- * or more are `loadCases` plus `caseWeights` (no `loads`, since the wall takes one or the other).
+ * What the panel sends for its loads: one load is `loads` alone, and two or more are `loadCases` plus `caseWeights`
+ * (no `loads`, since the wall takes one or the other). A blank name is "Case 1", "Case 2", …, the same words ribs_plan
+ * gives an unnamed case.
  */
 export function loadRequest(loads: StudyLoad[], cases: PanelLoadCase[] | undefined): { loads: StudyLoad[]; loadCases?: { name: string; loads: StudyLoad[] }[]; caseWeights?: number[] } {
   if (!cases || cases.length < 2) return { loads };
   const kept = cases.slice(0, MAX_LOAD_CASES);
   return {
     loads: [],
-    loadCases: kept.map((row) => ({ name: row.name.trim() || "Case", loads: row.loads })),
+    loadCases: kept.map((row, i) => ({ name: row.name.trim() || `Case ${i + 1}`, loads: row.loads })),
     caseWeights: kept.map((row) => (Number.isFinite(row.weight) && row.weight > 0 ? row.weight : 1)),
   };
 }

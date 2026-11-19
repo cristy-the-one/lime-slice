@@ -5,10 +5,10 @@ import type { StudyLoad } from "../src/sim/study.ts";
 import { findFloor, openCard, openPart, primary, shot } from "./auto-ribs-box";
 
 /**
- * Two named load cases on the synthetic box. The panel and the stand-in share loadRequest and caseOutcomes, so the
- * factors on screen are the plan's for the request the panel sent.
+ * Two named load cases on the synthetic box. The panel and the browser stand-in share loadRequest and caseOutcomes,
+ * so the factors on screen are the stand-in's for the request the panel sent. caseOutcomes is not the planner.
  */
-test("two load cases with different weights show each factor, equal to the plan on that request", async ({ page }) => {
+test("two load cases with different weights show each factor, equal to the stand-in on that request", async ({ page }) => {
   test.setTimeout(180_000);
   await openPart(page, { stress: true });
   const floor = await findFloor(page);
