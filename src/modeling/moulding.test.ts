@@ -157,7 +157,7 @@ const rib = (points: V3[], section: MouldSection, height: number, wall: number, 
     JSON.stringify(rows),
   );
   // Measured by junctionDiameter on the default section. Every row is over 1.2; nothing is changed to pass it.
-  const junctionWant = [1.2213888888888889, 1.2127754681746374, 1.2066666666666666, 1.2152295074071757, 1.2091666666666667, 1.2014900470669965];
+  const junctionWant = [1.2213888888888889, 1.212775050331169, 1.2066666666666666, 1.2152292606027406, 1.2091666666666667, 1.2014899584150276];
   check(
     "junction/wall stays over 1.2 on every default row",
     junction.length === junctionWant.length && junction.every((value, i) => near(value, junctionWant[i]!, 1e-12) && value > MOULD_JUNCTION_RATIO),

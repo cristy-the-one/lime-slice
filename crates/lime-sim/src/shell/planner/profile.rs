@@ -335,11 +335,23 @@ impl RibProfile {
     }
 }
 
+/// The reply rounds a section width to 6 decimals. Rounding the exact width
+/// up puts the base over 0.6, so this stops on the 6-decimal millimetre at
+/// or under it. The panel's `wireWidthMm` is the same step.
+fn wire_width_mm(mm: f64) -> f64 {
+    if !mm.is_finite() {
+        return mm;
+    }
+    (mm * 1e6).floor() / 1e6
+}
+
 /// Half-height width of the moulded default, so the base at `height` is
 /// [`MOULD_BASE_RATIO`] × `wall`. Draft stays [`DRAFT_DEG`]. The panel's
 /// copy is `mouldedDefaultWidth`; both are the one rule for that language.
 pub fn moulded_default_width(wall: f64, height: f64) -> f64 {
-    (MOULD_BASE_RATIO * wall - height * DRAFT_DEG.to_radians().tan()).max(MIN_DEFAULT_WIDTH_MM)
+    wire_width_mm(
+        (MOULD_BASE_RATIO * wall - height * DRAFT_DEG.to_radians().tan()).max(MIN_DEFAULT_WIDTH_MM),
+    )
 }
 
 /// Root radius of the moulded default, mm. Half the top width, or
@@ -461,12 +473,12 @@ mod tests {
     #[test]
     fn moulded_default_matches_the_panel_table() {
         let rows: [(f64, f64, f64, f64, bool); 6] = [
-            (2.0, 2.0, 1.1650898701435648, 0.5650898701435648, false),
-            (2.0, 4.0, 1.1301797402871296, 0.5301797402871297, false),
-            (2.0, 6.0, 1.0952696104306945, 0.5, true),
-            (3.0, 3.0, 1.747634805215347, 0.8476348052153471, false),
-            (3.0, 6.0, 1.6952696104306944, 0.7952696104306944, false),
-            (3.0, 9.0, 1.6429044156460415, 0.75, true),
+            (2.0, 2.0, 1.165089, 0.5650894350717824, false),
+            (2.0, 4.0, 1.130179, 0.5301793701435649, false),
+            (2.0, 6.0, 1.095269, 0.5, true),
+            (3.0, 3.0, 1.747634, 0.8476344026076735, false),
+            (3.0, 6.0, 1.695269, 0.7952693052153472, false),
+            (3.0, 9.0, 1.642904, 0.75, true),
         ];
         for (wall, height, width, root, clamped) in rows {
             let w = moulded_default_width(wall, height);

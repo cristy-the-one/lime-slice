@@ -34,9 +34,18 @@ const MIN_DEFAULT_WIDTH_MM = 0.4;
  * {@link MOULD_BASE_RATIO} × `wall`. Draft stays {@link MOULD_DRAFT_DEG}. One place: the panel and
  * `ribs_plan` both call `ribRules`, which calls this. The planner's copy is `moulded_default_width`.
  */
+/**
+ * The planner's reply rounds a section width to 6 decimals (`r6`). Rounding the exact
+ * width up puts the base over 0.6, so the width stops on the 6-decimal millimetre at or under it.
+ */
+function wireWidthMm(mm: number): number {
+  if (!Number.isFinite(mm)) return mm;
+  return Math.floor(mm * 1e6) / 1e6;
+}
+
 export function mouldedDefaultWidth(wall: number, height: number): number {
   const tan = Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
-  return Math.max(MIN_DEFAULT_WIDTH_MM, MOULD_BASE_RATIO * wall - height * tan);
+  return wireWidthMm(Math.max(MIN_DEFAULT_WIDTH_MM, MOULD_BASE_RATIO * wall - height * tan));
 }
 
 /**

@@ -35,17 +35,19 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   check("resin is 0.8 of the wall", near(ribRules({ ...base, process: "resin" }).width, 1.6));
   const moulded = ribRules({ ...base, process: "moulded" });
   const mouldedWidth = mouldedDefaultWidth(2, 6);
-  check("moulded width is the shared rule at 3 × the wall, so the base is 0.6", near(moulded.width, mouldedWidth) && near(mouldedWidth + 6 * Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180), MOULD_BASE_RATIO * 2, 1e-12), String(moulded.width));
+  const replied = Math.round(mouldedWidth * 1e6) / 1e6;
+  const repliedBase = replied + 6 * Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
+  check("moulded width is the shared rule at 3 × the wall, so the base is 0.6", near(moulded.width, mouldedWidth) && repliedBase <= MOULD_BASE_RATIO * 2 && near(repliedBase, MOULD_BASE_RATIO * 2, 1e-6), String(moulded.width));
   check("a typed moulded width is kept", near(ribRules({ ...base, process: "moulded", given: { width: 1.4 } }).width, 1.4));
   check("the moulded sentence says the base, and the root clamp in one sentence", moulded.defaults.some((row) => row.includes("0.6 × the wall at the rib's base")) && moulded.defaults.some((row) => row === "root radius half the top width, or 0.25 × the wall when half the top is smaller"), JSON.stringify(moulded.defaults));
   // The same six widths and roots the crate test locks, so the two languages match.
   const shared: [number, number, number, number, boolean][] = [
-    [2, 2, 1.1650898701435648, 0.5650898701435648, false],
-    [2, 4, 1.1301797402871296, 0.5301797402871297, false],
-    [2, 6, 1.0952696104306945, 0.5, true],
-    [3, 3, 1.747634805215347, 0.8476348052153471, false],
-    [3, 6, 1.6952696104306944, 0.7952696104306944, false],
-    [3, 9, 1.6429044156460415, 0.75, true],
+    [2, 2, 1.165089, 0.5650894350717824, false],
+    [2, 4, 1.130179, 0.5301793701435649, false],
+    [2, 6, 1.095269, 0.5, true],
+    [3, 3, 1.747634, 0.8476344026076735, false],
+    [3, 6, 1.695269, 0.7952693052153472, false],
+    [3, 9, 1.642904, 0.75, true],
   ];
   check(
     "moulded width and root match the crate table, clamped only at 3 × wall",
