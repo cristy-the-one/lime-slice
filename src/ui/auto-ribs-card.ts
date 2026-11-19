@@ -179,6 +179,8 @@ let liveDrawn = new Map<number, DrawnRib>();
 
 /** The run's request and the read it came from: what the plan answers. */
 let ranWith: { key: string; goal: PlanGoal; body: RibPlanBody; wall: RibWall; solid: AutoRibsSolid; caseNames: string[] | null; process: RibProcess } | null = null;
+/** Tests set the build axis the resin plan uses. Absent: the part as it sits. */
+let buildOverride: V3 | null = null;
 let balancedFactor: number | null = null;
 let edit: { head: string } | null = null;
 let applying = false;
@@ -236,6 +238,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
         <p class="model-note" id="autoRibsMouldingTitle">Moulding</p>
         <ul class="ar-lines" id="autoRibsMouldingList" aria-label="Moulding"></ul>
       </div>
+      <p class="model-note" id="autoRibsVents" hidden></p>
       <p class="model-note ar-faint" id="autoRibsRelative">${RELATIVE_NOTE}</p>
       <ul class="tc-list ar-ribs" id="autoRibsList" aria-label="Planned ribs"></ul>
       <p class="model-note is-warn" id="autoRibsEditedNote" hidden></p>
@@ -620,7 +623,9 @@ export async function autoRibsPrimary() {
 }
 
 function planStale(): boolean {
-  return !!ranWith && (ranWith.key !== readKey() || JSON.stringify(ranWith.goal) !== JSON.stringify(currentGoal()) || JSON.stringify(ranWith.body.rules) !== JSON.stringify(bodyRules(ranWith.wall)));
+  const axis = JSON.stringify(ranWith?.body.buildAxis ?? null);
+  const now = JSON.stringify(ranWith?.process === "resin" ? (buildOverride ?? host?.build() ?? null) : null);
+  return !!ranWith && (ranWith.key !== readKey() || JSON.stringify(ranWith.goal) !== JSON.stringify(currentGoal()) || JSON.stringify(ranWith.body.rules) !== JSON.stringify(bodyRules(ranWith.wall)) || axis !== now);
 }
 
 function currentGoal(): PlanGoal {
@@ -661,7 +666,8 @@ async function startRun() {
   const material = host.material();
   materialNote = material?.note ?? "";
   const asked = loadRequest(card.loads, card.cases);
-  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
+  const buildAxis = buildOverride ?? host.build();
+  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}), ...(card.ribs.process === "resin" ? { vent: true, buildAxis } : {}) };
 
   generation += 1;
   const mine = generation;
@@ -992,6 +998,13 @@ function paintResult() {
       if (i === all.length - 1 && plan.notBetterThanBaseline) li.className = "is-warn";
       return li;
     }));
+  }
+  const vents = $<HTMLElement>("#autoRibsVents");
+  if (vents) {
+    const n = plan.vents?.pockets.length ?? 0;
+    const show = ranWith?.process === "resin" && n > 0;
+    vents.hidden = !show;
+    vents.textContent = show ? `${n} pocket${n === 1 ? "" : "s"} vented` : "";
   }
   const moulding = $<HTMLElement>("#autoRibsMoulding");
   const mouldingList = $<HTMLElement>("#autoRibsMouldingList");
@@ -1964,4 +1977,8 @@ function wallExtent(): number {
   plan: () => run.plan,
   zonesRead: () => (read?.wall ? read.wall.report.zones : null),
   faceRibs: () => faceRibs.map((rib) => ({ points: rib.points, heights: rib.heights })),
+  setBuild: (axis: V3) => {
+    buildOverride = axis;
+    paint();
+  },
 };

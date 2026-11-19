@@ -245,6 +245,15 @@ pub struct RibPlanBody {
     /// One weight per load case. Empty weighs every case at 1.
     #[serde(default)]
     pub case_weights: Vec<f64>,
+    /// Resin only. Filament and moulded omit it, and the plan is unchanged.
+    #[serde(default)]
+    pub vent: bool,
+    /// Away from the plate, toward the tank. Omitted: +Z.
+    #[serde(default, rename = "buildAxis")]
+    pub build_axis: Option<[f64; 3]>,
+    /// The wall's outer border is a side wall. Omitted: the edge is open.
+    #[serde(default, rename = "risingBorder")]
+    pub rising_border: bool,
 }
 
 /// The default material: a PETG-like placeholder. Only ratios matter for
@@ -538,6 +547,16 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         rules,
         goal,
         options,
+        vent: body.vent,
+        build_axis: {
+            let axis = body.build_axis.unwrap_or([0.0, 0.0, 1.0]);
+            let n = axis.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if !axis.iter().all(|v| v.is_finite()) || n < 1e-9 {
+                return Err("buildAxis is three finite numbers, not all zero.".into());
+            }
+            axis
+        },
+        rising_border: body.rising_border,
     })
 }
 
@@ -694,6 +713,21 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "baselines": r6(s.baselines), "solver": r6(s.solver), "total": r6(s.total),
         },
     });
+    // Resin only. Filament and moulded leave the key off, so their replies stay as they were.
+    if let Some(vents) = &plan.vents {
+        out["vents"] = json!({
+            "sizeMm": r6(vents.size_mm),
+            "factorBefore": r6(vents.factor_before),
+            "factorAfter": r6(vents.factor_after),
+            "mouseHoleFactor": r6(vents.mouse_hole_factor),
+            "notch": "gap",
+            "pockets": vents.pockets.iter().map(|p| json!({
+                "rib": p.rib,
+                "at": p6(&p.at),
+                "sizeMm": r6(p.size_mm),
+            })).collect::<Vec<_>>(),
+        });
+    }
     // Only a worst-case plan has one, and the tool asks for weighted plans.
     if !plan.worst_trace.is_empty() {
         out["worstTrace"] = json!(plan

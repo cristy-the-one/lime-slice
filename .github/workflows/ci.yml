@@ -445,6 +445,8 @@ jobs:
           node --experimental-strip-types mcp/folded-shell-occt.test.ts
           # Moulding report on a small synthetic shelled box. Kept here so the shared Open CASCADE job stays within its 25 minutes.
           node --experimental-strip-types mcp/moulding-occt.test.ts
+          # Resin vent notches on the same small box. Kept here so the shared Open CASCADE job stays within its 25 minutes.
+          node --experimental-strip-types mcp/vents-occt.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:
