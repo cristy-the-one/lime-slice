@@ -311,6 +311,8 @@ pub(super) fn retouch_layer(
                 if pieces.len() != 1
                     || pieces[0].points.len() != path.points.len()
                     || pieces[0].speed != path.speed
+                    || pieces[0].accel != path.accel
+                    || pieces[0].travel_accel != path.travel_accel
                     || pieces[0].flow != path.flow
                     || pieces[0].fan != path.fan
                     || pieces[0].fan_role != path.fan_role

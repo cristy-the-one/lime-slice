@@ -458,7 +458,10 @@ pub(crate) fn retouch(
     first: &crate::gcode::FirstLayer,
 ) -> Vec<Extrusion> {
     if slow_all {
-        return vec![slow(path, first.cap(path.kind))];
+        // A later copy's first layer is that copy's first layer: travel into it is gentle too.
+        let mut whole = slow(path, first.cap(path.kind), first);
+        whole.travel_accel = first.accel(whole.travel_accel);
+        return vec![whole];
     }
     if !matches!(path.kind, PathKind::Outer | PathKind::Wall | PathKind::Support) {
         return vec![path.clone()];
@@ -475,14 +478,16 @@ pub(crate) fn retouch(
         return vec![path.clone()];
     }
     if on.iter().all(|hit| *hit) {
-        return vec![slow(path, first.speed)];
+        return vec![slow(path, first.speed, first)];
     }
-    split_contact(path, &on, first.speed)
+    split_contact(path, &on, first)
 }
 
-fn slow(path: &Extrusion, speed: f64) -> Extrusion {
+/// What touches the belt prints like a first layer: its feed, its accel when the printer names one, more flow, no fan.
+fn slow(path: &Extrusion, speed: f64, first: &crate::gcode::FirstLayer) -> Extrusion {
     let mut path = path.clone();
     path.speed = path.speed.min(speed);
+    path.accel = first.accel(path.accel);
     path.flow *= WALL_FLOW;
     path.fan = 0;
     path.fan_role = FanRole::Off;
@@ -491,7 +496,8 @@ fn slow(path: &Extrusion, speed: f64) -> Extrusion {
 
 /// Split an outer wall into contact and free runs. A contact run under 0.8 mm
 /// stays at the path's own speed: a corner speck is not a belt wall.
-fn split_contact(path: &Extrusion, on: &[bool], speed: f64) -> Vec<Extrusion> {
+fn split_contact(path: &Extrusion, on: &[bool], first: &crate::gcode::FirstLayer) -> Vec<Extrusion> {
+    let speed = first.speed;
     let mut groups = Vec::new();
     let mut start = 0usize;
     for i in 1..=on.len() {
@@ -517,7 +523,7 @@ fn split_contact(path: &Extrusion, on: &[bool], speed: f64) -> Vec<Extrusion> {
     }
     if merged.len() == 1 {
         return vec![if merged[0].2 {
-            slow(path, speed)
+            slow(path, speed, first)
         } else {
             path.clone()
         }];
@@ -542,7 +548,7 @@ fn split_contact(path: &Extrusion, on: &[bool], speed: f64) -> Vec<Extrusion> {
             piece.flow_frac = slice_frac(&path.flow_frac, from, end);
         }
         if contact {
-            piece = slow(&piece, speed);
+            piece = slow(&piece, speed, first);
         }
         out.push(piece);
     }

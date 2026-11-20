@@ -1320,10 +1320,12 @@ const PAST_STARTS: Record<string, string[]> = {
 };
 
 /**
- * The IR3 V2's own numbers (owner, 2026-11-20): Lime Slice's speeds, with a gentle first layer for belt adhesion and a
- * slightly softer outer wall. Only accelerations lower than the blend's own are set; every speed stays the blend's.
+ * The IR3 V2's own numbers (owner, 2026-11-20), for adhesion on the belt: the first layer, and every later layer's
+ * belt-contact edge, at 25 mm/s (30 elsewhere) and 500 mm/s², and a slightly softer outer wall. Every other feed and
+ * accel stays the blend's own.
  */
 export const IR3_V2_SPEEDS: PrinterSpeeds = {
+  firstLayer: 25,
   outerWallAccel: 2000,
   firstLayerAccel: 500,
 };

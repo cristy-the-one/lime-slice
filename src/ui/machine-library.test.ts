@@ -475,7 +475,7 @@ check("a corrupt library grows the built-ins back", restored.printers.some((prin
   const ir3Row = lib.printers.find((printer) => printer.id === "ideaformer-ir3-v2")!;
   const lime = lib.printers.find((printer) => printer.id === "lime-220")!;
   const pla = lib.filaments[0]!;
-  check("the IR3 V2 carries the owner's speeds", JSON.stringify(ir3Row.speeds) === JSON.stringify(IR3_V2_SPEEDS) && IR3_V2_SPEEDS.firstLayerAccel === 500 && IR3_V2_SPEEDS.outerWallAccel === 2000 && IR3_V2_SPEEDS.outerWall === undefined && IR3_V2_SPEEDS.firstLayer === undefined);
+  check("the IR3 V2 carries the owner's speeds", JSON.stringify(ir3Row.speeds) === JSON.stringify(IR3_V2_SPEEDS) && IR3_V2_SPEEDS.firstLayerAccel === 500 && IR3_V2_SPEEDS.outerWallAccel === 2000 && IR3_V2_SPEEDS.outerWall === undefined && IR3_V2_SPEEDS.firstLayer === 25 && IR3_V2_SPEEDS.firstLayerInfill === undefined);
   check("the IR3 V2 sends its speeds", JSON.stringify(enginePrinter(ir3Row, pla, 0.4).speeds) === JSON.stringify(IR3_V2_SPEEDS));
   check("a printer without speeds sends no speeds key", !("speeds" in enginePrinter(lime, pla, 0.4)));
   // A library stored before the speeds existed: the built-in IR3 V2 takes the catalog's.

@@ -2,9 +2,12 @@
 //! the printer's numbers, the first layer keeps to its first-layer feeds and
 //! accel, and a printer that names none slices as it always has.
 
+use base64::Engine;
 use lime_slice_core::{
-    slice_configured, BlendMode, Mesh, PrinterProfile, PrinterSpeeds, SliceSettings, StrategyId,
+    slice_configured, slice_request, BlendMode, Job, Mesh, PrinterProfile, PrinterSpeeds,
+    SliceRequest, SliceSettings, StrategyId,
 };
+use serde_json::{json, Value};
 
 fn face(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> [[[f64; 3]; 3]; 2] {
     [[a, b, c], [a, c, d]]
@@ -202,9 +205,10 @@ fn the_slider_ends_move_with_the_printer() {
     assert!(ir3_speed > 96.0);
 }
 
-/// The built-in IR3 V2's block (src/ui/machine-library.ts): accelerations only.
+/// The built-in IR3 V2's block (src/ui/machine-library.ts): a slower, gentler first layer and a softer outer wall.
 fn ir3_v2() -> PrinterSpeeds {
     PrinterSpeeds {
+        first_layer: Some(25.0),
         outer_wall_accel: Some(2000.0),
         first_layer_accel: Some(500.0),
         ..PrinterSpeeds::default()
@@ -212,13 +216,17 @@ fn ir3_v2() -> PrinterSpeeds {
 }
 
 #[test]
-fn the_ir3_v2_keeps_every_feed_and_softens_only_the_first_layer_and_outer_wall() {
+fn the_ir3_v2_keeps_every_feed_but_the_first_layers_and_softens_only_the_first_layer_and_outer_wall() {
     let own = moves(&slice(default_blend(), &printer(None)));
     let ir3 = moves(&slice(default_blend(), &printer(Some(ir3_v2()))));
     assert_eq!(own.len(), ir3.len());
     for (a, b) in own.iter().zip(&ir3) {
-        assert!(a.layer == b.layer && a.kind == b.kind && (a.feed - b.feed).abs() < 1e-9, "a feed moved: {} {} {} -> {}", a.layer, a.kind, a.feed, b.feed);
+        assert!(a.layer == b.layer && a.kind == b.kind, "the moves differ at layer {}", a.layer);
+        // The first layer's 30 mm/s becomes 25; every other feed stays.
+        let want = if a.layer == 0 && (a.feed - 30.0).abs() < 1e-9 { 25.0 } else { a.feed };
+        assert!((b.feed - want).abs() < 1e-9, "a feed moved: {} {} {} -> {}", a.layer, a.kind, a.feed, b.feed);
     }
+    assert!(ir3.iter().any(|m| m.layer == 0 && (m.feed - 25.0).abs() < 1e-9), "no first-layer move at 25 mm/s");
     let first = ir3.iter().filter(|m| m.layer == 0).map(|m| m.accel).fold(0.0, f64::max);
     let own_first = own.iter().filter(|m| m.layer == 0).map(|m| m.accel).fold(0.0, f64::max);
     assert!(first <= 500.0 + 1e-6 && own_first > 500.0, "first layer {first}, before {own_first}");
@@ -228,4 +236,92 @@ fn the_ir3_v2_keeps_every_feed_and_softens_only_the_first_layer_and_outer_wall()
     for (a, b) in own.iter().zip(&ir3) {
         assert!(b.accel <= a.accel + 1e-6, "accel rose: {} {} {} -> {}", a.layer, a.kind, a.accel, b.accel);
     }
+}
+
+fn stl(mesh: &Mesh) -> String {
+    let mut out = String::from("solid part
+");
+    for t in &mesh.triangles {
+        out.push_str("facet normal 0 0 0
+outer loop
+");
+        for v in t {
+            out.push_str(&format!("vertex {} {} {}
+", v[0], v[1], v[2]));
+        }
+        out.push_str("endloop
+endfacet
+");
+    }
+    out.push_str("endsolid part
+");
+    out
+}
+
+/// Two copies of a block on a 45° belt, as the app sends it.
+fn belt_request(speeds: Option<Value>) -> SliceRequest {
+    let mut printer = json!({
+        "name": "belt", "nozzleDiameter": 0.4, "filamentDiameter": 1.75,
+        "nozzleTemp": 210, "bedTemp": 60, "bedX": 220, "bedY": 220,
+        "maxAccel": 20000, "maxVolumetricMm3S": 1000
+    });
+    if let Some(speeds) = speeds {
+        printer["speeds"] = speeds;
+    }
+    serde_json::from_value(json!({
+        "filename": "block.stl",
+        "dataB64": base64::engine::general_purpose::STANDARD.encode(stl(&block(12.0, 12.0, 3.0)).as_bytes()),
+        "layerHeight": 0.2,
+        "lineWidth": 0.45,
+        "baseline": false,
+        "compare": false,
+        "includePreview": false,
+        "includeGcode": true,
+        "printer": printer,
+        "belt": { "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 220.0, "copies": 2, "gapMm": 5.0 },
+    }))
+    .unwrap()
+}
+
+/// Belt-contact moves after the first layer: the walls and support feet retouched to the first-layer feed.
+fn contact_moves(all: &[Move]) -> Vec<&Move> {
+    all.iter()
+        .filter(|m| m.layer > 0 && (m.feed - 30.0).abs() < 1e-6)
+        .collect()
+}
+
+#[test]
+fn on_a_belt_everything_touching_the_belt_takes_the_first_layer_accel() {
+    let plain = slice_request(&belt_request(None), Job::default()).unwrap().gcode;
+    let empty = slice_request(&belt_request(Some(json!({}))), Job::default()).unwrap().gcode;
+    assert_eq!(plain, empty, "an empty speeds block changed a belt slice");
+    let gentle = slice_request(&belt_request(Some(json!({ "firstLayerAccel": 500 }))), Job::default())
+        .unwrap()
+        .gcode;
+    let before = moves(&plain);
+    let after = moves(&gentle);
+    let touched_before = contact_moves(&before);
+    let touched = contact_moves(&after);
+    assert!(!touched.is_empty(), "no belt-contact move after the first layer");
+    assert_eq!(touched.len(), touched_before.len(), "the contact edges moved");
+    assert!(
+        touched_before.iter().any(|m| m.accel > 500.0),
+        "the belt edges were already gentle, so this proves nothing"
+    );
+    for m in &touched {
+        assert!(m.accel <= 500.0 + 1e-6, "layer {} {} touches the belt at accel {}", m.layer, m.kind, m.accel);
+    }
+    // Moves clear of the belt keep their accel.
+    let free = after
+        .iter()
+        .filter(|m| m.layer > 0 && (m.feed - 30.0).abs() > 1e-6)
+        .map(|m| m.accel)
+        .fold(0.0, f64::max);
+    assert!(free > 500.0, "the whole part went gentle: {free}");
+    // The second copy's first layer is a first layer too.
+    let copy_first: Vec<&Move> = after
+        .iter()
+        .filter(|m| m.layer > 0 && m.feed <= 30.0 + 1e-6)
+        .collect();
+    assert!(copy_first.iter().all(|m| m.accel <= 500.0 + 1e-6));
 }
