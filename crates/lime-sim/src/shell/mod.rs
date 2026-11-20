@@ -40,8 +40,8 @@ mod tensor;
 pub use geometry::Frame;
 pub use membrane::MembraneKind;
 pub use model::{
-    ElementResult, LoadCase, Rib, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel,
-    ShellOptions, ShellResult, Timings, DRILL_PENALTY,
+    BucklingMode, BucklingSet, ElementResult, LoadCase, Rib, RibSide, ShellHold, ShellLoad,
+    ShellMesh, ShellModel, ShellOptions, ShellResult, Timings, DRILL_PENALTY,
 };
 pub use modes::{cluster_count, lower_generalized, ModeSet, ShellMode, CLUSTER_GAP};
 pub use rib_section::{RibSection, SectionProperties};

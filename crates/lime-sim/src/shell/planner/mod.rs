@@ -45,7 +45,10 @@
 
 mod baseline;
 mod field;
+mod buckling;
 mod frequency;
+
+pub use buckling::against_case;
 mod loose;
 mod profile;
 mod select;
@@ -213,6 +216,11 @@ pub enum Goal {
     /// A plan has one goal: this does not carry a stiffness target or a
     /// budget, and a request without it plans as a stiffness goal.
     Frequency { factor: f64 },
+    /// The wall holds at least this multiple of the chosen load before it
+    /// buckles. 1 buckles exactly at that load. `on` is the load-case
+    /// index when the request has two or more cases, and is absent
+    /// otherwise. One goal per plan.
+    Buckling { factor: f64, on: Option<usize> },
 }
 
 /// Tuning, with defaults that need no changing.
@@ -514,9 +522,23 @@ pub struct RibPlan {
     pub frequency_hz: Option<FrequencyHz>,
     /// Ribbed over bare lowest frequency. Absent on a stiffness plan.
     pub frequency_factor: Option<f64>,
+    /// Load factor before buckling, bare then ribbed, on the chosen case.
+    /// Absent on a plan that is not a buckling goal. 1 buckles exactly at
+    /// the load.
+    pub buckling_factor: Option<BucklingFactor>,
     /// Empty on a stiffness plan. A frequency plan records that the loads
-    /// were not part of the goal.
+    /// were not part of the goal. A buckling plan carries the ideal-load
+    /// warning, and the result sentence for what the ribs reached.
     pub notes: Vec<String>,
+}
+
+/// Bare and ribbed buckling load factor on the chosen load.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BucklingFactor {
+    pub bare: f64,
+    pub ribbed: f64,
+    /// The case the factor was solved on, when the request named one.
+    pub case_index: Option<usize>,
 }
 
 /// Bare and ribbed lowest natural frequency, Hz.
@@ -612,6 +634,8 @@ pub struct RibEvent {
     /// Ribbed over bare lowest frequency after this rib was added. Absent
     /// on a stiffness plan, whose events carry only the compliance.
     pub frequency_factor: Option<f64>,
+    /// Load factor after this rib was added. Absent except on a buckling plan.
+    pub buckling_factor: Option<f64>,
     pub fraction: f64,
 }
 
@@ -684,6 +708,7 @@ impl Reporter<'_> {
             compliance: cur.compliance,
             stiffness_factor: c0 / cur.compliance,
             frequency_factor: None,
+            buckling_factor: None,
             fraction: *last,
         }));
     }
@@ -710,6 +735,32 @@ impl Reporter<'_> {
             compliance: 0.0,
             stiffness_factor: 1.0,
             frequency_factor: Some(ratio),
+            buckling_factor: None,
+            fraction: *last,
+        }));
+    }
+
+    /// A rib a buckling plan accepted. `factor` is the load factor after it.
+    pub fn buckling_rib(
+        &self,
+        rib: &select::DRib,
+        pos: &[[f64; 3]],
+        design: &[select::DRib],
+        factor: f64,
+    ) {
+        let Some(p) = self.ctl.progress else { return };
+        let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        p(&PlanEvent::Rib(RibEvent {
+            change: RibChange::Added,
+            id: rib.id,
+            points: rib.chain.iter().map(|&v| pos[v as usize]).collect(),
+            heights: rib.heights(),
+            ribs: design.len(),
+            rib_volume_mm3: select::network_volume(pos, design),
+            compliance: 0.0,
+            stiffness_factor: 1.0,
+            frequency_factor: None,
+            buckling_factor: Some(factor),
             fraction: *last,
         }));
     }
@@ -733,6 +784,9 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     check(req)?;
     if matches!(req.goal, Goal::Frequency { .. }) {
         return frequency::plan(req, &rep, started);
+    }
+    if matches!(req.goal, Goal::Buckling { .. }) {
+        return buckling::plan(req, &rep, started);
     }
     let mut stats = PlanStats {
         input_triangles: req.mesh.triangles.len(),
@@ -805,6 +859,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             }),
             frequency_hz: None,
             frequency_factor: None,
+            buckling_factor: None,
             notes: Vec::new(),
         }
     };
@@ -1041,8 +1096,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
             Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
             Goal::Balanced => outcome.goal_met,
-            // A frequency plan returns before selection.
-            Goal::Frequency { .. } => false,
+            // A frequency or buckling plan returns before selection.
+            Goal::Frequency { .. } | Goal::Buckling { .. } => false,
         };
         // A budget is kept by the clean count too: the ribs cut into the
         // input mesh run through vertices snapped within a tenth of an edge,
@@ -1129,8 +1184,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
                 Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
                 Goal::Balanced => goal_met,
-                // A frequency plan returns before the vent block.
-                Goal::Frequency { .. } => false,
+                // A frequency or buckling plan returns before the vent block.
+                Goal::Frequency { .. } | Goal::Buckling { .. } => false,
             };
             // pocket.rib indexes the ribs this plan returns. A piece that did not embed is named, not dropped.
             let mut placed = Vec::new();
@@ -1300,6 +1355,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         vents,
         frequency_hz: None,
         frequency_factor: None,
+        buckling_factor: None,
         notes,
     })
 }
@@ -1713,6 +1769,24 @@ fn check(req: &RibPlanRequest) -> Result<(), SimError> {
                 _ => Err(SimError::new(
                     "A frequency goal needs the material's density.",
                 )),
+            }
+        }
+        Goal::Buckling { factor, on } => {
+            if !(factor.is_finite() && factor >= 1.0) {
+                return Err(SimError::new("A buckling goal must be 1 or more."));
+            }
+            let n = req.load_cases.len();
+            match on {
+                Some(_) if n < 2 => Err(SimError::new(
+                    "A buckling goal names a load case only when there is more than one.",
+                )),
+                None if n >= 2 => Err(SimError::new(
+                    "A buckling goal needs the load case it is solved against.",
+                )),
+                Some(i) if i >= n => Err(SimError::new(
+                    "A buckling goal names a load case the request does not have.",
+                )),
+                _ => Ok(()),
             }
         }
         _ => Ok(()),

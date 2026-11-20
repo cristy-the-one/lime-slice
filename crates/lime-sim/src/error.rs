@@ -40,6 +40,14 @@ pub fn modal_refused() -> SimError {
     SimError::new("Modal analysis is not in this version.")
 }
 
+/// The pre-stress has no compressive membrane force, so the buckling
+/// pencil has no positive load factor. This is not a factor of zero.
+pub fn no_buckling_compression() -> SimError {
+    SimError::new(
+        "This load bends the wall but doesn't press along it, so it can't buckle it. Buckling needs a load along the wall, such as a push on its edge.",
+    )
+}
+
 pub fn bead_refused() -> SimError {
     SimError::new("A bead-by-bead model is not in this version.")
 }
