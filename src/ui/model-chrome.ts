@@ -25,6 +25,7 @@ import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { GEAR_DEFAULTS, gearRefusal, isBoreShape, type BoreShape, type GearFields } from "../model-gear";
+import { isPartKind, partProblem, partRowText, type PartKind, type PartSpec } from "../model-part";
 import { gearAt, nearestVerdict, verdictSentence, type WorldGear } from "../gear-pair";
 import { gearOf, isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { FEATURE_CHOICE_DEFAULTS, featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
@@ -313,6 +314,7 @@ const PRIMITIVE_ICONS: Record<PrimitiveKind, IconNode> = {
   polygon: Hexagon,
   tube: Disc,
   gear: Cog,
+  part: CircleDot,
 };
 
 /** What the Radius field means on each primitive that has one. */
@@ -637,6 +639,16 @@ export function mountModelChrome(next: ModelChromeHooks) {
       hooks?.paramsChanged();
       return;
     }
+    // A fastener's kind or nominal changes the row, the fields and the ghost at once.
+    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal")) {
+      if (ev.target.id === "modelPartKind") onPartKind();
+      syncFields();
+      refreshGhost();
+      refreshApply();
+      refreshNote();
+      hooks?.paramsChanged();
+      return;
+    }
     if (ev.target instanceof HTMLElement && ev.target.id === "modelChamferFlip") {
       paintChamferSide();
       refreshGhost();
@@ -669,7 +681,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind")) return;
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal")) return;
+    if (ev.target instanceof HTMLInputElement && ev.target.id === "modelPartLength") ev.target.dataset.touched = "1";
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
@@ -1081,6 +1094,14 @@ function fillEdit() {
     const kind = document.querySelector<HTMLSelectElement>("#modelGearKind");
     if (kind) kind.value = panel.rack ? "rack" : panel.ring ? "ring" : "external";
   }
+  if (panel.primitive === "part") {
+    const kind = document.querySelector<HTMLSelectElement>("#modelPartKind");
+    if (kind && panel.partKind) kind.value = panel.partKind;
+    const nominal = document.querySelector<HTMLSelectElement>("#modelPartNominal");
+    if (nominal && panel.nominal) nominal.value = panel.nominal;
+    const length = document.querySelector<HTMLInputElement>("#modelPartLength");
+    if (length) length.dataset.touched = "1";
+  }
   if (panel.plane) paintPlaneMode(panel.plane.mode);
   if (panel.hole) setHoleBoxes(panel.hole.through, panel.hole.counterbore);
   // --- A5. A stored step pick opens on that step; picked edges stay picked. ---
@@ -1340,6 +1361,7 @@ function syncFields() {
   // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
   // A field under a gear's More that only one kind of gear takes (Shift: an external gear's).
   document.querySelectorAll<HTMLElement>("#modelPanel [data-gear-kind]:not([data-for])").forEach((node) => node.toggleAttribute("hidden", !node.dataset.gearKind!.split(" ").includes(gearKind())));
+  document.querySelectorAll<HTMLElement>("#modelPanel [data-part-kind]:not([data-for])").forEach((node) => node.toggleAttribute("hidden", !node.dataset.partKind!.split(" ").includes(partKindNow())));
   document.querySelectorAll<HTMLElement>("#modelPanel [data-for], #modelPanel [data-when], #modelPanel [data-fontkind]").forEach((node) => {
     const forOk = !node.dataset.for || (!!tool && node.dataset.for.split(" ").includes(tool));
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
@@ -1372,7 +1394,8 @@ function syncFields() {
     const memberOk = node.dataset.member === undefined || hooks?.placeFrame() != null;
     // --- A gear's Flat is for a D bore.
     const gearBoreOk = (!node.dataset.gearBore || (node.dataset.gearBore === gearBoreShape() && gearKind() === "external")) && (!node.dataset.gearKind || node.dataset.gearKind.split(" ").includes(gearKind()));
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk));
+    const partOk = !node.dataset.partKind || node.dataset.partKind.split(" ").includes(partKindNow());
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk && partOk));
   });
   // --- A3 composite features ---
   // --- Text with real fonts: what the font picked allows, and the sample line, whenever the card shows.
@@ -1405,6 +1428,9 @@ function syncFields() {
   const radius = RADIUS_LABELS[kind] ?? "Radius";
   setLabel("#modelRadiusLabel", "#modelRadius", radius);
   setLabel("#modelHeightLabel", "#modelHeight", kind === "gear" ? "Thickness" : "Height");
+  const thick = document.querySelector<HTMLElement>("#modelPartThick")?.closest("label")?.querySelector("span");
+  if (thick) thick.textContent = partKindNow() === "hex" ? "Head height" : "Thickness";
+  paintPartNote();
   const flats = acrossFlats();
   setLabel("#modelAcrossLabel", "#modelAcross", flats ? "Across flats" : "Across corners", flats ? "Width across flats" : "Width across corners");
 }
@@ -1608,6 +1634,7 @@ export function fieldPrimitive(): PrimitiveSpec {
       across: num("#modelAcross"),
       flats: acrossFlats(),
       ...(primitiveKind() === "gear" ? { gear: gearFields() } : {}),
+      ...(primitiveKind() === "part" ? { part: partFields() } : {}),
     },
     [num("#modelX"), num("#modelY"), num("#modelZ")],
     [num("#modelRx"), num("#modelRy"), num("#modelRz")],
@@ -1682,6 +1709,51 @@ function gearFields(): GearFields {
     out.hubHeight = hubHeight;
   }
   return out;
+}
+
+/** The fastener kind on the card. */
+function partKindNow(): PartKind {
+  const value = document.querySelector<HTMLSelectElement>("#modelPartKind")?.value;
+  return isPartKind(value) ? value : "nut";
+}
+
+/** A socket starts at 25 mm under the head, a hex screw at 20, unless the length was typed or this is an edit. */
+function onPartKind() {
+  const length = document.querySelector<HTMLInputElement>("#modelPartLength");
+  if (length && !length.dataset.touched && !edit) length.value = partKindNow() === "hex" ? "20" : "25";
+}
+
+function partFields(): PartSpec {
+  const kind = partKindNow();
+  const nominal = document.querySelector<HTMLSelectElement>("#modelPartNominal")?.value || "M6";
+  const spec: PartSpec = { partKind: kind, nominal, height: 0 };
+  if (kind === "nut" || kind === "washer") {
+    spec.allowance = num("#modelPartAllowance");
+    spec.height = num("#modelPartThick");
+  }
+  if (kind === "socket" || kind === "hex") spec.length = num("#modelPartLength");
+  if (kind === "hex") spec.height = num("#modelPartThick");
+  if (kind === "socket") {
+    const head = num("#modelPartHeadH");
+    spec.headDiameter = num("#modelPartHeadD");
+    spec.headHeight = head;
+    spec.socketDepth = num("#modelPartSocket");
+    spec.height = head;
+  }
+  return spec;
+}
+
+function paintPartNote() {
+  const row = document.querySelector("#modelPartRow");
+  if (!row || primitiveKind() !== "part") return;
+  const fields = partFields();
+  row.textContent = partRowText(fields.partKind ?? "", fields.nominal ?? "M6");
+}
+
+/** The sentence a fastener is refused with before anything is sent; null for any other primitive, or a fine part. */
+function partRefused(): string | null {
+  if (primitiveKind() !== "part" || joinOpen() || (tool !== "create" && tool !== "boolean")) return null;
+  return partProblem(partFields());
 }
 
 /** The sentence a gear's numbers are refused with before anything is sent; null for any other primitive, or a fine gear. */
@@ -2056,7 +2128,7 @@ function refreshApply() {
     : stepBlend
       ? edgeStepKnown() && probeAllowsApply(current, probe)
       : modelApplyReady(current, picks, num("#modelFactor"), current === "split" && !!splitPlan()?.inside, probeAllowsApply(current, probe));
-  button.disabled = waiting || !current || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !ready || gearRefused() !== null;
+  button.disabled = waiting || !current || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !ready || gearRefused() !== null || partRefused() !== null;
 }
 
 function refreshNote() {
@@ -2065,8 +2137,12 @@ function refreshNote() {
   let text = "";
   let bad = false;
   const gearNo = gearRefused();
+  const partNo = partRefused();
   if (gearNo) {
     text = gearNo;
+    bad = true;
+  } else if (partNo) {
+    text = partNo;
     bad = true;
   } else if (edit && hooks?.editUnchanged()) {
     text = tool === "fillet" || tool === "chamfer" ? "Change the size or the edges to update this step." : tool === "shell" ? "Change the thickness or the open faces to update this step." : "Change a number to update this step.";
@@ -2251,6 +2327,7 @@ function dragContext(): DragContext {
     primitive: primitiveKind(),
     ring: gearRing(),
     rack: gearKind() === "rack",
+    partKind: primitiveKind() === "part" ? partKindNow() : undefined,
     center,
     extent,
     split: tool === "split" ? splitPlan() : null,

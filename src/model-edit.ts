@@ -12,6 +12,7 @@ import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { BoreShape } from "./model-gear.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
+import { isPartKind, type PartKind } from "./model-part.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
 import { draftOp } from "./model-request.ts";
@@ -301,6 +302,9 @@ export interface EditPanel {
   /** A ring gear's step opens with the panel on Ring, a rack's on Rack. */
   ring?: boolean;
   rack?: boolean;
+  /** A fastener's kind and nominal, for the selects beside the numbers. */
+  partKind?: PartKind;
+  nominal?: string;
   /**
    * A split's base axis, and whether its normal is that axis turned around: a face split on a face that points down an
    * axis keeps the other side, which the panel's X, Y and Z cannot say on their own.
@@ -366,9 +370,10 @@ export function draftPanelOp(
 }
 
 /** The panel's choices that are not numbers: a polygon's Flats or Corners, a gear's bore shape. */
-function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack"> {
+function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack" | "partKind" | "nominal"> {
   if (spec.primitive === "polygon") return { flats: spec.flats ?? false };
   if (spec.primitive === "gear") return { boreShape: spec.boreShape ?? "round", ...(spec.internal ? { ring: true } : {}), ...(spec.rack ? { rack: true } : {}) };
+  if (spec.primitive === "part") return { partKind: isPartKind(spec.partKind) ? spec.partKind : "nut", nominal: spec.nominal || "M6" };
   return {};
 }
 
@@ -512,6 +517,20 @@ function sizeFields(spec: PrimitiveSpec): Record<string, number> {
         modelGearRim: spec.rim ?? 0,
         modelGearBack: spec.back ?? 0,
       };
+    case "part": {
+      const kind = spec.partKind ?? "nut";
+      const thick = spec.height > 0 ? spec.height : 0;
+      if (kind === "socket") {
+        return {
+          modelPartLength: spec.length ?? 25,
+          modelPartHeadD: spec.headDiameter ?? 0,
+          modelPartHeadH: spec.headHeight ?? thick,
+          modelPartSocket: spec.socketDepth ?? 0,
+        };
+      }
+      if (kind === "hex") return { modelPartLength: spec.length ?? 20, modelPartThick: thick };
+      return { modelPartAllowance: spec.allowance ?? 0, modelPartThick: thick };
+    }
   }
 }
 

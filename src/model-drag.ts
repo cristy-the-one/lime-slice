@@ -25,7 +25,7 @@ function isFeatureDrag(tool: ModelTool | null): tool is "pocket" | "boss" | "tex
 // --- end A3 ---
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
-const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack"];
+const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack", "modelPartLength", "modelPartAllowance"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
@@ -117,6 +117,8 @@ export interface DragContext {
   ring?: boolean;
   /** A gear card set to Rack (stage 3): a back knob under its bar. */
   rack?: boolean;
+  /** A fastener card's kind. Absent is a nut, so the default drag check has two knobs that do not meet. */
+  partKind?: "nut" | "socket" | "hex" | "washer";
   /** Centre and largest side of the open solid. */
   center: Vec3;
   extent: number;
@@ -350,6 +352,26 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
         knob("gear-hub", "modelGearHub", diag(back(axes[0]), axes[1]), "accent", "Hub ⌀", { rate: 2, min: 0 }),
         knob("gear-hub-height", "modelGearHubH", diag(axes[2], back(axes[0])), "z", "Hub height", { min: 0 }),
       ];
+    }
+    case "part": {
+      const kind = ctx.partKind;
+      const down: Vec3 = [-axes[2][0], -axes[2][1], -axes[2][2]];
+      const length = knob("part-length", "modelPartLength", down, "z", "Length", { min: 0, max: 200 });
+      const allowance = knob("part-allowance", "modelPartAllowance", axes[0], "accent", "Allowance", { min: 0, max: 1 });
+      if (kind === "socket") {
+        return [
+          length,
+          knob("part-head-d", "modelPartHeadD", axes[0], "accent", "Head diameter", { min: 0, rate: 2 }),
+          knob("part-head-h", "modelPartHeadH", axes[2], "z", "Head height", { min: 0 }),
+          knob("part-socket", "modelPartSocket", axes[1], "accent", "Socket depth", { min: 0 }),
+        ];
+      }
+      if (kind === "hex") return [length, knob("part-thick", "modelPartThick", axes[2], "accent", "Head height", { min: 0 })];
+      if (kind === "nut" || kind === "washer") {
+        return [knob("part-thick", "modelPartThick", axes[2], "z", "Thickness", { min: 0 }), allowance];
+      }
+      // No kind: the two fields the checklist always sees, on different axes.
+      return [length, allowance];
     }
   }
 }

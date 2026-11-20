@@ -1,6 +1,6 @@
 # Mechanical parts in the Model tab
 
-Status: plan. Not built. Implementation waits until after the 6.13.0 release. This file is the spec an implementation follows. The catalogue and the lust fixtures on `study/mech-components` (`docs/studies/mechanical-components.md`, PR #773) stay study material. They are not the product, and they are not copied into the kernel.
+Status: milestone 1 (fasteners, sections 4.1–4.4) is in review. The rest of this file is still the spec. The catalogue and the lust fixtures on `study/mech-components` (`docs/studies/mechanical-components.md`, PR #773) stay study material. They are not the product, and they are not copied into the kernel.
 
 The owner's direction on that PR: each part is a native Model-tab part, built by the modelling kernel the way the gear primitive is (`crates/lime-model-occt/src/tree/gear.rs`, `docs/plan-native-recipes.md` milestone 8).
 
@@ -313,8 +313,8 @@ As a boolean tool the same primitive takes `origin` or `centre` and `turn`, and 
 
 MCP, no new tool:
 
-- `solid_new {primitive:"part", kind:"nut", nominal:"M6"}`, and the same `primitive` for every kind above. A heat-set is `kind:"heat-set"` with `article:"RX-M3x5,7"`. A plate is `kind:"plate"` with `holeFor:"M4"`.
-- A boolean op carries the same `primitive`, `kind` and fields.
+- `solid_new {primitive:"part", kind:"nut", nominal:"M6"}`, and the same `primitive` for every kind above. A heat-set is `kind:"heat-set"` with `article:"RX-M3x5,7"`. A plate is `kind:"plate"` with `holeFor:"M4"`. `solid_new` accepts `kind` or `partKind`. Milestone 1 stores the fastener kind as `partKind` (decision 6).
+- A boolean op carries the same `primitive` and fields. Its fastener kind is `partKind`, because the op is already tagged `kind:"boolean"`.
 - The sentences in section 4 and 5 are the refusals (`gear.rs` is the pattern: one sentence, the limit it names).
 - The size tables are in `guide`, not in the default tool list. The guide's GT2 entry says "approximate GT2 groove", the same words as the card.
 
@@ -349,7 +349,7 @@ Measured against the analytic solid, at the default and at two other nominals (M
 
 **Kernel** (`cargo test -p lime-model-occt`, which the Rust tests job and the Windows Open CASCADE job already run with `LIME_REQUIRE_OCCT=1`):
 
-- Bounds within 0.02 mm of the analytic box. That tolerance is for the kernel's box against exact cylinders and planar hexes, not for a mesh.
+- Bounds within 0.02 mm of the analytic box. That tolerance is for the kernel's box against exact cylinders and planar hexes, not for a mesh. `model_describe` reads the mesh box. A part is tessellated at 0.01 mm so that box stays within 0.02 mm (decision 6). Other primitives stay at 0.05 mm.
 - Volume within 0.5 mm³ of the closed-form volume in sections 4 and 5, where one is given.
 - `model_check` equivalent in the kernel: the solid is closed, 0 open edges, 0 non-manifold edges.
 - The socket test places a point at `(0, 0, k − t/2)` outside the material, and a point at `(0, 0, k + 1)` outside the solid's box. A socket that starts at `z = k` fails the first point.
@@ -380,3 +380,4 @@ Each one is a PR to `main`, after 6.13.0, and each updates this file where the c
 3. **GT2.** The 0.75 mm by 1.41 mm rectangle ships, labelled "approximate GT2 groove" on the card and in the guide.
 4. **Shaft collar.** Stays parametric. No DIN 705 table.
 5. **Plate and L-bracket holes.** Sized by screw: **Hole for** is M3–M24 or Free diameter. A screw choice uses the ISO 273 medium clearance in section 4.8, plus a printer allowance (default 0.2 mm, range 0 to 1). Default M4, which drills 4.7 mm.
+6. **Fastener kind field, height, and the mesh box** (milestone 1). The kernel field is `partKind`, not `kind`. A boolean op is already tagged `kind`, and `Solid` is flattened into that op, so a second `kind` cannot be stored. `solid_new` still accepts `kind` and writes `partKind`. A boolean and a saved solid use `partKind`. `height` of 0 means the table row. The MCP `height` schema rejects 0, so a table size is the field left out; a positive `height` overrides the nut, the washer, the hex head, or the socket head. `model_describe`'s box is the mesh box, so a part is opened at chord 0.01 mm and later steps keep that tolerance. The shank meets the head on the shared face at z = 0. Milestone 1's kind select has only the Fasteners group.

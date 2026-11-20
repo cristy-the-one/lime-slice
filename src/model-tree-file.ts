@@ -6,6 +6,7 @@
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
 import { isBoreShape } from "./model-gear.ts";
+import { isPartKind } from "./model-part.ts";
 import { readLoftDrawing } from "./sketch/loft-file.ts";
 import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
@@ -701,6 +702,25 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   if (value.rack !== undefined) {
     if (typeof value.rack !== "boolean") return undefined;
     if (value.rack) spec.rack = true;
+  }
+  // A fastener (docs/plan-mech-parts.md). Dropping these would make the mesh empty and the history unreadable.
+  if (value.partKind !== undefined) {
+    if (!isPartKind(value.partKind)) return undefined;
+    spec.partKind = value.partKind;
+  }
+  if (value.nominal !== undefined) {
+    if (typeof value.nominal !== "string") return undefined;
+    spec.nominal = value.nominal;
+  }
+  for (const key of ["allowance", "length", "headDiameter", "headHeight", "socketDepth"] as const) {
+    const raw = value[key];
+    if (raw === undefined) continue;
+    if (!finite(raw)) return undefined;
+    spec[key] = raw;
+  }
+  if (value.boreKind !== undefined) {
+    if (value.boreKind !== "tap" && value.boreKind !== "thread") return undefined;
+    spec.boreKind = value.boreKind;
   }
   return spec;
 }

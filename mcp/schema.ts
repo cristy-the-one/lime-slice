@@ -62,7 +62,7 @@ const label = { type: "string", maxLength: 80, description: "Step name." };
 const objectName = { type: "string", minLength: 1, maxLength: 120, description: "Name in the app's object list." };
 /** A study region, spelled as the paint regions are. A sphere or a box does not renumber after a Model edit. */
 const simRegion = { type: "object", description: "{faces}, {sphere}, or {box}." };
-const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." };
+const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube", "part"], description: "Primitive." };
 const booleanKind = { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." };
 
 /** The fields every primitive takes, as solid_new names them. */
@@ -80,6 +80,14 @@ const primitiveFields = {
   sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
   across: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Polygon width." },
   flats: { type: "boolean", description: "Across flats." },
+  partKind: { enum: ["nut", "socket", "hex", "washer"], description: "Fastener. guide {topic:\"ops\", section:\"part\"}." },
+  nominal: { type: "string", description: "M3–M24. Default M6." },
+  allowance: { type: "number", minimum: 0, maximum: 1, description: "Nut or washer hole, mm." },
+  length: { type: "number", minimum: 0, maximum: 200, description: "Under the head, mm." },
+  headDiameter: { type: "number", minimum: 0, maximum: 1000, description: "Socket head ⌀. 0 is the row." },
+  headHeight: { type: "number", minimum: 0, maximum: 1000, description: "Socket head height. 0 is the row." },
+  socketDepth: { type: "number", minimum: 0, maximum: 1000, description: "Socket depth. 0 is the row." },
+  boreKind: { enum: ["tap", "thread"], description: "Nut bore. thread is refused." },
   origin: { ...vec3, description: "Box min corner, or round base centre, before the turn." },
   centre: { ...vec3, description: "Turn point: box middle, mid-axis." },
   turn: { ...vec3, description: "Degrees X, then Y, then Z." },
@@ -1485,12 +1493,13 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "solid_new",
-    description: "Add a primitive, a gear or a fit coupon, centred on X and Y on Z = 0. Needs Open CASCADE.",
+    description: "Add a primitive, a gear, a fastener or a fit coupon, centred on X and Y on Z = 0. Needs Open CASCADE.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         ...solidFields,
+        kind: { enum: ["nut", "socket", "hex", "washer"], description: "With primitive part. Same as partKind." },
         name: objectName,
         gear: { type: "object", description: "guide {kind:\"gear\"}." },
         coupon: {
@@ -1756,7 +1765,10 @@ export const TOOLS: ToolSpec[] = [
           additionalProperties: false,
           required: ["primitive"],
           description: "As solid_new takes it.",
-          properties: solidFields,
+          properties: {
+            ...solidFields,
+            kind: { enum: ["nut", "socket", "hex", "washer"], description: "With primitive part. Same as partKind." },
+          },
         },
         ops: { type: "array", maxItems: 1000, items: opPointer("One edit."), description: "Edits, in order; each and use expand first." },
         params: { type: "object", description: "This call only, e.g. {\"wallH\": 35}." },
