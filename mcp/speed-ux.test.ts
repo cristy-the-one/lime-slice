@@ -106,6 +106,37 @@ check("nearestTools('model_aply') suggests model_apply first", nearestTools("mod
   check("gcode_read reuses cached G-code without calling sliceGcode again", read.ok === true && gcodeCalls === 1 && Array.isArray(read.lines) && read.lines.length > 0, { read, gcodeCalls });
 }
 
+// 4b. When the slice worker restarts and parked G-code is gone, all three G-code tools refuse with slice-lost.
+{
+  const cube = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
+  const inner = fakeEngine();
+  const lostEngine = {
+    ...inner,
+    slicePollWire: (id: string) => {
+      const raw = JSON.parse(inner.slicePoll(id) as string) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
+      if (raw.status === "done" && raw.result) {
+        const wire = JSON.parse(raw.result) as Record<string, unknown>;
+        delete wire.gcode;
+        return JSON.stringify({ status: "done", stage: raw.stage, fraction: raw.fraction, hasParkedGcode: true, wire, error: null });
+      }
+      return JSON.stringify({ status: raw.status, stage: raw.stage, fraction: raw.fraction, hasParkedGcode: false, error: raw.error ?? null });
+    },
+    sliceGcode: () => JSON.stringify({ ok: false, error: "That slice job is not in this session." }),
+  };
+  const session = new Session(lostEngine);
+  await session.call("mesh_import", { path: cube });
+  const sliced = await session.call("slice_start", { wait: true });
+  check("slice_start {wait: true} completes before simulated slicer restart", sliced.ok === true && sliced.status === "done", sliced);
+  const sum = await session.call("gcode_summary", {});
+  const rd = await session.call("gcode_read", { fromLine: 1, count: 5 });
+  const exp = await session.call("gcode_export", { name: "lost.gcode" });
+  const isLost = (row: Record<string, unknown>) =>
+    row.ok === false && row.code === "slice-lost" && /slicer restarted/i.test(String(row.reason));
+  check("gcode_summary refuses with slice-lost when parked G-code is gone", isLost(sum), sum);
+  check("gcode_read refuses with slice-lost when parked G-code is gone", isLost(rd), rd);
+  check("gcode_export refuses with slice-lost when parked G-code is gone", isLost(exp), exp);
+}
+
 // 5. plan_run reference error includes available keys to self-correct.
 {
   const session = new Session(fakeEngine());

@@ -134,14 +134,35 @@ export function prepareProject(project: LimeProject): PreparedProject {
 }
 
 /** Bounded cache of gzip+base64 packed records, so repeated saves and autosaves skip re-compressing unchanged meshes and B-reps. */
-const PACK_CACHE_MAX_ENTRIES = 24;
-const PACK_CACHE_MAX_CHARS = 32 * 1024 * 1024;
-const packCache = new Map<string, { raw: string; packed: string }>();
+export const PACK_CACHE_MAX_ENTRIES = 24;
+export const PACK_CACHE_MAX_CHARS = 32 * 1024 * 1024;
+type PackCacheEntry = { raw: string; packed: string; chars: number };
+const packCache = new Map<string, PackCacheEntry>();
+let packCacheMaxChars = PACK_CACHE_MAX_CHARS;
 let packCacheChars = 0;
+let packCacheHits = 0;
+let packCacheMisses = 0;
+
+/** Cache stats and reset, for unit tests. */
+export function packCacheStats(): { entries: number; chars: number; maxChars: number; hits: number; misses: number } {
+  return { entries: packCache.size, chars: packCacheChars, maxChars: packCacheMaxChars, hits: packCacheHits, misses: packCacheMisses };
+}
+
+export function resetPackCache(maxChars = PACK_CACHE_MAX_CHARS): void {
+  packCache.clear();
+  packCacheMaxChars = maxChars;
+  packCacheChars = 0;
+  packCacheHits = 0;
+  packCacheMisses = 0;
+}
 
 function packCacheGet(key: string, raw: string): string | null {
   const hit = packCache.get(key);
-  if (!hit || hit.raw !== raw) return null;
+  if (!hit || hit.raw !== raw) {
+    packCacheMisses += 1;
+    return null;
+  }
+  packCacheHits += 1;
   // Refresh LRU order.
   packCache.delete(key);
   packCache.set(key, hit);
@@ -149,20 +170,21 @@ function packCacheGet(key: string, raw: string): string | null {
 }
 
 function packCacheSet(key: string, raw: string, packed: string): void {
-  if (packed.length > PACK_CACHE_MAX_CHARS / 2) return;
+  const chars = raw.length + packed.length;
+  if (raw.length > packCacheMaxChars / 2 || chars > packCacheMaxChars) return;
   const prev = packCache.get(key);
   if (prev) {
-    packCacheChars -= prev.packed.length;
+    packCacheChars -= prev.chars;
     packCache.delete(key);
   }
-  packCache.set(key, { raw, packed });
-  packCacheChars += packed.length;
-  while (packCache.size > PACK_CACHE_MAX_ENTRIES || packCacheChars > PACK_CACHE_MAX_CHARS) {
+  packCache.set(key, { raw, packed, chars });
+  packCacheChars += chars;
+  while (packCache.size > PACK_CACHE_MAX_ENTRIES || packCacheChars > packCacheMaxChars) {
     const oldest = packCache.keys().next().value;
     if (oldest === undefined) break;
     const removed = packCache.get(oldest);
     packCache.delete(oldest);
-    if (removed) packCacheChars -= removed.packed.length;
+    if (removed) packCacheChars -= removed.chars;
   }
 }
 

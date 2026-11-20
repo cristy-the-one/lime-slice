@@ -483,15 +483,28 @@ function finished(this: Session, handle?: string): Job | null {
 }
 
 /** Materialize parked lazy G-code on demand the first time a G-code read, summary, or export asks for it. */
-async function ensureGcode(this: Session, job: Job): Promise<string | null> {
-  if (typeof job.gcode === "string") return job.gcode;
-  if (!job.hasParkedGcode || !this.engine.sliceGcode) return null;
-  const reply = JSON.parse(await this.ask(this.engine.sliceGcode(String(job.engineId)))) as { ok?: boolean; gcode?: string };
-  if (reply.ok === true && typeof reply.gcode === "string") {
-    job.gcode = reply.gcode;
-    return job.gcode;
+async function ensureGcode(this: Session, job: Job): Promise<{ gcode: string } | { refusal: Record<string, unknown> }> {
+  if (typeof job.gcode === "string") return { gcode: job.gcode };
+  if (!job.hasParkedGcode || !this.engine.sliceGcode) {
+    return { refusal: refuse("not-sliced", "Slice first.", undefined, NEXT.slice) };
   }
-  return null;
+  try {
+    const reply = JSON.parse(await this.ask(this.engine.sliceGcode(String(job.engineId)))) as { ok?: boolean; gcode?: string };
+    if (reply.ok === true && typeof reply.gcode === "string") {
+      job.gcode = reply.gcode;
+      return { gcode: job.gcode };
+    }
+  } catch {
+    // The slice worker restarted or errored while fetching parked G-code.
+  }
+  return {
+    refusal: refuse(
+      "slice-lost",
+      "The slicer restarted and this slice's G-code went with it. Slice again.",
+      { job: job.handle },
+      NEXT.slice,
+    ),
+  };
 }
 
 /**
@@ -501,7 +514,9 @@ async function ensureGcode(this: Session, job: Job): Promise<string | null> {
  */
 async function gcodeSummary(this: Session, handle?: string, lines = false): Promise<Record<string, unknown>> {
   const job = this.finished(handle);
-  if (!job?.wire || !(await this.ensureGcode(job))) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  if (!job?.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  const gcode = await this.ensureGcode(job);
+  if ("refusal" in gcode) return gcode.refusal;
   const stale = this.staleReason(job);
   if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const summary = this.summarize(job);
@@ -548,7 +563,9 @@ function customBlocks(this: Session): string[] {
 
 async function gcodeExport(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const job = this.finished(typeof input.job === "string" ? input.job : undefined);
-  if (!job || !(await this.ensureGcode(job))) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  if (!job?.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  const gcode = await this.ensureGcode(job);
+  if ("refusal" in gcode) return gcode.refusal;
   const stale = this.staleReason(job);
   if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const now = typeof input.now === "string" ? new Date(input.now) : new Date();
