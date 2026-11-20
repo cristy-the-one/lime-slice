@@ -45,14 +45,14 @@ const CHECK_PRESSURE = 0.01;
 const CHECK_CELL_MM = 2;
 
 /** The card the shell model uses for the selected filament (shared with ribs_plan), as the panel needs it. */
-function materialCard(): { card: MaterialCard; note: string } | null {
+function materialCard(): { card: MaterialCard; note: string; forFilament: boolean; id: string; polymer: string } | null {
   const library = loadMachineLibrary();
   const cards = cardsOf(library);
   const fallback = cards.find((card) => card.id === "inhouse-petg") ?? cards[0];
   if (!fallback) return null;
   const filament = selection(library)?.filament;
   const chosen = ribCardFor(cards, { name: filament?.name ?? "this filament", material: filament?.material ?? "" }, fallback);
-  return { card: chosen.card, note: chosen.row.note };
+  return { card: chosen.card, note: chosen.row.note, forFilament: chosen.row.forFilament, id: chosen.row.card, polymer: chosen.row.polymer };
 }
 
 /** The part as it was before the last Apply, for the Stress check: its study mesh and its faces. */
@@ -279,7 +279,7 @@ export function bindAutoRibs() {
     apply: applyNet,
     material() {
       const chosen = materialCard();
-      return chosen ? { e: chosen.card.EInPlaneMPa, nu: chosen.card.nu, note: chosen.note } : null;
+      return chosen ? { e: chosen.card.EInPlaneMPa, nu: chosen.card.nu, densityGCm3: chosen.card.densityGCm3, name: chosen.card.polymer, note: chosen.note, forFilament: chosen.forFilament, card: chosen.id, polymer: chosen.polymer } : null;
     },
     // The desktop's sim_study runs the check; a page under test may answer it (`__limeSimStudy`). A browser has neither.
     stressAvailable: () => isTauri() || typeof (globalThis as { __limeSimStudy?: unknown }).__limeSimStudy === "function",

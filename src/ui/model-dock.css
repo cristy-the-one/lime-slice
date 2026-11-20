@@ -770,7 +770,11 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-auto-ribs .ar-more { border-top: 1px solid var(--line); padding-top: var(--space-1); }
 .model-auto-ribs .ar-more > summary { font-size: var(--fs-2); color: var(--text); padding: 4px 0; cursor: pointer; }
 .model-auto-ribs .ar-modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; margin: 0 0 var(--space-2); }
+.model-auto-ribs .ar-modes.is-frequency { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .model-auto-ribs .ar-modes .btn.mode { min-width: 0; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html:not(.layout-compact) .model-dock .model-auto-ribs .ar-measure,
+.model-auto-ribs .ar-measure { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; margin: 0 0 var(--space-2); }
+.model-auto-ribs .ar-measure .btn.mode { flex: 1 1 auto; white-space: nowrap; }
 .model-auto-ribs .ar-slider input[type="range"] { width: 100%; accent-color: var(--accent); }
 .model-auto-ribs .ar-slider-ends { display: flex; justify-content: space-between; color: var(--text-faint); font-size: var(--fs-1); }
 .model-auto-ribs .model-fields { margin: 0 0 var(--space-2); }

@@ -511,6 +511,10 @@ pub enum LooseEndReason {
     NoRibZone,
     /// An extension reached an anchor, but the budget does not allow it.
     Budget,
+    /// A frequency plan left it where the trace stopped. It is not a
+    /// keep-clear zone and it is not the budget: the plan does not extend
+    /// or close it.
+    Open,
 }
 
 /// A rib end left in mid-wall.
@@ -582,6 +586,9 @@ pub struct RibEvent {
     pub rib_volume_mm3: f64,
     pub compliance: f64,
     pub stiffness_factor: f64,
+    /// Ribbed over bare lowest frequency after this rib was added. Absent
+    /// on a stiffness plan, whose events carry only the compliance.
+    pub frequency_factor: Option<f64>,
     pub fraction: f64,
 }
 
@@ -653,6 +660,33 @@ impl Reporter<'_> {
             rib_volume_mm3: select::network_volume(pos, design),
             compliance: cur.compliance,
             stiffness_factor: c0 / cur.compliance,
+            frequency_factor: None,
+            fraction: *last,
+        }));
+    }
+
+    /// A rib a frequency plan accepted. There is no compliance yet: the
+    /// stiffness solve runs once, after selection. `ratio` is the lowest
+    /// frequency over the bare wall's.
+    pub fn frequency_rib(
+        &self,
+        rib: &select::DRib,
+        pos: &[[f64; 3]],
+        design: &[select::DRib],
+        ratio: f64,
+    ) {
+        let Some(p) = self.ctl.progress else { return };
+        let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        p(&PlanEvent::Rib(RibEvent {
+            change: RibChange::Added,
+            id: rib.id,
+            points: rib.chain.iter().map(|&v| pos[v as usize]).collect(),
+            heights: rib.heights(),
+            ribs: design.len(),
+            rib_volume_mm3: select::network_volume(pos, design),
+            compliance: 0.0,
+            stiffness_factor: 1.0,
+            frequency_factor: Some(ratio),
             fraction: *last,
         }));
     }

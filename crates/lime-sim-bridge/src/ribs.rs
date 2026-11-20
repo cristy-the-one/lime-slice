@@ -27,7 +27,7 @@ use std::time::Instant;
 use lime_sim::shell::planner::{
     choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, LoadCombine, LooseEndReason, PlanControl, PlanEvent,
     PlanStage, PlannerOptions, Process, ProfileRules, RibChange, RibEndKind, RibPlan,
-    RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode, DRAFT_LOST_NOTE,
+    RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode,
 };
 use lime_sim::shell::{IsotropicShell, RibSection, RibSide, ShellHold, ShellLoad, ShellMesh};
 use serde::Deserialize;
@@ -112,13 +112,23 @@ fn positive() -> String {
     "positive".into()
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WireMaterial {
     /// Young's modulus, MPa.
     pub e: f64,
     pub nu: f64,
+    /// Mass density, g/cm³. A stiffness plan leaves it out. 1 g/cm³ is
+    /// 1e-9 N·s²/mm⁴, which is what [`IsotropicShell::with_density`] stores.
+    #[serde(default, rename = "densityGCm3")]
+    pub density_g_cm3: Option<f64>,
+    /// The card's name, used only when a frequency goal has no density.
+    #[serde(default)]
+    pub name: Option<String>,
 }
+
+/// g/cm³ to N·s²/mm⁴. 1 g/cm³ = 1000 kg/m³ = 1e-9 N·s²/mm⁴.
+const DENSITY_G_CM3_TO_N_S2_MM4: f64 = 1e-9;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -213,6 +223,11 @@ pub enum WireGoal {
         volume_mm3: f64,
     },
     Balanced,
+    /// Raise the lowest natural frequency by this factor. One goal: the
+    /// caller refuses a budget or another goal beside it.
+    Frequency {
+        factor: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -411,11 +426,13 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         triangles: wall.mesh.triangles.clone(),
         thickness: wall.mesh.thickness.clone(),
     };
-    let material = body.material.unwrap_or(WireMaterial {
+    let wire = body.material.clone().unwrap_or(WireMaterial {
         e: DEFAULT_E_MPA,
         nu: DEFAULT_NU,
+        density_g_cm3: None,
+        name: None,
     });
-    let material = IsotropicShell::new(material.e, material.nu).map_err(|e| e.message)?;
+    let mut material = IsotropicShell::new(wire.e, wire.nu).map_err(|e| e.message)?;
     let tri_count = wall.mesh.triangles.len();
     let holds = match &wall.holds {
         WireHolds::Given { holds } => {
@@ -516,6 +533,27 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         WireGoal::MaxDeflection { mm } => Goal::MaxDeflection(mm),
         WireGoal::Budget { volume_mm3 } => Goal::Budget { volume_mm3 },
         WireGoal::Balanced => Goal::Balanced,
+        WireGoal::Frequency { factor } => {
+            if !(factor.is_finite() && factor >= 1.0) {
+                return Err("A frequency goal must be 1 or more.".into());
+            }
+            match wire.density_g_cm3 {
+                Some(grams) if grams.is_finite() && grams > 0.0 => {
+                    material = material
+                        .with_density(grams * DENSITY_G_CM3_TO_N_S2_MM4)
+                        .map_err(|e| e.message)?;
+                }
+                _ => {
+                    let name = wire
+                        .name
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("The material");
+                    return Err(format!("{name} has no density."));
+                }
+            }
+            Goal::Frequency { factor }
+        }
     };
     let given = body.options.unwrap_or_default();
     let defaults = PlannerOptions::default();
@@ -597,22 +635,29 @@ pub fn event_json(event: &PlanEvent) -> Value {
             "stage": stage_name(*stage),
             "fraction": r6(*fraction),
         }),
-        PlanEvent::Rib(rib) => json!({
-            "kind": "rib",
-            "change": match rib.change {
-                RibChange::Added => "added",
-                RibChange::Changed => "changed",
-                RibChange::Removed => "removed",
-            },
-            "id": rib.id,
-            "points": rib.points.iter().map(p6).collect::<Vec<_>>(),
-            "heights": rib.heights.iter().map(|h| r6(*h)).collect::<Vec<_>>(),
-            "ribs": rib.ribs,
-            "ribVolumeMm3": r6(rib.rib_volume_mm3),
-            "compliance": r6(rib.compliance),
-            "stiffnessFactor": r6(rib.stiffness_factor),
-            "fraction": r6(rib.fraction),
-        }),
+        PlanEvent::Rib(rib) => {
+            let mut out = json!({
+                "kind": "rib",
+                "change": match rib.change {
+                    RibChange::Added => "added",
+                    RibChange::Changed => "changed",
+                    RibChange::Removed => "removed",
+                },
+                "id": rib.id,
+                "points": rib.points.iter().map(p6).collect::<Vec<_>>(),
+                "heights": rib.heights.iter().map(|h| r6(*h)).collect::<Vec<_>>(),
+                "ribs": rib.ribs,
+                "ribVolumeMm3": r6(rib.rib_volume_mm3),
+                "compliance": r6(rib.compliance),
+                "stiffnessFactor": r6(rib.stiffness_factor),
+                "fraction": r6(rib.fraction),
+            });
+            if let Some(factor) = rib.frequency_factor {
+                let extra = json!({ "frequencyFactor": r6(factor) });
+                out["frequencyFactor"] = extra["frequencyFactor"].clone();
+            }
+            out
+        }
     }
 }
 
@@ -675,6 +720,7 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "reason": match l.reason {
                 LooseEndReason::NoRibZone => "noRibZone",
                 LooseEndReason::Budget => "budget",
+                LooseEndReason::Open => "open",
             },
         })).collect::<Vec<_>>(),
         "stats": {
@@ -700,16 +746,20 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "baselines": r6(s.baselines), "solver": r6(s.solver), "total": r6(s.total),
         },
     });
-    // Only when a drafted rib lost its draft. An empty list, and the
-    // frequency notes, stay off the JSON so an unchanged plan stays unchanged.
-    let lost: Vec<&str> = plan
-        .notes
-        .iter()
-        .filter(|note| note.as_str() == DRAFT_LOST_NOTE)
-        .map(|note| note.as_str())
-        .collect();
-    if !lost.is_empty() {
-        out["notes"] = json!(lost);
+    // A frequency plan names Hz before and after and the ratio. A stiffness
+    // plan leaves those off. Notes are the draft-lost sentence, the
+    // frequency sentences, or both; an empty list stays off the JSON so an
+    // unchanged stiffness plan stays unchanged.
+    if let Some(hz) = plan.frequency_hz {
+        let extra = json!({ "frequencyHz": { "bare": r6(hz.bare), "ribbed": r6(hz.ribbed) } });
+        out["frequencyHz"] = extra["frequencyHz"].clone();
+    }
+    if let Some(factor) = plan.frequency_factor {
+        let extra = json!({ "frequencyFactor": r6(factor) });
+        out["frequencyFactor"] = extra["frequencyFactor"].clone();
+    }
+    if !plan.notes.is_empty() {
+        out["notes"] = json!(plan.notes);
     }
     // Only a worst-case plan has one, and the tool asks for weighted plans.
     if !plan.worst_trace.is_empty() {
@@ -799,12 +849,17 @@ impl RibJob {
                         }
                         PlanEvent::Rib(rib) => {
                             st.fraction = rib.fraction;
-                            st.totals = Some(json!({
+                            let mut totals = json!({
                                 "ribs": rib.ribs,
                                 "ribVolumeMm3": r6(rib.rib_volume_mm3),
                                 "compliance": r6(rib.compliance),
                                 "stiffnessFactor": r6(rib.stiffness_factor),
-                            }));
+                            });
+                            if let Some(factor) = rib.frequency_factor {
+                                let extra = json!({ "frequencyFactor": r6(factor) });
+                                totals["frequencyFactor"] = extra["frequencyFactor"].clone();
+                            }
+                            st.totals = Some(totals);
                         }
                     }
                     if st.events.len() >= EVENT_CAP {
@@ -943,6 +998,8 @@ pub fn rib_plan_cancel(id: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lime_sim::shell::planner::{plan_ribs, Goal, RibPlanRequest};
+    use lime_sim::shell::ShellLoad;
 
     /// A flat 120 × 60 wall, 2 mm thick, clamped all round, as `ribWall`
     /// writes it (one clearance null: nothing faces it there).
@@ -1065,5 +1122,174 @@ mod tests {
         if result["stoppedEarly"] == true {
             assert!(!result["ribs"].as_array().unwrap().is_empty() || result["stiffnessFactor"] == 1.0);
         }
+    }
+
+    /// 1 g/cm³ is 1e-9 N·s²/mm⁴, the unit [`IsotropicShell::with_density`] stores.
+    #[test]
+    fn one_gram_per_cm3_is_the_crate_density_unit() {
+        // 1 g/cm³ is exactly 1e-9. 1.27 is not a binary float, so 1.27 × 1e-9
+        // is the value with_density stores, not the decimal 1.27e-9.
+        let one = IsotropicShell::new(2000.0, 0.3)
+            .unwrap()
+            .with_density(1.0 * DENSITY_G_CM3_TO_N_S2_MM4)
+            .unwrap();
+        assert_eq!(one.density, Some(1.0e-9));
+        let stored = 1.27 * DENSITY_G_CM3_TO_N_S2_MM4;
+        let from_card = IsotropicShell::new(2000.0, 0.3).unwrap().with_density(stored).unwrap();
+        assert_eq!(from_card.density, Some(stored));
+        println!("1 g/cm³ -> {one:?}; 1.27 g/cm³ -> {stored:.16e}");
+    }
+
+    fn panel_body(size: [f64; 2], div: [usize; 2], goal: Value, density: Option<f64>, name: Option<&str>, load: Option<(u32, [f64; 3])>) -> String {
+        let mesh = ShellMesh::rectangle(size, div, 2.0);
+        let load_cases = match load {
+            Some((node, force)) => json!([[{ "kind": "force", "node": node, "force": force }]]),
+            None => json!([]),
+        };
+        let mut material = json!({ "e": 2000.0, "nu": 0.3 });
+        if let Some(grams) = density {
+            material["densityGCm3"] = json!(grams);
+        }
+        if let Some(name) = name {
+            material["name"] = json!(name);
+        }
+        json!({
+            "request": {
+                "mesh": { "vertices": mesh.vertices, "triangles": mesh.triangles, "thickness": mesh.thickness },
+                "holds": { "kind": "allBoundary" },
+                "loadCases": load_cases,
+                "side": "positive",
+            },
+            "material": material,
+            "rules": {
+                "width": 1.2, "maxHeight": 6.0, "minHeight": 1.0,
+                "minSpacing": 15.0, "minLength": 10.0,
+                "profile": { "kind": "straight" },
+            },
+            "goal": goal,
+            "options": { "baselines": false },
+        })
+        .to_string()
+    }
+
+    fn reason_of(body: &str) -> String {
+        let out: Value = serde_json::from_str(&plan_ribs_json(body)).unwrap();
+        assert_eq!(out["ok"], false, "{out}");
+        out["reason"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn a_frequency_goal_is_refused_by_the_material_name_and_by_a_factor_below_one() {
+        let missing = panel_body([40.0, 20.0], [4, 2], json!({ "kind": "frequency", "factor": 1.3 }), None, Some("PETG"), None);
+        let reason = reason_of(&missing);
+        assert_eq!(reason, "PETG has no density.");
+        println!("missing density: {reason}");
+        let unnamed = panel_body([40.0, 20.0], [4, 2], json!({ "kind": "frequency", "factor": 1.3 }), None, None, None);
+        assert_eq!(reason_of(&unnamed), "The material has no density.");
+        let low = panel_body([40.0, 20.0], [4, 2], json!({ "kind": "frequency", "factor": 0.5 }), Some(1.0), Some("PETG"), None);
+        let reason = reason_of(&low);
+        assert_eq!(reason, "A frequency goal must be 1 or more.");
+        println!("factor 0.5: {reason}");
+    }
+
+    /// The stiffness reply with `seconds` removed. Wall-clock is the only
+    /// field a stiffness plan does not repeat. Set `LIME_WRITE_STIFFNESS_REPLY`
+    /// to regenerate the file from this function.
+    #[test]
+    fn a_stiffness_reply_matches_the_base_once_seconds_are_removed() {
+        let body = panel_body([40.0, 20.0], [4, 2], json!({ "kind": "stiffer", "factor": 1.5 }), None, None, None);
+        let out: Value = serde_json::from_str(&plan_ribs_json(&body)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        assert!(out.get("frequencyHz").is_none(), "a stiffness reply gained frequencyHz");
+        assert!(out.get("frequencyFactor").is_none(), "a stiffness reply gained frequencyFactor");
+        assert!(out.get("notes").is_none(), "a stiffness reply gained notes");
+        let mut stripped = out;
+        stripped.as_object_mut().unwrap().remove("seconds");
+        let text = serde_json::to_string_pretty(&stripped).unwrap() + "\n";
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/stiffness_reply_base.json");
+        if std::env::var_os("LIME_WRITE_STIFFNESS_REPLY").is_some() {
+            std::fs::write(path, &text).unwrap();
+        }
+        let expected = std::fs::read_to_string(path).unwrap_or_default();
+        assert_eq!(text, expected, "stiffness reply differs from {path}");
+        println!("stiffness snapshot {} bytes, ribs {}", text.len(), stripped["ribs"].as_array().unwrap().len());
+    }
+
+    /// Clamped 120 × 70 × 2, the crate test's panel. Hz in the bridge reply
+    /// matches `plan_ribs` to 1e-6. The same call times a frequency plan
+    /// against a stiffness plan; the times are printed and not asserted.
+    #[test]
+    fn frequency_reply_matches_the_crate_on_the_120_panel() {
+        let mesh = ShellMesh::rectangle([120.0, 70.0], [24, 14], 2.0);
+        let node = mesh.nearest_vertex([15.0, 35.0, 0.0]);
+        let force = [0.0, 0.0, -10.0];
+        let body = panel_body(
+            [120.0, 70.0],
+            [24, 14],
+            json!({ "kind": "frequency", "factor": 1.3 }),
+            Some(1.0),
+            Some("panel"),
+            Some((node, force)),
+        );
+        let mut req = RibPlanRequest::new(mesh, IsotropicShell::new(2000.0, 0.3).unwrap().with_density(1.0e-9).unwrap());
+        req.goal = Goal::Frequency { factor: 1.3 };
+        req.load_cases = vec![vec![ShellLoad::Force { node, force }]];
+        req.options.baselines = false;
+        let t = Instant::now();
+        let crate_plan = plan_ribs(&req).unwrap();
+        let crate_s = t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let text = plan_ribs_json(&body);
+        let bridge_s = t.elapsed().as_secs_f64();
+        let out: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let hz = crate_plan.frequency_hz.unwrap();
+        let bare = out["frequencyHz"]["bare"].as_f64().unwrap();
+        let ribbed = out["frequencyHz"]["ribbed"].as_f64().unwrap();
+        let factor = out["frequencyFactor"].as_f64().unwrap();
+        println!(
+            "bridge frequency: bare {bare} Hz, ribbed {ribbed} Hz, ×{factor} frequency, ×{} stiffness, volume {} mm³, goalMet {}, bridge {:.3} s, crate {:.3} s",
+            out["stiffnessFactor"], out["ribVolumeMm3"], out["goalMet"], bridge_s, crate_s
+        );
+        println!("bridge notes: {}", out["notes"]);
+        assert!((bare - hz.bare).abs() < 1e-6, "bare {bare} vs crate {}", hz.bare);
+        assert!((ribbed - hz.ribbed).abs() < 1e-6, "ribbed {ribbed} vs crate {}", hz.ribbed);
+        assert!((factor - crate_plan.frequency_factor.unwrap()).abs() < 1e-6, "factor {factor} vs crate {}", crate_plan.frequency_factor.unwrap());
+        assert!(factor >= 1.3, "reached ×{factor}");
+        assert_eq!(out["goalMet"], true);
+        assert!(out["notes"].to_string().contains("ignored"));
+        assert!(out.get("stiffnessFactor").is_some());
+
+        let stiff = panel_body([120.0, 70.0], [24, 14], json!({ "kind": "stiffer", "factor": 1.3 }), None, None, Some((node, force)));
+        let t = Instant::now();
+        let stiff_out: Value = serde_json::from_str(&plan_ribs_json(&stiff)).unwrap();
+        let stiff_s = t.elapsed().as_secs_f64();
+        println!(
+            "tool plan time on 120×70×2: frequency {bridge_s:.3} s, stiffness {stiff_s:.3} s (stiffnessFactor {})",
+            stiff_out["stiffnessFactor"]
+        );
+        assert_eq!(stiff_out["ok"], true, "{stiff_out}");
+        assert!(stiff_out.get("frequencyHz").is_none());
+    }
+
+    #[test]
+    fn an_unreached_frequency_ratio_is_named() {
+        let body = panel_body([40.0, 20.0], [4, 2], json!({ "kind": "frequency", "factor": 20.0 }), Some(1.0), Some("panel"), None);
+        let out: Value = serde_json::from_str(&plan_ribs_json(&body)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let factor = out["frequencyFactor"].as_f64().unwrap();
+        println!("40×20 asked ×20: reached ×{factor}, goalMet {}, notes {}", out["goalMet"], out["notes"]);
+        assert_eq!(out["goalMet"], false, "×20 was reached; raise the ask, do not drop this check");
+        let note = out["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n.as_str())
+            .find(|n| n.contains("cannot be reached"))
+            .unwrap_or("");
+        let quoted: f64 = note.split('×').nth(1).unwrap_or("").trim_end_matches('.').parse().unwrap_or(0.0);
+        println!("unreached note: {note}");
+        assert!(!note.is_empty(), "the reply did not say the ratio cannot be reached: {}", out["notes"]);
+        assert!((quoted - factor).abs() < 1e-6, "the note quotes {quoted}, the reply's frequencyFactor is {factor}: {note}");
     }
 }
