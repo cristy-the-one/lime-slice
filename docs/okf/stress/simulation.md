@@ -51,6 +51,21 @@ sources:
   - id: moulding
     resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/modeling/moulding.ts
     title: src/modeling/moulding.ts (03b1c1d6)
+  - id: frequency
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/crates/lime-sim/src/shell/planner/frequency.rs
+    title: crates/lime-sim/src/shell/planner/frequency.rs (03b1c1d6)
+  - id: vents
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/modeling/vents.ts
+    title: src/modeling/vents.ts (03b1c1d6)
+  - id: planner
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/crates/lime-sim/src/shell/planner/mod.rs
+    title: crates/lime-sim/src/shell/planner/mod.rs (03b1c1d6)
+  - id: ribnet
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/modeling/auto-ribs.ts
+    title: src/modeling/auto-ribs.ts (03b1c1d6)
+  - id: ribs-schema
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/mcp/schema.ts
+    title: mcp/schema.ts (03b1c1d6)
 ---
 
 # Solver
@@ -81,11 +96,13 @@ The README's worked example is a 100 × 10 × 10 mm box, 100% infill, one end he
 
 # Auto ribs additions
 
-Automatic ribs (6.11.0) plan ribs on one wall with a thin-shell model in `lime-sim`. 6.13.0 adds three things, in the panel and in `ribs_plan`:
+Automatic ribs (6.11.0) plan ribs on one wall with a thin-shell model in `lime-sim`. 6.13.0 adds these, in the panel and in `ribs_plan`:
 
 * **Load cases.** Up to 8 named cases, each with a weight (default 1) and its own loads, weighed as Σ wᵢ·Cᵢ/Cᵢ⁰. The result gives each case's stiffness factor and its bare and ribbed deflection. No two cases share a name: the tool refuses it, the panel adds " (2)".[^ribs-tool] [^ribs-panel]
 * **Folded walls.** `wall.folded` (the panel's "Include side walls (folded)", off by default) takes thin faces across sharp edges into one folded shell, with thick regions kept as stiff patches.[^rib-wall]
 * **Moulding checks.** With the moulded process, a report of six rules (base 0.6 × wall, root radius 0.25–0.5 × wall, height 3 × wall, draft 0.5°, junction circle 1.2 × wall, spacing 2 walls) with flags per rib. It changes nothing. Without a pull direction each rib is read along its own wall, and a folded wall says so in the report's notes.[^moulding]
+* **Higher frequency.** The panel's Higher frequency choice raises the lowest natural frequency. Its slider stops are ×1.15, ×1.3, ×1.5, ×1.75 and ×2; stop 0, in the middle, is ×1.5. The default quantity is stiffness.[^ribs-panel] [^frequency] The result shows hertz before and after (`frequencyHz.bare` and `frequencyHz.ribbed`) and the ratio (`frequencyFactor`).[^ribs-tool] [^frequency] A load that misses the wall is ignored, and the note names it. A hold that misses is still refused.[^ribs-tool] [^ribs-panel] A plan has one goal: `frequency` beside another goal key is refused.[^ribs-panel] [^ribs-schema]
+* **Resin vents.** A resin plan that closes a pocket cuts one full-height notch, 0.75 mm wide.[^vents] [^ribs-schema] The ribNet path sets `openEnds` on a gap end, so that end stays square: a vent notch, not run into the facing rib and not tapered.[^ribnet] [^ribs-schema] `plan.vents` lists the pockets that were cut and the pockets that were not.[^ribs-tool] When projected chords cross and stay more than 1 mm apart, the wall is a fold and venting is left undone; the note says so. Borders are dropped onto the rib plane before that check.[^vents] Filament and moulded plans send no vent fields, so those plans are unchanged.[^vents] [^ribs-tool] [^planner] A frequency plan is not notched: it returns no vents, and when venting was asked it notes that venting was skipped.[^frequency]
 
 `ribs_apply` with `verify` runs the sliced study once per load case, before and after.[^ribs-tool] See [Tool catalog](../mcp/tools.md).
 
@@ -104,3 +121,8 @@ Automatic ribs (6.11.0) plan ribs on one wall with a thin-shell model in `lime-s
 [^ribs-panel]: src/auto-ribs.ts (03b1c1d6)
 [^rib-wall]: src/modeling/rib-wall.ts (03b1c1d6)
 [^moulding]: src/modeling/moulding.ts (03b1c1d6)
+[^frequency]: crates/lime-sim/src/shell/planner/frequency.rs (03b1c1d6)
+[^vents]: src/modeling/vents.ts (03b1c1d6)
+[^planner]: crates/lime-sim/src/shell/planner/mod.rs (03b1c1d6)
+[^ribnet]: src/modeling/auto-ribs.ts (03b1c1d6)
+[^ribs-schema]: mcp/schema.ts (03b1c1d6)
