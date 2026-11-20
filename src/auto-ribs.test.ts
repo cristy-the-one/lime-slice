@@ -243,7 +243,7 @@ eq("a ray between the ribs", ribUnderRay(drawn, [5, 10, 50], [0, 0, -1], 1), -1)
 const panelGoal = goalOf({ kind: "slider", stop: -1 }, 1.24, null, "frequency");
 const toolGoal = goalFromTool({ frequency: 1.3 }, 1.24);
 eq("the slider stop and the tool ask for the same frequency goal", panelGoal, toolGoal);
-eq("stop −1 is ×1.3", frequencyFactorAt(-1), 1.3);
+eq("the frequency stops, with ×1.5 in the middle", [-2, -1, 0, 1, 2].map(frequencyFactorAt), [1.15, 1.3, 1.5, 1.75, 2]);
 const petg = { e: 1800, nu: 0.35, densityGCm3: 1.27, name: "PETG" };
 if ("reason" in toolGoal) throw new Error(toolGoal.reason);
 eq("the tool and the panel send the same material", engineMaterial(petg, panelGoal), engineMaterial(petg, toolGoal));

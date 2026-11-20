@@ -303,8 +303,8 @@ export function newZone(id: number, kind: ZoneShape["kind"], at: V3, extent: num
 
 const SLIDER_SHARE = [0.5, 0.75, 1, 1.35, 1.75] as const;
 export const SLIDER_LABELS = ["Lightest", "Lighter", "Balanced", "Stiffer", "Stiffest"] as const;
-/** Slider stops −2..2 as a multiple of the lowest natural frequency. Stop 0 is 1.5×. There is no balanced frequency plan to share. */
-export const FREQUENCY_STOPS = [1.15, 1.3, 1.5, 2, 3] as const;
+/** Higher frequency slider stops, −2..2. Stop 0, in the middle, is ×1.5. ×1.15, ×1.3, ×1.5, ×1.75, ×2. */
+export const FREQUENCY_STOPS = [1.15, 1.3, 1.5, 1.75, 2] as const;
 
 /** The frequency multiple a slider stop asks for. */
 export function frequencyFactorAt(stop: number): number {

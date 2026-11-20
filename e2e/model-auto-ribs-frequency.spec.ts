@@ -21,6 +21,9 @@ test("Higher frequency shows Hz, cancel stops mid-plan, and Stiffer returns the 
 
   await page.getByRole("button", { name: "Higher frequency" }).click();
   await expect(page.locator("#autoRibsSliderNote")).toContainText(/Higher frequency: 1\.5×/);
+  await expect(page.locator("#autoRibsSliderLo")).toHaveText("1.15×");
+  await expect(page.locator("#autoRibsSliderMid")).toHaveText("1.5×");
+  await expect(page.locator("#autoRibsSliderHi")).toHaveText("2×");
   await expect(page.getByRole("button", { name: "Deflection" })).toBeHidden();
   await expect(page.getByRole("button", { name: "Budget" })).toBeHidden();
   const group = await page.locator("#autoRibsHowMuch .ar-modes").boundingBox();
@@ -42,6 +45,7 @@ test("Higher frequency shows Hz, cancel stops mid-plan, and Stiffer returns the 
   await shot(page, "frequency-result.png");
 
   await page.locator("#autoRibsSlider").fill("1");
+  await expect(page.locator("#autoRibsSliderNote")).toContainText("Higher frequency: 1.75×");
   await expect(primary(page)).toHaveText("Run again");
   await primary(page).click();
   await expect(page.locator("#autoRibsStage")).toHaveText("Choosing ribs", { timeout: 15_000 });
@@ -53,6 +57,8 @@ test("Higher frequency shows Hz, cancel stops mid-plan, and Stiffer returns the 
   await page.locator("#autoRibsSlider").fill("0");
   await page.getByRole("button", { name: "Stiffer", exact: true }).click();
   await expect(page.locator("#autoRibsSliderNote")).toContainText("Balanced");
+  await expect(page.locator("#autoRibsSliderLo")).toHaveText("Lightest");
+  await expect(page.locator("#autoRibsSliderHi")).toHaveText("Stiffest");
   await expect(primary(page)).toHaveText("Run again");
   await primary(page).click();
   await expect(page.locator("#autoRibsGain")).toHaveText(stiffer, { timeout: 30_000 });
