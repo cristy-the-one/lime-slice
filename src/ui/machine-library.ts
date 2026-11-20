@@ -1279,8 +1279,8 @@ const IR3_V2_START_5_2_1 = [
   "M82",
 ].join("\n");
 
-/** The start as built: 5.2.1's comment and `Z0` replaced by the line placed against the part. */
-const IR3_V2_START = IR3_V2_START_5_2_1
+/** 6.12's start: 5.2.1's comment and `Z0` replaced by the line placed against the part. */
+const IR3_V2_START_6_12 = IR3_V2_START_5_2_1
   .split("\n")
   .flatMap((line) => {
     if (line.startsWith("; two lines across the belt")) {
@@ -1294,6 +1294,12 @@ const IR3_V2_START = IR3_V2_START_5_2_1
     return [line === "G92 E0 Z0" ? "G92 E0 Z{purge_line_z}" : line];
   })
   .join("\n");
+
+/** The line that makes the purge gentle. The engine's own `M204` after the start block sets the slice's accel back. */
+const IR3_V2_GENTLE_PURGE = "M204 S500 ; the purge and the lines across lie on the belt: gentle, so they stick";
+
+/** The start as built: 6.12's, with the purge and the lines across at 500 mm/s², like the first layer. */
+const IR3_V2_START = IR3_V2_START_6_12.replace("G1 Z0.4 F900\n", `${IR3_V2_GENTLE_PURGE}\nG1 Z0.4 F900\n`);
 
 /** The IR3 V2 purge lines across the belt, as 5.2.1 had them. */
 const IR3_V2_ACROSS = [
@@ -1316,7 +1322,7 @@ const IR3_V2_START_LINES_FIRST = IR3_V2_START_ZIGZAG_ONLY.replace(
 
 /** Built-in start G-code the catalog shipped earlier, by printer id. */
 const PAST_STARTS: Record<string, string[]> = {
-  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST, IR3_V2_START_5_2_1],
+  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST, IR3_V2_START_5_2_1, IR3_V2_START_6_12],
 };
 
 /**
