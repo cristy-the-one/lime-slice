@@ -16,8 +16,8 @@ import { session, state, type CardId } from "./state";
 import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
-import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
-import { mountProjectFiles, openPickedFile, saveCurrentProject } from "./project-io";
+import { addDroppedFiles, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
+import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { newProject } from "./new-project";
 import { pickModelFile } from "../platform";
 import { dismissMeshWarning, noteGroupToggle, noteSubgroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, refreshObjectList, revealPrinterDetails, setCalibrate, settleAutoField, syncFindStuck, touch } from "./settings";
@@ -473,6 +473,7 @@ export function wireApp() {
     const action = button.dataset.fileAction;
     if (action === "new") void newProject();
     else if (action === "open") pickModelFile();
+    else if (action === "add") pickAddedMesh();
     else if (action === "save") void saveCurrentProject();
     else if (button.dataset.sample) void loadNamed(button.dataset.sample).catch(fail);
     else if (button.id === "export3mf") void export3mf();
@@ -483,19 +484,21 @@ export function wireApp() {
     }
   });
   mountProjectFiles();
+  // Both pickers take several files: Open replaces the plate with one and adds the rest, Add adds them all.
+  const picked = (files: File[], mode: "open" | "add") => {
+    if (files.length > 0) import("./pick-files").then((pick) => pick.openPickedFiles(files, mode)).catch(fail);
+  };
   document.querySelector("#file")!.addEventListener("change", (ev) => {
     const input = ev.target as HTMLInputElement;
-    const file = input.files?.[0];
+    const files = [...(input.files ?? [])];
     input.value = "";
-    if (!file) return;
-    openPickedFile(file).catch(fail);
+    picked(files, "open");
   });
   document.querySelector("#plateAddFile")!.addEventListener("change", (ev) => {
     const input = ev.target as HTMLInputElement;
-    const file = input.files?.[0];
+    const files = [...(input.files ?? [])];
     input.value = "";
-    if (!file) return;
-    void file.arrayBuffer().then((bytes) => addMeshBytes(file.name, bytes)).catch(fail);
+    picked(files, "add");
   });
   // The printer chip's pickers also serve the compact Device page, so the listener sits on the document.
   document.addEventListener("change", (ev) => {
