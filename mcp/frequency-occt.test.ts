@@ -117,7 +117,7 @@ const started = await call("ribs_plan", { object, wall, goal: { frequency: 1.3 }
 const done = await waitJob(String(started.job));
 const hz = done.plan?.frequencyHz;
 const factor = Number(done.plan?.frequencyFactor);
-check("the reply has frequencyHz and frequencyFactor", done.ok === true && hz && hz.bare > 0 && hz.ribbed > 0 && Number.isFinite(factor) && Math.abs(factor - hz.ribbed / hz.bare) < 1e-4, JSON.stringify({ hz, factor, sentence: done.sentence }).slice(0, 500));
+check("the reply has frequencyHz and frequencyFactor", done.ok === true && done.plan.goalMet === true && hz && hz.ribbed > hz.bare && factor >= 1.3 && Math.abs(factor - hz.ribbed / hz.bare) < 1e-4, JSON.stringify({ hz, factor, goalMet: done.plan?.goalMet, sentence: done.sentence }).slice(0, 500));
 check("the sentence names the Hz and the stiffness factor", /Hz/.test(String(done.sentence)) && /Stiffness /.test(String(done.sentence)) && /for information/.test(String(done.sentence)), String(done.sentence));
 const notes = (done.notes ?? []) as string[];
 check("no loads were given, so the notes do not say they are ignored", notes.some((line) => /mode shape/.test(line)) && notes.every((line) => !/ignored/.test(line)), JSON.stringify(notes));

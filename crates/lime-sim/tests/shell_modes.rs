@@ -649,44 +649,50 @@ fn stiffness_stamp(plan: &RibPlan) -> String {
     serde_json::to_string_pretty(&v).unwrap() + "\n"
 }
 
-/// Cancel on the first accepted rib of the clamped 120 × 70 panel. The
-/// plan comes back with that rib, stopped, and finite numbers, and does
-/// not keep selecting.
+/// Cancel during the round after the first rib of the clamped 120 × 70
+/// panel, inside that round's pool or shortlist, not at the round boundary.
+/// The first rib is about ×1.39, so a factor of 2 starts another round. The
+/// flag flips a millisecond after the rib event, once that next round has
+/// passed its opening check. The plan comes back with that rib, stopped,
+/// and finite numbers, and does not accept another.
 #[test]
 fn a_cancel_after_the_first_rib_returns_that_rib() {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Mutex;
+    use std::thread;
+    use std::time::Duration;
 
     let mesh = ShellMesh::rectangle([120.0, 70.0], [24, 14], 2.0);
     let cancel = AtomicBool::new(false);
-    let ribs_seen = Mutex::new(0u32);
+    let ribs_seen = AtomicU32::new(0);
     let cancel_at = Mutex::new(None::<Instant>);
-    let sink = |e: &PlanEvent| {
-        if matches!(e, PlanEvent::Rib(_)) {
-            *ribs_seen.lock().unwrap() += 1;
-            let mut at = cancel_at.lock().unwrap();
-            if at.is_none() {
-                cancel.store(true, Ordering::Relaxed);
-                *at = Some(Instant::now());
-            }
-        }
-    };
     let node = mesh.nearest_vertex([15.0, 35.0, 0.0]);
     let mut req = RibPlanRequest::new(mesh, dense(2000.0, 0.3));
-    req.goal = Goal::Frequency { factor: 1.3 };
+    req.goal = Goal::Frequency { factor: 2.0 };
     req.load_cases = vec![vec![ShellLoad::Force {
         node,
         force: [0.0, 0.0, -10.0],
     }]];
     req.options.baselines = false;
-    let plan = plan_ribs_with(
-        &req,
-        PlanControl {
-            progress: Some(&sink),
-            cancel: Some(&cancel),
-        },
-    )
-    .unwrap();
+    let plan = thread::scope(|scope| {
+        let sink = |e: &PlanEvent| {
+            if matches!(e, PlanEvent::Rib(_)) && ribs_seen.fetch_add(1, Ordering::Relaxed) == 0 {
+                scope.spawn(|| {
+                    thread::sleep(Duration::from_millis(1));
+                    *cancel_at.lock().unwrap() = Some(Instant::now());
+                    cancel.store(true, Ordering::Relaxed);
+                });
+            }
+        };
+        plan_ribs_with(
+            &req,
+            PlanControl {
+                progress: Some(&sink),
+                cancel: Some(&cancel),
+            },
+        )
+        .unwrap()
+    });
     let back = cancel_at
         .lock()
         .unwrap()
@@ -697,7 +703,7 @@ fn a_cancel_after_the_first_rib_returns_that_rib() {
     println!(
         "cancel to return on the 120×70 panel: {back:.3} s, ribs {}, events {}, bare {:.3} Hz, ribbed {:.3} Hz, ×{:.6} frequency, ×{:.6} stiffness, stopped {}",
         plan.ribs.len(),
-        *ribs_seen.lock().unwrap(),
+        ribs_seen.load(Ordering::Relaxed),
         hz.bare,
         hz.ribbed,
         plan.frequency_factor.unwrap(),
@@ -707,9 +713,9 @@ fn a_cancel_after_the_first_rib_returns_that_rib() {
     assert!(plan.stopped_early);
     assert!(!plan.ribs.is_empty());
     assert_eq!(
-        *ribs_seen.lock().unwrap(),
+        ribs_seen.load(Ordering::Relaxed),
         1,
-        "selection continued after the cancel"
+        "selection finished the round after the cancel"
     );
     assert!(hz.bare.is_finite() && hz.ribbed.is_finite() && hz.bare > 0.0 && hz.ribbed > 0.0);
     assert!(plan.frequency_factor.unwrap().is_finite());
@@ -719,7 +725,9 @@ fn a_cancel_after_the_first_rib_returns_that_rib() {
 
 /// The highest frequency ratio selection reaches when the ask is far above
 /// it. Printed so the slider stops can be chosen; the value is not locked.
+/// About a minute in CI, and it asserts nothing about the ratio.
 #[test]
+#[ignore = "prints the highest ratio; it locks nothing"]
 fn the_highest_frequency_ratio_on_three_panels() {
     let panels = [
         ("120×70×2 [24,14]", [120.0, 70.0], [24usize, 14]),

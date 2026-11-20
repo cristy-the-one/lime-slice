@@ -607,6 +607,17 @@ export function frequencyAside(plan: RibPlanResult): string {
 }
 
 /** A load that misses the wall, named, when a frequency plan ignores it instead of refusing. */
+/**
+ * Loads a frequency plan ignores. One load lists them on `substituted.loads`. Load cases leave that list empty and
+ * record the miss on `notOnWall`, so the even-pressure sentence is not the one to show.
+ */
+export function frequencyIgnoredLoads(report: { substituted?: { holds: number[]; loads: number[] } | undefined; notOnWall: readonly { kind: string; index: number; case?: string; dropped: boolean }[] }): { kind: string; index: number; case?: string }[] {
+  const sub = report.substituted;
+  if (!sub || sub.holds.length > 0) return [];
+  if (sub.loads.length > 0) return sub.loads.map((index) => ({ kind: "load", index }));
+  return report.notOnWall.filter((row) => row.kind === "load" && row.dropped).map((row) => ({ kind: "load", index: row.index, ...(row.case ? { case: row.case } : {}) }));
+}
+
 export function ignoredLoadNote(missed: readonly { kind: string; index: number; case?: string }[]): string {
   const loads = missed.filter((row) => row.kind === "load");
   if (loads.length === 0) return "";

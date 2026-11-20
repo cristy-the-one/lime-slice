@@ -322,9 +322,8 @@ jobs:
           # The rib network (ribNet) on flat, sloped, cylinder and freeform shells, and the ribs leak on a sloped floor.
           node --experimental-strip-types mcp/rib-net-occt.test.ts
           # Auto ribs end to end: ribWall on kernel meshes, ribs_plan as a job, ribs_apply, zones, an obstacle, cancel, verify, a curved wall, the flange table.
-          # Two load cases (section 5b): per-case factors against a fresh solve, and the stored request re-plans the same ribs.
-          # Two-case verify (section 5c): ribs_apply {verify:true} on a 64 × 40 × 14 box, each case before and after.
-          # The frequency goal is mcp/frequency-occt.test.ts on the folded-shell job, not here.
+          # Its load-case sections (5b, 5c) run in the folded-shell job (mcp/auto-ribs-cases-occt.test.ts).
+          # The frequency goal is mcp/frequency-occt.test.ts on that same job, not here.
           node --experimental-strip-types mcp/auto-ribs-occt.test.ts
           # The step guard on a ribbed shell: cuts at a wall are probed and applied, an edge-only touch is refused by both.
           node --experimental-strip-types mcp/step-guard-occt.test.ts
@@ -453,6 +452,10 @@ jobs:
           # On this job, not the shared one. The rest of auto-ribs-occt stays on the shared job: together they
           # passed 20 of this step's 25 minutes before the frequency plans ran (run 44698889099).
           node --experimental-strip-types mcp/frequency-occt.test.ts
+          # Auto ribs with load cases, moved out of the shared job (auto-ribs-occt sections 5b and 5c):
+          # two cases with per-case factors against a fresh solve and the stored request re-planned (5b),
+          # and ribs_apply {verify:true} with two cases on a 64 × 40 × 14 box, each case before and after (5c).
+          node --experimental-strip-types mcp/auto-ribs-cases-occt.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:

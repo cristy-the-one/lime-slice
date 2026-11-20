@@ -22,6 +22,7 @@ import {
   engineMaterial,
   fallbackHzNote,
   frequencyAside,
+  frequencyIgnoredLoads,
   ignoredLoadNote,
   frequencyFactorAt,
   idleRun,
@@ -257,6 +258,8 @@ eq("hertz before and after", resultNumbers({ ...runDone(startedRun(), { ok: true
 eq("the stiffness factor is information", frequencyAside(freqPlan), "1.8× as stiff, for information.");
 eq("a case factor after the Hz is stiffness", caseResultLines(["spread", "point"], [1.35, 2.4], [{ bare: 0.8, ribbed: 0.593 }, { bare: 0.8, ribbed: 0.333 }], true), ["spread: stiffness 1.35×, deflection 0.8 mm → 0.593 mm", "point: stiffness 2.4×, deflection 0.8 mm → 0.333 mm"]);
 eq("×1 asks for no change is the panel's fallback sentence's twin", ignoredLoadNote([{ kind: "load", index: 0 }]), "Load 1 misses the wall and is ignored: a frequency plan does not use the loads.");
+eq("a missed load of a case is ignored by name", ignoredLoadNote(frequencyIgnoredLoads({ substituted: { holds: [], loads: [] }, notOnWall: [{ kind: "load", index: 0, case: "sideways", dropped: true }] })), "Load 1 of sideways misses the wall and is ignored: a frequency plan does not use the loads.");
+eq("one missed load still uses the load index", ignoredLoadNote(frequencyIgnoredLoads({ substituted: { holds: [], loads: [0] }, notOnWall: [] })), "Load 1 misses the wall and is ignored: a frequency plan does not use the loads.");
 eq("the default card's Hz are named", fallbackHzNote({ forFilament: false, polymer: "PETG", id: "inhouse-petg" }), "These Hz are the default PETG card's (inhouse-petg): no card in the library is for this filament.");
 eq("the filament's own card adds no Hz note", fallbackHzNote({ forFilament: true, polymer: "PETG", id: "inhouse-petg" }), "");
 eq("an edit of a frequency plan does not say stiffness", editedNote({ ...runDone(startedRun(), { ok: true, plan: freqPlan }), removed: [0] }).includes("the frequency is the plan's before the edit"), true);

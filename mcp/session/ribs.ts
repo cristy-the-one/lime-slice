@@ -17,7 +17,8 @@ import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wallSpan, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
-import { duplicateCaseName, engineMaterial, fallbackHzNote, goalFromTool, ignoredLoadNote, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { duplicateCaseName, engineMaterial, fallbackHzNote, frequencyIgnoredLoads, goalFromTool, ignoredLoadNote, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { planOptions } from "../../src/auto-ribs-plan.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -355,7 +356,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   // Asked to plan anyway: what was left out comes first, in the notes and in the sentence. A frequency plan names a
   // missed load as ignored instead of as planned under even pressure.
   const substituted = wall.report.substituted;
-  const ignoredLoad = goal.kind === "frequency" && substituted && substituted.holds.length === 0 && substituted.loads.length ? ignoredLoadNote(substituted.loads.map((index) => ({ kind: "load", index }))) : "";
+  const ignoredLoad = goal.kind === "frequency" ? ignoredLoadNote(frequencyIgnoredLoads(wall.report)) : "";
   if (ignoredLoad) notes.push(ignoredLoad);
   else if (substituted) notes.push(substituted.sentence);
   if (wall.report.features.count) notes.push(wall.report.features.note);
@@ -400,7 +401,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     material: builtMaterial.material,
     rules: { width: rules.width, maxHeight: rules.maxHeight, minHeight: rules.minHeight, minSpacing: rules.minSpacing, minLength: rules.minLength, profile },
     goal,
-    options: { baselines: input.baselines !== false },
+    options: planOptions(wall, input.baselines !== false),
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
     ...(sentLoads.caseWeights ? { caseWeights: sentLoads.caseWeights } : {}),
   };

@@ -23,7 +23,7 @@ import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSpan, wa
 import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
 import type { StudyHold, StudyLoad } from "../sim/study.ts";
-import { stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
+import { planOptions, stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
 import {
   AUTO_RIBS_LABEL,
   AUTO_RIBS_TITLE,
@@ -671,42 +671,54 @@ async function startRun() {
   }
   const solid = host.solid();
   const goal = currentGoal();
-  // A load that misses the wall is ignored on a frequency plan. A hold that misses is still refused.
-  ignoredLoads = "";
-  if (!read?.wall && read?.missed.length && goal.kind === "frequency" && read.missed.every((row) => row.kind === "load")) {
+  // A load that misses the wall is ignored on a frequency plan. The re-read stays local: `read` keeps the refusal, so a
+  // later Stiffer run still refuses. A hold that misses is still refused.
+  let wall = read?.wall ?? null;
+  let pendingIgnored = "";
+  if (!wall && read?.missed.length && goal.kind === "frequency" && read.missed.every((row) => row.kind === "load")) {
     const options = wallOptions();
-    ignoredLoads = ignoredLoadNote(read.missed);
     if (options) {
       const again = await host.readWall({ ...options, ifMissed: "evenPressure" });
-      if (!("reason" in again)) read = { ...read, wall: again, error: null };
+      if (!("reason" in again)) {
+        wall = again;
+        pendingIgnored = ignoredLoadNote(read.missed);
+      }
     }
   }
-  if (!read?.wall || !solid) {
+  const refuseRun = (text: string) => {
     ignoredLoads = "";
-    if (read?.error) host.readout(read.error);
+    hzCard = "";
+    host!.readout(text);
     paint();
+  };
+  if (!wall || !solid) {
+    if (read?.error) refuseRun(read.error);
+    else {
+      ignoredLoads = "";
+      hzCard = "";
+    }
     return;
   }
-  const wall = read.wall;
   if (goal.kind === "frequency" && !(goal.factor >= 1)) {
-    host.readout("A frequency goal must be 1 or more.");
+    refuseRun("A frequency goal must be 1 or more.");
     return;
   }
   const sent: RibPlanBody["request"] = wall.request.holds.holds.length === 0 ? { ...wall.request, holds: { kind: "allBoundary" } } : wall.request;
   const material = host.material();
-  materialNote = material?.note ?? "";
-  hzCard = goal.kind === "frequency" ? fallbackHzNote(material?.forFilament === false && material.polymer && material.card ? { forFilament: false, polymer: material.polymer, id: material.card } : null) : "";
   let sentMaterial: RibPlanBody["material"] | undefined;
   if (goal.kind === "frequency" || material) {
     const built = engineMaterial(material ?? { e: 0, nu: 0, name: "The material" }, goal);
     if ("reason" in built) {
-      host.readout(built.reason);
+      refuseRun(built.reason);
       return;
     }
     sentMaterial = built.material;
   }
+  materialNote = material?.note ?? "";
+  hzCard = goal.kind === "frequency" ? fallbackHzNote(material?.forFilament === false && material.polymer && material.card ? { forFilament: false, polymer: material.polymer, id: material.card } : null) : "";
+  ignoredLoads = pendingIgnored;
   const asked = loadRequest(card.loads, card.cases);
-  const body: RibPlanBody = { request: sent, ...(sentMaterial ? { material: sentMaterial } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
+  const body: RibPlanBody = { request: sent, ...(sentMaterial ? { material: sentMaterial } : {}), rules: bodyRules(wall), goal, options: planOptions(wall, true), holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
 
   generation += 1;
   const mine = generation;
@@ -715,7 +727,7 @@ async function startRun() {
   faceRibs = [];
   liveDrawn = new Map();
   lit = null;
-  ranWith = { key: read.key, goal, body, wall, solid, caseNames: asked.loadCases ? asked.loadCases.map((row) => row.name) : null, process: card.ribs.process };
+  ranWith = { key: read?.key ?? "", goal, body, wall, solid, caseNames: asked.loadCases ? asked.loadCases.map((row) => row.name) : null, process: card.ribs.process };
   const source = host.source();
   const note = $<HTMLElement>("#autoRibsSourceNote");
   if (note) note.hidden = source.kind !== "stand-in";

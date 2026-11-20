@@ -14,7 +14,7 @@
  *
  * Shared module: no DOM, no engine.
  */
-import type { RibWallRequest } from "./modeling/rib-wall.ts";
+import type { RibWall, RibWallRequest } from "./modeling/rib-wall.ts";
 import type { Section } from "./modeling/auto-ribs.ts";
 import { defaultDraftedSection } from "./modeling/moulding.ts";
 
@@ -112,7 +112,7 @@ export interface RibPlanResult {
   /** Per case, only when the plan was asked for two or more. One load leaves these off. */
   caseFactors?: number[];
   caseDeflectionMm?: { bare: number; ribbed: number }[];
-  /** A drafted rib built straight because its top closed, and a frequency plan's own sentences. Absent when there is nothing to say. */
+  /** The draft-lost sentence on a stiffness or frequency plan, and a frequency plan's own sentences. Absent when there is nothing to say. */
   notes?: string[];
 }
 
@@ -154,10 +154,19 @@ export interface RibPlanBody {
   material?: { e: number; nu: number; densityGCm3?: number; name?: string };
   rules: { width: number; maxHeight: number; minHeight?: number; minSpacing: number; minLength: number; profile?: WireProfile };
   goal?: PlanGoal;
-  options?: { baselines?: boolean };
+  /** creases: plan across sharp edges; sent only for a wall read with folded, so any other wall plans as v6.12 did. */
+  options?: { baselines?: boolean; creases?: boolean };
   holeRimMarginMm?: number;
   /** One weight per load case, in order. Absent for one load, which is a plain sum, as before. */
   caseWeights?: number[];
+}
+
+/**
+ * The plan body's options, for the panel and ribs_plan alike. creases goes only with a wall read with folded (its
+ * report lists faces.folded), so every other wall, sharp edges included, plans exactly as v6.12 did.
+ */
+export function planOptions(wall: Pick<RibWall, "report">, baselines: boolean): NonNullable<RibPlanBody["options"]> {
+  return { baselines, ...(wall.report.faces.folded !== undefined ? { creases: true } : {}) };
 }
 
 export type PlanReply = { ok: true; plan: RibPlanResult } | { ok: false; reason: string };
