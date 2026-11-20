@@ -820,6 +820,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-gears.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-mech.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-mech-study.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-horology.test.ts
           # Contact in poses (docs/plan-contact-poses.md): model_place {until}, sweep on a train, an escapement animation keyed from rig reads, lust and rustc alike.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/contact.test.ts
