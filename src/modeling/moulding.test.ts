@@ -81,6 +81,23 @@ const rib = (points: V3[], section: MouldSection, height: number, wall: number, 
   check("a pull against the wall flags an undercut and fails draft", cut !== undefined && cut.value < 0 && cut.threshold === 0 && under.rules.find((row) => row.rule === "draft")!.pass === false, JSON.stringify(cut));
 }
 
+// A folded wall: a floor rib and a level rib along a side wall (the side wall faces +X). Without a pull each is read along its own
+// wall and both pass draft, so the report says that one mould pull was not checked. With pull +Z the side rib's flank
+// faces against it, an undercut, and there is nothing to say.
+{
+  const section = defaultDraftedSection(1.2, 4);
+  const box = [rib([[0, 0, 0], [10, 0, 0]], section, 4, 2), rib([[20, 0, 5], [20, 10, 5]], section, 4, 2, [1, 0, 0])];
+  const unfolded = mouldingReport(box);
+  check("an unfolded wall's report has no notes, as before", unfolded.notes === undefined && !("notes" in unfolded), JSON.stringify(unfolded.notes));
+  const folded = mouldingReport(box, null, { folded: true });
+  check("a folded wall with no pull passes draft rib by rib", folded.rules.find((row) => row.rule === "draft")!.pass, JSON.stringify(folded.rules));
+  check("and says in one note that one mould pull was not checked", folded.notes?.length === 1 && folded.notes[0]!.includes("no pull was given") && folded.notes[0]!.includes("undercuts"), JSON.stringify(folded.notes));
+  const lines = mouldingLines(folded);
+  check("the panel's list leads with that note, then the flags as before", lines[0] === folded.notes![0] && JSON.stringify(lines.slice(1)) === JSON.stringify(mouldingLines(unfolded)), JSON.stringify(lines));
+  const pulled = mouldingReport(box, [0, 0, 1], { folded: true });
+  check("with a pull the side rib is an undercut and no note is needed", pulled.notes === undefined && pulled.flags.some((f) => f.rule === "undercut" && f.rib === 1), JSON.stringify(pulled.flags));
+}
+
 // Rule 4. A 90° crossing holds a larger circle than one rib.
 {
   const alone = mouldingReport([rib([[-20, 0, 0], [20, 0, 0]], straight(1.2), 6, 2)]);

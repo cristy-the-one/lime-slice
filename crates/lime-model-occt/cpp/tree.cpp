@@ -2852,13 +2852,16 @@ LimeShape* lime_tree_draft(
             return nullptr;
         }
         std::vector<TopoDS_Face> picked;
+        std::vector<int> names;
         picked.reserve(static_cast<size_t>(count));
+        names.reserve(static_cast<size_t>(count));
         for (int i = 0; i < count; ++i) {
             if (faces[i] < 0 || faces[i] >= from->held.faces.Extent()) {
                 set_error(error, "That face is not on this solid.");
                 return nullptr;
             }
             picked.push_back(TopoDS::Face(from->held.faces(faces[i] + 1)));
+            names.push_back(faces[i]);
         }
         gp_Dir direction;
         if (pull == nullptr) {
@@ -2899,7 +2902,7 @@ LimeShape* lime_tree_draft(
         std::string message;
         double volume = 0.0;
         const TopoDS_Shape result = build_draft(
-            from->held.shape, from->held.volume, picked, angle_deg, direction, neutral, plane_origin, plane_normal, volume, message);
+            from->held.shape, from->held.volume, picked, names, angle_deg, direction, neutral, plane_origin, plane_normal, volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;

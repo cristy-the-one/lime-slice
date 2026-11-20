@@ -1,6 +1,7 @@
 /**
  * The panel and ribs_plan build load cases through one function. The same two cases give the same wall request
- * and the same plan body. ribs_plan refuses a weight that is not above zero, and more than 8 cases, before that.
+ * and the same plan body. ribs_plan refuses a weight that is not above zero, two cases with one name, and more than 8
+ * cases, before that.
  * One load stays `loads` alone.
  */
 import { loadRequest } from "../src/auto-ribs.ts";
@@ -131,6 +132,11 @@ const badWeight = ribsLoadRequest(read, { loadCases: [{ name: "spread", loads: [
 refusal("a weight that is not above zero is refused, naming the case", badWeight, "bad-argument", "Load case 2: weight is a number above zero.");
 const tooMany = ribsLoadRequest(read, { loadCases: Array.from({ length: 9 }, () => ({ name: "c", loads: [rawPressure] })) });
 refusal("more than 8 cases is refused, saying 8 is the most", tooMany, "bad-argument", "loadCases takes up to 8 cases; this has 9.");
+const sameName = ribsLoadRequest(read, { loadCases: [{ name: "lid", loads: [rawPressure] }, { name: " lid ", loads: [rawForce] }] });
+refusal("two cases with one name are refused, naming it", sameName, "bad-argument", 'Two load cases are named "lid" (a case with no name is "Case N" by its place): give each case its own name.');
+const blankClash = ribsLoadRequest(read, { loadCases: [{ name: "Case 2", loads: [rawPressure] }, { loads: [rawForce] }] });
+refusal("a blank name that is Case N clashes as well", blankClash, "bad-argument", 'Two load cases are named "Case 2" (a case with no name is "Case N" by its place): give each case its own name.');
+eq("the panel suffixes a shared name instead", loadRequest([], [{ name: "lid", weight: 1, loads: [pressure] }, { name: "lid", weight: 1, loads: [force] }]).loadCases?.map((row) => row.name), ["lid", "lid (2)"]);
 eq("the panel still turns a weight of 0 into 1", loadRequest([], [{ name: "a", weight: 0, loads: [force] }, { name: "b", weight: 2, loads: [pressure] }]).caseWeights, [1, 2]);
 
 if (failed) {
