@@ -118,6 +118,21 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
   check("crossing paths are two runs with loose ends", ok(crossing) && crossing.runs === 2 && crossing.ends.tapered === 4);
 }
 
+// --- A vent notch: two ends face each other across 0.75 mm. They stay square, so the opening is not closed.
+{
+  const made = plan({ width: 2.4, height: 6, paths: [{ points: [[-40, 0, 2], [-0.375, 0, 2]] }, { points: [[0.375, 0, 2], [40, 0, 2]] }] });
+  check("a 0.75 mm notch plans", ok(made), JSON.stringify(made).slice(0, 300));
+  if (ok(made)) {
+    const full = made.steps.flatMap((step) => (step.kind === "loft" ? step.sections : [])).filter((row) => Math.max(...row.profile!.map((p) => p[1])) > 5);
+    const xs = full.map((row) => row.origin[0]).sort((a, b) => a - b);
+    const gap = xs.length >= 2 ? xs[xs.length - 1]! - xs[0]! : -1;
+    // The full-height sections are the square ends and the start of each taper. The two ends of the opening are the inner pair.
+    const inner = xs.filter((x) => Math.abs(x) < 2).sort((a, b) => a - b);
+    const opening = inner.length >= 2 ? inner[inner.length - 1]! - inner[0]! : -1;
+    check("the facing ends stay square and 0.75 mm apart", made.ends.square === 2 && made.ends.joint === 0 && Math.abs(opening - 0.75) < 0.05, JSON.stringify({ ends: made.ends, opening, gap, xs }));
+  }
+}
+
 // --- What a network adds (volumeMm3), against the closed form of what it builds.
 {
   // Wall to wall: 116 × 1.5 × 6 over the floor (the sunk half millimetre and the ends into the walls add nothing).
