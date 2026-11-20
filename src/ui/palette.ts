@@ -17,6 +17,7 @@ import {
   selectedProfileId,
 } from "../app/profile-actions";
 import { removePlateObject } from "../app/plate-actions";
+import { pickAddedMesh } from "../app/files";
 import { newProject } from "../app/new-project";
 import { saveCurrentProject } from "../app/project-io";
 import { clearSettingsSearch, commitTypedFields, focusSettingsSearch, revealPrinterDetails } from "../app/settings";
@@ -350,6 +351,9 @@ export function runCommand(id: string) {
       return;
     case "open":
       pickModelFile();
+      return;
+    case "add-to-plate":
+      pickAddedMesh();
       return;
     case "save-project":
       void saveCurrentProject();

@@ -56,6 +56,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "printer-edit", label: "Printers and filaments", group: "File", keywords: "machine library edit bed flow advance" },
   { id: "new-project", label: "New project", group: "File", keys: ["Ctrl+N"], typing: true, keywords: "untitled blank document" },
   { id: "open", label: "Open mesh or project", group: "File", keys: ["Ctrl+O"], typing: true, keywords: "lime file stl 3mf step" },
+  { id: "add-to-plate", label: "Add to plate", group: "File", keys: ["Ctrl+Shift+O"], typing: true, keywords: "append import another object part stl 3mf step several multiple" },
   { id: "save-project", label: "Save project", group: "File", keys: ["Ctrl+S"], typing: true, keywords: "lime file" },
   { id: "samples", label: "Samples", group: "File", keywords: "cube hull example" },
   { id: "calibrate", label: "Calibrate", group: "File", keywords: "pressure advance flow temperature retraction tower test" },

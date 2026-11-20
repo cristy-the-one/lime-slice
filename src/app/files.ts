@@ -619,10 +619,13 @@ export function openMeshPicker() {
   document.querySelector<HTMLInputElement>("#file")?.click();
 }
 
-/** The Add object picker. Cancel leaves the plate alone: the change handler returns when no file was chosen. */
+/**
+ * The Add object picker, also File > Add to plate. Cancel leaves the plate alone: the change handler returns when no file
+ * was chosen. On an empty plate it works like Open: the first file becomes the plate and the rest are added.
+ */
 export function pickAddedMesh() {
   const input = document.querySelector<HTMLInputElement>("#plateAddFile");
-  if (!input || !state.mesh || state.plate.objects.length === 0) return;
+  if (!input) return;
   input.value = "";
   input.click();
 }
