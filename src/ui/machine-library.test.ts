@@ -1,4 +1,6 @@
+import { readPrinterSpeeds } from "../profiles.ts";
 import {
+  IR3_V2_SPEEDS,
   acceptsArcs,
   advanceFor,
   builtinLibrary,
@@ -382,15 +384,23 @@ check(
   "the IR3 V2 zig-zag cleans the nozzle first, then the lines across the belt end where Z is zeroed on the part's first wall ({purge_line_z})",
   start.includes("G1 X6.67 Z23.4 E1.85") && start.indexOf("G1 X6.67 Z23.4 E1.85") < start.indexOf("G1 X250 E25 F2000") && start.indexOf("G1 X0 E25 F2000") + 1 === start.indexOf("G92 E0 Z{purge_line_z}"),
 );
+const gentle = start.find((line) => line.startsWith("M204 S500"));
+check(
+  "the IR3 V2 lays its purge and the lines across at 500 mm/s², set before the first move that extrudes onto the belt",
+  gentle !== undefined && start.indexOf(gentle) > start.indexOf("G92 Z0") && start.indexOf(gentle) < start.indexOf("G1 Z0.4 F900") && start.indexOf("G1 Z0.4 F900") < start.indexOf("G1 Z5.4 E1. F1200"),
+);
+// 6.12's text: the same, without the gentle purge.
+const asShipped612 = start.filter((line) => line !== gentle).join("\n");
 const across = ["; two lines across the belt, there and back, 25 mm of filament each. Z is zeroed on the", "; second, so the part's first layer starts against it and the line holds it to the belt.", "G1 X0 F6000", "G1 X250 E25 F2000", "G1 Z28.8 F900", "G1 X0 E25 F2000"];
 // 5.2.1's text: the belt zeroed on the second line.
-const asShipped521 = start
+const asShipped521 = asShipped612
+  .split("\n")
   .flatMap((line) => line.startsWith("; two lines across the belt") ? across.slice(0, 2) : line.startsWith("; line's far edge") || line.startsWith("; the file): the line") ? [] : [line === "G92 E0 Z{purge_line_z}" ? "G92 E0 Z0" : line])
   .join("\n");
 check("the current IR3 V2 start says the line is placed against the part", start.some((line) => line.includes("placed against the part")) && !asShipped521.includes("purge_line_z"));
 const zigzagOnly = asShipped521.split("\n").filter((line) => !across.includes(line)).join("\n");
 const linesFirst = zigzagOnly.replace("G1 X0 Z0.4 F6000\n", "G1 X0 Z0.4 F6000\n; two lines across the belt, there and back, 25 mm of filament each\nG1 X250 E25 F2000\nG1 Z0.8 F900\nG1 X0 E25 F2000\n");
-for (const [name, old] of [["the old zig-zag-only start", zigzagOnly], ["#564's lines-first start", linesFirst], ["5.2.1's start, the belt zeroed on the second line", asShipped521]] as const) {
+for (const [name, old] of [["the old zig-zag-only start", zigzagOnly], ["#564's lines-first start", linesFirst], ["5.2.1's start, the belt zeroed on the second line", asShipped521], ["6.12's start, without the gentle purge", asShipped612]] as const) {
   const stored = parseLibrary(JSON.stringify({ ...before, printers: before.printers.map((printer) => printer.id === "ideaformer-ir3-v2" ? { ...printer, startGcode: old, endGcode: "PRINT_END" } : printer) }));
   const upgraded = ensureBuiltins(stored).printers.find((printer) => printer.id === "ideaformer-ir3-v2");
   check(`a stored IR3 V2 still on ${name} takes the current one`, upgraded !== undefined && old !== refreshed?.startGcode && upgraded.startGcode === refreshed?.startGcode);
@@ -465,6 +475,25 @@ check("a corrupt library grows the built-ins back", restored.printers.some((prin
   check("the plate's selection never is the Form 4", sliced !== null && !isExportOnly(sliced.printer));
   // @ts-expect-error The slicer takes a library printer only: an export-only record is not one.
   void (() => enginePrinter(form4, sliced!.filament, 0.4));
+}
+
+{
+  // The IR3 V2's own speeds ride on the slice request; other printers send none.
+  const lib = builtinLibrary();
+  const ir3Row = lib.printers.find((printer) => printer.id === "ideaformer-ir3-v2")!;
+  const lime = lib.printers.find((printer) => printer.id === "lime-220")!;
+  const pla = lib.filaments[0]!;
+  check("the IR3 V2 carries the owner's speeds", JSON.stringify(ir3Row.speeds) === JSON.stringify(IR3_V2_SPEEDS) && IR3_V2_SPEEDS.firstLayerAccel === 500 && IR3_V2_SPEEDS.outerWallAccel === 2000 && IR3_V2_SPEEDS.outerWall === undefined && IR3_V2_SPEEDS.firstLayer === 25 && IR3_V2_SPEEDS.firstLayerInfill === undefined);
+  check("the IR3 V2 sends its speeds", JSON.stringify(enginePrinter(ir3Row, pla, 0.4).speeds) === JSON.stringify(IR3_V2_SPEEDS));
+  check("a printer without speeds sends no speeds key", !("speeds" in enginePrinter(lime, pla, 0.4)));
+  // A library stored before the speeds existed: the built-in IR3 V2 takes the catalog's.
+  const stale = parseLibrary(JSON.stringify({ ...lib, printers: lib.printers.map((printer) => (printer.id === "ideaformer-ir3-v2" ? { ...printer, speeds: undefined } : printer)) }));
+  check("a stored built-in IR3 V2 takes the catalog speeds", JSON.stringify(ensureBuiltins(stale).printers.find((printer) => printer.id === "ideaformer-ir3-v2")!.speeds) === JSON.stringify(IR3_V2_SPEEDS));
+  const edited = parseLibrary(JSON.stringify({ ...lib, printers: lib.printers.map((printer) => (printer.id === "ideaformer-ir3-v2" ? { ...printer, speeds: { outerWall: 50 } } : printer)) }));
+  check("a built-in's stored speeds never win over the catalog", JSON.stringify(ensureBuiltins(edited).printers.find((printer) => printer.id === "ideaformer-ir3-v2")!.speeds) === JSON.stringify(IR3_V2_SPEEDS));
+  const copy = parseLibrary(JSON.stringify({ ...lib, printers: [...lib.printers, { ...ir3Row, id: "my-ir3", name: "My IR3", builtin: false, speeds: { outerWall: 70, firstLayer: 30 } }] }));
+  check("a user copy keeps its own speeds", JSON.stringify(ensureBuiltins(copy).printers.find((printer) => printer.id === "my-ir3")!.speeds) === JSON.stringify({ outerWall: 70, firstLayer: 30 }));
+  check("stored speeds keep only positive numbers", JSON.stringify(readPrinterSpeeds({ outerWall: 80, innerWall: -1, travel: "fast", topSurface: Infinity, bogus: 3 })) === JSON.stringify({ outerWall: 80 }) && readPrinterSpeeds({ innerWall: 0 }) === undefined && readPrinterSpeeds(null) === undefined);
 }
 
 if (failed) {

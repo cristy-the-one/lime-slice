@@ -1,4 +1,5 @@
-/** Mirrors `strategy::mix` / `pure` so the panel can update before the next slice. */
+/** Mirrors `strategy::mix` / `pure` and `PrinterSpeeds::tune` so the panel can update before the next slice. */
+import type { PrinterSpeeds } from "./profiles.ts";
 
 export interface ResolvedCard {
   name: string;
@@ -51,7 +52,13 @@ export function layerWeight(z: number, bottomMm: number, transitionMm: number): 
   return 1 - (z - bottomMm) / transitionMm;
 }
 
-export function resolved(toughness: number, layerH = 0.2, lineWidth = 0.45, maxVol = 12): ResolvedCard {
+/** `own` scaled so the default blend (0.5) prints the printer's `target`, as the engine's `PrinterSpeeds::tune` does. */
+function tuned(own: number, speed: number, tough: number, target: number | undefined): number {
+  const mid = (speed + tough) / 2;
+  return target !== undefined && Number.isFinite(target) && target > 0 && mid > 0 ? (own * target) / mid : own;
+}
+
+export function resolved(toughness: number, layerH = 0.2, lineWidth = 0.45, maxVol = 12, speeds?: PrinterSpeeds): ResolvedCard {
   const t = Math.max(0, Math.min(1, toughness));
   const lerp = (a: number, b: number) => a + (b - a) * t;
   let pattern = "gyroid";
@@ -62,11 +69,12 @@ export function resolved(toughness: number, layerH = 0.2, lineWidth = 0.45, maxV
     const area = Math.max(1e-6, lineWidth * layerH);
     return Math.min(speed, maxVol / area);
   };
-  const outer = lerp(SPEED.outer, TOUGH.outer);
-  const inner = lerp(SPEED.inner, TOUGH.inner);
-  const sparse = lerp(SPEED.sparse, TOUGH.sparse);
-  const gyroid = lerp(SPEED.gyroid, TOUGH.gyroid);
-  const top = lerp(SPEED.top, TOUGH.top);
+  const outer = tuned(lerp(SPEED.outer, TOUGH.outer), SPEED.outer, TOUGH.outer, speeds?.outerWall);
+  const inner = tuned(lerp(SPEED.inner, TOUGH.inner), SPEED.inner, TOUGH.inner, speeds?.innerWall);
+  const sparse = tuned(lerp(SPEED.sparse, TOUGH.sparse), SPEED.sparse, TOUGH.sparse, speeds?.sparseInfill);
+  // 3D gyroid follows sparse infill's ratio, as in the engine.
+  const gyroid = tuned(lerp(SPEED.gyroid, TOUGH.gyroid), SPEED.sparse, TOUGH.sparse, speeds?.sparseInfill);
+  const top = tuned(lerp(SPEED.top, TOUGH.top), SPEED.top, TOUGH.top, speeds?.topSurface);
   const name = t <= 1e-9 ? "speed" : t >= 1 - 1e-9 ? "toughness" : Math.abs(t - 0.5) < 0.02 ? "efficiency" : "weight";
   return {
     name,
@@ -78,7 +86,7 @@ export function resolved(toughness: number, layerH = 0.2, lineWidth = 0.45, maxV
     inner,
     sparse,
     top,
-    travel: lerp(SPEED.travel, TOUGH.travel),
+    travel: tuned(lerp(SPEED.travel, TOUGH.travel), SPEED.travel, TOUGH.travel, speeds?.travel),
     effectiveOuter: cap(outer),
     effectiveInner: cap(inner),
     effectiveSparse: cap(sparse),

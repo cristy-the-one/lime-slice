@@ -12,7 +12,7 @@
  */
 import { escapeHtml, html, joinHtml, raw, type Html } from "./html.ts";
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
-import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../profiles.ts";
+import { KLIPPER_NUMBERS, readPrinterSpeeds, type KlipperLimits, type PrinterProfile, type PrinterSpeeds } from "../profiles.ts";
 import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settings-rules.ts";
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
 import { fanDefaults, fanOf, readFan, withFan, type FanSettings } from "../fan.ts";
@@ -59,6 +59,8 @@ export interface PrinterRecord extends KlipperLimits {
   firmwareArcs?: boolean;
   /** Cartesian bed, or a conveyor. */
   kind: PrinterKind;
+  /** The printer's own speeds and accelerations, sent as `printer.speeds`. A built-in takes the catalog's. */
+  speeds?: PrinterSpeeds;
   /** Sent beside `printer` on the slice request when `kind` is a belt. */
   belt: BeltSettings;
 }
@@ -294,6 +296,14 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
 }
 
 function refreshBuiltin(stored: PrinterRecord, catalog: PrinterRecord | undefined): PrinterRecord {
+  const row = refreshBuiltinGcode(stored, catalog);
+  // A built-in cannot be edited, only duplicated, so its speeds are always the catalog's.
+  if (!row.builtin || !catalog) return row;
+  const { speeds: _old, ...rest } = row;
+  return catalog.speeds ? { ...rest, speeds: catalog.speeds } : rest;
+}
+
+function refreshBuiltinGcode(stored: PrinterRecord, catalog: PrinterRecord | undefined): PrinterRecord {
   if (stored.builtin && catalog && PAST_STARTS[stored.id]?.includes(stored.startGcode.trim())) {
     return { ...stored, startGcode: catalog.startGcode };
   }
@@ -328,6 +338,7 @@ export function enginePrinter(printer: PrinterRecord, filament: FilamentRecord, 
     linearAdvance: advanceFor(filament.linearAdvance, nozzleMm),
     ...klipperLimits(printer),
     ...fanOf(filament),
+    ...(printer.speeds ? { speeds: printer.speeds } : {}),
   };
 }
 
@@ -1268,8 +1279,8 @@ const IR3_V2_START_5_2_1 = [
   "M82",
 ].join("\n");
 
-/** The start as built: 5.2.1's comment and `Z0` replaced by the line placed against the part. */
-const IR3_V2_START = IR3_V2_START_5_2_1
+/** 6.12's start: 5.2.1's comment and `Z0` replaced by the line placed against the part. */
+const IR3_V2_START_6_12 = IR3_V2_START_5_2_1
   .split("\n")
   .flatMap((line) => {
     if (line.startsWith("; two lines across the belt")) {
@@ -1283,6 +1294,12 @@ const IR3_V2_START = IR3_V2_START_5_2_1
     return [line === "G92 E0 Z0" ? "G92 E0 Z{purge_line_z}" : line];
   })
   .join("\n");
+
+/** The line that makes the purge gentle. The engine's own `M204` after the start block sets the slice's accel back. */
+const IR3_V2_GENTLE_PURGE = "M204 S500 ; the purge and the lines across lie on the belt: gentle, so they stick";
+
+/** The start as built: 6.12's, with the purge and the lines across at 500 mm/s², like the first layer. */
+const IR3_V2_START = IR3_V2_START_6_12.replace("G1 Z0.4 F900\n", `${IR3_V2_GENTLE_PURGE}\nG1 Z0.4 F900\n`);
 
 /** The IR3 V2 purge lines across the belt, as 5.2.1 had them. */
 const IR3_V2_ACROSS = [
@@ -1305,7 +1322,18 @@ const IR3_V2_START_LINES_FIRST = IR3_V2_START_ZIGZAG_ONLY.replace(
 
 /** Built-in start G-code the catalog shipped earlier, by printer id. */
 const PAST_STARTS: Record<string, string[]> = {
-  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST, IR3_V2_START_5_2_1],
+  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST, IR3_V2_START_5_2_1, IR3_V2_START_6_12],
+};
+
+/**
+ * The IR3 V2's own numbers (owner, 2026-11-20), for adhesion on the belt: the first layer, and every later layer's
+ * belt-contact edge, at 25 mm/s (30 elsewhere) and 500 mm/s², and a slightly softer outer wall. Every other feed and
+ * accel stays the blend's own.
+ */
+export const IR3_V2_SPEEDS: PrinterSpeeds = {
+  firstLayer: 25,
+  outerWallAccel: 2000,
+  firstLayerAccel: 500,
 };
 
 const IR3_V2_LIMITS: KlipperLimits = {
@@ -1328,6 +1356,7 @@ function builtinPrinters(): PrinterRecord[] {
     {
       ...printer("ideaformer-ir3-v2", "Ideaformer IR3 V2", 250, 250, 250, 12, 20000),
       ...IR3_V2_LIMITS,
+      speeds: IR3_V2_SPEEDS,
       kind: "belt",
       // Its printer.cfg has no [gcode_arcs], and Ideaformer's own slicer writes no arcs.
       firmwareArcs: false,
@@ -1475,6 +1504,7 @@ function readPrinterBody(value: unknown, missing: KlipperLimits = KLIPPER_NUMBER
   if (row.kind !== "cartesian" && row.kind !== "belt") return null;
   if (!row.belt || typeof row.belt !== "object" || Array.isArray(row.belt)) return null;
   const hostType = coerceHostKind(row.hostType);
+  const speeds = readPrinterSpeeds(row.speeds);
   return {
     name: row.name.trim(),
     bedX: row.bedX,
@@ -1493,6 +1523,7 @@ function readPrinterBody(value: unknown, missing: KlipperLimits = KLIPPER_NUMBER
     startPrint: row.startPrint,
     firmware: row.firmware === "marlin" ? "marlin" : "klipper",
     ...(typeof row.firmwareArcs === "boolean" ? { firmwareArcs: row.firmwareArcs } : {}),
+    ...(speeds ? { speeds } : {}),
     kind: row.kind,
     belt: coerceBelt(row.belt, row.bedX),
     squareCornerVelocity: atLeast(row.squareCornerVelocity, missing.squareCornerVelocity),

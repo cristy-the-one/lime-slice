@@ -242,7 +242,7 @@ export function renderChrome() {
   applyFilter();
   syncFindStuck();
 
-  const live = resolved(currentWeight(), state.layerHeight);
+  const live = resolved(currentWeight(), state.layerHeight, undefined, undefined, state.profile.speeds);
   const section = (title: string, body: string, tier?: Tier, id?: string) => `<section class="res"${id ? ` id="${id}"` : ""}${tier ? ` data-level="${tier}"` : ""}><h4>${title}</h4>${body}</section>`;
   document.querySelector("#right")!.innerHTML = `
     ${result ? section("Estimate", `${meshWarningHtml()}<div id="estimate">${estimateHtml()}</div>`, undefined, "summaryCard") : ""}
@@ -1174,7 +1174,7 @@ export function paramLine(card: ResolvedCard) {
 
 export function paramTable(card: ResolvedCard) {
   if (state.blendKind === "byRegion") {
-    return `<div class="param-head">Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm</div><div class="param-side">Low side</div>${paramLine(resolved(1, state.layerHeight))}<div class="param-side">High side</div>${paramLine(resolved(0, state.layerHeight))}`;
+    return `<div class="param-head">Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm</div><div class="param-side">Low side</div>${paramLine(resolved(1, state.layerHeight, undefined, undefined, state.profile.speeds))}<div class="param-side">High side</div>${paramLine(resolved(0, state.layerHeight, undefined, undefined, state.profile.speeds))}`;
   }
   return paramLine(card);
 }
@@ -1567,7 +1567,7 @@ export function onBlend(ev: Event) {
     const out = document.querySelector("#weightLabel .row-out");
     if (out) out.textContent = `${(state.toughness * 100).toFixed(0)}%`;
     const node = document.querySelector("#resolved");
-    if (node) node.innerHTML = paramTable(resolved(state.toughness, state.layerHeight));
+    if (node) node.innerHTML = paramTable(resolved(state.toughness, state.layerHeight, undefined, undefined, state.profile.speeds));
     markStale();
     return;
   }
@@ -1588,7 +1588,7 @@ export function onBlend(ev: Event) {
   fx.paintSlider();
   fx.draw();
   const node = document.querySelector("#resolved");
-  if (node) node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+  if (node) node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight, undefined, undefined, state.profile.speeds));
 }
 
 /** Picks the strategy a row stands for. */

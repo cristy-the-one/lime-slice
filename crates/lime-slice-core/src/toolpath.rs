@@ -543,10 +543,30 @@ fn apply_feed(path: &mut Extrusion, strategy: &ResolvedStrategy) {
                 (strategy.sparse_speed, strategy.sparse_accel)
             }
         }
-        PathKind::Solid | PathKind::GapFill => (strategy.solid_speed, strategy.solid_accel),
+        PathKind::Solid => (strategy.solid_speed, strategy.solid_accel),
+        PathKind::GapFill => (
+            strategy
+                .printer_feeds
+                .gap_speed
+                .unwrap_or(strategy.solid_speed),
+            strategy.solid_accel,
+        ),
         PathKind::Top | PathKind::Ironing => (strategy.top_speed, strategy.top_accel),
         PathKind::Bridge => (strategy.top_speed.min(36.0), strategy.top_accel),
-        PathKind::Support | PathKind::SupportInterface => (strategy.print_speed, strategy.accel),
+        PathKind::Support => (
+            strategy
+                .printer_feeds
+                .support_speed
+                .unwrap_or(strategy.print_speed),
+            strategy.accel,
+        ),
+        PathKind::SupportInterface => (
+            strategy
+                .printer_feeds
+                .support_interface_speed
+                .unwrap_or(strategy.print_speed),
+            strategy.accel,
+        ),
     };
     path.speed = speed;
     path.accel = accel;

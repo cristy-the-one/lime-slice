@@ -10,6 +10,7 @@ src/ui/settings-search.test.ts
 src/ui/settings-schema.test.ts
 src/ui/settings-profiles.test.ts
 src/ui/machine-library.test.ts
+src/strategy-speeds.test.ts
 src/temperature.test.ts
 src/flow.test.ts
 src/adhesion.test.ts

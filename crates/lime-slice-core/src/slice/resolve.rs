@@ -56,6 +56,9 @@ pub(super) fn resolve(
             strategy.z_hop = ZHopMode::Off;
         }
     }
+    if let Some(speeds) = &settings.printer_speeds {
+        strategy = speeds.tune(strategy);
+    }
     strategy
 }
 

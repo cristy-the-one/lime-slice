@@ -91,6 +91,13 @@ test("the IR3 V2 with ABS asks for a 90 C bed, says so, and exports a file that 
   expect(lines.indexOf("G1 X6.67 Z23.4 E1.85")).toBeGreaterThan(lines.indexOf("FMS_on"));
   expect(across).toBeGreaterThan(lines.indexOf("G1 X6.67 Z23.4 E1.85"));
   expect(lines.slice(across + 1, across + 4)).toEqual(["G1 Z28.8 F900", "G1 X0 E25 F2000", "G92 E0 Z-0.318"]);
+  // The purge and the lines across lie on the belt at 500 mm/s²; the slice's own accel comes back before layer 0.
+  const gentle = lines.findIndex((line) => line.startsWith("M204 S500"));
+  expect(gentle).toBeGreaterThan(lines.indexOf("FMS_on"));
+  expect(gentle).toBeLessThan(lines.indexOf("G1 Z5.4 E1. F1200"));
+  const back = lines.indexOf("M204 S1500", across);
+  expect(back).toBeGreaterThan(across);
+  expect(back).toBeLessThan(lines.indexOf(";LAYER:0 Z:0.283 H:0.200"));
   expect(lines.some((line) => /^M1[49]0 S100$/.test(line))).toBe(false);
   expect(lines.slice(lines.indexOf("PRINT_START"), lines.indexOf("PRINT_START") + 4)).toEqual(["PRINT_START", "M140 S90", "M104 S250", "M109 S250"]);
   const afterStart = lines.indexOf("M82", lines.indexOf("G28 Y"));

@@ -215,7 +215,7 @@ pub(super) fn preview_path(
         profile.max_volumetric_mm3_s,
     );
     if layer.index == 0 {
-        limited = limited.min(30.0);
+        limited = limited.min(crate::gcode::FirstLayer::of(profile).cap(path.kind));
     }
     paths.push(PreviewPath {
         kind: path.kind.as_str().into(),

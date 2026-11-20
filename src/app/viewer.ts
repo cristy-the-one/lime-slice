@@ -507,7 +507,7 @@ export function scrub(next: number) {
   const readout = document.querySelector("#layerReadout");
   if (readout) readout.innerHTML = layerReadout();
   const resolvedNode = document.querySelector("#resolved");
-  if (resolvedNode && state.blendKind === "byLayer") resolvedNode.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+  if (resolvedNode && state.blendKind === "byLayer") resolvedNode.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight, undefined, undefined, state.profile.speeds));
   paintSlider();
   paintSpark();
   paintPlayback();
@@ -645,7 +645,7 @@ export function commitSplit(at: number) {
   state.splitCustom = true;
   syncSplitField(true);
   const node = document.querySelector("#resolved");
-  if (node && state.blendKind === "byRegion") node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+  if (node && state.blendKind === "byRegion") node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight, undefined, undefined, state.profile.speeds));
   markStale();
 }
 

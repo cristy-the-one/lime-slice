@@ -483,6 +483,19 @@ pub struct ResolvedStrategy {
     pub gyroid_core_ratio: f64,
     /// Resolved hop policy. `Blend` is not stored here.
     pub z_hop: ZHopMode,
+    /// Feeds the printer's own speeds set where the blend has none of its own:
+    /// gap fill and the two support feeds. Left out, each keeps its old rule.
+    pub printer_feeds: PrinterFeeds,
+}
+
+/// Gap-fill and support feeds a printer's `speeds` set, already scaled for
+/// the blend. `None` keeps gap fill at the solid feed and supports on
+/// `support_speed`'s rule.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PrinterFeeds {
+    pub gap_speed: Option<f64>,
+    pub support_speed: Option<f64>,
+    pub support_interface_speed: Option<f64>,
 }
 
 pub fn pure(id: StrategyId) -> ResolvedStrategy {
@@ -523,6 +536,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             gyroid_skin_mm: 0.0,
             gyroid_core_ratio: 1.0,
             z_hop: ZHopMode::Off,
+            printer_feeds: PrinterFeeds::default(),
         },
         StrategyId::Toughness => ResolvedStrategy {
             id,
@@ -560,6 +574,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             gyroid_skin_mm: 0.0,
             gyroid_core_ratio: 1.0,
             z_hop: ZHopMode::Smart,
+            printer_feeds: PrinterFeeds::default(),
         },
     }
 }
@@ -639,6 +654,7 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         } else {
             ZHopMode::Off
         },
+        printer_feeds: PrinterFeeds::default(),
     }
 }
 
@@ -667,8 +683,140 @@ pub fn support_interface_density(strategy: &ResolvedStrategy) -> f64 {
 }
 
 pub fn support_speed(strategy: &ResolvedStrategy, interface: bool) -> f64 {
+    let own = if interface {
+        strategy.printer_feeds.support_interface_speed
+    } else {
+        strategy.printer_feeds.support_speed
+    };
+    if let Some(speed) = own {
+        return speed;
+    }
     let scale = if interface { 0.45 } else { 0.62 };
     (strategy.print_speed * scale).clamp(18.0, 80.0)
+}
+
+/// A printer's own speeds and accelerations, mm/s and mm/s². Each one is what
+/// the default blend (toughness 0.5) prints that feature at on this printer;
+/// the rest of the slider moves by the same ratio, so Speed stays faster and
+/// Toughness slower. A field left out keeps Lime Slice's own number.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrinterSpeeds {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer_wall: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_wall: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparse_infill: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solid_infill: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_surface: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_infill: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_interface: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub travel: Option<f64>,
+    /// Walls, skirt and supports on the first layer, and the belt-contact edge
+    /// of a belt printer. Left out, 30 mm/s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_layer: Option<f64>,
+    /// Infill, solid, top and gap fill on the first layer. Left out, `first_layer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_layer_infill: Option<f64>,
+    /// Supports and any print move without a feature speed of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accel: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer_wall_accel: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_wall_accel: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparse_infill_accel: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solid_infill_accel: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_surface_accel: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub travel_accel: Option<f64>,
+    /// Every move on the first layer, travel included. Left out, no first-layer limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_layer_accel: Option<f64>,
+}
+
+/// The first-layer feed when a printer names none.
+pub const FIRST_LAYER_SPEED_MM_S: f64 = 30.0;
+
+fn given(value: Option<f64>) -> Option<f64> {
+    value.filter(|v| v.is_finite() && *v > 0.0)
+}
+
+impl PrinterSpeeds {
+    /// Walls, skirt and supports on the first layer.
+    pub fn first_layer_speed(speeds: Option<&PrinterSpeeds>) -> f64 {
+        speeds
+            .and_then(|s| given(s.first_layer))
+            .unwrap_or(FIRST_LAYER_SPEED_MM_S)
+    }
+
+    /// Infill, solid, top and gap fill on the first layer.
+    pub fn first_layer_infill_speed(speeds: Option<&PrinterSpeeds>) -> f64 {
+        speeds
+            .and_then(|s| given(s.first_layer_infill))
+            .unwrap_or_else(|| Self::first_layer_speed(speeds))
+    }
+
+    pub fn first_layer_accel(speeds: Option<&PrinterSpeeds>) -> Option<f64> {
+        speeds.and_then(|s| given(s.first_layer_accel))
+    }
+
+    /// `strategy` with this printer's numbers. Each feature is scaled by
+    /// `target / default-blend value`, so the default blend prints exactly the
+    /// target and the slider's ends keep their place around it.
+    pub fn tune(&self, mut s: ResolvedStrategy) -> ResolvedStrategy {
+        let mid = mix(0.5);
+        let ratio = |target: Option<f64>, mid_value: f64| match given(target) {
+            Some(t) if mid_value > 0.0 => t / mid_value,
+            _ => 1.0,
+        };
+        // Gap fill and supports follow the blend the way the feed they share does.
+        let solid_share = if mid.solid_speed > 0.0 {
+            s.solid_speed / mid.solid_speed
+        } else {
+            1.0
+        };
+        let print_share = if mid.print_speed > 0.0 {
+            s.print_speed / mid.print_speed
+        } else {
+            1.0
+        };
+        let sparse = ratio(self.sparse_infill, mid.sparse_speed);
+        let sparse_accel = ratio(self.sparse_infill_accel, mid.sparse_accel);
+        s.outer_speed *= ratio(self.outer_wall, mid.outer_speed);
+        s.inner_speed *= ratio(self.inner_wall, mid.inner_speed);
+        s.sparse_speed *= sparse;
+        s.gyroid_speed *= sparse;
+        s.solid_speed *= ratio(self.solid_infill, mid.solid_speed);
+        s.top_speed *= ratio(self.top_surface, mid.top_speed);
+        s.travel_speed *= ratio(self.travel, mid.travel_speed);
+        s.accel *= ratio(self.accel, mid.accel);
+        s.outer_accel *= ratio(self.outer_wall_accel, mid.outer_accel);
+        s.inner_accel *= ratio(self.inner_wall_accel, mid.inner_accel);
+        s.sparse_accel *= sparse_accel;
+        s.gyroid_accel *= sparse_accel;
+        s.solid_accel *= ratio(self.solid_infill_accel, mid.solid_accel);
+        s.top_accel *= ratio(self.top_surface_accel, mid.top_accel);
+        s.travel_accel *= ratio(self.travel_accel, mid.travel_accel);
+        s.printer_feeds = PrinterFeeds {
+            gap_speed: given(self.gap_infill).map(|t| t * solid_share),
+            support_speed: given(self.support).map(|t| t * print_share),
+            support_interface_speed: given(self.support_interface).map(|t| t * print_share),
+        };
+        s
+    }
 }
 
 /// Toughness weight at a layer whose top is `z`.
@@ -754,6 +902,10 @@ pub struct PrinterProfile {
     /// the second at half.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fan_off_layers: Option<u32>,
+    /// This printer's own feature speeds and accelerations. Left out, Lime
+    /// Slice's blend prints as it always has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speeds: Option<PrinterSpeeds>,
 }
 
 impl PrinterProfile {
@@ -840,6 +992,7 @@ impl Default for PrinterProfile {
             overhang_fan_percent: None,
             support_fan_percent: None,
             fan_off_layers: None,
+            speeds: None,
         }
     }
 }

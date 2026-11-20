@@ -205,7 +205,12 @@ fn stage_inputs<'a>(
         profile.pressure_advance = 0.0;
         profile.linear_advance = 0.0;
     }
+    // The printer's own speeds are the one source: a caller's settings never disagree with its printer.
+    settings.printer_speeds = profile.speeds;
     let mut objects = part_frames(sources, &profile);
+    for object in &mut objects {
+        object.settings.printer_speeds = profile.speeds;
+    }
     for (i, object) in objects.iter().enumerate() {
         let tweak = object.settings.object_tweak;
         if let Err(err) = wire::tweak(tweak.infill, tweak.walls, tweak.speed) {
