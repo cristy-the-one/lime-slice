@@ -10,6 +10,7 @@ import {
   seatContextBar,
   type ContextBox,
 } from "./context-bar.ts";
+import { COMMANDS } from "./ui/commands.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -125,6 +126,11 @@ off();
 
 check("push/pull names its shortcut command", actionsFor("flat-face")[0]?.command === "model-pushpull");
 check("new primitive clicks New solid", actionsFor("empty")[0]?.toolbar === "#modelToolNew");
+// A context action's command is what its tooltip and the palette name: each one must exist.
+const ids = new Set(COMMANDS.map((command) => command.id));
+eq("every context action names a command that exists", registeredContextActions().filter((action) => action.command && !ids.has(action.command)).map((action) => action.id), []);
+const draftCommand = COMMANDS.find((command) => command.id === "model-draft");
+eq("Draft is in the palette and clicks the Draft tool", [draftCommand?.group, draftCommand?.target], ["Model", "#modelToolDraft"]);
 
 if (failed > 0) {
   console.error(`${failed} failed`);

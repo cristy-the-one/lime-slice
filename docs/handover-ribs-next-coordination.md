@@ -54,20 +54,30 @@ Merged into `feature/ribs-next`, oldest first:
 | #759 | D1 | Real folded cover and box against the baselines: ribs win (the grid needs 2.1×, thickening 4.4–4.9× the rib material) | 5f869e86 |
 | #760 | E1 | Moulding report on moulded plans (`src/modeling/moulding.ts`, `plan.moulding`, panel list) | 4ef7fd0d |
 | #761 | E2 | `draft` Model step on existing faces (kernel, MCP op, face menu, History) | c24dbf1f |
+| #764 | — | This coordination handover | 30dc452d |
+| #762 | B1a | Frequency goal in the crate: mass, lowest modes, `Goal::Frequency`, Hz before and after (crate only) | dc3811ea |
 
-`feature/ribs-next` head at handover: **c24dbf1f**.
+`feature/ribs-next` head at handover: c24dbf1f. Head when §4–5 were last brought up to date (2026-11-20): **dc3811ea**.
 
 Also on `main`: #753, the `readLoads` fix (`02989e0f`). In v6.11.0, `ribs_apply verify:true` with a region-placed load checked the wrong place.
 
-**Package status:** A done; C done (folded-as-default pending, §6); D done (no build); E1 and E2 done; B, E1b, E3 and F remain.
+**Package status:** A done; C done (folded-as-default pending, §6); D done (no build); E1 and E2 done; B1a done in the crate; B1b, E1b and E3 in review (§5); B2 and F remain.
 
-## 5. In flight at handover
+**Release note to carry (draft step).** A project saved by this version with a `draft` step does not open with its History in 6.12: 6.12 does not know the op, its saved tree is unreadable to it, and there is no project version guard, so the part opens as a mesh with its History dropped. The release notes must say so.
 
-| Executor | Branch | Brief | State |
+## 5. In flight
+
+At handover (2026-11-19) the E2 session was free after #761, A was building B1a on `ribs-next/b-vibration`, and C was building E3 on `ribs-next/e-vents`. As of 2026-11-20:
+
+| PR | Branch | Brief | State |
 |---|---|---|---|
-| E2 session | — | — | Free. #761 merged at `c24dbf1f` (after the coordinator's conflict merge `ef62961d`, the union of `ci.yml` and the smoke list). Next: E1b (Appendix C). |
-| A | `ribs-next/b-vibration` | B1a, Appendix A | Started from `4ef7fd0d`. Crate-only vibration build. |
-| C | `ribs-next/e-vents` | E3, Appendix B | Started from `4ef7fd0d`. Resin vent notches. |
+| #762 | `ribs-next/b-vibration` | B1a, Appendix A | Merged as `dc3811ea`. |
+| #764 | `ribs-next/coordination-handover` | this document | Merged as `30dc452d`. |
+| #763 | `ribs-next/e-vents` | E3, Appendix B | Open: resin vent notches. |
+| #765 | `ribs-next/e-moulded-base` | E1b, Appendix C | Open: the moulded default sized at its base. |
+| #766 | `ribs-next/b-vibration-tool` | B1b (§6 item 4) | Open: the frequency goal in `ribs_plan` and the panel. |
+
+A close-out PR from the whole-branch review fixes the draft step (editing it on a turned part, a draft about a mid-height plane, refusals that name the face's index, a palette command) and the auto ribs panel and tool (a cached moulding report, a folded wall checked with no pull says so, duplicate load case names, `folded` kept when a `ribs_plan` row reopens in the panel), and brings the release docs up to date.
 
 Review notes for #761, already settled:
 - The executor replaced the brief's "frustum" volume with the integral ∫(40−2zt)(30−2zt)dz. That is correct: the brief was wrong, since a rectangle drafted on all sides is not a similar-section frustum.

@@ -17,7 +17,7 @@ import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wallSpan, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
-import { loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { duplicateCaseName, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
 import { planOptions } from "../../src/auto-ribs-plan.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
@@ -76,7 +76,7 @@ function num(value: unknown): number | undefined {
 
 /**
  * The loads ribs_plan puts on the wall and on the plan body. One load stays `loads`. A weight that is not a number
- * above zero, and more than 8 cases, are refused here, before `loadRequest`. Names still come from `loadRequest`,
+ * above zero, two cases with one name, and more than 8 cases, are refused here, before `loadRequest`. Names still come from `loadRequest`,
  * and a weight that was left out is 1 there. The panel calls `loadRequest` on its own and keeps the quiet fixes.
  */
 export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { reason: string }, input: { loads?: unknown; loadCases?: unknown }): ReturnType<typeof loadRequest> | { reason: string; code: "bad-argument" | "bad-load" } {
@@ -98,6 +98,9 @@ export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { r
     if (row.weight !== undefined && !(weight !== undefined && weight > 0)) return { reason: `Load case ${ci + 1}: weight is a number above zero.`, code: "bad-argument" };
     parsed.push({ name: typeof row.name === "string" ? row.name : "", weight: weight ?? Number.NaN, loads: got });
   }
+  // verify finds each case's loads by its name, so two cases with one name would take each other's.
+  const twice = duplicateCaseName(parsed);
+  if (twice !== null) return { reason: `Two load cases are named "${twice}" (a case with no name is "Case N" by its place): give each case its own name.`, code: "bad-argument" };
   return loadRequest(loads, parsed.length ? parsed : undefined, true);
 }
 
@@ -512,7 +515,11 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   };
   if (process === "moulded") {
     const mesh = wall.request.mesh;
-    mouldedOnly(process, plan, mouldingReport(onSkin.ribs.map((rib) => ({ points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p)) })), pull));
+    // A folded wall with no pull is checked rib by rib along its own wall: the report says so, and so do the notes.
+    const folded = (wall.report.faces.folded?.length ?? 0) > 0;
+    const report = mouldingReport(onSkin.ribs.map((rib) => ({ points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p)) })), pull, { folded });
+    mouldedOnly(process, plan, report);
+    if (report.notes?.length) notes.push(...report.notes.map((note) => `${note} Pass pull to check every rib against one direction.`));
   }
   const joined = [...new Set(wall.report.faces.stops.map((row) => row.face))].filter((face) => !wallSet.has(face));
   // The verify study carries what the plan carried: holds and loads left out under ifMissed stay out of it too.

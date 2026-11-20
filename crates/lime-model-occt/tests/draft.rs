@@ -230,8 +230,9 @@ fn a_floor_is_refused_and_a_bad_face_refuses_its_index() {
         "op": draft(&[floor], 3.0)
     }));
     let message = refused["error"].as_str().expect("an error");
+    // The face is named by its index on the solid, as picked, not by its place in the list.
     assert!(
-        message.contains("Face 0") && message.contains("floor"),
+        message.starts_with(&format!("Face {floor} is a floor")),
         "{message}"
     );
     rel(volume(&ok(json!({ "call": "goto", "key": "floor", "node": 0 }))), 24000.0);
@@ -244,8 +245,8 @@ fn a_floor_is_refused_and_a_bad_face_refuses_its_index() {
     }));
     let mixed_message = mixed["error"].as_str().expect("an error");
     assert!(
-        mixed_message.contains("Face 1"),
-        "the bad face is named by its place in the list: {mixed_message}"
+        mixed_message.starts_with(&format!("Face {floor} is a floor")),
+        "the bad face is named by its index, not its place (1) in the list: {mixed_message}"
     );
     rel(volume(&ok(json!({ "call": "goto", "key": "floor", "node": 0 }))), 24000.0);
 }
@@ -327,9 +328,88 @@ fn a_zero_angle_and_a_duplicate_face_are_refused() {
         "call": "apply", "key": "bad", "parent": 0, "node": 1,
         "op": draft(&[face, face], 3.0)
     }));
-    assert!(
-        twice["error"].as_str().unwrap_or("").contains("Face 1"),
+    assert_eq!(
+        twice["error"].as_str(),
+        Some(format!("Face {face} is listed twice.").as_str()),
         "{twice}"
     );
     rel(volume(&ok(json!({ "call": "goto", "key": "bad", "node": 0 }))), 24000.0);
+}
+
+fn bottom_and_top(reply: &Value) -> (f64, f64) {
+    (
+        area(reply, face_facing(reply, [0.0, 0.0, -1.0])),
+        area(reply, face_facing(reply, [0.0, 0.0, 1.0])),
+    )
+}
+
+/// The +X wall of the 40 × 30 × 20 box drafted 3° about a plane at mid-height. The wall pivots
+/// on the line at z = 10: the top loses 10 tan 3° of width and the bottom gains the same, so the
+/// volume is the box's. The draft is a change all the same and must build.
+#[test]
+fn a_neutral_plane_at_mid_height_drafts_although_the_volume_stays() {
+    if !ready("mid") {
+        return;
+    }
+    let opened = ok(json!({ "call": "goto", "key": "mid", "node": 0 }));
+    let face = face_facing(&opened, [1.0, 0.0, 0.0]);
+    let drafted = apply(
+        "mid",
+        0,
+        1,
+        json!({
+            "kind": "draft", "faces": [face], "angleDeg": 3.0,
+            "neutral": { "origin": [0.0, 0.0, 10.0], "normal": [0.0, 0.0, 1.0] }
+        }),
+    );
+    let t = 3.0_f64.to_radians().tan();
+    rel(volume(&drafted), 40.0 * 30.0 * 20.0);
+    let (bottom, top) = bottom_and_top(&drafted);
+    rel(top, 30.0 * (40.0 - 10.0 * t));
+    rel(bottom, 30.0 * (40.0 + 10.0 * t));
+}
+
+/// The +X wall drafted 3° about the top face: the top stays 40 wide, the bottom grows by 20 tan 3°,
+/// and the box gains the wedge 30 · 20 · 20 tan 3° / 2.
+#[test]
+fn a_neutral_face_keeps_that_face_and_tilts_the_wall_about_it() {
+    if !ready("neutral-face") {
+        return;
+    }
+    let opened = ok(json!({ "call": "goto", "key": "neutral-face", "node": 0 }));
+    let face = face_facing(&opened, [1.0, 0.0, 0.0]);
+    let top_face = face_facing(&opened, [0.0, 0.0, 1.0]);
+    let drafted = apply(
+        "neutral-face",
+        0,
+        1,
+        json!({ "kind": "draft", "faces": [face], "angleDeg": 3.0, "neutral": top_face }),
+    );
+    let t = 3.0_f64.to_radians().tan();
+    rel(volume(&drafted), 40.0 * 30.0 * 20.0 + 6000.0 * t);
+    let (bottom, top) = bottom_and_top(&drafted);
+    rel(top, 30.0 * 40.0);
+    rel(bottom, 30.0 * (40.0 + 20.0 * t));
+}
+
+/// Pulled down (−Z), the +X wall opens toward the bottom about the plane through its lowest point
+/// along the pull, the top: the bottom loses 20 tan 3° of width and the top stays.
+#[test]
+fn a_pull_down_drafts_the_wall_about_the_top() {
+    if !ready("pull-down") {
+        return;
+    }
+    let opened = ok(json!({ "call": "goto", "key": "pull-down", "node": 0 }));
+    let face = face_facing(&opened, [1.0, 0.0, 0.0]);
+    let drafted = apply(
+        "pull-down",
+        0,
+        1,
+        json!({ "kind": "draft", "faces": [face], "angleDeg": 3.0, "pull": [0.0, 0.0, -1.0] }),
+    );
+    let t = 3.0_f64.to_radians().tan();
+    rel(volume(&drafted), 40.0 * 30.0 * 20.0 - 6000.0 * t);
+    let (bottom, top) = bottom_and_top(&drafted);
+    rel(top, 30.0 * 40.0);
+    rel(bottom, 30.0 * (40.0 - 20.0 * t));
 }
