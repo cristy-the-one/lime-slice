@@ -19,7 +19,7 @@ Cylinders, polygon prisms and boxes grow in +Z from their origin. A box's origin
 
 Two waves, then a list that waits on a table or a kernel feature. Rack and ring already exist as gear kinds and are not rebuilt.
 
-**Wave 1, fasteners and structure.** Hex nut, socket-head cap screw, hex-head screw, washer, spacer, shaft, shaft collar, plate, L-bracket. The heat-set boss is in this wave only after an insert table is added to section 6.
+**Wave 1, fasteners and structure.** Hex nut, socket-head cap screw, hex-head screw, washer, spacer, shaft, shaft collar, plate, L-bracket, and the heat-set boss. The Ruthex insert table is in section 4.10, so the boss ships in milestone 2.
 
 **Wave 2, drives.** GT2 pulley. The V-belt pulley follows only after the ISO 4183 groove table is copied into section 5.
 
@@ -165,7 +165,7 @@ The default asks `shaft(8, Sliding, 0.1)`. The test's expected diameter is that 
 
 ### 4.7 Shaft collar
 
-Parametric. This plan does not copy a DIN 705 table; a later edit can add one. The study fixture's set-screw hole started inside the wall and ran the whole outside diameter, so it exited the far side, and its slit occupied one quadrant.
+Parametric. Decided 2026-11-20: no DIN 705 table. The study fixture's set-screw hole started inside the wall and ran the whole outside diameter, so it exited the far side, and its slit occupied one quadrant.
 
 Parameters: bore, default 8, range 3 to 25. Outside diameter, default 14, range 6 to 40, and at least 2 mm above the bore. Width, default 6, range 3 to 15. Set-screw diameter, default 3, range 2 to 6, and small enough to sit in the width.
 
@@ -175,17 +175,34 @@ Geometry: tube, outer radius `od/2`, inner radius `bore/2`, height `width`. Set-
 
 No standard. A rectangular plate and a hole pattern.
 
-Parameters: width, default 80, range 30 to 250. Depth, default 60, range 20 to 200. Thickness, default 4, range 2 to 15. Hole count, default 4, range 0 to 12. Hole diameter, default 4.2, range 2 to 12. Pitch-circle diameter, default 0, range 0 to 200. Zero lays the holes on the rectangle inset 8 mm from the edges, up to the count. A positive pitch circle lays them equally around that circle. A hole centre that falls off the plate, or a hole that breaks an edge, is refused.
+Parameters: width, default 80, range 30 to 250. Depth, default 60, range 20 to 200. Thickness, default 4, range 2 to 15. Hole count, default 4, range 0 to 12. Pitch-circle diameter, default 0, range 0 to 200. Zero lays the holes on the rectangle inset 8 mm from the edges, up to the count. A positive pitch circle lays them equally around that circle. A hole centre that falls off the plate, or a hole that breaks an edge, is refused.
+
+Holes are sized by the screw, decided 2026-11-20. **Hole for** is a choice: M3, M4, M5, M6, M8, M10, M12, M16, M20, M24, or Free diameter. Default M4. A screw choice drills the ISO 273 medium clearance below, plus a printer allowance. Allowance default 0.2 mm, range 0 to 1. Free diameter shows a number field, range 2 to 30 mm, step 0.1. Switching to Free leaves the number at the diameter the screw choice was using, so the M4 default opens that field at 4.7 mm. The old 4.2 mm default is not used: it is tight for an M4 screw before a printed hole shrinks.
+
+ISO 273 medium series (DIN EN 20273, mittel), the clearance a screw passes through. Checked 2026-11-20 against three published tables that agree on every row: Mech Codex, "Metric Clearance Hole Sizes (ISO 273)", updated October 2026 (https://mechcodex.com/reference/metric-clearance-hole-sizes); the DIN EN 20273 mittel column (https://cad-markt.de/index.php/cad-tutuorials/normen/364-20273-din-iso-20273-durchgangsl); and, through M20, pickedshares' DIN EN 20273 middle column (https://pickedshares.com/en/characteristics-of-a-bolted-connection-acc-din-en-iso-4014/). M14, M18 and M22 are in those tables and are not in this choice.
+
+| Screw | Medium clearance |
+|---|---:|
+| M3 | 3.4 |
+| M4 | 4.5 |
+| M5 | 5.5 |
+| M6 | 6.6 |
+| M8 | 9 |
+| M10 | 11 |
+| M12 | 13.5 |
+| M16 | 17.5 |
+| M20 | 22 |
+| M24 | 26 |
+
+The drilled diameter is that clearance plus the allowance. Default M4 with 0.2 mm allowance is 4.7 mm.
 
 Geometry: one box, centred on X and Y, standing on `z = 0`. Through holes along −Z from the top face. Default box: `x ±40`, `y ±30`, `z` 0 to 4.
-
-The 4.2 mm hole is the parameter's default. It is not claimed as an ISO 273 clearance.
 
 ### 4.9 L-bracket
 
 No standard. Two legs of equal length at a right angle, with holes.
 
-Parameters: leg length, default 40, range 15 to 120. Width, default 30, range 10 to 80. Thickness, default 3, range 1.5 to 10, and less than the leg. Holes per leg, default 2, range 0 to 4. Hole diameter, default 4.2, range 2 to 12.
+Parameters: leg length, default 40, range 15 to 120. Width, default 30, range 10 to 80. Thickness, default 3, range 1.5 to 10, and less than the leg. Holes per leg, default 2, range 0 to 4. **Hole for** is the same control as the plate (section 4.8): M3 to M24 from the ISO 273 medium table, or Free diameter, plus the same allowance (default 0.2 mm, range 0 to 1). Default M4, so each hole is 4.7 mm.
 
 Geometry:
 
@@ -198,11 +215,31 @@ Default box: `x ±20`, `y ±15`, `z` 0 to 40.
 
 ### 4.10 Heat-set boss
 
-There is no ISO table for a hobby heat-set insert. The study fixture sized the hole with `Fit::Press` on the thread nominal, which is the screw size and not the insert's outside diameter, and fused a cone that sat inside the boss cylinder, so the taper added no surface.
+Ruthex RX metric inserts. There is no ISO table for these. The study fixture sized the hole with `Fit::Press` on the thread nominal, which is the screw size and not the insert's outside diameter, and fused a cone that sat inside the boss cylinder, so the taper added no surface.
 
-This part is not built until this section holds a table: the insert series by name, the source sheet, and for each nominal the insert outside diameter, the recommended hole, and the insert length. The kernel refuses `"heat-set"` with "No insert table is selected." while the table is absent.
+Source: Ruthex Produktdatenblatt "RX-Reihe – Metrisches ISO-Gewinde", status 14.12.2023, fetched 2026-11-20 from https://asset.conrad.com/media10/add/160267/c1/-/de/003398929DS00/tehnicni-podatki-3398929-ruthex-navojni-vlozek-primerno-za-3d-tiskalnik-pla-zdruzljive-naprave-rx-m5sx58-ge-m5sx58-001.pdf. The drawing on that sheet labels `d1` on the knurled outside, `d2` on the lead-in, `d3` on the blind or through hole ("Sack- oder Durchgangsloch"), `L` as the length, and `W` min as the minimum wall. An older copy of the same sheet, status 15.08.2022 (https://www.igo3d.com/mediafiles/Sonstiges/Ruthex/ruthex_Datenblatt_RX-Serie.pdf), prints the short M5 as `RX-M5Sx9,5` while its length column is 5.8 and its order number is `GE-M5Sx58-001`. The 14.12.2023 sheet names that row `RX-M5Sx5,8`. This plan uses the 2023 name. The sheet's UNC page is not in the picker. M10 and above are not on the sheet, so they are not in the choice.
 
-When the table is here, the body is one cone: base radius `bossOd/2`, top radius `(bossOd − taper)/2`, height as given. The hole is blind from the top, diameter and depth from the table, plus the allowance parameter. Parameters beside the table: nominal choice, boss outside diameter, height, taper (the reduction of the top diameter), allowance.
+Where the sheet draws one `W` and one `d3` across a pair, both articles in the pair take that cell. That is M4 (`W` 2.1, `d3` 5.6) and M5 (`W` 2.6, `d3` 6.4).
+
+| Article | Thread | Outside d1 | Lead-in d2 | Length L | Wall W min | Hole d3 |
+|---|---|---:|---:|---:|---:|---:|
+| RX-M2x4 | M2 | 3.6 | 3.1 | 4.0 | 1.3 | 3.2 |
+| RX-M2,5x5,7 | M2.5 | 4.6 | 3.9 | 5.7 | 1.6 | 4.0 |
+| RX-M3Sx4,0 | M3 | 4.6 | 3.9 | 4.0 | 1.6 | 4.0 |
+| RX-M3x5x4 | M3 | 5.0 | 4.25 | 4.0 | 1.3 | 4.4 |
+| RX-M3x5,7 | M3 | 4.6 | 3.9 | 5.7 | 1.6 | 4.0 |
+| RX-M4Sx4,0 | M4 | 6.3 | 5.5 | 4.0 | 2.1 | 5.6 |
+| RX-M4x8,1 | M4 | 6.3 | 5.5 | 8.1 | 2.1 | 5.6 |
+| RX-M5Sx5,8 | M5 | 7.1 | 6.3 | 5.8 | 2.6 | 6.4 |
+| RX-M5x9,5 | M5 | 7.1 | 6.3 | 9.5 | 2.6 | 6.4 |
+| RX-M6x12,7 | M6 | 8.7 | 7.9 | 12.7 | 3.3 | 8.0 |
+| RX-M8x12,7 | M8 | 10.1 | 9.5 | 12.7 | 4.5 | 9.6 |
+
+The choice is the article, not the thread size. One thread has more than one outside diameter (M3 is 4.6 mm on `RX-M3x5,7` and 5.0 mm on `RX-M3x5x4`). Default article `RX-M3x5,7`, the M3 in the assortment box `GE-KASTEN-001` on the same sheet.
+
+Parameters: article, as above. Boss outside diameter, default `d1 + 2 * W` (the sheet's minimum wall placed outside the knurl; a larger boss is allowed, a smaller one is refused). Height, default `L`, range from `L` to 40. Taper, the reduction of the top diameter, default 0, range 0 to 2. Allowance added to `d3`, default 0, range 0 to 1. The published `d3` is already Ruthex's installation hole, so the allowance stays 0 until the person sets it. It is not the plate's 0.2 mm.
+
+Geometry: one cone, base radius `bossOd/2`, top radius `(bossOd − taper)/2`, height as given. With the default taper of 0 that cone is a cylinder. Through hole on the axis, diameter `d3 + allowance`. The sheet allows a blind hole or a through hole; this milestone drills through, so the depth is the boss height and no second depth is invented. Default `RX-M3x5,7` box: `x` and `y` `±3.9` (outside diameter 4.6 + 2 × 1.6 = 7.8), `z` from 0 to 5.7, hole 4.0 mm.
 
 ## 5. Wave 2
 
@@ -220,7 +257,7 @@ Geometry:
 - One groove per tooth. The cut is a box placed by its centre at angle `360° * i / teeth`, radius `OD/2 − depth/2`, `z = width/2`, turned `[0, 0, angle]` so the box's X axis is radial. Radial size `depth + OVERSHOOT_MM` (the extra breaks the outside surface). Tangential size is the groove width below. Axial size `width + 2 * OVERSHOOT_MM`, so the groove crosses the full width and breaks both side faces.
 - Bore: through hole, diameter as given.
 
-The groove cross-section in this milestone is a rectangle, depth 0.75 mm and width 1.41 mm. Those two numbers are the orinovate generator's published approximation (it describes the real groove as arcs, about 0.75 mm deep and about 1.41 mm wide at the OD, and it says the shape is not a Gates drawing). Gates does not publish the pulley groove. The part's label and the guide say "approximate GT2 groove". A later milestone may replace the rectangle with the arc profile once the points are copied from a named drawing into the kernel.
+The groove cross-section in this milestone is a rectangle, depth 0.75 mm and width 1.41 mm. Those two numbers are the orinovate generator's published approximation (it describes the real groove as arcs, about 0.75 mm deep and about 1.41 mm wide at the OD, and it says the shape is not a Gates drawing). Gates does not publish the pulley groove. The part's label and the guide say "approximate GT2 groove". Decided 2026-11-20: this rectangle ships. A later milestone may replace it with the arc profile once the points are copied from a named drawing into the kernel.
 
 Flanges are not in this milestone.
 
@@ -238,17 +275,37 @@ Parameters beside the table: section choice, datum diameter, bore, number of gro
 
 ## 6. The Add dialog, History, and MCP
 
-The picker (`PRIMITIVES` in `src/model-primitive.ts`, drawn by `src/app/model/markup.ts`) gains three buttons after Gear:
+Decided 2026-11-20: the picker (`PRIMITIVES` in `src/model-primitive.ts`, drawn by `src/app/model/markup.ts`) gains one button after Gear, **Part**. One kind select, grouped the way a menu groups its entries:
 
-| Button | Kinds |
+| Group | Kinds |
 |---|---|
-| Fastener | Hex nut, Socket screw, Hex screw, Washer |
-| Fitting | Spacer, Shaft, Collar, and Heat-set when section 4.10 has a table |
-| Pulley | GT2, and V when section 5.2 has a table |
+| Fasteners | Hex nut, Socket screw, Hex screw, Washer |
+| Fittings | Spacer, Shaft, Collar, Heat-set boss |
+| Brackets | Plate, L-bracket |
+| Pulleys | GT2 pulley, V pulley |
 
-Plate and L-bracket are a fourth button, **Bracket**, with those two kinds. Four buttons keep each family's fields on one select, the way Gear's select switches external, ring and rack. A History step is labelled from the kind ("Nut", "Socket screw", "GT2 pulley"), the way a ring gear is labelled from its kind.
+The fields under the select change with the kind, as the gear card's fields change with external, ring and rack. V pulley is in the list and is refused with the section 5.2 sentence until that table is in this file.
 
-Fields follow the gear card: the choice and the sizes a person always sets are visible; an override that defaults to "table" sits under More. Scrub steps match the parameter steps above. Changing the nominal rewrites the table-driven fields that are still on "table". A field the person has typed a number into keeps that number.
+**One primitive.** The kernel primitive is `part`, with a `kind`. The groups are labels on the select, not four primitives. One `Solid` variant stores every kind, the way `Primitive::Gear` stores external, ring and rack. Splitting the families into four primitives would repeat the origin, the turn and the boolean path for a difference the select already shows.
+
+Kind ids and History labels:
+
+| Kind | Label |
+|---|---|
+| `nut` | Nut |
+| `socket` | Socket screw |
+| `hex` | Hex screw |
+| `washer` | Washer |
+| `spacer` | Spacer |
+| `shaft` | Shaft |
+| `collar` | Collar |
+| `heat-set` | Heat-set boss |
+| `plate` | Plate |
+| `bracket` | L-bracket |
+| `gt2` | GT2 pulley |
+| `v` | V pulley |
+
+Fields follow the gear card: the choice and the sizes a person always sets are visible; an override that defaults to "table" sits under More. Scrub steps match the parameter steps above. Changing the nominal, the article or **Hole for** rewrites the table-driven fields that are still on "table". A field the person has typed a number into keeps that number. The heat-set card's article select lists the eleven rows in section 4.10. The plate and the bracket show **Hole for**, the allowance, and the free-diameter field only when the choice is Free.
 
 Editing the History step reopens the same card (`model_edit`), one rebuild, one undo. Save and reopen round-trips the `Solid` fields.
 
@@ -256,10 +313,10 @@ As a boolean tool the same primitive takes `origin` or `centre` and `turn`, and 
 
 MCP, no new tool:
 
-- `solid_new {primitive:"fastener", kind:"nut", nominal:"M6"}` and the same for `fitting`, `bracket` and `pulley`.
+- `solid_new {primitive:"part", kind:"nut", nominal:"M6"}`, and the same `primitive` for every kind above. A heat-set is `kind:"heat-set"` with `article:"RX-M3x5,7"`. A plate is `kind:"plate"` with `holeFor:"M4"`.
 - A boolean op carries the same `primitive`, `kind` and fields.
 - The sentences in section 4 and 5 are the refusals (`gear.rs` is the pattern: one sentence, the limit it names).
-- The size tables are in `guide`, not in the default tool list.
+- The size tables are in `guide`, not in the default tool list. The guide's GT2 entry says "approximate GT2 groove", the same words as the card.
 
 The ghost is the analytic box of section 3, plus a hex outline for a nut or a hex head and a circle for a round part. It does not ask the engine. Groove and hole detail can be a coarser ghost: the box and the outer profile must match; the ghost may omit the socket.
 
@@ -297,7 +354,7 @@ Measured against the analytic solid, at the default and at two other nominals (M
 - `model_check` equivalent in the kernel: the solid is closed, 0 open edges, 0 non-manifold edges.
 - The socket test places a point at `(0, 0, k − t/2)` outside the material, and a point at `(0, 0, k + 1)` outside the solid's box. A socket that starts at `z = k` fails the first point.
 - The GT2 test places, for a tooth that is not on an axis (tooth 1 of 20, at 18°), a point at radius `OD/2 − 0.2` on that angle, at `z = width/2` and at `z = 0.2`, outside the material, and a point 12° off that angle at the same radius inside the material. Axis-aligned cuts fail the off-axis tooth. A groove that covers only the middle half of the width fails the `z = 0.2` point.
-- Refusals: unknown nominal, washer allowance that eats the wall, shaft nominal 40 mm, heat-set and V-pulley and `thread` while their sections say they are absent.
+- Refusals: unknown nominal, washer allowance that eats the wall, shaft nominal 40 mm, a heat-set boss smaller than `d1 + 2 * W`, V-pulley and `thread` while their sections say they are absent. The default heat-set hole is `d3` of `RX-M3x5,7` (4.0 mm) and its outside diameter is 7.8 mm.
 
 **MCP**, in the existing job "MCP server against real Open CASCADE" (`rust-mcp-occt`). No new job, and the job keeps its name. `solid_new` of each wave's default, then `model_describe` bounds against the same analytic box (0.02 mm) and `model_check` with `edges` `{open: 0, nonManifold: 0}`. One boolean: a washer cut by a nut's prism, or a plate fused with a spacer, still closed.
 
@@ -310,16 +367,16 @@ Measured against the analytic solid, at the default and at two other nominals (M
 Each one is a PR to `main`, after 6.13.0, and each updates this file where the code decides otherwise. None of them renames a CI job or adds one.
 
 1. **Fasteners.** Section 4.1 to 4.4. Kernel, ghost, card, MCP in the Open CASCADE job, `e2e/model-fastener.spec.ts`.
-2. **Fittings.** Section 4.5 to 4.7. Heat-set (4.10) ships in this PR only if the insert table is already in this file. Otherwise the kind is absent and the PR says so.
-3. **Brackets.** Section 4.8 and 4.9.
-4. **GT2 pulley.** Section 5.1, including the off-axis and full-width point tests.
+2. **Fittings.** Section 4.5 to 4.7 and the heat-set boss (4.10). The Ruthex table is in this file, so the boss ships here.
+3. **Brackets.** Section 4.8 and 4.9, including **Hole for** and the ISO 273 medium table.
+4. **GT2 pulley.** Section 5.1, including the off-axis and full-width point tests, with the card and the guide saying "approximate GT2 groove".
 5. **V-belt pulley.** Blocked on the ISO 4183 table in section 5.2.
 6. **Thread.** Section 8. Adds `thread` beside `tap` on the nut and both screws.
 
-## 11. Open questions
+## 11. Decided 2026-11-20
 
-1. Four picker buttons (Fastener, Fitting, Bracket, Pulley) against one Part button with two selects. This plan uses four, so the kind fits the gear card.
-2. Which heat-set insert series supplies section 4.10? The boss waits on that choice.
-3. Is the approximate GT2 groove (0.75 mm by 1.41 mm, labelled as such) enough for the first pulley, or does wave 2 wait for a named tooth drawing?
-4. Shaft collar stays parametric until someone wants a DIN 705 table copied here.
-5. Plate and bracket holes stay a free diameter. An ISO 273 clearance choice can be added later if the fastener nominal should drive the hole.
+1. **Picker.** One Part button after Gear. One kind select, grouped Fasteners, Fittings, Brackets, Pulleys. One kernel primitive `part` with a `kind` (section 6). History labels stay per kind.
+2. **Heat-set.** Ruthex RX, the 14.12.2023 Produktdatenblatt copied into section 4.10. The boss is in milestone 2.
+3. **GT2.** The 0.75 mm by 1.41 mm rectangle ships, labelled "approximate GT2 groove" on the card and in the guide.
+4. **Shaft collar.** Stays parametric. No DIN 705 table.
+5. **Plate and L-bracket holes.** Sized by screw: **Hole for** is M3–M24 or Free diameter. A screw choice uses the ISO 273 medium clearance in section 4.8, plus a printer allowance (default 0.2 mm, range 0 to 1). Default M4, which drills 4.7 mm.
