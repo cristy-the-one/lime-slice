@@ -526,8 +526,9 @@ jobs:
           # two cases with per-case factors against a fresh solve and the stored request re-planned (5b),
           # and ribs_apply {verify:true} with two cases on a 64 × 40 × 14 box, each case before and after (5c).
           node --experimental-strip-types mcp/auto-ribs-cases-occt.test.ts
+          # THROW AWAY. Aim-only: no box cut, pocket.at is the face gap midpoint. Revert this line.
           # Resin vent notches on the tray floor. In this job, not the folded-shell job.
-          node --experimental-strip-types mcp/vents-occt.test.ts
+          LIME_VENT_AIM_ONLY=1 node --experimental-strip-types mcp/vents-occt.test.ts
           # A frequency goal through ribs_plan: Hz, the refusals, a missed load, apply with and without verify.
           # On this job, not the shared one and not the folded-shell one.
           node --experimental-strip-types mcp/frequency-occt.test.ts

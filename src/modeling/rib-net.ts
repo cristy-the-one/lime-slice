@@ -910,8 +910,8 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     const first = skipped[0];
     return { reason: `No stretch of these paths has room for a rib${first ? `: near (${first.at.join(", ")}) there is ${first.why}` : ""}. Lower the height or the clearance, or move the paths. Nothing was built.` };
   }
-  // A named gap is an opening. A rib that crosses it is cut there; the new ends stay open so they are not run back in.
-  const notches = carveNotches(runs);
+  // THROW AWAY. LIME_VENT_AIM_ONLY builds the solid as at d9674149 (no split, no box cut) so the face aim can be measured alone. Revert this commit.
+  const notches = process.env.LIME_VENT_AIM_ONLY === "1" ? [] : carveNotches(runs);
   // --- Ends: a joint with another run (or a sharp turn of its own), a wall the rib runs into, or a free end that tapers.
   const ends = { wall: 0, joint: 0, tapered: 0, square: 0 };
   for (let ri = 0; ri < runs.length; ri += 1) {

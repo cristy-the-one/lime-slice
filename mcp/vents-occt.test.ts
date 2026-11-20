@@ -179,6 +179,7 @@ if (chosen && pockets.length > 0) {
   } else if (built.ok !== true) {
     check("the notched ribs build", false, JSON.stringify(built).slice(0, 400));
   } else {
+    console.log("vents-occt: experiment aim-only, no box cut, pocket.at is the face gap midpoint");
     console.log(`vents-occt: ribNet ${JSON.stringify(built.ribNet ?? {}).slice(0, 500)}`);
     for (const pocket of pockets) {
       const at = pocket.at as number[];
