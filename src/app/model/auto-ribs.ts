@@ -302,6 +302,6 @@ export function bindAutoRibs() {
 export function startAutoRibsEdit(op: ModelOp, head: string): boolean {
   const source = ribNetSource(op);
   if (!source) return false;
-  openAutoRibsEdit(cardFromRibNet(source), head);
+  openAutoRibsEdit(cardFromRibNet(source, state.profile.filamentDensityGCm3 || 1.24), head);
   return true;
 }
