@@ -48,7 +48,9 @@ mod field;
 mod buckling;
 mod frequency;
 
-pub use buckling::against_case;
+pub use buckling::{
+    against_case, already_enough, buckles_at, reached_short, IDEAL_BUCKLING,
+};
 mod loose;
 mod profile;
 mod select;

@@ -5,7 +5,8 @@
 use std::collections::HashMap;
 
 use lime_sim::shell::planner::{
-    plan_ribs, Goal, Holds, RibPlanRequest,
+    already_enough, buckles_at, plan_ribs, reached_short, Goal, Holds, RibPlanRequest,
+    IDEAL_BUCKLING,
 };
 use lime_sim::shell::{
     BucklingSet, Rib, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel, ShellOptions,
@@ -500,6 +501,88 @@ fn planned_ribs_reach_twice_from_near_one() {
         plan.notes.iter().any(|n| n.contains("ideal buckling load")),
         "{:?}",
         plan.notes
+    );
+}
+
+/// Bare λ already above the ask: the plan stops before tracing a rib.
+#[test]
+fn a_plate_already_above_the_factor_plans_no_ribs() {
+    let (a, n) = (100.0, 8);
+    let mesh = ShellMesh::rectangle([a, a], [n, n], 1.0);
+    // Half the closed-form Ncr, so an exact plate holds 2×. The ask is 1.5×.
+    let (holds, loads) = compression(&mesh, a, a, 0.5 * ncr(4.0, a, 1.0), Edge::Simple);
+    let mut req = RibPlanRequest::new(mesh, material(E, NU));
+    req.holds = Holds::Given(holds);
+    req.load_cases = vec![loads];
+    req.goal = Goal::Buckling {
+        factor: 1.5,
+        on: None,
+    };
+    req.options.baselines = false;
+    let plan = plan_ribs(&req).unwrap();
+    let factor = plan.buckling_factor.expect("a buckling result");
+    println!(
+        "already enough: λ {:.4}, ribs {}, goal_met {}, notes {:?}",
+        factor.bare,
+        plan.ribs.len(),
+        plan.goal_met,
+        plan.notes
+    );
+    assert!(plan.ribs.is_empty(), "ribs were planned on a wall that already holds");
+    assert!(plan.goal_met);
+    assert!(
+        (factor.bare - factor.ribbed).abs() <= 1e-12,
+        "before {} after {}",
+        factor.bare,
+        factor.ribbed
+    );
+    assert!(factor.bare > 1.5, "bare λ {} is not above 1.5", factor.bare);
+    assert_eq!(
+        plan.notes,
+        vec![
+            IDEAL_BUCKLING.to_string(),
+            already_enough(factor.bare, 1.5),
+        ]
+    );
+}
+
+/// The ribs that pay still fall short of the ask, so the plan stops.
+#[test]
+fn a_capped_rib_stops_short_of_the_factor() {
+    let (a, n) = (100.0, 8);
+    let mesh = ShellMesh::rectangle([a, a], [n, n], 1.0);
+    let (holds, loads) = compression(&mesh, a, a, ncr(4.0, a, 1.0), Edge::Simple);
+    let mut req = RibPlanRequest::new(mesh, material(E, NU));
+    req.holds = Holds::Given(holds);
+    req.load_cases = vec![loads];
+    req.goal = Goal::Buckling {
+        factor: 5.0,
+        on: None,
+    };
+    req.rules.max_height = 1.0;
+    req.rules.min_spacing = 80.0;
+    req.options.baselines = false;
+    req.options.shortlist = 4;
+    let plan = plan_ribs(&req).unwrap();
+    let factor = plan.buckling_factor.expect("a buckling result");
+    println!(
+        "short: λ {:.4} → {:.4}, ribs {}, goal_met {}, notes {:?}",
+        factor.bare,
+        factor.ribbed,
+        plan.ribs.len(),
+        plan.goal_met,
+        plan.notes
+    );
+    assert!(!plan.ribs.is_empty(), "nothing was tried");
+    assert!(!plan.goal_met, "a 1 mm rib reached 5×");
+    assert!(factor.ribbed + 1e-9 < 5.0, "ribbed λ {}", factor.ribbed);
+    assert_eq!(
+        plan.notes,
+        vec![
+            IDEAL_BUCKLING.to_string(),
+            buckles_at(factor.ribbed, factor.bare),
+            reached_short(factor.ribbed, 5.0),
+        ]
     );
 }
 
