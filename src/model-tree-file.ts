@@ -712,7 +712,7 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
     if (typeof value.nominal !== "string") return undefined;
     spec.nominal = value.nominal;
   }
-  for (const key of ["allowance", "length", "headDiameter", "headHeight", "socketDepth"] as const) {
+  for (const key of ["allowance", "length", "headDiameter", "headHeight", "socketDepth", "diameter", "taper", "setScrew"] as const) {
     const raw = value[key];
     if (raw === undefined) continue;
     if (!finite(raw)) return undefined;
@@ -721,6 +721,18 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   if (value.boreKind !== undefined) {
     if (value.boreKind !== "tap" && value.boreKind !== "thread") return undefined;
     spec.boreKind = value.boreKind;
+  }
+  if (value.hollow !== undefined) {
+    if (typeof value.hollow !== "boolean") return undefined;
+    spec.hollow = value.hollow;
+  }
+  if (value.fit !== undefined) {
+    if (value.fit !== "running" && value.fit !== "sliding" && value.fit !== "press") return undefined;
+    spec.fit = value.fit;
+  }
+  if (value.article !== undefined) {
+    if (typeof value.article !== "string") return undefined;
+    spec.article = value.article;
   }
   return spec;
 }

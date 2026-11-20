@@ -25,7 +25,7 @@ import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { GEAR_DEFAULTS, gearRefusal, isBoreShape, type BoreShape, type GearFields } from "../model-gear";
-import { isPartKind, partProblem, partRowText, type PartKind, type PartSpec } from "../model-part";
+import { heatRow, isPartKind, partProblem, partRowText, type PartKind, type PartSpec } from "../model-part";
 import { gearAt, nearestVerdict, verdictSentence, type WorldGear } from "../gear-pair";
 import { gearOf, isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { FEATURE_CHOICE_DEFAULTS, featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
@@ -639,9 +639,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
       hooks?.paramsChanged();
       return;
     }
-    // A fastener's kind or nominal changes the row, the fields and the ghost at once.
-    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal")) {
+    // A part's kind, nominal, fit, article or hollow changes the row, the fields and the ghost at once.
+    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelPartFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow")) {
       if (ev.target.id === "modelPartKind") onPartKind();
+      if (ev.target.id === "modelPartArticle") onHeatArticle();
       syncFields();
       refreshGhost();
       refreshApply();
@@ -681,8 +682,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal")) return;
-    if (ev.target instanceof HTMLInputElement && ev.target.id === "modelPartLength") ev.target.dataset.touched = "1";
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelPartFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow")) return;
+    if (ev.target instanceof HTMLInputElement && (ev.target.id === "modelPartLength" || ev.target.id === "modelPartDiameter")) ev.target.dataset.touched = "1";
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
@@ -1099,8 +1100,21 @@ function fillEdit() {
     if (kind && panel.partKind) kind.value = panel.partKind;
     const nominal = document.querySelector<HTMLSelectElement>("#modelPartNominal");
     if (nominal && panel.nominal) nominal.value = panel.nominal;
+    const article = document.querySelector<HTMLSelectElement>("#modelPartArticle");
+    if (article && panel.article) article.value = panel.article;
+    const fit = document.querySelector<HTMLSelectElement>("#modelPartFit");
+    if (fit && panel.fit) fit.value = panel.fit;
+    const hollow = document.querySelector<HTMLInputElement>("#modelPartHollow");
+    if (hollow && panel.hollow !== undefined) hollow.checked = panel.hollow;
     const length = document.querySelector<HTMLInputElement>("#modelPartLength");
-    if (length) length.dataset.touched = "1";
+    const diameter = document.querySelector<HTMLInputElement>("#modelPartDiameter");
+    if (panel.partKind === "heat-set") {
+      const row = heatRow(panel.article);
+      const storedL = panel.fields.modelPartLength;
+      const storedD = panel.fields.modelPartDiameter;
+      if (length && row && storedL !== undefined && Math.abs(storedL - row.l) > 1e-6) length.dataset.touched = "1";
+      if (diameter && row && storedD !== undefined && Math.abs(storedD - (row.d1 + 2 * row.w)) > 1e-6) diameter.dataset.touched = "1";
+    } else if (length) length.dataset.touched = "1";
   }
   if (panel.plane) paintPlaneMode(panel.plane.mode);
   if (panel.hole) setHoleBoxes(panel.hole.through, panel.hole.counterbore);
@@ -1430,6 +1444,17 @@ function syncFields() {
   setLabel("#modelHeightLabel", "#modelHeight", kind === "gear" ? "Thickness" : "Height");
   const thick = document.querySelector<HTMLElement>("#modelPartThick")?.closest("label")?.querySelector("span");
   if (thick) thick.textContent = partKindNow() === "hex" ? "Head height" : "Thickness";
+  const partKind = partKindNow();
+  setLabel("#modelPartLengthLabel", "#modelPartLength", partKind === "collar" ? "Width" : partKind === "heat-set" ? "Height" : "Length", partKind === "collar" ? "Collar width, mm" : partKind === "heat-set" ? "Boss height, mm" : "Length, mm");
+  setLabel("#modelPartDiameterLabel", "#modelPartDiameter", partKind === "shaft" ? "Nominal ⌀" : partKind === "heat-set" ? "Boss ⌀" : "Outside ⌀");
+  setLabel("#modelPartBoreLabel", "#modelPartBore", partKind === "collar" ? "Bore ⌀" : "Hole ⌀");
+  const partLength = document.querySelector<HTMLInputElement>("#modelPartLength");
+  if (partLength) {
+    partLength.max = partKind === "shaft" ? "300" : partKind === "collar" ? "15" : partKind === "heat-set" ? "40" : "200";
+    partLength.step = partKind === "socket" || partKind === "hex" ? "0.5" : "0.1";
+  }
+  const partAllowance = document.querySelector<HTMLInputElement>("#modelPartAllowance");
+  if (partAllowance) partAllowance.max = partKind === "shaft" ? "0.5" : "1";
   paintPartNote();
   const flats = acrossFlats();
   setLabel("#modelAcrossLabel", "#modelAcross", flats ? "Across flats" : "Across corners", flats ? "Width across flats" : "Width across corners");
@@ -1717,16 +1742,61 @@ function partKindNow(): PartKind {
   return isPartKind(value) ? value : "nut";
 }
 
-/** A socket starts at 25 mm under the head, a hex screw at 20, unless the length was typed or this is an edit. */
+/** Each kind opens on its own defaults. A number the person has typed keeps its value until the kind changes. */
 function onPartKind() {
+  for (const id of ["#modelPartLength", "#modelPartDiameter", "#modelPartBore", "#modelPartAllowance", "#modelPartTaper", "#modelPartScrew"]) {
+    const field = document.querySelector<HTMLInputElement>(id);
+    if (field) delete field.dataset.touched;
+  }
+  const kind = partKindNow();
   const length = document.querySelector<HTMLInputElement>("#modelPartLength");
-  if (length && !length.dataset.touched && !edit) length.value = partKindNow() === "hex" ? "20" : "25";
+  const diameter = document.querySelector<HTMLInputElement>("#modelPartDiameter");
+  const bore = document.querySelector<HTMLInputElement>("#modelPartBore");
+  const allowance = document.querySelector<HTMLInputElement>("#modelPartAllowance");
+  const screw = document.querySelector<HTMLInputElement>("#modelPartScrew");
+  const taper = document.querySelector<HTMLInputElement>("#modelPartTaper");
+  const hollow = document.querySelector<HTMLInputElement>("#modelPartHollow");
+  const fit = document.querySelector<HTMLSelectElement>("#modelPartFit");
+  if (kind === "hex" && length) length.value = "20";
+  else if (kind === "socket" && length) length.value = "25";
+  else if (kind === "spacer") {
+    if (diameter) diameter.value = "10";
+    if (bore) bore.value = "4.2";
+    if (length) length.value = "12";
+    if (hollow) hollow.checked = true;
+  } else if (kind === "shaft") {
+    if (diameter) diameter.value = "8";
+    if (length) length.value = "40";
+    if (allowance) allowance.value = "0.1";
+    if (fit) fit.value = "sliding";
+  } else if (kind === "collar") {
+    if (bore) bore.value = "8";
+    if (diameter) diameter.value = "14";
+    if (length) length.value = "6";
+    if (screw) screw.value = "3";
+  } else if (kind === "heat-set") {
+    if (taper) taper.value = "0";
+    if (allowance) allowance.value = "0";
+    onHeatArticle();
+  }
+}
+
+/** The article's boss and height, while those fields are still the row's. */
+function onHeatArticle() {
+  const row = heatRow(document.querySelector<HTMLSelectElement>("#modelPartArticle")?.value);
+  if (!row) return;
+  const diameter = document.querySelector<HTMLInputElement>("#modelPartDiameter");
+  const length = document.querySelector<HTMLInputElement>("#modelPartLength");
+  if (diameter && !diameter.dataset.touched) diameter.value = String(row.d1 + 2 * row.w);
+  if (length && !length.dataset.touched) length.value = String(row.l);
 }
 
 function partFields(): PartSpec {
   const kind = partKindNow();
-  const nominal = document.querySelector<HTMLSelectElement>("#modelPartNominal")?.value || "M6";
-  const spec: PartSpec = { partKind: kind, nominal, height: 0 };
+  const spec: PartSpec = { partKind: kind, height: 0 };
+  if (kind === "nut" || kind === "socket" || kind === "hex" || kind === "washer") {
+    spec.nominal = document.querySelector<HTMLSelectElement>("#modelPartNominal")?.value || "M6";
+  }
   if (kind === "nut" || kind === "washer") {
     spec.allowance = num("#modelPartAllowance");
     spec.height = num("#modelPartThick");
@@ -1740,6 +1810,33 @@ function partFields(): PartSpec {
     spec.socketDepth = num("#modelPartSocket");
     spec.height = head;
   }
+  if (kind === "spacer") {
+    spec.diameter = num("#modelPartDiameter");
+    spec.bore = num("#modelPartBore");
+    spec.height = num("#modelPartLength");
+    if (!document.querySelector<HTMLInputElement>("#modelPartHollow")?.checked) spec.hollow = false;
+  }
+  if (kind === "shaft") {
+    spec.diameter = num("#modelPartDiameter");
+    spec.height = num("#modelPartLength");
+    spec.allowance = num("#modelPartAllowance");
+    spec.fit = document.querySelector<HTMLSelectElement>("#modelPartFit")?.value || "sliding";
+  }
+  if (kind === "collar") {
+    spec.diameter = num("#modelPartDiameter");
+    spec.bore = num("#modelPartBore");
+    spec.height = num("#modelPartLength");
+    spec.setScrew = num("#modelPartScrew");
+  }
+  if (kind === "heat-set") {
+    spec.article = document.querySelector<HTMLSelectElement>("#modelPartArticle")?.value || "RX-M3x5,7";
+    spec.diameter = num("#modelPartDiameter");
+    spec.height = num("#modelPartLength");
+    const taper = num("#modelPartTaper");
+    if (taper !== 0) spec.taper = taper;
+    const allowance = num("#modelPartAllowance");
+    if (allowance !== 0) spec.allowance = allowance;
+  }
   return spec;
 }
 
@@ -1747,7 +1844,7 @@ function paintPartNote() {
   const row = document.querySelector("#modelPartRow");
   if (!row || primitiveKind() !== "part") return;
   const fields = partFields();
-  row.textContent = partRowText(fields.partKind ?? "", fields.nominal ?? "M6");
+  row.textContent = partRowText(fields.partKind ?? "", fields.nominal ?? "M6", fields.article);
 }
 
 /** The sentence a fastener is refused with before anything is sent; null for any other primitive, or a fine part. */

@@ -97,7 +97,10 @@ for (const tool of MODEL_TOOLS) {
     for (const { kind: primitive } of PRIMITIVES) {
       for (const feature of features) {
         for (const repeat of repeats) {
-          for (const handle of handlesFor(tool, context(primitive, { hole, ...feature, ...repeat }))) handle.fields.forEach((field) => dragged.add(field));
+          const partKinds = primitive === "part" ? [undefined, "nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set"] as const : [undefined];
+          for (const partKind of partKinds) {
+            for (const handle of handlesFor(tool, context(primitive, { hole, ...feature, ...repeat, partKind }))) handle.fields.forEach((field) => dragged.add(field));
+          }
         }
       }
     }
@@ -150,6 +153,11 @@ for (const { kind } of PRIMITIVES) {
   const spots = new Set(knobs.map((handle) => handle.dir.map((value) => value.toFixed(3)).join(",")));
   eq(`a ${kind}'s size knobs each have a spot of their own`, spots.size, knobs.length);
   check(`a ${kind}'s size knobs sit on the ghost`, knobs.every(ghosted));
+}
+for (const partKind of ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set"] as const) {
+  const knobs = handlesFor("boolean", context("part", { partKind })).filter((handle) => handle.look === "knob");
+  const spots = new Set(knobs.map((handle) => handle.dir.map((value) => value.toFixed(3)).join(",")));
+  eq(`a ${partKind}'s size knobs each have a spot of their own`, spots.size, knobs.length);
 }
 eq("a cone's knobs name its two radii", handlesFor("boolean", context("cone")).filter((handle) => handle.look === "knob").map((handle) => handle.label), ["Bottom radius", "Top radius", "Height"]);
 eq("a torus turns, on three rings", handlesFor("boolean", context("torus")).filter((handle) => handle.kind === "ring").length, 3);

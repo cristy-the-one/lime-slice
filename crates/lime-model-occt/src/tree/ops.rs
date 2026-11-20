@@ -40,7 +40,7 @@ pub enum Primitive {
     Ellipsoid,
     /// A spur gear with true involute flanks (`gear.rs`), built in Rust from loops: never handed to `spec_of`.
     Gear,
-    /// A fastener (`part.rs`): nut, socket screw, hex screw, or washer. Built in Rust, never handed to `spec_of`.
+    /// A part (`part.rs`): a fastener or a fitting. Built in Rust, never handed to `spec_of`.
     Part,
 }
 
@@ -130,7 +130,8 @@ pub struct Solid {
     /// Tooth 0's centre, degrees from the gear's own +X about its axis; 0 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_deg: Option<f64>,
-    /// The bore's size, mm: a round or D bore's diameter, a hexagon's width across its flats. None or 0 for no bore.
+    /// The bore's size, mm: a gear's round or D bore diameter, or a hexagon's width across its flats (none or 0 for no bore).
+    /// On a part, a spacer's hole or a collar's bore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bore: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -156,8 +157,8 @@ pub struct Solid {
     /// A rack's bar under its roots, mm; 1.5 modules when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back: Option<f64>,
-    // --- A fastener (docs/plan-mech-parts.md). `height` 0 is the table row. Written only on a part.
-    /// nut, socket, hex, or washer. Not `kind`: a boolean op is already tagged `kind`.
+    // --- A part (docs/plan-mech-parts.md). `height` 0 is a fastener's table row, or a fitting's default length.
+    /// nut, socket, hex, washer, spacer, shaft, collar, or heat-set. Not `kind`: a boolean op is already tagged `kind`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_kind: Option<String>,
     /// M3, M4, M5, M6, M8, M10, M12, M16, M20, M24. M6 when absent.
@@ -181,6 +182,24 @@ pub struct Solid {
     /// "tap" or "thread". A modelled thread is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bore_kind: Option<String>,
+    /// Spacer or collar outside diameter, shaft nominal diameter, or heat-set boss diameter, mm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diameter: Option<f64>,
+    /// Spacer: hollow when absent or true. False is a solid cylinder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hollow: Option<bool>,
+    /// Shaft fit: running, sliding, or press. Sliding when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<String>,
+    /// Heat-set article. `RX-M3x5,7` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub article: Option<String>,
+    /// Heat-set taper: how much the top diameter is under the base, mm. 0 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taper: Option<f64>,
+    /// Collar set-screw diameter, mm. 3 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_screw: Option<f64>,
 }
 
 impl Solid {

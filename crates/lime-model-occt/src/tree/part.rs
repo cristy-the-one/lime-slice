@@ -1,9 +1,12 @@
-//! Fasteners (docs/plan-mech-parts.md, milestone 1): one primitive, four kinds.
+//! Parts (docs/plan-mech-parts.md): one primitive, a `partKind`.
 //!
-//! Hex nut (ISO 4032), socket-head cap screw (ISO 4762), hex-head screw (ISO 4017) and washer
-//! (ISO 7089). Every standard size is a row in the table below. The kernel does not compute a
+//! Fasteners: hex nut (ISO 4032), socket-head cap screw (ISO 4762), hex-head screw (ISO 4017) and
+//! washer (ISO 7089). Every standard size is a row in the table below. The kernel does not compute a
 //! wrench size, a head, or a tap drill from the nominal. The shank of a screw is the major
 //! diameter, which the row stores, and it is plain: this milestone has no thread.
+//!
+//! Fittings: spacer, shaft, collar, and heat-set boss. A shaft's diameter is
+//! `lime_recipe::horology::shaft`; the clearance table is not copied here.
 
 use super::ffi::lime_tree_boolean;
 use super::ops::{Primitive, Solid};
@@ -338,6 +341,10 @@ enum Kind {
     Socket,
     Hex,
     Washer,
+    Spacer,
+    Shaft,
+    Collar,
+    Heat,
 }
 
 impl Kind {
@@ -347,6 +354,7 @@ impl Kind {
             Kind::Socket => "ISO 4762 socket head cap screw table",
             Kind::Hex => "ISO 4017 hex head screw table",
             Kind::Washer => "ISO 7089 washer table",
+            Kind::Spacer | Kind::Shaft | Kind::Collar | Kind::Heat => "part",
         }
     }
 }
@@ -380,7 +388,11 @@ fn kind_of(solid: &Solid) -> Result<Kind, String> {
         Some("socket") => Ok(Kind::Socket),
         Some("hex") => Ok(Kind::Hex),
         Some("washer") => Ok(Kind::Washer),
-        _ => Err("A part needs a kind: nut, socket, hex, or washer.".into()),
+        Some("spacer") => Ok(Kind::Spacer),
+        Some("shaft") => Ok(Kind::Shaft),
+        Some("collar") => Ok(Kind::Collar),
+        Some("heat-set") => Ok(Kind::Heat),
+        _ => Err("A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, or heat-set.".into()),
     }
 }
 
@@ -450,17 +462,24 @@ fn refuse_bore(solid: &Solid, kind: Kind) -> Result<(), String> {
     }
 }
 
+fn text_set(value: &Option<String>) -> bool {
+    value.as_deref().is_some_and(|text| !text.trim().is_empty())
+}
+
 fn refuse_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
+    let fastener = matches!(kind, Kind::Nut | Kind::Socket | Kind::Hex | Kind::Washer);
     if matches!(kind, Kind::Nut | Kind::Washer) && solid.length.is_some() {
         return Err(match kind {
             Kind::Nut => "A nut has no length under a head.".into(),
             _ => "A washer has no length under a head.".into(),
         });
     }
-    if matches!(kind, Kind::Socket | Kind::Hex) && solid.allowance.is_some() {
+    if matches!(kind, Kind::Socket | Kind::Hex | Kind::Spacer | Kind::Collar) && solid.allowance.is_some() {
         return Err(match kind {
             Kind::Socket => "A socket screw has no allowance.".into(),
-            _ => "A hex screw has no allowance.".into(),
+            Kind::Hex => "A hex screw has no allowance.".into(),
+            Kind::Spacer => "A spacer has no allowance.".into(),
+            _ => "A collar has no allowance.".into(),
         });
     }
     if !matches!(kind, Kind::Socket) && set_positive(solid.head_diameter) {
@@ -472,7 +491,398 @@ fn refuse_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
     if !matches!(kind, Kind::Socket) && set_positive(solid.socket_depth) {
         return Err("Only a socket screw takes a socket depth.".into());
     }
+    if fastener && solid.diameter.is_some() {
+        return Err(match kind {
+            Kind::Nut => "A nut has no diameter.".into(),
+            Kind::Socket => "A socket screw has no diameter.".into(),
+            Kind::Hex => "A hex screw has no diameter.".into(),
+            _ => "A washer has no diameter.".into(),
+        });
+    }
+    if fastener && solid.hollow.is_some() {
+        return Err("Only a spacer is hollow or solid.".into());
+    }
+    if fastener && text_set(&solid.fit) {
+        return Err("Only a shaft takes a fit.".into());
+    }
+    if fastener && text_set(&solid.article) {
+        return Err("Only a heat-set boss takes an article.".into());
+    }
+    if fastener && set_positive(solid.taper) {
+        return Err("Only a heat-set boss takes a taper.".into());
+    }
+    if fastener && solid.set_screw.is_some() {
+        return Err("Only a collar takes a set screw.".into());
+    }
+    if !fastener && solid.length.is_some() {
+        return Err(match kind {
+            Kind::Spacer => "A spacer's length is its height.".into(),
+            Kind::Shaft => "A shaft's length is its height.".into(),
+            Kind::Collar => "A collar's width is its height.".into(),
+            _ => "A heat-set boss's height is its height.".into(),
+        });
+    }
+    if !fastener && text_set(&solid.nominal) {
+        return Err(match kind {
+            Kind::Spacer => "A spacer has no nominal size.".into(),
+            Kind::Shaft => "A shaft's nominal size is its diameter, not a screw size.".into(),
+            Kind::Collar => "A collar has no nominal size.".into(),
+            _ => "A heat-set boss is chosen by its article, not a screw size.".into(),
+        });
+    }
+    if !matches!(kind, Kind::Spacer | Kind::Collar) && solid.bore.is_some() {
+        return Err(match kind {
+            Kind::Nut => "A nut has no bore.".into(),
+            Kind::Socket => "A socket screw has no bore.".into(),
+            Kind::Hex => "A hex screw has no bore.".into(),
+            Kind::Washer => "A washer has no bore.".into(),
+            Kind::Shaft => "A shaft has no bore.".into(),
+            _ => "A heat-set boss's hole comes from its article.".into(),
+        });
+    }
+    if !matches!(kind, Kind::Spacer) && solid.hollow.is_some() {
+        return Err("Only a spacer is hollow or solid.".into());
+    }
+    if !matches!(kind, Kind::Shaft) && text_set(&solid.fit) {
+        return Err("Only a shaft takes a fit.".into());
+    }
+    if !matches!(kind, Kind::Heat) && text_set(&solid.article) {
+        return Err("Only a heat-set boss takes an article.".into());
+    }
+    if !matches!(kind, Kind::Heat) && set_positive(solid.taper) {
+        return Err("Only a heat-set boss takes a taper.".into());
+    }
+    if !matches!(kind, Kind::Collar) && solid.set_screw.is_some() {
+        return Err("Only a collar takes a set screw.".into());
+    }
     Ok(())
+}
+
+fn in_range(value: f64, lo: f64, hi: f64) -> bool {
+    value.is_finite() && value >= lo && value <= hi
+}
+
+/// A tenth of a millimetre when the value needs it, else a whole number.
+fn mm(value: f64) -> String {
+    let tenths = (value * 10.0).round() / 10.0;
+    if (tenths - tenths.round()).abs() < 1e-9 {
+        format!("{}", tenths.round() as i64)
+    } else {
+        format!("{tenths:.1}")
+    }
+}
+
+/// `R = Rz Ry Rx`, row-major, applied to a column.
+fn turn_matrix(turn: [f64; 3]) -> [f64; 9] {
+    let (sx, cx) = turn[0].to_radians().sin_cos();
+    let (sy, cy) = turn[1].to_radians().sin_cos();
+    let (sz, cz) = turn[2].to_radians().sin_cos();
+    [
+        cz * cy,
+        cz * sy * sx - sz * cx,
+        cz * sy * cx + sz * sx,
+        sz * cy,
+        sz * sy * sx + cz * cx,
+        sz * sy * cx - cz * sx,
+        -sy,
+        cy * sx,
+        cy * cx,
+    ]
+}
+
+fn mat_mul(a: [f64; 9], b: [f64; 9]) -> [f64; 9] {
+    let mut out = [0.0; 9];
+    for row in 0..3 {
+        for col in 0..3 {
+            out[row * 3 + col] =
+                a[row * 3] * b[col] + a[row * 3 + 1] * b[3 + col] + a[row * 3 + 2] * b[6 + col];
+        }
+    }
+    out
+}
+
+fn mat_apply(m: [f64; 9], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+        m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+        m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+    ]
+}
+
+fn euler_of(m: [f64; 9]) -> [f64; 3] {
+    let sy = -m[6];
+    let cy = (m[0] * m[0] + m[3] * m[3]).sqrt();
+    let (rx, ry, rz) = if cy > 1e-8 {
+        (m[7].atan2(m[8]), sy.atan2(cy), m[3].atan2(m[0]))
+    } else {
+        ((-m[5]).atan2(m[4]), sy.atan2(cy), 0.0)
+    };
+    [rx.to_degrees(), ry.to_degrees(), rz.to_degrees()]
+}
+
+/// A cylinder whose midpoint is `local_mid` in the part's frame, its own +Z turned by `local_turn` before the part turns.
+fn pose_cylinder(
+    part: &Solid,
+    centre_z: f64,
+    local_mid: [f64; 3],
+    local_turn: [f64; 3],
+    height: f64,
+) -> ([f64; 3], [f64; 3]) {
+    let part_r = turn_matrix(part.turn);
+    let delta = mat_apply(
+        part_r,
+        [local_mid[0], local_mid[1], local_mid[2] - centre_z],
+    );
+    let mid = [
+        part.origin[0] + delta[0],
+        part.origin[1] + delta[1],
+        part.origin[2] + centre_z + delta[2],
+    ];
+    (
+        [mid[0], mid[1], mid[2] - height * 0.5],
+        euler_of(mat_mul(part_r, turn_matrix(local_turn))),
+    )
+}
+
+/// A box whose midpoint is `local_mid`. Its origin is the minimum corner, and the turn is the part's.
+fn pose_box(part: &Solid, centre_z: f64, local_mid: [f64; 3], size: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let (at, turn) = pose_cylinder(part, centre_z, local_mid, [0.0, 0.0, 0.0], size[2]);
+    let mid = [at[0], at[1], at[2] + size[2] * 0.5];
+    (
+        [
+            mid[0] - size[0] * 0.5,
+            mid[1] - size[1] * 0.5,
+            mid[2] - size[2] * 0.5,
+        ],
+        turn,
+    )
+}
+
+fn block(origin: [f64; 3], turn: [f64; 3], size: [f64; 3]) -> Solid {
+    Solid {
+        primitive: Primitive::Box,
+        origin,
+        size,
+        turn,
+        ..Solid::default()
+    }
+}
+
+fn cone(origin: [f64; 3], turn: [f64; 3], radius: f64, top: f64, height: f64) -> Solid {
+    Solid {
+        primitive: Primitive::Cone,
+        origin,
+        radius,
+        top_radius: Some(top),
+        height,
+        turn,
+        ..Solid::default()
+    }
+}
+
+/// Ruthex RX, the 14.12.2023 Produktdatenblatt (docs/plan-mech-parts.md §4.10). `d2` is the lead-in; the boss is a cone.
+struct HeatRow {
+    article: &'static str,
+    d1: f64,
+    #[allow(dead_code)]
+    d2: f64,
+    l: f64,
+    w: f64,
+    d3: f64,
+}
+
+const HEAT: &[HeatRow] = &[
+    HeatRow { article: "RX-M2x4", d1: 3.6, d2: 3.1, l: 4.0, w: 1.3, d3: 3.2 },
+    HeatRow { article: "RX-M2,5x5,7", d1: 4.6, d2: 3.9, l: 5.7, w: 1.6, d3: 4.0 },
+    HeatRow { article: "RX-M3Sx4,0", d1: 4.6, d2: 3.9, l: 4.0, w: 1.6, d3: 4.0 },
+    HeatRow { article: "RX-M3x5x4", d1: 5.0, d2: 4.25, l: 4.0, w: 1.3, d3: 4.4 },
+    HeatRow { article: "RX-M3x5,7", d1: 4.6, d2: 3.9, l: 5.7, w: 1.6, d3: 4.0 },
+    HeatRow { article: "RX-M4Sx4,0", d1: 6.3, d2: 5.5, l: 4.0, w: 2.1, d3: 5.6 },
+    HeatRow { article: "RX-M4x8,1", d1: 6.3, d2: 5.5, l: 8.1, w: 2.1, d3: 5.6 },
+    HeatRow { article: "RX-M5Sx5,8", d1: 7.1, d2: 6.3, l: 5.8, w: 2.6, d3: 6.4 },
+    HeatRow { article: "RX-M5x9,5", d1: 7.1, d2: 6.3, l: 9.5, w: 2.6, d3: 6.4 },
+    HeatRow { article: "RX-M6x12,7", d1: 8.7, d2: 7.9, l: 12.7, w: 3.3, d3: 8.0 },
+    HeatRow { article: "RX-M8x12,7", d1: 10.1, d2: 9.5, l: 12.7, w: 4.5, d3: 9.6 },
+];
+
+fn build_spacer(solid: &Solid) -> Result<Shape, String> {
+    let od = solid.diameter.unwrap_or(10.0);
+    let length = if solid.height == 0.0 { 12.0 } else { solid.height };
+    let hole = solid.bore.unwrap_or(4.2);
+    let hollow = solid.hollow.unwrap_or(true);
+    if !in_range(od, 3.0, 80.0) {
+        return Err("The outside diameter is from 3 to 80 mm.".into());
+    }
+    if !in_range(length, 1.0, 200.0) {
+        return Err("The length is from 1 to 200 mm.".into());
+    }
+    if !in_range(hole, 0.0, 79.0) {
+        return Err("The hole is from 0 to 79 mm.".into());
+    }
+    if hollow && hole >= od {
+        return Err("The hole is at least as wide as the outside diameter. Turn hollow off, or use a smaller hole.".into());
+    }
+    let (origin, turn) = place(solid, length * 0.5, 0.0, length);
+    if hollow && hole > 0.0 && hole <= od - 0.4 {
+        return Shape::primitive(&tube(origin, turn, od * 0.5, hole * 0.5, length));
+    }
+    Shape::primitive(&cylinder(origin, turn, od * 0.5, length))
+}
+
+fn shaft_fit(solid: &Solid) -> Result<lime_recipe::horology::Fit, String> {
+    match solid.fit.as_deref().map(str::trim).map(|text| text.to_ascii_lowercase()).as_deref() {
+        None | Some("") | Some("sliding") => Ok(lime_recipe::horology::Fit::Sliding),
+        Some("running") => Ok(lime_recipe::horology::Fit::Running),
+        Some("press") => Ok(lime_recipe::horology::Fit::Press),
+        Some(_) => Err("The fit is running, sliding, or press.".into()),
+    }
+}
+
+fn build_shaft(solid: &Solid) -> Result<Shape, String> {
+    let nominal = solid.diameter.unwrap_or(8.0);
+    let length = if solid.height == 0.0 { 40.0 } else { solid.height };
+    let allowance = solid.allowance.unwrap_or(0.1);
+    if !in_range(length, 5.0, 300.0) {
+        return Err("The length is from 5 to 300 mm.".into());
+    }
+    if !(allowance.is_finite() && (0.0..=0.5).contains(&allowance)) {
+        return Err("The allowance is from 0 to 0.5 mm.".into());
+    }
+    let fit = shaft_fit(solid)?;
+    // None is the crate's limit: over 0 to 30 mm. A nominal inside that and under 2 mm is this card's range.
+    let Some(diameter) = lime_recipe::horology::shaft(nominal, fit, allowance) else {
+        return Err("A printed shaft is only defined over 0 to 30 mm.".into());
+    };
+    if !(2.0..=30.0).contains(&nominal) {
+        return Err("A shaft's nominal diameter is from 2 to 30 mm.".into());
+    }
+    if diameter <= 0.0 {
+        return Err("The allowance leaves no shaft.".into());
+    }
+    let (origin, turn) = place(solid, length * 0.5, 0.0, length);
+    Shape::primitive(&cylinder(origin, turn, diameter * 0.5, length))
+}
+
+fn build_collar(solid: &Solid) -> Result<Shape, String> {
+    let bore = solid.bore.unwrap_or(8.0);
+    let od = solid.diameter.unwrap_or(14.0);
+    let width = if solid.height == 0.0 { 6.0 } else { solid.height };
+    let screw = solid.set_screw.unwrap_or(3.0);
+    if !in_range(bore, 3.0, 25.0) {
+        return Err("The bore is from 3 to 25 mm.".into());
+    }
+    if !in_range(od, 6.0, 40.0) {
+        return Err("The outside diameter is from 6 to 40 mm.".into());
+    }
+    if od < bore + 2.0 {
+        return Err(format!(
+            "The outside diameter must be at least {} mm, 2 mm above the bore.",
+            mm(bore + 2.0)
+        ));
+    }
+    if !in_range(width, 3.0, 15.0) {
+        return Err("The width is from 3 to 15 mm.".into());
+    }
+    if !in_range(screw, 2.0, 6.0) {
+        return Err("The set screw is from 2 to 6 mm.".into());
+    }
+    // 0.5 mm of the width stays on each side of the screw: diameter ≤ width − 1.
+    if screw > width - 1.0 {
+        return Err(format!(
+            "The set screw must be at most {} mm so 0.5 mm of the collar stays on each side.",
+            mm(width - 1.0)
+        ));
+    }
+    let centre_z = width * 0.5;
+    let (origin, turn) = place(solid, centre_z, 0.0, width);
+    let body = Shape::primitive(&tube(origin, turn, od * 0.5, bore * 0.5, width))?;
+    // From the outer surface along −Y, through the wall and 0.2 mm into the bore.
+    let depth = (od - bore) * 0.5 + OVERSHOOT_MM;
+    let (screw_at, screw_turn) = pose_cylinder(
+        solid,
+        centre_z,
+        [0.0, od * 0.5 - depth * 0.5, width * 0.5],
+        [90.0, 0.0, 0.0],
+        depth,
+    );
+    let opened = combine(
+        body,
+        c"cut",
+        &cylinder(screw_at, screw_turn, screw * 0.5, depth),
+    )?;
+    // The slit is centred on −Y, opposite the set screw. It breaks the bore, the outside, and both side faces.
+    let slit_y = (od - bore) * 0.5 + 2.0 * OVERSHOOT_MM;
+    let slit_z = width + 2.0 * OVERSHOOT_MM;
+    let slit = [0.6, slit_y, slit_z];
+    let (slit_at, slit_turn) = pose_box(
+        solid,
+        centre_z,
+        [0.0, -((od + bore) * 0.25), width * 0.5],
+        slit,
+    );
+    combine(opened, c"cut", &block(slit_at, slit_turn, slit))
+}
+
+fn build_heat(solid: &Solid) -> Result<Shape, String> {
+    let name = solid
+        .article
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("RX-M3x5,7");
+    let Some(row) = HEAT.iter().find(|row| row.article == name) else {
+        return Err(format!("{name} is not in the Ruthex RX table."));
+    };
+    let min_od = row.d1 + 2.0 * row.w;
+    let boss = solid.diameter.unwrap_or(min_od);
+    let height = if solid.height == 0.0 { row.l } else { solid.height };
+    let taper = solid.taper.unwrap_or(0.0);
+    let allowance = solid.allowance.unwrap_or(0.0);
+    if !(allowance.is_finite() && (0.0..=1.0).contains(&allowance)) {
+        return Err("The allowance is from 0 to 1 mm.".into());
+    }
+    if !(taper.is_finite() && (0.0..=2.0).contains(&taper)) {
+        return Err("The taper is from 0 to 2 mm.".into());
+    }
+    if !boss.is_finite() || boss > 1000.0 {
+        return Err("The boss diameter is at most 1000 mm.".into());
+    }
+    // A boss under the sheet's minimum wall is named before the taper, which asks for a wider one.
+    if boss < min_od - 1e-9 {
+        return Err(format!(
+            "The boss must be at least {} mm across, the insert's outside plus twice the minimum wall.",
+            mm(min_od)
+        ));
+    }
+    if !(height.is_finite() && height + 1e-9 >= row.l && height <= 40.0) {
+        return Err(format!("The height is from {} to 40 mm.", mm(row.l)));
+    }
+    // Ruthex's minimum wall applies at the top too: the top diameter is the boss less the taper.
+    let top = boss - taper;
+    if top < min_od - 1e-9 {
+        return Err(format!(
+            "A taper of {} mm needs a boss at least {} mm across.",
+            mm(taper),
+            mm(min_od + taper)
+        ));
+    }
+    let hole = row.d3 + allowance;
+    if hole >= top - 1e-9 {
+        return Err(format!(
+            "A taper of {} mm needs a boss at least {} mm across.",
+            mm(taper),
+            mm(hole + taper)
+        ));
+    }
+    let (origin, turn) = place(solid, height * 0.5, 0.0, height);
+    let body = Shape::primitive(&cone(origin, turn, boss * 0.5, top * 0.5, height))?;
+    let hole_h = height + 2.0 * OVERSHOOT_MM;
+    let (hole_at, hole_turn) = place(solid, height * 0.5, -OVERSHOOT_MM, hole_h);
+    combine(
+        body,
+        c"cut",
+        &cylinder(hole_at, hole_turn, hole * 0.5, hole_h),
+    )
 }
 
 fn cylinder(origin: [f64; 3], turn: [f64; 3], radius: f64, height: f64) -> Solid {
@@ -645,5 +1055,9 @@ pub(super) fn build_part(solid: &Solid) -> Result<Shape, String> {
         Kind::Socket => build_socket(solid),
         Kind::Hex => build_hex(solid),
         Kind::Washer => build_washer(solid),
+        Kind::Spacer => build_spacer(solid),
+        Kind::Shaft => build_shaft(solid),
+        Kind::Collar => build_collar(solid),
+        Kind::Heat => build_heat(solid),
     }
 }

@@ -1,10 +1,14 @@
 /**
- * Fastener tables and the ghost's analytic box (docs/plan-mech-parts.md, milestone 1).
- * The sizes are the plan's rows. Nothing here asks the engine, and nothing derives a wrench size from the nominal.
+ * Part tables and the ghost's analytic box (docs/plan-mech-parts.md).
+ * Fastener sizes are the plan's rows. A shaft's printed diameter mirrors `lime_recipe::horology::shaft`
+ * so the ghost can draw it; the kernel calls the crate and does not keep that table.
+ * Nothing here asks the engine, and nothing derives a wrench size from the nominal.
  */
 import { formatMm } from "./model-plane.ts";
 
-export type PartKind = "nut" | "socket" | "hex" | "washer";
+export type PartKind = "nut" | "socket" | "hex" | "washer" | "spacer" | "shaft" | "collar" | "heat-set";
+
+export type ShaftFit = "running" | "sliding" | "press";
 
 export interface PartFields {
   partKind: PartKind;
@@ -15,9 +19,16 @@ export interface PartFields {
   headHeight?: number;
   socketDepth?: number;
   boreKind?: "tap" | "thread";
+  diameter?: number;
+  bore?: number;
+  hollow?: boolean;
+  fit?: ShaftFit;
+  article?: string;
+  taper?: number;
+  setScrew?: number;
 }
 
-/** What the kernel stores on a part, plus `height` (0 is the table row). */
+/** What the kernel stores on a part, plus `height` (0 is a fastener's table row, or a fitting's default length). */
 export interface PartSpec {
   partKind?: string;
   nominal?: string;
@@ -27,6 +38,13 @@ export interface PartSpec {
   headHeight?: number;
   socketDepth?: number;
   boreKind?: string;
+  diameter?: number;
+  bore?: number;
+  hollow?: boolean;
+  fit?: string;
+  article?: string;
+  taper?: number;
+  setScrew?: number;
   height: number;
 }
 
@@ -35,8 +53,8 @@ type Vec3 = [number, number, number];
 export interface PartPiece {
   /** Across-flats hex, one flat facing −Y. `hole` 0 is solid. */
   hex?: { across: number; z0: number; z1: number; hole: number };
-  /** Round pieces, outer radius, optional hole. */
-  rounds: { radius: number; z0: number; z1: number; hole: number }[];
+  /** Round pieces, outer radius, optional smaller top, optional hole. */
+  rounds: { radius: number; top?: number; z0: number; z1: number; hole: number }[];
 }
 
 export interface ResolvedPart extends PartPiece {
@@ -117,15 +135,94 @@ export const PART_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "washer", label: "Washer" },
 ];
 
-const TABLES: Record<PartKind, string> = {
+/** The Fittings group. Brackets and pulleys wait for their milestones. */
+export const FITTING_KINDS: readonly { id: PartKind; label: string }[] = [
+  { id: "spacer", label: "Spacer" },
+  { id: "shaft", label: "Shaft" },
+  { id: "collar", label: "Collar" },
+  { id: "heat-set", label: "Heat-set boss" },
+];
+
+export const PART_GROUPS: readonly { label: string; kinds: readonly { id: PartKind; label: string }[] }[] = [
+  { label: "Fasteners", kinds: PART_KINDS },
+  { label: "Fittings", kinds: FITTING_KINDS },
+];
+
+/** Ruthex RX, the 14.12.2023 Produktdatenblatt (docs/plan-mech-parts.md §4.10). `d2` is the lead-in; the boss is a cone. */
+export interface HeatRow { article: string; thread: string; d1: number; d2: number; l: number; w: number; d3: number }
+
+export const HEAT_ROWS: readonly HeatRow[] = [
+  { article: "RX-M2x4", thread: "M2", d1: 3.6, d2: 3.1, l: 4.0, w: 1.3, d3: 3.2 },
+  { article: "RX-M2,5x5,7", thread: "M2.5", d1: 4.6, d2: 3.9, l: 5.7, w: 1.6, d3: 4.0 },
+  { article: "RX-M3Sx4,0", thread: "M3", d1: 4.6, d2: 3.9, l: 4.0, w: 1.6, d3: 4.0 },
+  { article: "RX-M3x5x4", thread: "M3", d1: 5.0, d2: 4.25, l: 4.0, w: 1.3, d3: 4.4 },
+  { article: "RX-M3x5,7", thread: "M3", d1: 4.6, d2: 3.9, l: 5.7, w: 1.6, d3: 4.0 },
+  { article: "RX-M4Sx4,0", thread: "M4", d1: 6.3, d2: 5.5, l: 4.0, w: 2.1, d3: 5.6 },
+  { article: "RX-M4x8,1", thread: "M4", d1: 6.3, d2: 5.5, l: 8.1, w: 2.1, d3: 5.6 },
+  { article: "RX-M5Sx5,8", thread: "M5", d1: 7.1, d2: 6.3, l: 5.8, w: 2.6, d3: 6.4 },
+  { article: "RX-M5x9,5", thread: "M5", d1: 7.1, d2: 6.3, l: 9.5, w: 2.6, d3: 6.4 },
+  { article: "RX-M6x12,7", thread: "M6", d1: 8.7, d2: 7.9, l: 12.7, w: 3.3, d3: 8.0 },
+  { article: "RX-M8x12,7", thread: "M8", d1: 10.1, d2: 9.5, l: 12.7, w: 4.5, d3: 9.6 },
+];
+
+export const HEAT_DEFAULT = "RX-M3x5,7";
+
+/**
+ * Mean diametral clearance of `lime_recipe::horology::shaft`, the ISO 286 rows the crate publishes
+ * (to 3, 6, 10, 18, else). The kernel calls the crate. This copy is only the ghost's box.
+ */
+const SHAFT_CLEARANCE: Record<ShaftFit, readonly number[]> = {
+  running: [0.045, 0.06, 0.076, 0.093, 0.117],
+  sliding: [0.008, 0.01, 0.012, 0.0145, 0.017],
+  press: [-0.004, -0.01, -0.012, -0.0145, -0.018],
+};
+
+const TABLES: Record<"nut" | "socket" | "hex" | "washer", string> = {
   nut: "ISO 4032 style 1 hex nut table",
   socket: "ISO 4762 socket head cap screw table",
   hex: "ISO 4017 hex head screw table",
   washer: "ISO 7089 washer table",
 };
 
+const PART_KIND_IDS: readonly string[] = [...PART_KINDS, ...FITTING_KINDS].map((entry) => entry.id);
+
 export function isPartKind(value: unknown): value is PartKind {
-  return value === "nut" || value === "socket" || value === "hex" || value === "washer";
+  return typeof value === "string" && PART_KIND_IDS.includes(value);
+}
+
+export function isShaftFit(value: unknown): value is ShaftFit {
+  return value === "running" || value === "sliding" || value === "press";
+}
+
+/** The article's row, or the default M3 when the name is empty. Unknown names are refused by `partProblem`. */
+export function heatRow(article: string | undefined): HeatRow | undefined {
+  const name = (article ?? "").trim();
+  if (name.length === 0) return HEAT_ROWS.find((row) => row.article === HEAT_DEFAULT);
+  return HEAT_ROWS.find((row) => row.article === name);
+}
+
+/** Printed shaft diameter, or null outside 0 to 30 mm, as `horology::shaft` returns. */
+export function shaftDiameter(nominal: number, fit: ShaftFit, allowance: number): number | null {
+  if (!(nominal > 0 && nominal <= 30)) return null;
+  const row = nominal <= 3 ? 0 : nominal <= 6 ? 1 : nominal <= 10 ? 2 : nominal <= 18 ? 3 : 4;
+  return nominal - SHAFT_CLEARANCE[fit][row]! - allowance;
+}
+
+function mm(value: number): string {
+  const tenths = Math.round(value * 10) / 10;
+  return Math.abs(tenths - Math.round(tenths)) < 1e-9 ? String(Math.round(tenths)) : tenths.toFixed(1);
+}
+
+function inRange(value: number, lo: number, hi: number): boolean {
+  return Number.isFinite(value) && value >= lo && value <= hi;
+}
+
+function textSet(value: string | undefined): boolean {
+  return value !== undefined && value.trim().length > 0;
+}
+
+function fastenerKind(kind: PartKind): boolean {
+  return kind === "nut" || kind === "socket" || kind === "hex" || kind === "washer";
 }
 
 function nominalOf(spec: PartSpec): string {
@@ -157,9 +254,99 @@ function allowanceOf(spec: PartSpec): number | string {
   return "The allowance is from 0 to 1 mm.";
 }
 
+function fittingProblem(spec: PartSpec, kind: PartKind): string | null {
+  if (spec.length !== undefined) {
+    if (kind === "spacer") return "A spacer's length is its height.";
+    if (kind === "shaft") return "A shaft's length is its height.";
+    if (kind === "collar") return "A collar's width is its height.";
+    return "A heat-set boss's height is its height.";
+  }
+  if (textSet(spec.nominal)) {
+    if (kind === "shaft") return "A shaft's nominal size is its diameter, not a screw size.";
+    if (kind === "spacer") return "A spacer has no nominal size.";
+    if (kind === "collar") return "A collar has no nominal size.";
+    return "A heat-set boss is chosen by its article, not a screw size.";
+  }
+  const headSet = (value: number | undefined) => value !== undefined && value !== 0;
+  if (headSet(spec.headDiameter)) return "Only a socket screw takes a head diameter.";
+  if (headSet(spec.headHeight)) return "Only a socket screw takes a head height.";
+  if (headSet(spec.socketDepth)) return "Only a socket screw takes a socket depth.";
+  if (kind === "spacer") {
+    const od = spec.diameter ?? 10;
+    const length = spec.height === 0 ? 12 : spec.height;
+    const hole = spec.bore ?? 4.2;
+    const hollow = spec.hollow !== false;
+    if (spec.allowance !== undefined) return "A spacer has no allowance.";
+    if (textSet(spec.fit)) return "Only a shaft takes a fit.";
+    if (textSet(spec.article)) return "Only a heat-set boss takes an article.";
+    if (headSet(spec.taper)) return "Only a heat-set boss takes a taper.";
+    if (spec.setScrew !== undefined) return "Only a collar takes a set screw.";
+    if (!inRange(od, 3, 80)) return "The outside diameter is from 3 to 80 mm.";
+    if (!inRange(length, 1, 200)) return "The length is from 1 to 200 mm.";
+    if (!inRange(hole, 0, 79)) return "The hole is from 0 to 79 mm.";
+    if (hollow && hole >= od) return "The hole is at least as wide as the outside diameter. Turn hollow off, or use a smaller hole.";
+    return null;
+  }
+  if (kind === "shaft") {
+    const nominal = spec.diameter ?? 8;
+    const length = spec.height === 0 ? 40 : spec.height;
+    const allowance = spec.allowance ?? 0.1;
+    const fit = (spec.fit ?? "").trim().toLowerCase();
+    if (spec.bore !== undefined) return "A shaft has no bore.";
+    if (spec.hollow !== undefined) return "Only a spacer is hollow or solid.";
+    if (textSet(spec.article)) return "Only a heat-set boss takes an article.";
+    if (headSet(spec.taper)) return "Only a heat-set boss takes a taper.";
+    if (spec.setScrew !== undefined) return "Only a collar takes a set screw.";
+    if (!inRange(length, 5, 300)) return "The length is from 5 to 300 mm.";
+    if (!(Number.isFinite(allowance) && allowance >= 0 && allowance <= 0.5)) return "The allowance is from 0 to 0.5 mm.";
+    if (fit !== "" && !isShaftFit(fit)) return "The fit is running, sliding, or press.";
+    const named = (fit === "" ? "sliding" : fit) as ShaftFit;
+    if (shaftDiameter(nominal, named, allowance) === null) return "A printed shaft is only defined over 0 to 30 mm.";
+    if (!(nominal >= 2 && nominal <= 30)) return "A shaft's nominal diameter is from 2 to 30 mm.";
+    return null;
+  }
+  if (kind === "collar") {
+    const bore = spec.bore ?? 8;
+    const od = spec.diameter ?? 14;
+    const width = spec.height === 0 ? 6 : spec.height;
+    const screw = spec.setScrew ?? 3;
+    if (spec.allowance !== undefined) return "A collar has no allowance.";
+    if (spec.hollow !== undefined) return "Only a spacer is hollow or solid.";
+    if (textSet(spec.fit)) return "Only a shaft takes a fit.";
+    if (textSet(spec.article)) return "Only a heat-set boss takes an article.";
+    if (headSet(spec.taper)) return "Only a heat-set boss takes a taper.";
+    if (!inRange(bore, 3, 25)) return "The bore is from 3 to 25 mm.";
+    if (!inRange(od, 6, 40)) return "The outside diameter is from 6 to 40 mm.";
+    if (od < bore + 2) return `The outside diameter must be at least ${mm(bore + 2)} mm, 2 mm above the bore.`;
+    if (!inRange(width, 3, 15)) return "The width is from 3 to 15 mm.";
+    if (!inRange(screw, 2, 6)) return "The set screw is from 2 to 6 mm.";
+    if (screw > width - 1) return `The set screw must be at most ${mm(width - 1)} mm so 0.5 mm of the collar stays on each side.`;
+    return null;
+  }
+  const row = heatRow(spec.article);
+  if (!row) return `${(spec.article ?? "").trim()} is not in the Ruthex RX table.`;
+  const minOd = row.d1 + 2 * row.w;
+  const boss = spec.diameter ?? minOd;
+  const height = spec.height === 0 ? row.l : spec.height;
+  const taper = spec.taper ?? 0;
+  const allowance = spec.allowance ?? 0;
+  if (spec.bore !== undefined) return "A heat-set boss's hole comes from its article.";
+  if (spec.hollow !== undefined) return "Only a spacer is hollow or solid.";
+  if (textSet(spec.fit)) return "Only a shaft takes a fit.";
+  if (spec.setScrew !== undefined) return "Only a collar takes a set screw.";
+  if (!(Number.isFinite(allowance) && allowance >= 0 && allowance <= 1)) return "The allowance is from 0 to 1 mm.";
+  if (!(Number.isFinite(taper) && taper >= 0 && taper <= 2)) return "The taper is from 0 to 2 mm.";
+  if (!Number.isFinite(boss) || boss > 1000) return "The boss diameter is at most 1000 mm.";
+  if (boss < minOd - 1e-9) return `The boss must be at least ${mm(minOd)} mm across, the insert's outside plus twice the minimum wall.`;
+  if (!(Number.isFinite(height) && height + 1e-9 >= row.l && height <= 40)) return `The height is from ${mm(row.l)} to 40 mm.`;
+  const top = boss - taper;
+  if (top < minOd - 1e-9) return `A taper of ${mm(taper)} mm needs a boss at least ${mm(minOd + taper)} mm across.`;
+  return null;
+}
+
 /** The sentence a part is refused with, or null when the kernel can build it. */
 export function partProblem(spec: PartSpec): string | null {
-  if (!isPartKind(spec.partKind)) return "A part needs a kind: nut, socket, hex, or washer.";
+  if (!isPartKind(spec.partKind)) return "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, or heat-set.";
   const kind = spec.partKind;
   const bore = spec.boreKind?.trim();
   if (bore === "thread") return "A modelled thread is not available yet. Use tap drill.";
@@ -175,6 +362,24 @@ export function partProblem(spec: PartSpec): string | null {
   if (kind !== "socket" && headSet(spec.headDiameter)) return "Only a socket screw takes a head diameter.";
   if (kind !== "socket" && headSet(spec.headHeight)) return "Only a socket screw takes a head height.";
   if (kind !== "socket" && headSet(spec.socketDepth)) return "Only a socket screw takes a socket depth.";
+  if (fastenerKind(kind) && spec.diameter !== undefined) {
+    if (kind === "nut") return "A nut has no diameter.";
+    if (kind === "socket") return "A socket screw has no diameter.";
+    if (kind === "hex") return "A hex screw has no diameter.";
+    return "A washer has no diameter.";
+  }
+  if (fastenerKind(kind) && spec.hollow !== undefined) return "Only a spacer is hollow or solid.";
+  if (fastenerKind(kind) && textSet(spec.fit)) return "Only a shaft takes a fit.";
+  if (fastenerKind(kind) && textSet(spec.article)) return "Only a heat-set boss takes an article.";
+  if (fastenerKind(kind) && headSet(spec.taper)) return "Only a heat-set boss takes a taper.";
+  if (fastenerKind(kind) && spec.setScrew !== undefined) return "Only a collar takes a set screw.";
+  if (fastenerKind(kind) && spec.bore !== undefined) {
+    if (kind === "nut") return "A nut has no bore.";
+    if (kind === "socket") return "A socket screw has no bore.";
+    if (kind === "hex") return "A hex screw has no bore.";
+    return "A washer has no bore.";
+  }
+  if (!fastenerKind(kind)) return fittingProblem(spec, kind);
   const nominal = nominalOf(spec);
   if (kind === "nut") {
     const row = NUTS.find((item) => item.nominal === nominal);
@@ -262,6 +467,37 @@ export function resolvedPart(spec: PartSpec): ResolvedPart | null {
     const rounds = length > 0 ? [{ radius: row.major / 2, z0: -length, z1: 0, hole: 0 }] : [];
     return { kind, nominal, ...box, centreZ: (k - length) / 2, hex: { across: row.s, z0: 0, z1: k, hole: 0 }, rounds };
   }
+  if (kind === "spacer") {
+    const od = spec.diameter ?? 10;
+    const length = spec.height === 0 ? 12 : spec.height;
+    const hole = spec.hollow === false ? 0 : spec.bore ?? 4.2;
+    const radius = od / 2;
+    const inner = hole > 0 && hole <= od - 0.4 ? hole / 2 : 0;
+    return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, length], centreZ: length / 2, rounds: [{ radius, z0: 0, z1: length, hole: inner }] };
+  }
+  if (kind === "shaft") {
+    const fit = ((spec.fit ?? "").trim().toLowerCase() || "sliding") as ShaftFit;
+    const diameter = shaftDiameter(spec.diameter ?? 8, fit, spec.allowance ?? 0.1) ?? 0;
+    const length = spec.height === 0 ? 40 : spec.height;
+    const radius = diameter / 2;
+    return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, length], centreZ: length / 2, rounds: [{ radius, z0: 0, z1: length, hole: 0 }] };
+  }
+  if (kind === "collar") {
+    const od = spec.diameter ?? 14;
+    const width = spec.height === 0 ? 6 : spec.height;
+    const radius = od / 2;
+    const inner = (spec.bore ?? 8) / 2;
+    return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, width], centreZ: width / 2, rounds: [{ radius, z0: 0, z1: width, hole: inner }] };
+  }
+  if (kind === "heat-set") {
+    const row = heatRow(spec.article)!;
+    const boss = spec.diameter ?? row.d1 + 2 * row.w;
+    const height = spec.height === 0 ? row.l : spec.height;
+    const top = Math.max(0, (boss - (spec.taper ?? 0)) / 2);
+    const radius = Math.max(boss / 2, top);
+    const hole = (row.d3 + (spec.allowance ?? 0)) / 2;
+    return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, height], centreZ: height / 2, rounds: [{ radius: boss / 2, top, z0: 0, z1: height, hole }] };
+  }
   const row = WASHERS.find((item) => item.nominal === nominal)!;
   const h = (tableHeight(spec.height) as number | undefined) ?? row.h;
   const outer = row.d2 / 2;
@@ -281,11 +517,18 @@ export function partCentreZ(spec: PartSpec): number {
   return resolvedPart(spec)?.centreZ ?? 0;
 }
 
-/** History label: "Nut M6", "Socket screw M6 × 25", "Hex screw M6 × 20", "Washer M6". */
+/** History label: "Nut M6", "Socket screw M6 × 25", "Hex screw M6 × 20", "Washer M6", and the fitting's size. */
 export function partLabel(spec: PartSpec): string {
   const part = resolvedPart(spec);
   if (!part) return "Part";
   const allowance = spec.allowance && spec.allowance > 0 ? ` +${formatMm(spec.allowance)}` : "";
+  if (part.kind === "spacer") return `Spacer ⌀${formatMm((spec.diameter ?? 10))} × ${formatMm(part.max[2])}`;
+  if (part.kind === "shaft") {
+    const fit = (spec.fit ?? "").trim().toLowerCase() || "sliding";
+    return `Shaft ⌀${formatMm(spec.diameter ?? 8)} ${fit} × ${formatMm(part.max[2])}`;
+  }
+  if (part.kind === "collar") return `Collar ⌀${formatMm(spec.diameter ?? 14)} / ⌀${formatMm(spec.bore ?? 8)} × ${formatMm(part.max[2])}`;
+  if (part.kind === "heat-set") return `Heat-set boss ${(spec.article ?? "").trim() || HEAT_DEFAULT}`;
   if (part.kind === "nut") return `Nut ${part.nominal}${allowance}`;
   if (part.kind === "washer") return `Washer ${part.nominal}${allowance}`;
   const length = formatMm(spec.length ?? (part.kind === "hex" ? 20 : 25));
@@ -293,7 +536,7 @@ export function partLabel(spec: PartSpec): string {
 }
 
 /** The table row, so the card shows the standard sizes without opening More. */
-export function partRowText(kind: string, nominal: string): string {
+export function partRowText(kind: string, nominal: string, article?: string): string {
   if (kind === "nut") {
     const row = NUTS.find((item) => item.nominal === nominal);
     return row ? `ISO 4032: across flats ${row.s} mm, thick ${row.m} mm, tap drill ${row.drill} mm.` : "";
@@ -310,6 +553,13 @@ export function partRowText(kind: string, nominal: string): string {
     const row = WASHERS.find((item) => item.nominal === nominal);
     return row ? `ISO 7089: hole ⌀${row.d1} mm, outside ⌀${row.d2} mm, thick ${row.h} mm.` : "";
   }
+  if (kind === "spacer") return "A tube when the hole is at least 0.4 mm under the outside, or a solid cylinder.";
+  if (kind === "shaft") return "Printed diameter from the shaft fit. Running, sliding, or press.";
+  if (kind === "collar") return "Set screw on +Y, into the bore. Slit centred on −Y.";
+  if (kind === "heat-set") {
+    const row = heatRow(article);
+    return row ? `Ruthex ${row.article}: insert ⌀${row.d1} mm, wall ${row.w} mm, hole ⌀${row.d3} mm, tall ${row.l} mm.` : "";
+  }
   return "";
 }
 
@@ -319,6 +569,7 @@ function num(value: unknown): number | undefined {
 
 /** A part from tool fields. `height` 0 means the table row. */
 export function partFrom(input: Record<string, unknown>): { fields: PartFields; height: number } | { reason: string } {
+  const fit = typeof input.fit === "string" ? input.fit : undefined;
   const spec: PartSpec = {
     partKind: typeof input.partKind === "string" ? input.partKind : undefined,
     nominal: typeof input.nominal === "string" ? input.nominal : undefined,
@@ -328,18 +579,32 @@ export function partFrom(input: Record<string, unknown>): { fields: PartFields; 
     headHeight: num(input.headHeight),
     socketDepth: num(input.socketDepth),
     boreKind: typeof input.boreKind === "string" ? input.boreKind : undefined,
+    diameter: num(input.diameter),
+    bore: num(input.bore),
+    hollow: typeof input.hollow === "boolean" ? input.hollow : undefined,
+    fit,
+    article: typeof input.article === "string" ? input.article : undefined,
+    taper: num(input.taper),
+    setScrew: num(input.setScrew),
     height: num(input.height) ?? 0,
   };
   const why = partProblem(spec);
   if (why) return { reason: why };
   const kind = spec.partKind as PartKind;
   const fields: PartFields = { partKind: kind };
-  if (spec.nominal && spec.nominal.trim().length > 0) fields.nominal = spec.nominal.trim();
-  if (spec.allowance !== undefined && spec.allowance !== 0) fields.allowance = spec.allowance;
+  if (spec.nominal && spec.nominal.trim().length > 0 && (kind === "nut" || kind === "socket" || kind === "hex" || kind === "washer")) fields.nominal = spec.nominal.trim();
+  if (spec.allowance !== undefined && (kind === "shaft" || spec.allowance !== 0)) fields.allowance = spec.allowance;
   if (spec.length !== undefined) fields.length = spec.length;
   if (spec.headDiameter) fields.headDiameter = spec.headDiameter;
   if (spec.headHeight) fields.headHeight = spec.headHeight;
   if (spec.socketDepth) fields.socketDepth = spec.socketDepth;
   if (spec.boreKind === "tap" || spec.boreKind === "thread") fields.boreKind = spec.boreKind;
+  if (spec.diameter !== undefined) fields.diameter = spec.diameter;
+  if (spec.bore !== undefined) fields.bore = spec.bore;
+  if (spec.hollow === false) fields.hollow = false;
+  if (isShaftFit(fit)) fields.fit = fit;
+  if (spec.article && spec.article.trim().length > 0) fields.article = spec.article.trim();
+  if (spec.taper) fields.taper = spec.taper;
+  if (spec.setScrew !== undefined) fields.setScrew = spec.setScrew;
   return { fields, height: spec.height };
 }

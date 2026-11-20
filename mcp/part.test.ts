@@ -53,6 +53,11 @@ check(
   guide.ok === true && guideText.includes("ISO 4032") && guideText.includes("ISO 4762") && guideText.includes("ISO 4017") && guideText.includes("ISO 7089") && guideText.includes("A modelled thread is not available yet. Use tap drill."),
   show(guide),
 );
+check(
+  "guide {topic:ops, section:part} has the fittings and the Ruthex table",
+  guideText.includes("RX-M3x5,7") && guideText.includes("RX-M8x12,7") && guideText.includes("centred on −Y") && guideText.includes("lime_recipe::horology::shaft"),
+  guideText.slice(guideText.indexOf("Fittings"), guideText.indexOf("Fittings") + 400),
+);
 
 const hexArea = (s: number) => (Math.sqrt(3) / 2) * s * s;
 const cylinder = (radius: number, height: number) => Math.PI * radius * radius * height;
@@ -120,6 +125,37 @@ check("M7 names the ISO 4032 table", unknown.ok === false && sentence.includes("
 
 const thread = await call("solid_new", { primitive: "part", kind: "nut", nominal: "M6", boreKind: "thread" });
 check("a modelled thread is refused", thread.ok === false && String(thread.reason ?? "").includes("A modelled thread is not available yet. Use tap drill."), show(thread));
+
+const shaftD = 8 - 0.012 - 0.1;
+const fittings: { name: string; args: Record<string, unknown>; volume: number | null; box: [[number, number, number], [number, number, number]] }[] = [
+  { name: "spacer", args: { kind: "spacer" }, volume: Math.PI * (5 * 5 - 2.1 * 2.1) * 12, box: [[-5, -5, 0], [5, 5, 12]] },
+  { name: "shaft", args: { kind: "shaft" }, volume: Math.PI * (shaftD / 2) ** 2 * 40, box: [[-shaftD / 2, -shaftD / 2, 0], [shaftD / 2, shaftD / 2, 40]] },
+  { name: "collar", args: { kind: "collar" }, volume: null, box: [[-7, -7, 0], [7, 7, 6]] },
+  { name: "heat-set", args: { kind: "heat-set" }, volume: Math.PI * (3.9 * 3.9 - 2 * 2) * 5.7, box: [[-3.9, -3.9, 0], [3.9, 3.9, 5.7]] },
+];
+for (const row of fittings) {
+  const made = await call("solid_new", { primitive: "part", ...row.args, name: row.name });
+  const object = String(made.object ?? "");
+  const described = object ? await call("model_describe", { object, limit: 0 }) : {};
+  const volume = Number(described.volumeMm3);
+  const bounds = described.bounds as { min?: number[]; max?: number[] } | undefined;
+  console.log(`part ${row.name}: measured volume ${volume} mm3, analytic ${row.volume ?? "tube, after the cuts"} mm3, measured bounds ${show(bounds)}, analytic bounds ${show(row.box)}`);
+  check(`solid_new ${row.name}`, made.ok === true, show(made));
+  if (row.volume !== null) check(`${row.name} volume within 0.5 mm3`, Math.abs(volume - row.volume) < 0.5, show(described));
+  check(`${row.name} bounds within 0.02 mm`, nearBox(bounds, row.box), show(bounds));
+  const checked = await call("model_check", { object });
+  check(`${row.name} is closed`, JSON.stringify(checked.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show(checked.edges));
+}
+
+const plate = await call("solid_new", { primitive: "box", dx: 30, dy: 30, dz: 4, name: "plate" });
+const fused = await call("model_apply", {
+  object: plate.object,
+  probe: true,
+  op: { kind: "boolean", op: "fuse", primitive: "part", partKind: "spacer" },
+});
+const fusedCheck = await call("model_check", { object: plate.object });
+console.log(`plate fused with a spacer: ${show({ ok: fused.ok, edges: fusedCheck.edges, volume: fusedCheck.volumeMm3 })}`);
+check("a plate fused with a spacer stays closed", fused.ok === true && JSON.stringify(fusedCheck.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show({ fused, edges: fusedCheck.edges }));
 
 if (failed > 0) {
   console.error(`part: ${failed} failed`);
