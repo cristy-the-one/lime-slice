@@ -5,7 +5,8 @@ import { selectedEdges, selectedFaces } from "../../model-blend";
 import { isFeatureTool } from "../../model-features";
 import { isRepeatTool } from "../../model-repeat";
 import { type ModelOp, type Vec3 } from "../../model-tree";
-import { draftOp, moveFacesOp, shellOp, stepEdges } from "../../model-request";
+import { moveFacesOp, shellOp, stepEdges } from "../../model-request";
+import { draftPanelOp } from "../../model-edit";
 import {
   fieldPrimitive,
   holeBoxes,
@@ -151,15 +152,9 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       return moveFacesOp(faces.map((pick) => ({ face: pick.index, distance })));
     }
     case "draft": {
-      const faces = selectedFaces(S.picks);
-      const angle = num("#modelDraft");
-      if (faces.length === 0 || !Number.isFinite(angle) || angle === 0 || angle < -30 || angle > 30) return null;
+      // Model space, as the fields show it; `toolOp` turns it into the solid's frame. An edited step keeps its neutral.
       const raw: Vec3 = [num("#modelDraftPullX"), num("#modelDraftPullY"), num("#modelDraftPullZ")];
-      const length = Math.hypot(raw[0], raw[1], raw[2]);
-      if (!(length > 1e-9)) return null;
-      const pull: Vec3 = [raw[0] / length, raw[1] / length, raw[2] / length];
-      const defaultPull = Math.abs(pull[0]) < 1e-9 && Math.abs(pull[1]) < 1e-9 && pull[2] > 0.999;
-      return draftOp(faces, angle, defaultPull ? {} : { pull });
+      return draftPanelOp(selectedFaces(S.picks), num("#modelDraft"), raw, S.editing?.op, openPose());
     }
     default:
       return null;

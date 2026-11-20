@@ -4,7 +4,7 @@ title: Tool catalog
 description: The server advertises 91 tools from mcp/schema.ts, in a core list plus eight groups.
 tags: [mcp, tools]
 status: draft
-generated: { by: cursor-cloud-agent/grok-4.7, at: 2026-10-28T07:01:46Z }
+generated: { by: claude/opus, at: 2026-11-20T12:00:00Z }
 sources:
   - id: schema
     resource: https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/mcp/schema.ts
@@ -12,6 +12,9 @@ sources:
   - id: groups
     resource: https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/mcp/groups.ts
     title: mcp/groups.ts
+  - id: ribs
+    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/mcp/session/ribs.ts
+    title: mcp/session/ribs.ts (feature/ribs-next)
 ---
 
 # How the list is built
@@ -408,5 +411,14 @@ Up to 16 variants. A sliced study needs reslice.
 
 Leave the last result.
 
+### ribs_plan
+
+Added after 4.2.0. Plans ribs on one wall as a background job. On `feature/ribs-next` it also takes `wall.folded` (side walls across sharp edges), `loadCases` (up to 8 named, weighted cases; `plan.cases` gives each case's factor and deflections; two cases with one name are refused), and, with `process: "moulded"`, `pull` and `plan.moulding` (rules, flags, and notes).[^ribs]
+
+### ribs_apply
+
+Added after 4.2.0. Builds a plan as one `ribNet` History row; `verify: true` runs the sliced Stress study before and after, once per load case when the plan has cases.[^ribs]
+
 [^schema]: mcp/schema.ts
 [^groups]: mcp/groups.ts
+[^ribs]: mcp/session/ribs.ts (feature/ribs-next)

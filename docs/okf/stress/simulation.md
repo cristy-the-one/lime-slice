@@ -4,7 +4,7 @@ title: Simulation
 description: An in-house linear static solver estimates stress in millimetres, newtons, and MPa. It is not a certification.
 tags: [stress, simulation]
 status: draft
-generated: { by: cursor-cloud-agent/grok-4.7, at: 2026-10-28T07:01:46Z }
+generated: { by: claude/opus, at: 2026-11-20T12:00:00Z }
 sources:
   - id: sim
     resource: https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/crates/lime-sim/src/lib.rs
@@ -39,6 +39,18 @@ sources:
   - id: readme
     resource: https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/README.md
     title: README.md
+  - id: ribs-tool
+    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/mcp/session/ribs.ts
+    title: mcp/session/ribs.ts (feature/ribs-next)
+  - id: ribs-panel
+    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/src/auto-ribs.ts
+    title: src/auto-ribs.ts (feature/ribs-next)
+  - id: rib-wall
+    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/src/modeling/rib-wall.ts
+    title: src/modeling/rib-wall.ts (feature/ribs-next)
+  - id: moulding
+    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/src/modeling/moulding.ts
+    title: src/modeling/moulding.ts (feature/ribs-next)
 ---
 
 # Solver
@@ -67,6 +79,16 @@ The Model dock section is a hold, a load, and a material card. Faces are picked 
 
 The README's worked example is a 100 × 10 × 10 mm box, 100% infill, one end held and the other loaded with 20 N, PLA card, 1.5 mm cells, and it says `mcp/sim-paint.test.ts` checks the numbers. It also says the four cards are placeholders, so for now every result is `rough`, and that a second solve within 5% is `converged`, within 15% is `usable`, and otherwise `rough`.[^readme]
 
+# Auto ribs additions
+
+Automatic ribs (6.11.0) plan ribs on one wall with a thin-shell model in `lime-sim`. `feature/ribs-next` adds three things, in the panel and in `ribs_plan`:
+
+* **Load cases.** Up to 8 named cases, each with a weight (default 1) and its own loads, weighed as Σ wᵢ·Cᵢ/Cᵢ⁰. The result gives each case's stiffness factor and its bare and ribbed deflection. No two cases share a name: the tool refuses it, the panel adds " (2)".[^ribs-tool] [^ribs-panel]
+* **Folded walls.** `wall.folded` (the panel's "Include side walls (folded)", off by default) takes thin faces across sharp edges into one folded shell, with thick regions kept as stiff patches.[^rib-wall]
+* **Moulding checks.** With the moulded process, a report of six rules (base 0.6 × wall, root radius 0.25–0.5 × wall, height 3 × wall, draft 0.5°, junction circle 1.2 × wall, spacing 2 walls) with flags per rib. It changes nothing. Without a pull direction each rib is read along its own wall, and a folded wall says so in the report's notes.[^moulding]
+
+`ribs_apply` with `verify` runs the sliced study once per load case, before and after.[^ribs-tool] See [Tool catalog](../mcp/tools.md).
+
 [^sim]: crates/lime-sim/src/lib.rs
 [^element]: crates/lime-sim/src/element.rs
 [^error]: crates/lime-sim/src/error.rs
@@ -78,3 +100,7 @@ The README's worked example is a 100 × 10 × 10 mm box, 100% infill, one end he
 [^ui]: src/ui/stress.ts
 [^desktop]: src/sim/desktop-solve.ts
 [^readme]: README.md
+[^ribs-tool]: mcp/session/ribs.ts (feature/ribs-next)
+[^ribs-panel]: src/auto-ribs.ts (feature/ribs-next)
+[^rib-wall]: src/modeling/rib-wall.ts (feature/ribs-next)
+[^moulding]: src/modeling/moulding.ts (feature/ribs-next)

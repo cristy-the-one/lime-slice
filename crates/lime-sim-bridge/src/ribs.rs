@@ -740,8 +740,10 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "baselines": r6(s.baselines), "solver": r6(s.solver), "total": r6(s.total),
         },
     });
-    // A frequency plan names Hz before and after, the ratio, and why the
-    // loads were not the goal. A stiffness plan leaves these off.
+    // A frequency plan names Hz before and after and the ratio. A stiffness
+    // plan leaves those off. Notes are the draft-lost sentence, the
+    // frequency sentences, or both; an empty list stays off the JSON so an
+    // unchanged stiffness plan stays unchanged.
     if let Some(hz) = plan.frequency_hz {
         let extra = json!({ "frequencyHz": { "bare": r6(hz.bare), "ribbed": r6(hz.ribbed) } });
         out["frequencyHz"] = extra["frequencyHz"].clone();

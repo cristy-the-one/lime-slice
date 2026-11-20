@@ -15,9 +15,9 @@
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
-import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wallSpan, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
-import { engineMaterial, fallbackHzNote, goalFromTool, ignoredLoadNote, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { duplicateCaseName, engineMaterial, fallbackHzNote, goalFromTool, ignoredLoadNote, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -75,7 +75,7 @@ function num(value: unknown): number | undefined {
 
 /**
  * The loads ribs_plan puts on the wall and on the plan body. One load stays `loads`. A weight that is not a number
- * above zero, and more than 8 cases, are refused here, before `loadRequest`. Names still come from `loadRequest`,
+ * above zero, two cases with one name, and more than 8 cases, are refused here, before `loadRequest`. Names still come from `loadRequest`,
  * and a weight that was left out is 1 there. The panel calls `loadRequest` on its own and keeps the quiet fixes.
  */
 export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { reason: string }, input: { loads?: unknown; loadCases?: unknown }): ReturnType<typeof loadRequest> | { reason: string; code: "bad-argument" | "bad-load" } {
@@ -97,6 +97,9 @@ export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { r
     if (row.weight !== undefined && !(weight !== undefined && weight > 0)) return { reason: `Load case ${ci + 1}: weight is a number above zero.`, code: "bad-argument" };
     parsed.push({ name: typeof row.name === "string" ? row.name : "", weight: weight ?? Number.NaN, loads: got });
   }
+  // verify finds each case's loads by its name, so two cases with one name would take each other's.
+  const twice = duplicateCaseName(parsed);
+  if (twice !== null) return { reason: `Two load cases are named "${twice}" (a case with no name is "Case N" by its place): give each case its own name.`, code: "bad-argument" };
   return loadRequest(loads, parsed.length ? parsed : undefined, true);
 }
 
@@ -363,14 +366,17 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     notes.push("Nothing joins this wall to the rest of the part and no holds were given, so it is planned held all round its borders. Give holds for a truer plan.");
   }
   const outer = wall.report.loops.reduce((most, loop) => Math.max(most, loop.lengthMm), 0);
+  const walls = wallSpan(wall.request.mesh.thickness);
   const rules = ribRules({
     process,
     nozzleMm: this.library.nozzleMm,
     thicknessMm: wall.report.thickness.medianMm,
+    ...(walls ? { thinnestMm: walls.thin, thickestMm: walls.thick } : {}),
     areaMm2: wall.report.areaMm2,
     outerLoopMm: outer,
     given: { width: num(rib.width), maxHeight: num(rib.maxHeight), minHeight: num(rib.minHeight), minSpacing: num(rib.minSpacing), minLength: num(rib.minLength) },
   });
+  if (rules.mouldedNote) notes.push(`${rules.mouldedNote.charAt(0).toUpperCase()}${rules.mouldedNote.slice(1)}.`);
   const material = ribCard.call(this);
   const card = material.card;
   if ("reason" in card) return refuse("no-card", card.reason);
@@ -386,7 +392,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const typedChamfer = num(rib.flangeChamferDeg);
   const flange = typedChamfer !== undefined ? (typedChamfer > 0 ? "chamfered" : "square") : flanges.flange;
   const extra = (keys: string[]) => Object.fromEntries(keys.filter((key) => num(rib[key]) !== undefined).map((key) => [key, num(rib[key])!]));
-  const profile: Row = wireProfileOf(asked, process, flange, extra(asked === "tee" ? ["flangeWidth", "flangeThickness", "flangeChamferDeg", "rootRadius"] : ["draftDeg", "rootRadius"]));
+  const profile: Row = wireProfileOf(asked, process, flange, extra(asked === "tee" ? ["flangeWidth", "flangeThickness", "flangeChamferDeg", "rootRadius"] : ["draftDeg", "rootRadius"]), rules.mouldedRoot);
   const builtMaterial = engineMaterial({ e: card.EInPlaneMPa, nu: card.nu, densityGCm3: card.densityGCm3, name: card.polymer }, goal);
   if ("reason" in builtMaterial) return refuse("bad-goal", builtMaterial.reason);
   const body = {
@@ -433,6 +439,9 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   }
   const planSeconds = (Date.now() - planStarted) / 1000;
   if (result.ok !== true) return refuse("rib-plan-failed", typeof result.reason === "string" ? result.reason : "The rib planner did not finish.");
+  for (const note of (result.notes as unknown[] | undefined) ?? []) {
+    if (typeof note === "string" && !notes.includes(note)) notes.push(note);
+  }
   stage("taking the ribs onto the wall", 0.05 + span);
   const engineRibs = (result.ribs ?? []) as Row[];
   // Each rib off the mid-surface onto the face, its ends drawn back from a free edge, its tee stretches checked against
@@ -513,7 +522,11 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   };
   if (process === "moulded") {
     const mesh = wall.request.mesh;
-    mouldedOnly(process, plan, mouldingReport(onSkin.ribs.map((rib) => ({ points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p)) })), pull));
+    // A folded wall with no pull is checked rib by rib along its own wall: the report says so, and so do the notes.
+    const folded = (wall.report.faces.folded?.length ?? 0) > 0;
+    const report = mouldingReport(onSkin.ribs.map((rib) => ({ points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p)) })), pull, { folded });
+    mouldedOnly(process, plan, report);
+    if (report.notes?.length) notes.push(...report.notes.map((note) => `${note} Pass pull to check every rib against one direction.`));
   }
   const joined = [...new Set(wall.report.faces.stops.map((row) => row.face))].filter((face) => !wallSet.has(face));
   // The verify study carries what the plan carried: holds and loads left out under ifMissed stay out of it too.

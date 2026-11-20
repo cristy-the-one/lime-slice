@@ -123,9 +123,9 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
 
 /**
  * What a plan sends for its loads. One load is `loads` alone. Two or more are `loadCases` plus `caseWeights` and no
- * `loads`, since the wall takes one or the other. A blank name is "Case 1", "Case 2", …. A weight that is not above
- * zero is 1. At most 8 cases. The panel keeps these quiet fixes. ribs_plan refuses a bad weight and more than 8
- * before it calls this, and passes `keepOne` so one named case stays a case; the panel folds a single case back
+ * `loads`, since the wall takes one or the other. A blank name is "Case 1", "Case 2", …, and a name two cases share is
+ * made distinct (`caseNames`). A weight that is not above zero is 1. At most 8 cases. The panel keeps these quiet
+ * fixes. ribs_plan refuses a bad weight, a shared name and more than 8 before it calls this, and passes `keepOne` so one named case stays a case; the panel folds a single case back
  * into the one load.
  */
 export function loadRequest(loads: StudyLoad[], cases: PanelLoadCase[] | undefined, keepOne = false): { loads: StudyLoad[]; loadCases?: { name: string; loads: StudyLoad[] }[]; caseWeights?: number[] } {
@@ -133,9 +133,37 @@ export function loadRequest(loads: StudyLoad[], cases: PanelLoadCase[] | undefin
   const kept = cases.slice(0, MAX_LOAD_CASES);
   return {
     loads: [],
-    loadCases: kept.map((row, i) => ({ name: row.name.trim() || `Case ${i + 1}`, loads: row.loads })),
+    loadCases: caseNames(kept).map((name, i) => ({ name, loads: kept[i]!.loads })),
     caseWeights: kept.map((row) => (Number.isFinite(row.weight) && row.weight > 0 ? row.weight : 1)),
   };
+}
+
+/**
+ * The names a plan sends for its cases, one per case and no two alike: the verify study finds a case's loads by its
+ * name. Trimmed; a blank one is "Case N" by its place; a name already taken gets " (2)", " (3)", ….
+ */
+export function caseNames(cases: readonly { name: string }[]): string[] {
+  const out: string[] = [];
+  cases.forEach((row, i) => out.push(freeCaseName(row.name.trim() || `Case ${i + 1}`, out)));
+  return out;
+}
+
+/** `wanted`, or `wanted (2)`, `wanted (3)`, …: the first that none of `taken` is. */
+export function freeCaseName(wanted: string, taken: readonly string[]): string {
+  let name = wanted;
+  for (let k = 2; taken.includes(name); k += 1) name = `${wanted} (${k})`;
+  return name;
+}
+
+/** The first name two cases would be sent with (trimmed, a blank one "Case N"), or null when every name is its own. */
+export function duplicateCaseName(cases: readonly { name: string }[]): string | null {
+  const seen = new Set<string>();
+  for (const [i, row] of cases.entries()) {
+    const name = row.name.trim() || `Case ${i + 1}`;
+    if (seen.has(name)) return name;
+    seen.add(name);
+  }
+  return null;
 }
 
 /** Cases stored on a card: two or more, each with a name, a weight and its loads. One stored case is not a case list. */
@@ -161,15 +189,18 @@ export function ribNetSource(op: { kind: string; source?: unknown }): Record<str
 
 /**
  * The card a rib network step reopens with: the panel's own request when the panel made it (`auto.panel`), the wall
- * faces when ribs_plan made it (`auto.wall.faces`), else null (a hand-typed network: pick its wall again).
+ * faces and `folded` when ribs_plan made it (`auto.wall`), else null (a hand-typed network: pick its wall again).
  */
 export function cardFromRibNet(source: Record<string, unknown>): AutoRibsCard | null {
   const auto = source.auto as Record<string, unknown> | undefined;
   if (!auto || typeof auto !== "object") return null;
   const panel = cardFromStored(auto.panel);
   if (panel) return panel;
-  const faces = (auto.wall as { faces?: unknown } | undefined)?.faces;
-  if (Array.isArray(faces) && faces.every((f) => Number.isInteger(f))) return { ...newAutoRibsCard(), picked: faces as number[] };
+  // ribs_plan's request: its wall's faces, and whether it took side walls across sharp edges. Its loads are typed in
+  // the tool's own form (places, selectors), which the panel cannot read back here, so they are picked again.
+  const wall = auto.wall as { faces?: unknown; folded?: unknown } | undefined;
+  const faces = wall?.faces;
+  if (Array.isArray(faces) && faces.every((f) => Number.isInteger(f))) return { ...newAutoRibsCard(), picked: faces as number[], ...(wall?.folded === true ? { folded: true } : {}) };
   return null;
 }
 
