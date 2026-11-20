@@ -749,6 +749,7 @@ const ribNetOp = {
           width: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "This run's thickness, mm." },
           height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "This run's height off the surface, mm." },
           heights: { type: "array", maxItems: 1999, items: { type: "number", minimum: 0.1, maximum: 500 }, description: "One height per stretch between points, none above height: the rib changes height along one run (ramped over a short step, the lower height at the point where it changes)." },
+          openEnds: { type: "array", minItems: 2, maxItems: 2, items: { type: "boolean" }, description: "The path's start and end. true keeps that end square: a vent notch, not run into the facing rib and not tapered." },
           ...ribProfileFields,
         },
       },
