@@ -90,6 +90,8 @@ export interface PlanResponse {
 /** `plan_json`, the parts the panel reads. */
 export interface RibPlanResult {
   ribs: PlannedRib[];
+  /** Set when a drafted rib was built straight because its top closed. */
+  notes?: string[];
   ribVolumeMm3: number;
   bare: PlanResponse;
   ribbed: PlanResponse;
@@ -137,7 +139,7 @@ export type PlanGoal = { kind: "balanced" } | { kind: "stiffer"; factor: number 
 export type WireProfile =
   | { kind: "auto"; process: RibProcess; flange: "chamfered" | "square" | null }
   | { kind: "straight" }
-  | { kind: "drafted" }
+  | { kind: "drafted"; draftDeg?: number; rootRadius?: number }
   | { kind: "tee"; flange: "chamfered" | "square" };
 
 /** `RibPlanBody`: ribWall's request and what the planner needs besides. */
@@ -274,6 +276,7 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       grid: grid ? { reached: grid.reached === true, pitchMm: num(grid.pitchMm), volumeMm3: typeof grid.volumeMm3 === "number" ? grid.volumeMm3 : null, gridVolumeMm3: num(grid.gridVolumeMm3) } : null,
       notBetterThanBaseline: row.notBetterThanBaseline === true,
       stoppedEarly: row.stoppedEarly === true,
+      ...(Array.isArray(row.notes) && (row.notes as unknown[]).some((note) => typeof note === "string") ? { notes: (row.notes as unknown[]).filter((note): note is string => typeof note === "string") } : {}),
       looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" : "noRibZone" })),
       ...perCase(row),
     },
@@ -547,9 +550,12 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
       const wire = body.rules.profile;
       const asked = wire?.kind;
       const profile: RibProfileName = asked === "drafted" || asked === "tee" ? asked : "straight";
-      // Moulded auto, and an asked drafted rib, use the planner's drafted default (1° and the root from the greatest height).
-      const drafted = wire?.kind === "drafted" || (wire?.kind === "auto" && wire.process === "moulded");
-      const draftedRoot = drafted ? defaultDraftedSection(width, tall).rootRadius : 0;
+      // A drafted profile that carries a root keeps it (the moulded default sends its clamped root). A typed
+      // moulded width is auto and keeps half the top, as does resin and an asked drafted rib with no root.
+      const mouldedAuto = wire?.kind === "auto" && wire.process === "moulded";
+      const drafted = wire?.kind === "drafted" || mouldedAuto;
+      const plainRoot = drafted ? defaultDraftedSection(width, tall).rootRadius ?? 0 : 0;
+      const draftedRoot = wire?.kind === "drafted" && typeof wire.rootRadius === "number" ? wire.rootRadius : plainRoot;
       let fraction = 0;
       let factor = 1;
       const bareDeflection = 0.8;

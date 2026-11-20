@@ -15,11 +15,15 @@ test("moulded lists moulding flags, one rib inside the limits passes, and filame
   await page.locator("#autoRibsProcess").selectOption("moulded");
   await page.mouse.click(floor.x, floor.y);
   await expect(primary(page)).toBeEnabled();
+  await expect(page.locator("#autoRibsDefaults")).toContainText("at half height, sized so the base is 0.6 × the thinnest wall");
+  await expect(page.locator("#autoRibsDefaults")).toContainText("0.25 × the thickest wall when half the top is smaller");
   await primary(page).click();
   await expect(page.locator("#autoRibsResult")).toBeVisible({ timeout: 20_000 });
   const flags = page.locator("#autoRibsMoulding");
   await expect(flags).toBeVisible();
-  await expect(flags).toContainText(/base .* × the wall, over 0\.6/);
+  // The default base is 0.6 × the wall, so rule 1 does not flag. A crossing still flags the junction over 1.2.
+  await expect(flags).not.toContainText(/base .* × the wall, over 0\.6/);
+  await expect(flags).toContainText(/junction circle .* × the wall, over 1\.2/);
   await expect(page.locator("#autoRibsMouldingList li").first()).toBeVisible();
   await flags.scrollIntoViewIfNeeded();
   await shot(page, "moulding-flags.png");

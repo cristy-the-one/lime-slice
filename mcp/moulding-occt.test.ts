@@ -72,6 +72,12 @@ const report = moulded.plan?.moulding as Reply | undefined;
 const rules = (report?.rules ?? []) as Reply[];
 const flags = (report?.flags ?? []) as Reply[];
 const ribs = (moulded.plan?.ribs ?? []) as Reply[];
+const baseRule = rules.find((row) => row.rule === "base");
+check(
+  "moulded default passes rule 1: the base is at most 0.6 × the wall",
+  baseRule?.pass === true && typeof baseRule.worst === "number" && baseRule.worst <= 0.6 + 1e-9,
+  JSON.stringify(baseRule),
+);
 check(
   "moulded plan.moulding has the six rules, and the radius band is 0.25 to 0.5",
   rules.length === 6 && rules.every((row) => typeof row.rule === "string" && "pass" in row) && rules.filter((row) => row.rule !== "radius").every((row) => typeof row.threshold === "number") && JSON.stringify(rules.find((row) => row.rule === "radius")?.threshold) === JSON.stringify([0.25, 0.5]),
