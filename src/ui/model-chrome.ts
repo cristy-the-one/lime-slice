@@ -640,7 +640,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // A part's kind, nominal, fit, article or hollow changes the row, the fields and the ghost at once.
-    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelPartFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow")) {
+    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow")) {
       if (ev.target.id === "modelPartKind") onPartKind();
       if (ev.target.id === "modelPartArticle") onHeatArticle();
       syncFields();
@@ -682,7 +682,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelPartFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow")) return;
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow")) return;
     if (ev.target instanceof HTMLInputElement && (ev.target.id === "modelPartLength" || ev.target.id === "modelPartDiameter")) ev.target.dataset.touched = "1";
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
@@ -1102,7 +1102,7 @@ function fillEdit() {
     if (nominal && panel.nominal) nominal.value = panel.nominal;
     const article = document.querySelector<HTMLSelectElement>("#modelPartArticle");
     if (article && panel.article) article.value = panel.article;
-    const fit = document.querySelector<HTMLSelectElement>("#modelPartFit");
+    const fit = document.querySelector<HTMLSelectElement>("#modelShaftFit");
     if (fit && panel.fit) fit.value = panel.fit;
     const hollow = document.querySelector<HTMLInputElement>("#modelPartHollow");
     if (hollow && panel.hollow !== undefined) hollow.checked = panel.hollow;
@@ -1756,7 +1756,7 @@ function onPartKind() {
   const screw = document.querySelector<HTMLInputElement>("#modelPartScrew");
   const taper = document.querySelector<HTMLInputElement>("#modelPartTaper");
   const hollow = document.querySelector<HTMLInputElement>("#modelPartHollow");
-  const fit = document.querySelector<HTMLSelectElement>("#modelPartFit");
+  const fit = document.querySelector<HTMLSelectElement>("#modelShaftFit");
   if (kind === "hex" && length) length.value = "20";
   else if (kind === "socket" && length) length.value = "25";
   else if (kind === "spacer") {
@@ -1820,7 +1820,7 @@ function partFields(): PartSpec {
     spec.diameter = num("#modelPartDiameter");
     spec.height = num("#modelPartLength");
     spec.allowance = num("#modelPartAllowance");
-    spec.fit = document.querySelector<HTMLSelectElement>("#modelPartFit")?.value || "sliding";
+    spec.fit = document.querySelector<HTMLSelectElement>("#modelShaftFit")?.value || "sliding";
   }
   if (kind === "collar") {
     spec.diameter = num("#modelPartDiameter");
