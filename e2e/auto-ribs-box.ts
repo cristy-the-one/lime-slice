@@ -81,6 +81,19 @@ export function block(gap: number): MockSolid {
   return { volumeMm3: 30 * 30 * 10, positions, triangles, faces: Array.from({ length: 6 }, (_, id) => ({ id, areaMm2: 0 })), edges: [] };
 }
 
+/** One free-edged plate, face 0, normal +Z. Synthetic, and only the vents spec uses it. */
+export function openPlate(): MockSolid {
+  const positions: number[] = [];
+  const triangles: number[] = [];
+  const a: V = [0, 0, 2];
+  const b: V = [X, 0, 2];
+  const c: V = [X, Y, 2];
+  const d: V = [0, Y, 2];
+  positions.push(...a, ...b, ...c, ...a, ...c, ...d);
+  triangles.push(0, 0);
+  return { volumeMm3: X * Y * T, positions, triangles, faces: [{ id: 0, areaMm2: X * Y, normal: [0, 0, 1] }], edges: [] };
+}
+
 const FILE = Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n");
 
 export interface Options {
@@ -94,6 +107,8 @@ export interface Options {
   api?: string;
   /** Answer the desktop study solve (Check with Stress). */
   stress?: boolean;
+  /** A single free-edged plate, so a resin plan can vent. The box floor is walled in all round. */
+  plate?: boolean;
 }
 
 /** What Apply adds: each path as boxes on the floor, its volume on the part's. */
@@ -121,7 +136,7 @@ export async function openPart(page: Page, options: Options = {}): Promise<TreeM
     }, { tickMs: options.tickMs ?? 40, ...(options.beatsNeither ? { beatsNeither: true } : {}), ...(options.refuse ? { refuse: options.refuse } : {}) });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const part = openBox();
+  const part = options.plate ? openPlate() : openBox();
   const obstacle = block(1.5);
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => {
@@ -178,21 +193,26 @@ export const cardBox = (page: Page) => page.locator("#modelAutoRibs");
 export const labels = (page: Page) => page.locator("#modelHistoryTree .mh-label");
 export const primary = (page: Page) => page.locator("#modelApply");
 
-/** Where the floor can be clicked: a scan in Face mode, read from the readout ("Face 7" is face 6). */
-export async function findFloor(page: Page): Promise<{ x: number; y: number }> {
+/** Where a face can be clicked. "Face 7" is the box floor; "Face 1" is the plate. */
+export async function findFace(page: Page, readoutPrefix: string): Promise<{ x: number; y: number }> {
   const box = (await page.locator("#model").boundingBox())!;
   for (let row = 0; row < 16; row += 1) {
     for (let col = 0; col < 16; col += 1) {
       const x = box.x + box.width * (0.3 + col * 0.025);
       const y = box.y + box.height * (0.3 + row * 0.025);
       await page.mouse.click(x, y);
-      if (/^Face 7 /.test(await readout(page).innerText())) {
+      if (new RegExp(`^${readoutPrefix} `).test(await readout(page).innerText())) {
         await page.keyboard.press("Escape");
         return { x, y };
       }
     }
   }
-  throw new Error("the floor was not found on screen");
+  throw new Error(`${readoutPrefix} was not found on screen`);
+}
+
+/** Where the floor can be clicked: a scan in Face mode, read from the readout ("Face 7" is face 6). */
+export async function findFloor(page: Page): Promise<{ x: number; y: number }> {
+  return findFace(page, "Face 7");
 }
 
 export async function openCard(page: Page) {

@@ -4,7 +4,7 @@
  */
 import { editRefusal } from "./model-edit.ts";
 import { isProbed, probeNote } from "./model-feasibility.ts";
-import { faceExtrudeOp, faceLoopsRequest, moveFacesOp, shellOp } from "./model-request.ts";
+import { draftOp, faceExtrudeOp, faceLoopsRequest, moveFacesOp, shellOp } from "./model-request.ts";
 import { toSolidOp, type Affine } from "./model-space.ts";
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
 import { childWithOp, newTree, opLabel, withChild, type FaceRef, type ModelOp, type Vec3 } from "./model-tree.ts";
@@ -72,7 +72,11 @@ const pose: Affine = { m: eulerOrient(0, 0, 90), t: [10, 0, 0] };
 eq("a face move has no point to take through the pose", toSolidOp(pull, pose), pull);
 eq("a face extrude keeps its index", toSolidOp(prism, pose), prism);
 
-eq("the new tools are checked by the kernel", ["faceExtrude", "moveFaces"].map(isProbed), [true, true]);
+eq("the new tools are checked by the kernel", ["faceExtrude", "moveFaces", "draft"].map(isProbed), [true, true, true]);
+const tilted = draftOp([5], 3);
+eq("a draft keeps its index through a pose", toSolidOp(tilted, pose), tilted);
+eq("a draft names its wall and its angle", opLabel(tilted), "Draft 1 wall 3°");
+eq("four drafted walls name the count", opLabel(draftOp([2, 3, 4, 5], -3, { pull: [0, 0, -1] })), "Draft 4 walls -3°");
 eq(
   "a refusal reads as it came",
   probeNote("moveFaces", { phase: "done", ok: false, error: "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt." })?.text,

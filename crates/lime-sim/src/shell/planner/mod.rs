@@ -8,7 +8,8 @@
 //! 1. **Solve the bare wall** under each load case ([`ShellModel`]).
 //! 2. **Direction field** ([`field`]): principal bending-moment directions
 //!    (membrane-force directions where membrane energy dominates), combined
-//!    over cases weighted by strain energy, smoothed as a cross field with
+//!    over cases by strain energy divided by each case's bare compliance,
+//!    smoothed as a cross field with
 //!    Li et al.'s smoothness/alignment blend (α = 0.8), with low-confidence
 //!    zones marked.
 //! 3. **Candidates** ([`trace`]): evenly spaced streamlines along both
@@ -22,7 +23,8 @@
 //!    ranks the remaining candidates by a first-order estimate (the energy
 //!    the rib would take in the current solution) and solves the best
 //!    [`PlannerOptions::shortlist`] exactly; the one with the largest
-//!    compliance drop per added volume (Li et al.'s score per volume) is
+//!    drop in the weighted compliance (each case divided by its own bare
+//!    compliance) per added volume (Li et al.'s score per volume) is
 //!    added. Then loose ends are extended to the boundary, a hold or
 //!    another rib; ribs that meet end to end are joined; ribs the goal does
 //!    not need are pruned, weakest first; and heights are lowered where the
@@ -34,16 +36,22 @@
 //! Everything is deterministic: no hash-map iteration, ties broken by
 //! index, Gauss–Seidel in index order.
 //!
-//! Units: mm, N, MPa. Compliance is the work of the loads, N·mm, summed
-//! over the load cases.
+//! Units: mm, N, MPa. Compliance is the work of the loads, N·mm. Several
+//! cases are scored as `sum w_i C_i / C_i0` (each `C_i0` the bare wall on
+//! the same mesh), or, in [`LoadCombine::Worst`], by the p-norm of those
+//! scaled compliances. A single case is the compliance itself, in either
+//! mode. The reported stiffness factor is the combined number, and in
+//! worst-case mode that number is `min_i C_i0 / C_i`.
 
 mod baseline;
 mod field;
+mod frequency;
 mod loose;
 mod profile;
 mod select;
 mod surface;
 mod trace;
+mod vents;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -59,8 +67,12 @@ use super::{
     ShellModel, ShellOptions,
 };
 
-pub use profile::{choose_profile, FlangeShape, Process, ProfileRules, RibProfile};
+pub use profile::{
+    choose_profile, moulded_default_root, moulded_default_width, moulded_plan_root, FlangeShape,
+    Process, ProfileRules, RibProfile, DRAFT_LOST_NOTE,
+};
 pub use trace::Family;
+pub use vents::{vent_pockets, BorderKind, BorderRun, EndKind, RibRun, VentPocket, VentPockets, Venting, PART_CUPS, RESIN_VENT_MM};
 
 /// The default load when none is given: 1 kPa on every triangle, along
 /// its normal. Only ratios matter for planning.
@@ -157,10 +169,39 @@ impl Default for RibRules {
     }
 }
 
+/// How several load cases become the one number the planner minimises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LoadCombine {
+    /// `sum w_i C_i / C_i0`. Empty weights are all 1.
+    #[default]
+    Weighted,
+    /// Minimise `(sum_i (s_i C_i)^p)^(1/p)` with [`WORST_P`] unless
+    /// [`PlannerOptions::worst_p`] says otherwise. `s_i` normalises each
+    /// case by its bare compliance, at unit weight. The reported factor
+    /// is still `min_i C_i0 / C_i`, so [`Goal::Stiffer`] means every case
+    /// reaches it. Load-case weights are refused.
+    Worst,
+}
+
+/// Default exponent of [`LoadCombine::Worst`]. A hard minimum stalled the
+/// greedy loop; p = 8 keeps a gradient on the second-worst case.
+pub const WORST_P: f64 = 8.0;
+
+/// One greedy step in [`LoadCombine::Worst`]: which case limited the
+/// objective, and the worst stiffness factor, on the selection mesh.
+#[derive(Clone, Copy, Debug)]
+pub struct WorstRound {
+    pub limiting_case: usize,
+    /// `min_i C_i0 / C_i` after this rib (1 before any rib).
+    pub min_factor: f64,
+}
+
 /// What the plan must reach. One of them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Goal {
-    /// Bare compliance over ribbed compliance at least this.
+    /// Combined stiffness at least this. One case: bare over ribbed.
+    /// Weighted: `(sum w_i) / (sum w_i C_i / C_i0)`. Worst: every case,
+    /// `min_i C_i0 / C_i`.
     Stiffer(f64),
     /// The largest displacement (over all cases) at most this, mm.
     MaxDeflection(f64),
@@ -168,6 +209,10 @@ pub enum Goal {
     Budget { volume_mm3: f64 },
     /// Keep adding while a rib pays: see [`BALANCED_FLOOR`].
     Balanced,
+    /// The lowest natural frequency, ribbed over bare, at least this.
+    /// A plan has one goal: this does not carry a stiffness target or a
+    /// budget, and a request without it plans as a stiffness goal.
+    Frequency { factor: f64 },
 }
 
 /// Tuning, with defaults that need no changing.
@@ -191,6 +236,16 @@ pub struct PlannerOptions {
     /// junction or drop it (see [`RibPlan::loose_ends`]). Turn off only to
     /// measure what it costs.
     pub close_loose_ends: bool,
+    /// Exponent of [`LoadCombine::Worst`]'s p-norm. A weighted or one-case
+    /// plan does not read it.
+    pub worst_p: f64,
+    /// Treat edges where the wall turns more than 20° as creases: the
+    /// direction field and the traces unfold across them, every triangle
+    /// on an edge (a T-junction) is a neighbour, and a rib at a crease
+    /// stands on its own face. Meant for a folded wall (a cover's side
+    /// walls taken as one shell). Off by default: a plan is then exactly
+    /// what v6.12 gave for the same mesh, sharp edges included.
+    pub creases: bool,
 }
 
 /// Exactly solved candidates per round: one batch for eight models. The
@@ -211,6 +266,18 @@ impl Default for PlannerOptions {
             workers: 0,
             baselines: true,
             close_loose_ends: true,
+            worst_p: WORST_P,
+            creases: false,
+        }
+    }
+}
+
+impl PlannerOptions {
+    /// The shell options every planning model is built with.
+    pub(crate) fn shell(&self) -> ShellOptions {
+        ShellOptions {
+            creases: self.creases,
+            ..ShellOptions::default()
         }
     }
 }
@@ -222,8 +289,15 @@ pub struct RibPlanRequest {
     pub material: IsotropicShell,
     pub holds: Holds,
     /// Load cases on the input mesh; none means [`DEFAULT_PRESSURE`] on
-    /// every triangle. Several are combined by summed compliance.
+    /// every triangle. Several are scored as `sum w_i C_i / C_i0`.
     pub load_cases: Vec<LoadCase>,
+    /// One weight per load case. Empty means every case weighs 1. A single
+    /// case then scores exactly as its compliance. [`LoadCombine::Worst`]
+    /// refuses a non-empty list.
+    pub case_weights: Vec<f64>,
+    /// How several cases combine. [`LoadCombine::Weighted`] by default; a
+    /// one-case plan does not depend on it.
+    pub combine: LoadCombine,
     /// User-defined zones: no ribs, or ribs no taller than a cap.
     pub zones: Vec<Zone>,
     /// Keep this far (mm) from the rim of every hole in the wall (each
@@ -232,6 +306,18 @@ pub struct RibPlanRequest {
     pub rules: RibRules,
     pub goal: Goal,
     pub options: PlannerOptions,
+    /// Cut a vent through each pocket the ribs close, when the part is resin.
+    /// Filament and moulded leave this false, and the plan is unchanged.
+    pub vent: bool,
+    /// Plate frame, from the platform toward the tank. Default +Z, the part as
+    /// it sits. A pocket cups when the side the ribs stand on points along this.
+    pub build_axis: [f64; 3],
+    /// The wall's outer border is a side wall, so it closes a cell. A free
+    /// edge, and every hole, stays open. Filament and moulded leave this false.
+    /// Ignored when [`RibPlanRequest::borders`] is not empty.
+    pub rising_border: bool,
+    /// Wall borders in the wall frame. Empty uses [`RibPlanRequest::rising_border`].
+    pub borders: Vec<(Vec<[f64; 3]>, vents::BorderKind)>,
 }
 
 impl RibPlanRequest {
@@ -243,11 +329,17 @@ impl RibPlanRequest {
             material,
             holds: Holds::AllBoundaryClamped,
             load_cases: Vec::new(),
+            case_weights: Vec::new(),
+            combine: LoadCombine::Weighted,
             zones: Vec::new(),
             hole_rim_margin: Some(3.0),
             rules: RibRules::default(),
             goal: Goal::Balanced,
             options: PlannerOptions::default(),
+            vent: false,
+            build_axis: [0.0, 0.0, 1.0],
+            rising_border: false,
+            borders: Vec::new(),
         }
     }
 }
@@ -259,6 +351,8 @@ pub enum RibEndKind {
     Hold,
     Rib,
     Free,
+    /// The end of a vent gap. It is not a loose end.
+    Gap,
 }
 
 #[derive(Clone, Debug)]
@@ -383,8 +477,19 @@ pub struct RibPlan {
     pub rib_volume_mm3: f64,
     pub bare: Response,
     pub ribbed: Response,
-    /// Bare compliance over ribbed.
+    /// Combined stiffness on [`RibPlan::mesh`]. One case: bare over ribbed.
+    /// Weighted: `(sum w_i) / (sum w_i C_i / C_i0)`. Worst: `min_i C_i0 / C_i`.
     pub stiffness_factor: f64,
+    /// `C_i0 / C_i` for each load case, on [`RibPlan::mesh`].
+    pub case_factors: Vec<f64>,
+    /// Peak deflection per load case, `[bare, ribbed]` in mm, in case order.
+    /// [`RibPlan::bare`] and [`RibPlan::ribbed`] carry the greatest of these.
+    pub case_deflection_mm: Vec<[f64; 2]>,
+    /// Greedy rounds when [`RibPlanRequest::combine`] is
+    /// [`LoadCombine::Worst`]: the limiting case and the worst factor after
+    /// each accepted rib, including the bare wall as round 0. Empty for a
+    /// weighted plan, and for one case (that plan is the plain sum).
+    pub worst_trace: Vec<WorstRound>,
     pub goal_met: bool,
     pub thickening: Option<ThickeningBaseline>,
     pub grid: Option<GridBaseline>,
@@ -401,6 +506,24 @@ pub struct RibPlan {
     /// the returned ribs cut in. Rib vertices index it.
     pub mesh: ShellMesh,
     pub stats: PlanStats,
+    /// Resin only: the pockets the ribs closed, and the notches that open them.
+    /// The reported stiffness is the notched ribs. Absent for filament and moulded.
+    pub vents: Option<Venting>,
+    /// Lowest natural frequency, Hz, bare then ribbed, on [`RibPlan::mesh`].
+    /// Absent on a stiffness plan.
+    pub frequency_hz: Option<FrequencyHz>,
+    /// Ribbed over bare lowest frequency. Absent on a stiffness plan.
+    pub frequency_factor: Option<f64>,
+    /// Empty on a stiffness plan. A frequency plan records that the loads
+    /// were not part of the goal.
+    pub notes: Vec<String>,
+}
+
+/// Bare and ribbed lowest natural frequency, Hz.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrequencyHz {
+    pub bare: f64,
+    pub ribbed: f64,
 }
 
 /// Why a rib end was left in mid-wall.
@@ -411,6 +534,10 @@ pub enum LooseEndReason {
     NoRibZone,
     /// An extension reached an anchor, but the budget does not allow it.
     Budget,
+    /// A frequency plan left it where the trace stopped. It is not a
+    /// keep-clear zone and it is not the budget: the plan does not extend
+    /// or close it.
+    Open,
 }
 
 /// A rib end left in mid-wall.
@@ -482,6 +609,9 @@ pub struct RibEvent {
     pub rib_volume_mm3: f64,
     pub compliance: f64,
     pub stiffness_factor: f64,
+    /// Ribbed over bare lowest frequency after this rib was added. Absent
+    /// on a stiffness plan, whose events carry only the compliance.
+    pub frequency_factor: Option<f64>,
     pub fraction: f64,
 }
 
@@ -553,6 +683,33 @@ impl Reporter<'_> {
             rib_volume_mm3: select::network_volume(pos, design),
             compliance: cur.compliance,
             stiffness_factor: c0 / cur.compliance,
+            frequency_factor: None,
+            fraction: *last,
+        }));
+    }
+
+    /// A rib a frequency plan accepted. There is no compliance yet: the
+    /// stiffness solve runs once, after selection. `ratio` is the lowest
+    /// frequency over the bare wall's.
+    pub fn frequency_rib(
+        &self,
+        rib: &select::DRib,
+        pos: &[[f64; 3]],
+        design: &[select::DRib],
+        ratio: f64,
+    ) {
+        let Some(p) = self.ctl.progress else { return };
+        let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        p(&PlanEvent::Rib(RibEvent {
+            change: RibChange::Added,
+            id: rib.id,
+            points: rib.chain.iter().map(|&v| pos[v as usize]).collect(),
+            heights: rib.heights(),
+            ribs: design.len(),
+            rib_volume_mm3: select::network_volume(pos, design),
+            compliance: 0.0,
+            stiffness_factor: 1.0,
+            frequency_factor: Some(ratio),
             fraction: *last,
         }));
     }
@@ -574,12 +731,16 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     };
     let started = Instant::now();
     check(req)?;
+    if matches!(req.goal, Goal::Frequency { .. }) {
+        return frequency::plan(req, &rep, started);
+    }
     let mut stats = PlanStats {
         input_triangles: req.mesh.triangles.len(),
         ..PlanStats::default()
     };
     let rules = &req.rules;
-    let s0 = surface::Surface::new(&req.mesh, rules.clearance.as_deref());
+    let mut s0 = surface::Surface::new(&req.mesh, rules.clearance.as_deref());
+    s0.creases = req.options.creases;
     let cases0 = if req.load_cases.is_empty() {
         vec![vec![ShellLoad::Pressure {
             triangles: (0..req.mesh.triangles.len() as u32).collect(),
@@ -596,7 +757,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         req.mesh.clone(),
         req.material,
         &holds0,
-        ShellOptions::default(),
+        req.options.shell(),
     )?;
     rep.stage(PlanStage::BareSolve, 0.0);
     // One thread, as every planning model: the answer then does not depend
@@ -620,6 +781,12 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             bare,
             ribbed: bare,
             stiffness_factor: 1.0,
+            case_factors: vec![1.0; bare0.len()],
+            case_deflection_mm: bare0
+                .iter()
+                .map(|r| [r.max_deflection, r.max_deflection])
+                .collect(),
+            worst_trace: Vec::new(),
             goal_met: false,
             thickening: None,
             grid: None,
@@ -628,6 +795,17 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             loose_ends: Vec::new(),
             mesh: req.mesh.clone(),
             stats,
+            vents: req.vent.then_some(Venting {
+                size_mm: RESIN_VENT_MM,
+                factor_before: 1.0,
+                factor_after: 1.0,
+                pockets: Vec::new(),
+                unvented: Vec::new(),
+                note: None,
+            }),
+            frequency_hz: None,
+            frequency_factor: None,
+            notes: Vec::new(),
         }
     };
     if rep.cancelled() {
@@ -637,7 +815,22 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     // 2. The field.
     let t = Instant::now();
     rep.stage(PlanStage::Field, 0.0);
-    let field = field::Field::new(&s0, &bare0, req.options.field_alpha);
+    let bare0_c: Vec<f64> = bare0.iter().map(|r| r.compliance).collect();
+    let field = field::Field::new(
+        &s0,
+        &bare0,
+        req.options.field_alpha,
+        // Worst-case ignores weights, so a heavier load does not own the
+        // directions. Empty weights are all 1; one case stays at scale 1.
+        &field::energy_scales(
+            if req.combine == LoadCombine::Worst {
+                &[]
+            } else {
+                &req.case_weights
+            },
+            &bare0_c,
+        ),
+    );
     let zones = restrictions(&s0, &req.zones, req.hole_rim_margin, rules.min_height);
     let blocked0 = zones.blocked.clone();
     stats.seconds.field = t.elapsed().as_secs_f64();
@@ -764,11 +957,17 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 mesh1.clone(),
                 req.material,
                 &holds1,
-                ShellOptions::default(),
+                req.options.shell(),
             )
         })
         .collect::<Result<_, _>>()?;
-    let mut ev = select::Evaluator::new(models, cases1.clone(), rules.side);
+    let mut ev = select::Evaluator::new(
+        models,
+        cases1.clone(),
+        rules.side,
+        req.case_weights.clone(),
+        select::Mix::unbound(req.combine, req.options.worst_p),
+    );
     let loose_input = loose::Input {
         req,
         s0: &s0,
@@ -783,7 +982,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     // stiffer than it is. When the clean solve misses a stiffness or
     // deflection goal the selection reached, selection runs again with the
     // target moved by the gap (two more times at most).
-    let (outcome, closed, clean, goal_met) = loop {
+    let (outcome, mut closed, mut clean, mut goal_met) = loop {
         let outcome = select::run(&mut ev, &ctx, &cands, &rep)?;
         stats.seconds.select += outcome.seconds[0];
         stats.seconds.connect += outcome.seconds[1];
@@ -806,6 +1005,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 ribs,
                 outcome.floor,
                 outcome.bare.compliance,
+                &outcome.mix,
                 &rep,
             )?
         } else {
@@ -824,6 +1024,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 &closed.ribs,
                 ctx.goal,
                 outcome.floor,
+                &outcome.mix,
                 workers,
                 &rep,
             )?;
@@ -834,12 +1035,14 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         }
         let clean = clean_solve(req, &s0, &cases0, &closed.ribs)?;
         stats.solves += 2;
-        let factor = clean.bare.compliance / clean.ribbed.compliance;
+        let factor = clean.factor;
         let met = match req.goal {
             Goal::Stiffer(f) => factor >= f,
             Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
             Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
             Goal::Balanced => outcome.goal_met,
+            // A frequency plan returns before selection.
+            Goal::Frequency { .. } => false,
         };
         // A budget is kept by the clean count too: the ribs cut into the
         // input mesh run through vertices snapped within a tenth of an edge,
@@ -877,6 +1080,83 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     stats.seconds.solver = ev.seconds;
     stats.loose_ends = closed.stats;
 
+    // Resin: the reported solve is the notched ribs. The selection above is
+    // the unnotched one, so filament and moulded (vent left false) are unchanged.
+    let vents = if req.vent {
+        let before = clean.factor;
+        let build = crate::units::normalize(req.build_axis).unwrap_or([0.0, 0.0, 1.0]);
+        // A loose end is not a drain. An open border and a through hole are.
+        let generated = if req.borders.is_empty() { rising_borders(&s0, req.rising_border) } else { Vec::new() };
+        let border_lines: &[(Vec<[f64; 3]>, vents::BorderKind)] = if req.borders.is_empty() { &generated } else { &req.borders };
+        let border_runs: Vec<vents::BorderRun<'_>> = border_lines
+            .iter()
+            .map(|(pts, kind)| vents::BorderRun { points: pts, kind: *kind })
+            .collect();
+        let mut found = match vents::opening_of(&req.mesh, req.rules.side) {
+            Some(opening) => vents::find(&closed.ribs, &[], &border_runs, opening, build),
+            None => vents::VentPockets {
+                cups: false,
+                closed: 0,
+                size_mm: RESIN_VENT_MM,
+                pockets: Vec::new(),
+                unvented: Vec::new(),
+                note: None,
+            },
+        };
+        let (after, pockets) = if found.pockets.is_empty() {
+            (before, found.pockets)
+        } else {
+            let loose_pts: Vec<([f64; 3], LooseEndReason)> = closed
+                .loose
+                .iter()
+                .map(|&(rib, end, reason)| {
+                    let pts = &closed.ribs[rib].points;
+                    let p = if end == 0 { pts[0] } else { *pts.last().expect("rib points") };
+                    (p, reason)
+                })
+                .collect();
+            let mut cut = vents::notch(&closed.ribs, &found.pockets);
+            vents::seat_gaps(&s0, &mut cut.ribs, &cut.pairs, &mut cut.pockets);
+            found.unvented.extend(cut.refused);
+            let pockets = cut.pockets;
+            let notched = cut.ribs;
+            closed.loose = remap_loose(&loose_pts, &notched);
+            closed.ribs = notched;
+            clean = clean_solve(req, &s0, &cases0, &closed.ribs)?;
+            stats.solves += 2;
+            goal_met = match req.goal {
+                Goal::Stiffer(f) => clean.factor >= f,
+                Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
+                Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
+                Goal::Balanced => goal_met,
+                // A frequency plan returns before the vent block.
+                Goal::Frequency { .. } => false,
+            };
+            // pocket.rib indexes the ribs this plan returns. A piece that did not embed is named, not dropped.
+            let mut placed = Vec::new();
+            for p in pockets {
+                match clean.kept.iter().position(|&i| i == p.rib) {
+                    Some(rib) => placed.push(vents::VentPocket { rib, at: p.at, size_mm: p.size_mm }),
+                    None => found.unvented.push(vents::VentUnvented {
+                        at: p.at,
+                        message: "the notched rib is not in the plan".to_string(),
+                    }),
+                }
+            }
+            (clean.factor, placed)
+        };
+        Some(Venting {
+            size_mm: found.size_mm,
+            factor_before: before,
+            factor_after: after,
+            pockets,
+            unvented: found.unvented,
+            note: found.note,
+        })
+    } else {
+        None
+    };
+
     let bare = clean.bare;
     let ribbed = clean.ribbed;
     let rib_volume = clean.volume;
@@ -901,6 +1181,17 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             }
         }
         let length = points.windows(2).map(|w| norm(sub(w[1], w[0]))).sum();
+        let mut ends = clean.ends[k];
+        if let Some(v) = &vents {
+            for pocket in &v.pockets {
+                if norm(sub(points[0], pocket.at)) < 1.0 {
+                    ends[0] = RibEndKind::Gap;
+                }
+                if norm(sub(*points.last().expect("points"), pocket.at)) < 1.0 {
+                    ends[1] = RibEndKind::Gap;
+                }
+            }
+        }
         ribs.push(PlannedRib {
             vertices: d.chain.clone(),
             points,
@@ -914,7 +1205,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 .map(|&h| d.profile.section_at(d.width, h))
                 .collect(),
             side: rules.side,
-            ends: clean.ends[k],
+            ends,
             family: d.family,
             length_mm: length,
             volume_mm3: d.volume(&clean.pos),
@@ -926,7 +1217,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             },
         });
     }
-    let stiffness_factor = bare.compliance / ribbed.compliance;
+    let stiffness_factor = clean.factor;
 
     // 6. Baselines, on the clean solve's footing.
     let t = Instant::now();
@@ -942,7 +1233,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 material: req.material,
                 holds: &req.holds,
                 cases: &cases0,
-                target: ribbed.compliance,
+                mix: &clean.mix,
+                target: clean.target,
                 tolerance: req.options.simplify_tolerance,
                 rep: &rep,
             };
@@ -954,8 +1246,11 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                         req.material,
                         &clean.holds,
                         &clean.cases,
-                        bare.compliance,
-                        ribbed.compliance,
+                        &baseline::ThickeningGoal {
+                            mix: &clean.mix,
+                            bare: clean.bare_objective,
+                            target: clean.target,
+                        },
                         &rep,
                     )
                 },
@@ -984,12 +1279,16 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     };
     stats.seconds.total = started.elapsed().as_secs_f64();
     rep.stage(PlanStage::Done, 1.0);
+    let notes = draft_lost_notes(&ribs);
     Ok(RibPlan {
         ribs,
         rib_volume_mm3: rib_volume,
         bare,
         ribbed,
         stiffness_factor,
+        case_factors: clean.case_factors,
+        case_deflection_mm: clean.case_deflection_mm,
+        worst_trace: outcome.worst_trace,
         goal_met: goal_met && !stopped,
         thickening,
         grid,
@@ -998,7 +1297,67 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         loose_ends,
         mesh: clean.mesh,
         stats,
+        vents,
+        frequency_hz: None,
+        frequency_factor: None,
+        notes,
     })
+}
+
+/// The outer boundary, when a side wall stands on it. A shorter loop of this mesh is an opening
+/// through it. A standing wall is not an opening: the panel and MCP send its outline in
+/// `req.borders` as a rising border, and this fallback is not used then.
+fn rising_borders(s0: &surface::Surface, rising: bool) -> Vec<(Vec<[f64; 3]>, vents::BorderKind)> {
+    if !rising {
+        return Vec::new();
+    }
+    let loops = s0.boundary_loops();
+    let longest = loops.iter().enumerate().max_by_key(|(_, loop_ix)| loop_ix.len()).map(|(i, _)| i);
+    loops
+        .into_iter()
+        .enumerate()
+        .map(|(i, loop_ix)| {
+            let mut pts: Vec<[f64; 3]> = loop_ix.iter().map(|&v| s0.pos[v as usize]).collect();
+            if let Some(first) = pts.first().copied() {
+                pts.push(first);
+            }
+            let kind = if Some(i) == longest { vents::BorderKind::Rises } else { vents::BorderKind::Hole };
+            (pts, kind)
+        })
+        .collect()
+}
+
+/// Loose ends survive a notch when their point is still a rib end. A gap's new ends are not loose ends.
+fn remap_loose(points: &[([f64; 3], LooseEndReason)], ribs: &[GRib]) -> Vec<(usize, usize, LooseEndReason)> {
+    let mut out = Vec::new();
+    for &(point, reason) in points {
+        for (i, rib) in ribs.iter().enumerate() {
+            if rib.points.len() < 2 {
+                continue;
+            }
+            if norm(sub(rib.points[0], point)) < 0.2 {
+                out.push((i, 0, reason));
+            }
+            if norm(sub(*rib.points.last().expect("rib points"), point)) < 0.2 {
+                out.push((i, 1, reason));
+            }
+        }
+    }
+    out
+}
+
+/// The draft-lost sentence, when any drafted stretch was built straight
+/// because its top closed. Empty otherwise, so a plan that keeps its
+/// draft stays as it was.
+pub(crate) fn draft_lost_notes(ribs: &[PlannedRib]) -> Vec<String> {
+    if ribs
+        .iter()
+        .any(|rib| rib.profile.loses_draft(rib.width, &rib.heights))
+    {
+        vec![DRAFT_LOST_NOTE.to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// A chosen rib by its geometry: points on the mid-surface and the height
@@ -1084,6 +1443,7 @@ fn resize(
     ribs: &[GRib],
     goal: Goal,
     floor: f64,
+    mix: &select::Mix,
     workers: usize,
     rep: &Reporter,
 ) -> Result<(Vec<GRib>, usize, bool), SimError> {
@@ -1094,9 +1454,15 @@ fn resize(
     let mesh = s.to_mesh();
     let models: Vec<ShellModel> = (0..workers)
         .into_par_iter()
-        .map(|_| ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default()))
+        .map(|_| ShellModel::new(mesh.clone(), req.material, &holds, req.options.shell()))
         .collect::<Result<_, _>>()?;
-    let mut ev = select::Evaluator::new(models, cases, req.rules.side);
+    let mut ev = select::Evaluator::new(
+        models,
+        cases,
+        req.rules.side,
+        req.case_weights.clone(),
+        mix.clone(),
+    );
     let bare = ev.eval(&[])?;
     let cur = ev.eval(&design)?;
     let ctx = select::Ctx {
@@ -1182,6 +1548,14 @@ struct Clean {
     ribbed: Response,
     eval: select::Eval,
     volume: f64,
+    /// Scales from this mesh's bare compliances.
+    mix: select::Mix,
+    /// Bare and ribbed objective (`mix.of`), the target the baselines match.
+    bare_objective: f64,
+    target: f64,
+    factor: f64,
+    case_factors: Vec<f64>,
+    case_deflection_mm: Vec<[f64; 2]>,
 }
 
 fn clean_solve(
@@ -1194,21 +1568,41 @@ fn clean_solve(
     let holds = resolve_holds(&s, &req.holds);
     let cases = remap_cases(&s, cases0, req.mesh.triangles.len());
     let mesh = s.to_mesh();
-    let mut model = ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default())?;
+    let mut model = ShellModel::new(mesh.clone(), req.material, &holds, req.options.shell())?;
     model.set_threads(1);
     let bare = model.solve_cases(&cases)?;
-    let eval = select::evaluate(&mut model, &cases, req.rules.side, &design)?;
+    let bare_cs: Vec<f64> = bare.iter().map(|r| r.compliance).collect();
+    let mix = select::Mix::from_bare(
+        &req.case_weights,
+        &bare_cs,
+        req.combine,
+        req.options.worst_p,
+    );
+    let eval = select::evaluate(&mut model, &cases, req.rules.side, &design, &mix)?;
+    let rib_cs: Vec<f64> = eval.results.iter().map(|r| r.compliance).collect();
     let volume = select::network_volume(&s.pos, &design);
     let ends = rib_ends(&s, &held_flags(&holds, s.pos.len()), &design);
+    let bare_sum: f64 = bare_cs.iter().copied().sum();
+    let rib_sum: f64 = rib_cs.iter().copied().sum();
     Ok(Clean {
         bare: Response {
-            compliance: bare.iter().map(|r| r.compliance).sum(),
+            compliance: bare_sum,
             max_deflection: bare.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
         },
         ribbed: Response {
-            compliance: eval.compliance,
+            compliance: rib_sum,
             max_deflection: eval.max_deflection,
         },
+        mix: mix.clone(),
+        bare_objective: mix.of(&bare_cs),
+        target: mix.of(&rib_cs),
+        factor: mix.factor(&bare_cs, &rib_cs),
+        case_factors: select::Mix::case_factors(&bare_cs, &rib_cs),
+        case_deflection_mm: bare
+            .iter()
+            .zip(&eval.results)
+            .map(|(b, r)| [b.max_deflection, r.max_deflection])
+            .collect(),
         mesh,
         pos: s.pos,
         holds,
@@ -1272,6 +1666,34 @@ fn check(req: &RibPlanRequest) -> Result<(), SimError> {
     {
         return Err(SimError::new("The hole rim margin must not be below zero."));
     }
+    let n_cases = if req.load_cases.is_empty() {
+        1
+    } else {
+        req.load_cases.len()
+    };
+    if !req.case_weights.is_empty() && req.case_weights.len() != n_cases {
+        return Err(SimError::new(
+            "Each load case needs one weight, or none (every case weighs 1).",
+        ));
+    }
+    if req
+        .case_weights
+        .iter()
+        .any(|w| !(w.is_finite() && *w > 0.0))
+    {
+        return Err(SimError::new("A load-case weight must be above zero."));
+    }
+    if req.combine == LoadCombine::Worst && !req.case_weights.is_empty() {
+        return Err(SimError::new(
+            "Worst-case mode does not take load-case weights.",
+        ));
+    }
+    if req.combine == LoadCombine::Worst {
+        let p = req.options.worst_p;
+        if !(p.is_finite() && p >= 1.0) {
+            return Err(SimError::new("The worst-case exponent must be 1 or more."));
+        }
+    }
     match req.goal {
         Goal::Stiffer(f) if !(f.is_finite() && f >= 1.0) => {
             Err(SimError::new("A stiffness goal must be 1 or more."))
@@ -1281,6 +1703,17 @@ fn check(req: &RibPlanRequest) -> Result<(), SimError> {
         }
         Goal::Budget { volume_mm3 } if !(volume_mm3.is_finite() && volume_mm3 >= 0.0) => {
             Err(SimError::new("A budget must not be below zero."))
+        }
+        Goal::Frequency { factor } => {
+            if !(factor.is_finite() && factor >= 1.0) {
+                return Err(SimError::new("A frequency goal must be 1 or more."));
+            }
+            match req.material.density {
+                Some(d) if d.is_finite() && d > 0.0 => Ok(()),
+                _ => Err(SimError::new(
+                    "A frequency goal needs the material's density.",
+                )),
+            }
         }
         _ => Ok(()),
     }

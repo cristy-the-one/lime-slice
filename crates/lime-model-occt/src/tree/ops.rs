@@ -292,6 +292,22 @@ pub struct FaceMove {
     pub distance: f64,
 }
 
+/// The plane a draft leaves fixed: a face of the solid, or an origin and a normal.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Neutral {
+    Face(FacePick),
+    Plane { origin: [f64; 3], normal: [f64; 3] },
+}
+
+fn pull_z() -> [f64; 3] {
+    [0.0, 0.0, 1.0]
+}
+
+fn pull_is_z(pull: &[f64; 3]) -> bool {
+    pull[0].abs() < 1e-12 && pull[1].abs() < 1e-12 && (pull[2] - 1.0).abs() < 1e-12
+}
+
 fn draft_unset(value: &f64) -> bool {
     *value == 0.0
 }
@@ -580,6 +596,17 @@ pub enum Op {
     },
     /// Faces offset along their outward normals. Neighbours extend or trim; the other faces stay put.
     MoveFaces { faces: Vec<FaceMove> },
+    /// The faces tilted by `angle_deg`. Positive opens them toward `pull`, so a box drafted about its bottom
+    /// shrinks at the top. `pull` defaults to +Z. Absent `neutral` is the plane through the lowest point of the
+    /// picked faces along `pull`, with that pull as its normal.
+    Draft {
+        faces: Vec<FacePick>,
+        angle_deg: f64,
+        #[serde(default = "pull_z", skip_serializing_if = "pull_is_z")]
+        pull: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        neutral: Option<Neutral>,
+    },
     // --- Split to print (docs/plan-split-connectors.md, D1). Keep this variant, and the arms marked the same way, in
     // one block. ---
     /// The solid cut along every plane at once. The node keeps the first piece in partition order; the others are

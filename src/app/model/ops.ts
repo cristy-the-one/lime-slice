@@ -6,6 +6,7 @@ import { isFeatureTool } from "../../model-features";
 import { isRepeatTool } from "../../model-repeat";
 import { type ModelOp, type Vec3 } from "../../model-tree";
 import { moveFacesOp, shellOp, stepEdges } from "../../model-request";
+import { draftPanelOp } from "../../model-edit";
 import {
   fieldPrimitive,
   holeBoxes,
@@ -149,6 +150,11 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const prism = S.editing?.op.kind === "faceExtrude" ? S.editing.op : null;
       if (prism && faces.length === 1) return { ...prism, face: faces[0]!.index, distance };
       return moveFacesOp(faces.map((pick) => ({ face: pick.index, distance })));
+    }
+    case "draft": {
+      // Model space, as the fields show it; `toolOp` turns it into the solid's frame. An edited step keeps its neutral.
+      const raw: Vec3 = [num("#modelDraftPullX"), num("#modelDraftPullY"), num("#modelDraftPullZ")];
+      return draftPanelOp(selectedFaces(S.picks), num("#modelDraft"), raw, S.editing?.op, openPose());
     }
     default:
       return null;

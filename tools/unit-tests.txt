@@ -193,6 +193,7 @@ src/sim/study-mesh.test.ts
 src/sim/stress-cells.test.ts
 src/sim/paint-mesh.test.ts
 mcp/load-place.test.ts
+mcp/ribs-load-request.test.ts
 mcp/numbers.test.ts
 mcp/render.test.ts
 mcp/native-load.test.ts
@@ -253,7 +254,10 @@ src/modeling/mesh-step.test.ts
 src/modeling/rib-net.test.ts
 src/modeling/rib-wall.test.ts
 src/modeling/rib-wall-features.test.ts
+src/modeling/rib-wall-folded.test.ts
 src/modeling/auto-ribs.test.ts
+src/modeling/moulding.test.ts
+src/modeling/vents.test.ts
 src/modeling/step-guard.test.ts
 src/auto-ribs.test.ts
 src/auto-ribs-plan.test.ts

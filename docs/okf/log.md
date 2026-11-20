@@ -1,5 +1,9 @@
 # Directory Update Log
 
+## 2026-11-20
+
+* **Update**: [Sketching and features](modeler/sketching.md) gains the `draft` op from `feature/ribs-next`. [Simulation](stress/simulation.md) gains the auto ribs additions (load cases, folded walls, moulding checks), and [Tool catalog](mcp/tools.md) gains `ribs_plan` and `ribs_apply`. New sources point at the `feature/ribs-next` branch, not a commit, because the facts land with that branch's close-out; pin them to the merge commit once it reaches main. The rest of the bundle still describes 4.2.0.
+
 ## 2026-10-29
 
 * **Update**: [Test and CI](build/test-and-ci.md) gains "Target crashed" in a probe: the reported Split to print crash was a test-harness kill. It also covers the new real-kernel split spec in `test:engine`.

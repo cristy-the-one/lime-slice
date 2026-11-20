@@ -67,6 +67,7 @@ export function modelApplyReady(
   if (isRepeatTool(tool)) return probeOk;
   // --- A2 shell: a closed void needs no face. Apply waits on the dry-run, as a hole does. ---
   if (tool === "shell") return probeOk;
+  if (tool === "draft") return picks.some((pick) => pick.kind === "face") && probeOk;
   return (tool === "boolean" || tool === "hole") && probeOk;
 }
 

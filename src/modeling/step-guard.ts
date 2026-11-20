@@ -10,7 +10,7 @@ import { edgeReport, nonManifoldSegments, type EdgeReport, type Vec3 } from "../
 type Box = { min: Vec3 | number[]; max: Vec3 | number[] };
 
 /** Kinds that remove on purpose and may leave little: a shell hollows, a split or a common keeps part, a scale shrinks. */
-const MAY_SHRINK = new Set(["shell", "split", "scale", "root"]);
+const MAY_SHRINK = new Set(["shell", "split", "scale", "root", "draft"]);
 const ADDS = new Set(["boolean", "join", "extrude", "revolve", "loft", "sweep"]);
 
 const mm3 = (value: number) => `${Math.round(value * 10) / 10} mm³`;

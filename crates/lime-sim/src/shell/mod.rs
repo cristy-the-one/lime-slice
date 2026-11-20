@@ -22,12 +22,14 @@
 //!   done once per model; a rib change re-runs only the numeric factor
 //!   ([`ShellModel`]).
 //!
-//! Units: mm, N, MPa. Linear statics only.
+//! Units: mm, N, MPa. Linear statics, and the lowest natural frequencies
+//! ([`modes`]).
 
 mod beam;
 mod geometry;
 mod membrane;
 mod model;
+pub(crate) mod modes;
 pub mod planner;
 mod plate;
 pub mod rib_section;
@@ -41,6 +43,7 @@ pub use model::{
     ElementResult, LoadCase, Rib, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel,
     ShellOptions, ShellResult, Timings, DRILL_PENALTY,
 };
+pub use modes::{cluster_count, lower_generalized, ModeSet, ShellMode, CLUSTER_GAP};
 pub use rib_section::{RibSection, SectionProperties};
 pub use section::{IsotropicShell, Mat3, ShellSection};
 pub use tensor::Principal;

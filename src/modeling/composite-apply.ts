@@ -280,14 +280,14 @@ export async function runCombined(raw: Record<string, unknown>, port: CombinedPo
   }
   const count = steps.length;
   const combine = combineOf(steps);
-  if (typeof combine !== "string") return { refused: combine };
+  if (combine !== null && typeof combine !== "string") return { refused: combine };
   let source: unknown = raw;
   try {
     source = JSON.parse(JSON.stringify(raw)) as unknown;
   } catch {
     source = raw;
   }
-  const group: GroupOp = { kind: "group", label: compositeGroupLabel(raw, label), source, steps: port.linked ? port.linked(steps) : steps, combine };
+  const group: GroupOp = { kind: "group", label: compositeGroupLabel(raw, label), source, steps: port.linked ? port.linked(steps) : steps, ...(combine ? { combine } : {}) };
   const before = port.current();
   const prior = port.solid();
   const { probed, done } = await port.probeApply({ op: group, typed: cleanOp(raw) }, Math.max(port.budgetMs, count * 250));
@@ -301,10 +301,16 @@ export async function runCombined(raw: Record<string, unknown>, port: CombinedPo
   };
   const report = (done.combined ?? {}) as { failed?: { index: number; reason: string }[]; missed?: number[] };
   const left = report.failed?.[0];
-  if (left) return refuse({ reason: net ? `Run ${left.index + 1} of ${count} (path ${net.stepPath[left.index] ?? "?"}): ${left.reason}` : `Copy ${left.index + 1} of ${count}: ${left.reason}`, step: left.index + 1, of: count, failedStep: left.index + 1 });
+  if (left) {
+    const reason = net
+      ? `Run ${left.index + 1} of ${net.steps.length} (path ${net.stepPath[left.index] ?? "?"}): ${left.reason}`
+      : `Copy ${left.index + 1} of ${count}: ${left.reason}`;
+    return refuse({ reason, step: left.index + 1, of: count, failedStep: left.index + 1 });
+  }
   const after = port.solid();
   if (prior && after) {
-    const lost = lostVolume({ kind: "boolean", op: combine }, prior.volumeMm3, after.volumeMm3, null);
+    // With a notch the group is fuses then cuts. The part must still be there: a fuse that drops the solid is refused.
+    const lost = lostVolume({ kind: "boolean", op: combine! }, prior.volumeMm3, after.volumeMm3, null);
     if (lost) return refuse({ reason: lost });
     if (net) {
       // The outside must be as it was: every guard ray meets the part where it did, and the part grew only rib-side.

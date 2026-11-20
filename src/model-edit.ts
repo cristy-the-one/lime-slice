@@ -14,7 +14,8 @@ import type { BoreShape } from "./model-gear.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
-import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { draftOp } from "./model-request.ts";
+import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, type DraftOp, type JoinOp,childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 import { isSketchHoleGroup, sketchHolePanel } from "./sketch/holes.ts";
 
 /**
@@ -343,6 +344,27 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
   return op.exprs && Object.keys(op.exprs).length > 0 ? { ...panel, exprs: { ...op.exprs } } : panel;
 }
 
+/**
+ * The Draft panel's op in model space, from its angle and pull fields: `toSolidOp` at the part's pose stores it. When
+ * the panel is editing a draft step (`editing`, as stored, in the solid's frame), the neutral it has no field for is
+ * kept, carried into model space the same way, so an untouched edit sends the stored op again. Null when it cannot run.
+ */
+export function draftPanelOp(
+  faces: readonly (number | FaceRef)[],
+  angleDeg: number,
+  rawPull: Vec3,
+  editing: ModelOp | null | undefined,
+  pose: Affine,
+): DraftOp | null {
+  if (faces.length === 0 || !Number.isFinite(angleDeg) || angleDeg === 0 || angleDeg < -30 || angleDeg > 30) return null;
+  const length = Math.hypot(rawPull[0], rawPull[1], rawPull[2]);
+  if (!(length > 1e-9)) return null;
+  const pull: Vec3 = [rawPull[0] / length, rawPull[1] / length, rawPull[2] / length];
+  const defaultPull = Math.abs(pull[0]) < 1e-9 && Math.abs(pull[1]) < 1e-9 && pull[2] > 0.999;
+  const neutral = editing?.kind === "draft" && editing.neutral !== undefined ? (fromSolidOp(editing, pose) as DraftOp).neutral : undefined;
+  return draftOp(faces, angleDeg, { ...(defaultPull ? {} : { pull }), ...(neutral !== undefined ? { neutral } : {}) });
+}
+
 /** The panel's choices that are not numbers: a polygon's Flats or Corners, a gear's bore shape. */
 function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack"> {
   if (spec.primitive === "polygon") return { flats: spec.flats ?? false };
@@ -413,6 +435,20 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
       return { tool: "pushpull", fields: { modelPull: op.distance }, faces: [op.face] };
     case "moveFaces":
       return { tool: "pushpull", fields: { modelPull: op.faces[0]?.distance ?? 0 }, faces: op.faces.map((row) => row.face) };
+    case "draft": {
+      // The pull is a direction in the solid's frame: the panel shows it in model space, as every other case does.
+      const placed = fromSolidOp(op, pose) as typeof op;
+      return {
+        tool: "draft",
+        fields: {
+          modelDraft: placed.angleDeg,
+          modelDraftPullX: placed.pull?.[0] ?? 0,
+          modelDraftPullY: placed.pull?.[1] ?? 0,
+          modelDraftPullZ: placed.pull?.[2] ?? 1,
+        },
+        faces: op.faces,
+      };
+    }
     case "extrude":
     case "revolve":
     case "loft":

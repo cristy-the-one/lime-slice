@@ -4,23 +4,28 @@
  * there is a plan to apply, then Apply; Enter presses it, Esc stops a running plan or ends a pick before it closes.
  *
  * 1. Wall: a click takes the face and its smooth continuations (`wallFaces`); a taken face clicked again comes off;
- *    "Just this face" takes clicks alone. Hovering shows what a click would take.
+ *    "Just this face" takes clicks alone. "Include side walls (folded)" is off unless checked, and then a thin face
+ *    across a sharp edge joins the wall. Hovering shows what a click would take.
  * 2. Plan: a background job (src/auto-ribs-plan.ts): the stage and a bar that never goes back, each rib drawn on the wall
  *    as it is chosen, the running totals, Stop for the plan so far.
  * 3. The plan: gain and cost, the goal not met, the comparisons, the relative note; a rib list to light or take out.
+ *    Process moulded also lists moulding flags under the result. Filament and resin do not.
  * 4. Apply: one History row, then what it measured and the print check before and after.
  * Optional, folded: How much, Hold and load (the Stress panel's controls), Keep clear (zones, each a place), Ribs.
  *
  * State and sentences: src/auto-ribs.ts. The app side (solid, worker, apply, picks): src/app/model/auto-ribs.ts.
  */
 import { Check, X, createElement } from "lucide";
+import type { Affine } from "../model-space.ts";
 import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
-import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
+import { plateToWall, ventBodyOf, ventLoopsOf } from "../modeling/vents.ts";
+import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSpan, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
+import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
 import type { StudyHold, StudyLoad } from "../sim/study.ts";
-import { stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
+import { planOptions, stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
 import {
   AUTO_RIBS_LABEL,
   AUTO_RIBS_TITLE,
@@ -37,8 +42,19 @@ import {
   comparisonLines,
   editedNote,
   fmt,
+  caseResultLines,
   goalLine,
+  engineMaterial,
+  fallbackHzNote,
+  frequencyAside,
+  ignoredLoadNote,
+  frequencyFactorAt,
+  FREQUENCY_STOPS,
+  loadRequest,
+  caseNames,
+  freeCaseName,
   looseLine,
+  MAX_LOAD_CASES,
   goalOf,
   grams,
   idleRun,
@@ -46,6 +62,7 @@ import {
   measuredLine,
   newAutoRibsCard,
   newZone,
+  type PanelLoadCase,
   notOnWallLines,
   resultNumbers,
   ribBox,
@@ -98,8 +115,10 @@ export interface AutoRibsHost {
   densityGCm3(): number;
   nozzleMm(): number;
   printerName(): string;
-  /** The printer's build direction in the panel's frame. */
+  /** The printer's build direction in the panel's frame. Filament flanges use it. Resin vents do not. */
   build(): V3;
+  /** The plate orientation and the part's pose, so a resin build axis turns the same way for the panel and ribs_plan. */
+  plate(): { orient: readonly number[]; pose: Affine };
   /** The object's Stress setup, when it has one. */
   stress(): { holds: StudyHold[]; loads: StudyLoad[] } | null;
   /** Other objects on the plate, for an obstacle. */
@@ -116,14 +135,14 @@ export interface AutoRibsHost {
   /** Face picking on (the card takes clicks) or off. */
   pickFaces(): void;
   /** The shell model's material card for the selected filament (shared with ribs_plan), with the sentence naming it. */
-  material(): { e: number; nu: number; note: string } | null;
+  material(): { e: number; nu: number; densityGCm3?: number; name?: string; note: string; forFilament?: boolean; card?: string; polymer?: string } | null;
   /** Whether the Stress check can run here: the desktop's study solve. */
   stressAvailable(): boolean;
   /** The sliced Stress study before and after the ribs, opt-in after Apply. */
-  stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { reason: string }>;
+  stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[]; cases?: { name: string; loads: StudyLoad[] }[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { cases: { name: string; before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } }[] } | { reason: string }>;
 }
 
-type Pick = { kind: "wall" } | { kind: "zoneFaces"; zone: number } | { kind: "hold" } | { kind: "load" } | { kind: "place"; shape: ZoneShape["kind"] };
+type Pick = { kind: "wall" } | { kind: "zoneFaces"; zone: number } | { kind: "hold" } | { kind: "load"; case?: number } | { kind: "place"; shape: ZoneShape["kind"] };
 
 interface WallRead {
   /** What was asked, so a stale read is known. */
@@ -139,8 +158,12 @@ interface WallRead {
 
 /** The material card the last plan was solved with, in a sentence. */
 let materialNote = "";
+/** A missed load a frequency plan ignored, named. Empty when none was given or none missed. */
+let ignoredLoads = "";
+/** Beside the Hz when the shell used the default card. Empty on a stiffness plan and on the filament's own card. */
+let hzCard = "";
 /** The joined faces and the wall the last plan stood on: what the Stress check holds and presses by default. */
-let lastSetup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] } | null = null;
+let lastSetup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[]; cases?: { name: string; loads: StudyLoad[] }[] } | null = null;
 /** The opt-in Stress check after Apply: not run, running (its line), done (its lines) or refused. */
 let stressRun: { phase: "running"; text: string } | { phase: "done"; lines: string[] } | { phase: "failed"; text: string } | null = null;
 
@@ -171,12 +194,16 @@ let faceRibs: FaceRib[] = [];
 let liveDrawn = new Map<number, DrawnRib>();
 
 /** The run's request and the read it came from: what the plan answers. */
-let ranWith: { key: string; goal: PlanGoal; body: RibPlanBody; wall: RibWall; solid: AutoRibsSolid } | null = null;
+let ranWith: { key: string; goal: PlanGoal; body: RibPlanBody; wall: RibWall; solid: AutoRibsSolid; caseNames: string[] | null; process: RibProcess } | null = null;
+/** Tests set the build axis the resin plan uses. Absent: the part as it sits. */
+let buildOverride: V3 | null = null;
 let balancedFactor: number | null = null;
 let edit: { head: string } | null = null;
 let applying = false;
 let applied: Applied | null = null;
 let liftQueue = new Set<number>();
+/** The case list last drawn, so typing a name or a weight does not rebuild it and drop the cursor. */
+let paintedCases = "";
 let liftFrame = 0;
 let wallSurface: { wall: RibWall; surface: RibSurface } | null = null;
 
@@ -202,6 +229,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
       <p class="model-note ar-wall-line" id="autoRibsWallLine" role="status"></p>
       <div class="ar-wall-row">
         <label class="model-keep" data-tip="Take only the faces you click, not the faces that continue them smoothly"><input id="autoRibsJustThis" type="checkbox"> Just this face</label>
+        <label class="model-keep" data-tip="Also take thin faces across a sharp edge, such as a cover's side walls. Off, a sharp edge stops the wall."><input id="autoRibsFolded" type="checkbox"> Include side walls (folded)</label>
         <button class="btn ar-small" id="autoRibsWallClear" type="button" hidden>Clear</button>
       </div>
       <ul class="ar-warnings" id="autoRibsWarnings" aria-label="About the wall"></ul>
@@ -218,9 +246,17 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     </fieldset>
     <section class="ar-result" id="autoRibsResult" aria-label="The plan" hidden>
       <div class="ar-headline"><strong id="autoRibsGain"></strong><span id="autoRibsCost"></span><span class="ar-badge" id="autoRibsStopped" hidden>stopped early</span><span class="ar-badge" id="autoRibsEdited" hidden>edited</span></div>
+      <p class="model-note" id="autoRibsFrequency" hidden></p>
+      <ul class="ar-lines" id="autoRibsNotes" aria-label="Notes" hidden></ul>
+      <ul class="ar-lines" id="autoRibsCaseLines" aria-label="Each load case" hidden></ul>
       <p class="model-note" id="autoRibsStoppedLine" hidden>${STOPPED_LINE}</p>
       <p class="model-note is-warn" id="autoRibsGoal" hidden></p>
       <ul class="ar-lines" id="autoRibsCompare" aria-label="Compared with"></ul>
+      <div id="autoRibsMoulding" hidden>
+        <p class="model-note" id="autoRibsMouldingTitle">Moulding</p>
+        <ul class="ar-lines" id="autoRibsMouldingList" aria-label="Moulding"></ul>
+      </div>
+      <p class="model-note" id="autoRibsVents" hidden></p>
       <p class="model-note ar-faint" id="autoRibsRelative">${RELATIVE_NOTE}</p>
       <ul class="tc-list ar-ribs" id="autoRibsList" aria-label="Planned ribs"></ul>
       <p class="model-note is-warn" id="autoRibsEditedNote" hidden></p>
@@ -238,6 +274,10 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     </section>
     <details class="stress-more ar-more" id="autoRibsHowMuch">
       <summary>How much</summary>
+      <div class="modes ar-measure" role="group" aria-label="What to raise">
+        <button class="btn mode" type="button" data-measure="stiffness" aria-pressed="true">Stiffer</button>
+        <button class="btn mode" type="button" data-measure="frequency" aria-pressed="false">Higher frequency</button>
+      </div>
       <div class="modes ar-modes" role="group" aria-label="How much">
         <button class="btn mode" type="button" data-amount="slider" aria-pressed="true">Slider</button>
         <button class="btn mode" type="button" data-amount="stiffer" aria-pressed="false">Target</button>
@@ -246,10 +286,10 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
       </div>
       <div class="ar-slider" data-for-amount="slider">
         <input id="autoRibsSlider" type="range" min="-2" max="2" step="1" value="0" aria-label="Lightest to stiffest" aria-valuetext="Balanced" list="autoRibsStops">
-        <div class="ar-slider-ends" aria-hidden="true"><span>Lightest</span><span>Balanced</span><span>Stiffest</span></div>
+        <div class="ar-slider-ends" aria-hidden="true"><span id="autoRibsSliderLo">Lightest</span><span id="autoRibsSliderMid">Balanced</span><span id="autoRibsSliderHi">Stiffest</span></div>
         <p class="model-note ar-faint" id="autoRibsSliderNote"></p>
       </div>
-      <div class="model-fields" data-for-amount="stiffer" hidden><label data-wide><span class="scrub-label">As stiff ×</span><input id="autoRibsStiffer" type="number" step="0.1" min="1.05" value="2" aria-label="Times as stiff as the bare wall"></label></div>
+      <div class="model-fields" data-for-amount="stiffer" hidden><label data-wide><span class="scrub-label" id="autoRibsStifferLabel">As stiff ×</span><input id="autoRibsStiffer" type="number" step="0.1" min="1.05" value="2" aria-label="Times as stiff as the bare wall"></label></div>
       <div class="model-fields" data-for-amount="deflection" hidden><label data-wide><span class="scrub-label">Deflection under mm</span><input id="autoRibsDeflection" type="number" step="0.05" min="0.01" value="0.5" aria-label="Greatest deflection, millimetres"></label></div>
       <div class="model-fields" data-for-amount="budget" hidden><label data-wide><span class="scrub-label">At most g</span><input id="autoRibsBudget" type="number" step="0.5" min="0.1" value="10" aria-label="Most rib material, grams"></label></div>
     </details>
@@ -286,6 +326,8 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
           <input id="autoRibsDirZ" type="number" step="0.1" value="-1" aria-label="Direction Z">
         </div>
       </fieldset>
+      <div id="autoRibsCases" hidden></div>
+      <button class="btn ar-small" id="autoRibsAddCase" type="button">Add a load case</button>
       <ul class="ar-warnings" id="autoRibsNotOnWall" aria-label="Not on the wall"></ul>
       <button class="btn ar-small" id="autoRibsEvenPressure" type="button" aria-pressed="false" hidden data-tip="A hold or load that misses the wall is left out and the plan says so; with no load left it runs under even pressure">Plan without it</button>
     </details>
@@ -367,6 +409,7 @@ function begin(next: AutoRibsCard, note?: string) {
   job?.cancel();
   job = null;
   card = structuredClone(next);
+  paintedCases = "";
   run = idleRun();
   read = null;
   faceRibs = [];
@@ -466,8 +509,13 @@ export function autoRibsTakesPick(pick: { kind: "face" | "edge"; index: number; 
     return true;
   }
   if (picking.kind === "load") {
-    const load = card.loads[0] ?? readLoad([]);
-    card = { ...card, loads: [{ ...load, faces: toggled(load.faces, face) }] };
+    if (picking.case != null && (card.cases?.length ?? 0) >= 2) {
+      const at = picking.case;
+      card = { ...card, cases: card.cases!.map((row, i) => (i === at ? { ...row, loads: [withFace(row.loads[0] ?? freshLoad(), face)] } : row)) };
+    } else {
+      const load = card.loads[0] ?? readLoad([]);
+      card = { ...card, loads: [{ ...load, faces: toggled(load.faces, face) }] };
+    }
     changed();
     return true;
   }
@@ -495,20 +543,29 @@ function takenFaces(): number[] {
   if (read?.wall && read.key === readKey()) return read.wall.faces;
   const solid = host?.solid();
   if (!solid || card.picked.length === 0) return [];
-  return wallFaces({ positions: solid.positions, faceOf: solid.faceOf }, { picked: card.picked, grow: !card.justThis, excludeFaces: card.excluded }).faces;
+  return wallFaces({ positions: solid.positions, faceOf: solid.faceOf }, { picked: card.picked, excludeFaces: card.excluded, ...growthOptions() }).faces;
+}
+
+/** Growth for the wall read, the hover and the local face list. Folded is passed only when the box is on. */
+function growthOptions(): { grow?: false; folded?: true } {
+  return {
+    ...(card.justThis ? { grow: false } : {}),
+    ...(card.folded && !card.justThis ? { folded: true } : {}),
+  };
 }
 
 function wallOptions(): RibWallOptions | null {
   if (!host) return null;
   const zones = zoneInputs(card.zones, (id) => host!.obstacle(id));
   const minHeight = 1;
+  const asked = loadRequest(card.loads, card.cases);
   return {
     picked: card.picked,
-    ...(card.justThis ? { grow: false } : {}),
+    ...growthOptions(),
     ...(card.excluded.length ? { excludeFaces: card.excluded } : {}),
     zones: zones.inputs,
     holds: card.holds,
-    loads: card.loads,
+    ...(asked.loadCases ? { loadCases: asked.loadCases } : { loads: card.loads }),
     minRibHeightMm: minHeight,
     ...(card.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
   };
@@ -516,7 +573,7 @@ function wallOptions(): RibWallOptions | null {
 
 function readKey(): string {
   const solid = host?.solid();
-  return JSON.stringify([solid?.key ?? "", card.picked, card.excluded, card.justThis, card.zones, card.holds, card.loads, card.ifMissed]);
+  return JSON.stringify([solid?.key ?? "", card.picked, card.excluded, card.justThis, card.folded, card.zones, card.holds, card.loads, card.cases ?? null, card.ifMissed]);
 }
 
 function queueRead(wait: number) {
@@ -553,10 +610,12 @@ async function readWall() {
 
 function rulesFor(wall: RibWall): RibRulesChosen {
   const outer = wall.report.loops.reduce((most, loop) => Math.max(most, loop.lengthMm), 0);
+  const span = wallSpan(wall.request.mesh.thickness);
   return ribRules({
     process: card.ribs.process,
     nozzleMm: host?.nozzleMm() ?? 0.4,
     thicknessMm: wall.report.thickness.medianMm,
+    ...(span ? { thinnestMm: span.thin, thickestMm: span.thick } : {}),
     areaMm2: wall.report.areaMm2,
     outerLoopMm: outer,
     given: { ...(card.ribs.width != null ? { width: card.ribs.width } : {}), ...(card.ribs.height != null ? { maxHeight: card.ribs.height } : {}) },
@@ -588,18 +647,31 @@ export async function autoRibsPrimary() {
 }
 
 function planStale(): boolean {
-  return !!ranWith && (ranWith.key !== readKey() || JSON.stringify(ranWith.goal) !== JSON.stringify(currentGoal()) || JSON.stringify(ranWith.body.rules) !== JSON.stringify(bodyRules(ranWith.wall)));
+  const axis = JSON.stringify(ranWith?.body.buildAxis ?? null);
+  const now = JSON.stringify(resinAxis());
+  return !!ranWith && (ranWith.key !== readKey() || JSON.stringify(ranWith.goal) !== JSON.stringify(currentGoal()) || JSON.stringify(ranWith.body.rules) !== JSON.stringify(bodyRules(ranWith.wall)) || axis !== now);
+}
+
+/** The resin build axis in the wall frame. Plate +Z unless the test named one. Filament plans carry none. */
+function resinAxis(): V3 | null {
+  if (!host || ranWith?.process !== "resin") return null;
+  const frame = host.plate();
+  return plateToWall(frame.orient, frame.pose, buildOverride ?? [0, 0, 1]);
+}
+
+function ventLoops(wall: RibWall) {
+  return ventLoopsOf(wall);
 }
 
 function currentGoal(): PlanGoal {
-  return goalOf(card.amount, host?.densityGCm3() ?? 1.24, balancedFactor);
+  return goalOf(card.amount, host?.densityGCm3() ?? 1.24, balancedFactor, card.quantity);
 }
 
 function bodyRules(wall: RibWall): RibPlanBody["rules"] {
   const chosen = rulesFor(wall);
   const step = Math.max(1, Math.floor(wall.normals.length / 64));
   const flange = planFlange(wall.normals.filter((_, i) => i % step === 0), host?.build() ?? [0, 0, 1]).flange;
-  return { width: chosen.width, maxHeight: chosen.maxHeight, minHeight: chosen.minHeight, minSpacing: chosen.minSpacing, minLength: chosen.minLength, profile: wireProfileOf(card.ribs.profile, card.ribs.process, flange) as RibPlanBody["rules"]["profile"] };
+  return { width: chosen.width, maxHeight: chosen.maxHeight, minHeight: chosen.minHeight, minSpacing: chosen.minSpacing, minLength: chosen.minLength, profile: wireProfileOf(card.ribs.profile, card.ribs.process, flange, {}, chosen.mouldedRoot) as RibPlanBody["rules"]["profile"] };
 }
 
 async function startRun() {
@@ -618,17 +690,56 @@ async function startRun() {
     await readWall();
   }
   const solid = host.solid();
-  if (!read?.wall || !solid) {
-    if (read?.error) host.readout(read.error);
+  const goal = currentGoal();
+  // A load that misses the wall is ignored on a frequency plan. The re-read stays local: `read` keeps the refusal, so a
+  // later Stiffer run still refuses. A hold that misses is still refused.
+  let wall = read?.wall ?? null;
+  let pendingIgnored = "";
+  if (!wall && read?.missed.length && goal.kind === "frequency" && read.missed.every((row) => row.kind === "load")) {
+    const options = wallOptions();
+    if (options) {
+      const again = await host.readWall({ ...options, ifMissed: "evenPressure" });
+      if (!("reason" in again)) {
+        wall = again;
+        pendingIgnored = ignoredLoadNote(read.missed);
+      }
+    }
+  }
+  const refuseRun = (text: string) => {
+    ignoredLoads = "";
+    hzCard = "";
+    host!.readout(text);
     paint();
+  };
+  if (!wall || !solid) {
+    if (read?.error) refuseRun(read.error);
+    else {
+      ignoredLoads = "";
+      hzCard = "";
+    }
     return;
   }
-  const wall = read.wall;
-  const goal = currentGoal();
+  if (goal.kind === "frequency" && !(goal.factor >= 1)) {
+    refuseRun("A frequency goal must be 1 or more.");
+    return;
+  }
   const sent: RibPlanBody["request"] = wall.request.holds.holds.length === 0 ? { ...wall.request, holds: { kind: "allBoundary" } } : wall.request;
   const material = host.material();
+  let sentMaterial: RibPlanBody["material"] | undefined;
+  if (goal.kind === "frequency" || material) {
+    const built = engineMaterial(material ?? { e: 0, nu: 0, name: "The material" }, goal);
+    if ("reason" in built) {
+      refuseRun(built.reason);
+      return;
+    }
+    sentMaterial = built.material;
+  }
   materialNote = material?.note ?? "";
-  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0 };
+  hzCard = goal.kind === "frequency" ? fallbackHzNote(material?.forFilament === false && material.polymer && material.card ? { forFilament: false, polymer: material.polymer, id: material.card } : null) : "";
+  ignoredLoads = pendingIgnored;
+  const asked = loadRequest(card.loads, card.cases);
+  const vent = ventBodyOf(card.ribs.process, host.plate(), ventLoops(wall), buildOverride);
+  const body: RibPlanBody = { request: sent, ...(sentMaterial ? { material: sentMaterial } : {}), rules: bodyRules(wall), goal, options: planOptions(wall, true), holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}), ...vent };
 
   generation += 1;
   const mine = generation;
@@ -637,7 +748,7 @@ async function startRun() {
   faceRibs = [];
   liveDrawn = new Map();
   lit = null;
-  ranWith = { key: read.key, goal, body, wall, solid };
+  ranWith = { key: read?.key ?? "", goal, body, wall, solid, caseNames: asked.loadCases ? asked.loadCases.map((row) => row.name) : null, process: card.ribs.process };
   const source = host.source();
   const note = $<HTMLElement>("#autoRibsSourceNote");
   if (note) note.hidden = source.kind !== "stand-in";
@@ -662,7 +773,9 @@ async function startRun() {
     const built = ribsOnFace({ positions: solid.positions, faceOf: solid.faceOf }, wall, reply.plan.ribs, host.build(), body.rules.width);
     faceRibs = built.ribs;
     if (goal.kind === "balanced" && !reply.plan.stoppedEarly) balancedFactor = reply.plan.stiffnessFactor;
-    host.readout(reply.plan.ribs.length === 0 ? (reply.plan.stoppedEarly ? "Stopped before the first rib: nothing to apply." : "No rib pays on this wall under these rules.") : reply.plan.stoppedEarly ? "Stopped early. The plan so far can be applied." : "Check the plan, then Apply.");
+    const asksNothing = goal.kind === "frequency" && !(goal.factor > 1);
+    const said = reply.plan.ribs.length === 0 ? (reply.plan.stoppedEarly ? "Stopped before the first rib: nothing to apply." : asksNothing ? "×1 asks for no change." : "No rib pays on this wall under these rules.") : reply.plan.stoppedEarly ? "Stopped early. The plan so far can be applied." : "Check the plan, then Apply.";
+    host.readout(reply.plan.notes?.length ? `${said} ${reply.plan.notes.join(" ")}` : said);
   } else host.readout(reply.reason);
   paint();
 }
@@ -708,9 +821,9 @@ async function applyPlan() {
     host.readout("Every rib was taken out: there is nothing to apply.");
     return;
   }
-  const built: BuiltRib[] = keptFace.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: (rib.sections[0]?.profile ?? "straight"), sections: rib.sections }));
+  const built: BuiltRib[] = keptFace.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: (rib.sections[0]?.profile ?? "straight"), sections: rib.sections, ...(rib.ends ? { ends: rib.ends } : {}) }));
   const plan = run.plan!;
-  const auto = { panel: card, plan: { ribs: kept.length, stiffnessFactor: plan.stiffnessFactor, ribVolumeMm3: plan.ribVolumeMm3, stoppedEarly: plan.stoppedEarly, edited: run.removed.length > 0 } };
+  const auto = { panel: card, plan: { ribs: kept.length, stiffnessFactor: plan.stiffnessFactor, ...(plan.frequencyHz ? { frequencyHz: plan.frequencyHz, frequencyFactor: plan.frequencyFactor } : {}), ribVolumeMm3: plan.ribVolumeMm3, stoppedEarly: plan.stoppedEarly, edited: run.removed.length > 0 } };
   const op = ribNetOf(built, AUTO_RIBS_LABEL, auto);
   if ("reason" in op) {
     host.readout(String(op.reason));
@@ -739,9 +852,10 @@ async function applyPlan() {
     return;
   }
   const density = host.densityGCm3();
-  applied = { measured: measuredLine(done.beforeMm3, done.afterMm3, density), check: null, problems: [] };
+  const frequencyNote = ranWith?.goal.kind === "frequency" ? " The ribs are built. A static Stress check has no frequency to check." : "";
+  applied = { measured: measuredLine(done.beforeMm3, done.afterMm3, density) + frequencyNote, check: null, problems: [] };
   stressRun = null;
-  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)) };
+  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)), ...((card.cases?.length ?? 0) >= 2 ? { cases: caseNames(card.cases!).map((name, i) => ({ name, loads: card.cases![i]!.loads })) } : {}) };
   edit = null;
   // Apply closed the card with the tool: it opens again on the new solid, with what was measured.
   root()?.toggleAttribute("hidden", false);
@@ -773,6 +887,7 @@ function writeFields() {
     if (input) input.checked = on;
   };
   check("#autoRibsJustThis", card.justThis);
+  check("#autoRibsFolded", card.folded);
   check("#autoRibsRimOn", card.holeRim.on);
   set("#autoRibsRimMm", String(card.holeRim.mm));
   set("#autoRibsProcess", card.ribs.process);
@@ -794,7 +909,7 @@ function writeFields() {
     const node = $<HTMLDetailsElement>(details);
     if (!node) continue;
     // A section the request uses opens with it; the rest stay folded.
-    const used = details === "#autoRibsHowMuch" ? !(a.kind === "slider" && a.stop === 0) : details === "#autoRibsHoldLoad" ? card.holds.length + card.loads.length > 0 : details === "#autoRibsKeepClear" ? card.zones.length > 0 : card.ribs.width != null || card.ribs.height != null || card.ribs.profile !== "auto" || card.ribs.process !== "filament";
+    const used = details === "#autoRibsHowMuch" ? !(a.kind === "slider" && a.stop === 0) : details === "#autoRibsHoldLoad" ? card.holds.length + card.loads.length > 0 || (card.cases?.length ?? 0) >= 2 : details === "#autoRibsKeepClear" ? card.zones.length > 0 : card.ribs.width != null || card.ribs.height != null || card.ribs.profile !== "auto" || card.ribs.process !== "filament";
     node.open = used;
   }
 }
@@ -912,6 +1027,32 @@ function builtNow(): number | null {
   return built.mm3;
 }
 
+/**
+ * The moulding lines of the kept ribs. The wall thickness under every rib point (a nearest-vertex search each) is read
+ * once per plan; the report is made again only when the kept ribs change, not on every paint.
+ */
+let moulded: { ribs: FaceRib[]; plan: string; walls: number[][]; removed: string; lines: string[] } | null = null;
+function mouldingNow(from: NonNullable<typeof ranWith>): string[] {
+  if (moulded?.ribs !== faceRibs || moulded.plan !== from.key) {
+    const mesh = from.wall.request.mesh;
+    moulded = { ribs: faceRibs, plan: from.key, walls: faceRibs.map((rib) => rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p))), removed: "", lines: [] };
+  }
+  const removed = JSON.stringify(run.removed);
+  if (moulded.removed !== removed || moulded.lines.length === 0) {
+    const walls = moulded.walls;
+    // A folded wall with no pull (the panel has none) is checked rib by rib along its own wall: the report says so.
+    const folded = (from.wall.report.faces.folded?.length ?? 0) > 0;
+    const report = mouldingReport(
+      faceRibs.map((rib, i) => (run.removed.includes(i) ? { points: [], heights: [], sections: [], normals: [], wallMm: [] } : { points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: walls[i] ?? [] })),
+      null,
+      { folded },
+    );
+    moulded.removed = removed;
+    moulded.lines = mouldingLines(report);
+  }
+  return moulded.lines;
+}
+
 function paintResult() {
   const section = $<HTMLElement>("#autoRibsResult");
   const plan = run.plan;
@@ -927,6 +1068,27 @@ function paintResult() {
     node.hidden = !show || text === "";
   };
   set("#autoRibsGain", plan.ribs.length ? numbers?.gain ?? "" : "No ribs");
+  set("#autoRibsFrequency", [frequencyAside(plan), hzCard].filter(Boolean).join(" "));
+  const noteList = $<HTMLElement>("#autoRibsNotes");
+  if (noteList) {
+    const lines = [...(plan.notes ?? []), ...(ignoredLoads ? [ignoredLoads] : [])];
+    noteList.hidden = lines.length === 0;
+    noteList.replaceChildren(...lines.map((text) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      return li;
+    }));
+  }
+  const caseLines = $<HTMLElement>("#autoRibsCaseLines");
+  if (caseLines) {
+    const lines = caseResultLines(ranWith?.caseNames ?? [], plan.caseFactors, plan.caseDeflectionMm, plan.frequencyHz != null);
+    caseLines.hidden = lines.length === 0;
+    caseLines.replaceChildren(...lines.map((text) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      return li;
+    }));
+  }
   set("#autoRibsCost", plan.ribs.length ? numbers?.cost ?? "" : "");
   const stopped = $<HTMLElement>("#autoRibsStopped");
   if (stopped) stopped.hidden = !plan.stoppedEarly;
@@ -948,6 +1110,43 @@ function paintResult() {
       if (i === all.length - 1 && plan.notBetterThanBaseline) li.className = "is-warn";
       return li;
     }));
+  }
+  const vents = $<HTMLElement>("#autoRibsVents");
+  if (vents) {
+    const n = plan.vents?.pockets.length ?? 0;
+    const unvented = plan.vents?.unvented ?? [];
+    const m = unvented.length;
+    const reasons = [...new Set(unvented.map((item) => item.message))].join("; ");
+    const extra = [plan.vents?.note, ...(plan.notes ?? [])].filter((line): line is string => typeof line === "string" && line.length > 0);
+    let sentence = "";
+    if (n > 0) sentence = `${n} pocket${n === 1 ? "" : "s"} vented, ${m} could not be vented`;
+    else if (m > 0) sentence = `${m} could not be vented: ${reasons}`;
+    else {
+      const refusal = extra.find((line) => !line.startsWith("Stand-in:"));
+      if (refusal) sentence = refusal;
+    }
+    if (sentence) {
+      const rest = extra.filter((line) => line !== sentence && !sentence.includes(line));
+      if (rest.length > 0) sentence = `${sentence}. ${rest.join(" ")}`;
+    }
+    const show = ranWith?.process === "resin" && sentence.length > 0;
+    vents.hidden = !show;
+    vents.textContent = show ? sentence : "";
+  }
+  const moulding = $<HTMLElement>("#autoRibsMoulding");
+  const mouldingList = $<HTMLElement>("#autoRibsMouldingList");
+  if (moulding && mouldingList) {
+    const show = ranWith?.process === "moulded" && plan.ribs.length > 0;
+    moulding.hidden = !show;
+    if (show && ranWith) {
+      const lines = mouldingNow(ranWith);
+      mouldingList.replaceChildren(...lines.map((text) => {
+        const li = document.createElement("li");
+        li.textContent = text;
+        if (!text.startsWith("Moulding checks pass")) li.className = "is-warn";
+        return li;
+      }));
+    }
   }
   const list = $<HTMLElement>("#autoRibsList");
   if (list) {
@@ -1011,6 +1210,8 @@ function paintApplied() {
   if (button) {
     button.disabled = stressRun?.phase === "running";
     button.textContent = stressRun?.phase === "done" ? "Check again" : "Check with Stress";
+    const frequencyNote = ranWith?.goal.kind === "frequency" ? " A static Stress check has no frequency to check." : "";
+    button.dataset.tip = ((lastSetup?.cases?.length ?? 0) >= 2 ? "Slice and solve the whole part before and after the ribs, once per load case. Each case adds two slices and two solves." : "Slice and solve the whole part before and after the ribs, with the same holds and loads. Slow, so it runs only when asked.") + frequencyNote;
   }
   const status = $<HTMLElement>("#autoRibsStressLine");
   if (status) {
@@ -1040,7 +1241,19 @@ async function runStressCheck() {
   });
   if (mine !== generation) return;
   if ("reason" in reply) stressRun = { phase: "failed", text: reply.reason };
-  else {
+  else if ("cases" in reply) {
+    const mm = (v: number) => `${fmt(v, 3)} mm`;
+    stressRun = {
+      phase: "done",
+      lines: [
+        ...reply.cases.map((row) => {
+          const stiffer = row.after.maxDisplacementMm > 0 ? row.before.maxDisplacementMm / row.after.maxDisplacementMm : null;
+          return `${row.name}: greatest deflection ${mm(row.before.maxDisplacementMm)} → ${mm(row.after.maxDisplacementMm)}${stiffer ? `: ${fmt(stiffer, 2)}× as stiff` : ""}.`;
+        }),
+        `Each case is the whole part, sliced, before and after. Each case adds two slices and two solves. Material cards are placeholders: compare before with after.${ranWith?.goal.kind === "frequency" ? " A static Stress check has no frequency to check." : ""}`,
+      ],
+    };
+  } else {
     const mm = (v: number) => `${fmt(v, 3)} mm`;
     const stiffer = reply.after.maxDisplacementMm > 0 ? reply.before.maxDisplacementMm / reply.after.maxDisplacementMm : null;
     const safety = (v: number | null) => (v == null ? "—" : fmt(v, 2));
@@ -1049,7 +1262,7 @@ async function runStressCheck() {
       lines: [
         `Greatest deflection ${mm(reply.before.maxDisplacementMm)} → ${mm(reply.after.maxDisplacementMm)}${stiffer ? `: ${fmt(stiffer, 2)}× as stiff on the sliced part` : ""}.`,
         `Least safety factor ${safety(reply.before.minSafetyFactor)} → ${safety(reply.after.minSafetyFactor)}.`,
-        "The whole part, sliced, with the same holds and loads. Material cards are placeholders: compare before with after.",
+        `The whole part, sliced, with the same holds and loads. Material cards are placeholders: compare before with after.${ranWith?.goal.kind === "frequency" ? " A static Stress check has no frequency to check." : ""}`,
       ],
     };
   }
@@ -1058,12 +1271,40 @@ async function runStressCheck() {
 
 function paintHowMuch() {
   const a = card.amount;
-  for (const button of root()?.querySelectorAll<HTMLElement>("[data-amount]") ?? []) press(button, button.dataset.amount === a.kind);
+  const frequency = card.quantity === "frequency";
+  root()?.querySelector("#autoRibsHowMuch .ar-modes")?.classList.toggle("is-frequency", frequency);
+  for (const button of root()?.querySelectorAll<HTMLElement>("[data-measure]") ?? []) press(button, button.dataset.measure === card.quantity);
+  for (const button of root()?.querySelectorAll<HTMLElement>("[data-amount]") ?? []) {
+    const kind = button.dataset.amount;
+    button.hidden = frequency && (kind === "deflection" || kind === "budget");
+    press(button, kind === a.kind);
+  }
   for (const row of root()?.querySelectorAll<HTMLElement>("[data-for-amount]") ?? []) row.hidden = row.dataset.forAmount !== a.kind;
   const slider = $<HTMLInputElement>("#autoRibsSlider");
-  if (slider && a.kind === "slider") slider.setAttribute("aria-valuetext", SLIDER_LABELS[Math.round(a.stop) + 2] ?? "Balanced");
+  if (slider) slider.setAttribute("aria-label", frequency ? "Times the lowest natural frequency" : "Lightest to stiffest");
+  if (slider && a.kind === "slider") slider.setAttribute("aria-valuetext", frequency ? `${fmt(frequencyFactorAt(a.stop), 2)}×` : SLIDER_LABELS[Math.round(a.stop) + 2] ?? "Balanced");
+  const end = (id: string, text: string) => {
+    const node = $<HTMLElement>(id);
+    if (node) node.textContent = text;
+  };
+  if (frequency) {
+    end("#autoRibsSliderLo", `${FREQUENCY_STOPS[0]}×`);
+    end("#autoRibsSliderMid", `${FREQUENCY_STOPS[2]}×`);
+    end("#autoRibsSliderHi", `${FREQUENCY_STOPS[4]}×`);
+  } else {
+    end("#autoRibsSliderLo", "Lightest");
+    end("#autoRibsSliderMid", "Balanced");
+    end("#autoRibsSliderHi", "Stiffest");
+  }
+  const label = $<HTMLElement>("#autoRibsStifferLabel");
+  const stiffer = $<HTMLInputElement>("#autoRibsStiffer");
+  if (label) label.textContent = frequency ? "Frequency ×" : "As stiff ×";
+  if (stiffer) {
+    stiffer.min = frequency ? "1" : "1.05";
+    stiffer.setAttribute("aria-label", frequency ? "Times the lowest natural frequency" : "Times as stiff as the bare wall");
+  }
   const note = $<HTMLElement>("#autoRibsSliderNote");
-  if (note) note.textContent = sliderNote(a, balancedFactor);
+  if (note) note.textContent = sliderNote(a, balancedFactor, card.quantity);
 }
 
 function paintHoldLoad() {
@@ -1076,16 +1317,36 @@ function paintHoldLoad() {
   if (row) row.hidden = !held;
   press($("#autoRibsHoldPick"), picking.kind === "hold");
   chips("#autoRibsHoldChips", held?.faces ?? [], "hold");
-  const load = card.loads[0];
-  const pressure = load?.kind === "pressure";
-  press($("#autoRibsLoadForce"), !pressure);
-  press($("#autoRibsLoadPressure"), pressure);
-  const label = $<HTMLElement>("#autoRibsForceLabel");
-  if (label) label.textContent = pressure ? "Pressure" : "Force";
-  const unit = $<HTMLElement>("#autoRibsForceUnit");
-  if (unit) unit.textContent = pressure ? "MPa" : "N";
-  press($("#autoRibsLoadPick"), picking.kind === "load");
-  chips("#autoRibsLoadChips", load?.faces ?? [], "load");
+  const multi = (card.cases?.length ?? 0) >= 2;
+  const single = $<HTMLElement>("#autoRibsLoad");
+  if (single) single.hidden = multi;
+  const add = $<HTMLButtonElement>("#autoRibsAddCase");
+  if (add) {
+    const full = multi && card.cases!.length >= MAX_LOAD_CASES;
+    add.disabled = full;
+    add.dataset.tip = full ? "Eight load cases is the most." : "Turn this load into a case and add another. Each case has a name, a weight and its own loads.";
+  }
+  const cases = $<HTMLElement>("#autoRibsCases");
+  if (cases) {
+    cases.hidden = !multi;
+    const key = multi ? JSON.stringify({ pick: picking, rows: card.cases!.map((item) => ({ kind: item.loads[0]?.kind ?? "force", faces: item.loads[0]?.faces ?? [] })) }) : "";
+    if (key !== paintedCases) {
+      paintedCases = key;
+      cases.replaceChildren(...(multi ? card.cases!.map((item, i) => caseField(item, i)) : []));
+    }
+  }
+  if (!multi) {
+    const load = card.loads[0];
+    const pressure = load?.kind === "pressure";
+    press($("#autoRibsLoadForce"), !pressure);
+    press($("#autoRibsLoadPressure"), pressure);
+    const label = $<HTMLElement>("#autoRibsForceLabel");
+    if (label) label.textContent = pressure ? "Pressure" : "Force";
+    const unit = $<HTMLElement>("#autoRibsForceUnit");
+    if (unit) unit.textContent = pressure ? "MPa" : "N";
+    press($("#autoRibsLoadPick"), picking.kind === "load");
+    chips("#autoRibsLoadChips", load?.faces ?? [], "load");
+  }
   const stress = host.stress();
   const use = $<HTMLButtonElement>("#autoRibsUseStress");
   if (use) use.hidden = !stress || stress.holds.length + stress.loads.length === 0;
@@ -1195,9 +1456,11 @@ function paintSizes() {
   const height = $<HTMLInputElement>("#autoRibsHeight");
   if (height) height.placeholder = chosen ? fmt(chosen.maxHeight, 1) : "auto";
   const list = $<HTMLElement>("#autoRibsDefaults");
-  if (list) list.replaceChildren(...(chosen?.defaults ?? ["Pick the wall to see the defaults it gives."]).map((text) => {
+  const lines = chosen ? [...chosen.defaults, ...(chosen.mouldedNote ? [chosen.mouldedNote] : [])] : ["Pick the wall to see the defaults it gives."];
+  if (list) list.replaceChildren(...lines.map((text) => {
     const li = document.createElement("li");
-    li.textContent = text.charAt(0).toUpperCase() + text.slice(1) + ".";
+    const head = text.charAt(0).toUpperCase() + text.slice(1);
+    li.textContent = /[.!?]$/.test(head) ? head : `${head}.`;
     return li;
   }));
 }
@@ -1382,7 +1645,7 @@ function onCanvasMove(ev: PointerEvent) {
     if (face == null || !solid) hoverWall = [];
     else {
       const taken = takenFaces();
-      hoverWall = taken.includes(face) ? [face] : wallFaces({ positions: solid.positions, faceOf: solid.faceOf }, { picked: [face], grow: !card.justThis }).faces;
+      hoverWall = taken.includes(face) ? [face] : wallFaces({ positions: solid.positions, faceOf: solid.faceOf }, { picked: [face], ...growthOptions() }).faces;
     }
     const canvas = document.querySelector<HTMLElement>("#model");
     if (canvas) canvas.dataset.autoRibsHover = hoverWall.join(" ");
@@ -1416,6 +1679,150 @@ function hoverList(target: EventTarget | null, on: boolean) {
 // Input.
 // ---------------------------------------------------------------------------
 
+function freshLoad(): StudyLoad {
+  return { kind: "force", faces: [], magnitude: 10, direction: [0, 0, -1] };
+}
+
+function withFace(load: StudyLoad, face: number): StudyLoad {
+  return { ...load, faces: toggled(load.faces, face) };
+}
+
+/** The single load becomes case 1, and case 2 is added. Further clicks add a case, up to eight. */
+function addLoadCase() {
+  if ((card.cases?.length ?? 0) >= MAX_LOAD_CASES) return;
+  const cases = (card.cases?.length ?? 0) >= 2 ? card.cases! : [{ name: "Case 1", weight: 1, loads: card.loads.length ? structuredClone(card.loads) : [freshLoad()] }];
+  // A free name: after a case was taken out, "Case 3" may already be there.
+  const name = freeCaseName(`Case ${cases.length + 1}`, cases.map((row) => row.name.trim()));
+  card = { ...card, loads: [], cases: [...cases, { name, weight: 1, loads: [freshLoad()] }] };
+}
+
+/** Drop one case. The last remaining case becomes today's single load, and the case list goes away. */
+function removeLoadCase(index: number) {
+  const left = (card.cases ?? []).filter((_, i) => i !== index);
+  if (picking.kind === "load") picking = { kind: "wall" };
+  if (left.length >= 2) {
+    card = { ...card, cases: left };
+    return;
+  }
+  const { cases: _gone, ...rest } = card;
+  card = { ...rest, loads: left[0]?.loads.length ? left[0].loads : rest.loads.length ? rest.loads : [freshLoad()] };
+}
+
+function caseField(row: PanelLoadCase, index: number): HTMLElement {
+  const load = row.loads[0] ?? freshLoad();
+  const pressure = load.kind === "pressure";
+  const box = document.createElement("fieldset");
+  box.className = "stress-group";
+  box.dataset.case = String(index);
+  const legend = document.createElement("legend");
+  legend.textContent = `Case ${index + 1}`;
+  const head = document.createElement("div");
+  head.className = "ar-case-head";
+  const name = document.createElement("input");
+  name.type = "text";
+  name.value = row.name;
+  name.dataset.case = String(index);
+  name.dataset.caseField = "name";
+  name.setAttribute("aria-label", `Case ${index + 1} name`);
+  const weight = document.createElement("input");
+  weight.type = "number";
+  weight.step = "0.1";
+  weight.min = "0.1";
+  weight.value = String(row.weight);
+  weight.dataset.case = String(index);
+  weight.dataset.caseField = "weight";
+  weight.setAttribute("aria-label", `Case ${index + 1} weight`);
+  const weightLabel = document.createElement("label");
+  weightLabel.className = "ar-inline";
+  weightLabel.append("Weight ", weight);
+  head.append(name, weightLabel);
+  const modes = document.createElement("div");
+  modes.className = "modes";
+  modes.setAttribute("role", "group");
+  modes.setAttribute("aria-label", `Case ${index + 1} load kind`);
+  const kindButton = (kind: "force" | "pressure", text: string, on: boolean) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn mode";
+    button.dataset.caseKind = kind;
+    button.dataset.case = String(index);
+    button.textContent = text;
+    press(button, on);
+    return button;
+  };
+  modes.append(kindButton("force", "Force N", !pressure), kindButton("pressure", "Pressure MPa", pressure));
+  const magLabel = document.createElement("label");
+  magLabel.className = "stress-inline";
+  const magName = document.createElement("span");
+  magName.textContent = pressure ? "Pressure" : "Force";
+  const magField = document.createElement("span");
+  magField.className = "stress-unit-field";
+  const mag = document.createElement("input");
+  mag.type = "number";
+  mag.step = "0.1";
+  mag.value = String(load.magnitude);
+  mag.dataset.case = String(index);
+  mag.dataset.caseField = "mag";
+  mag.setAttribute("aria-label", `Case ${index + 1} load magnitude`);
+  const unit = document.createElement("span");
+  unit.className = "stress-unit";
+  unit.textContent = pressure ? "MPa" : "N";
+  magField.append(mag, unit);
+  magLabel.append(magName, magField);
+  const pickRow = document.createElement("div");
+  pickRow.className = "stress-pick-row";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "btn stress-pick";
+  pick.dataset.casePick = String(index);
+  pick.textContent = "Pick faces";
+  press(pick, picking.kind === "load" && picking.case === index);
+  const list = document.createElement("ul");
+  list.className = "stress-chips";
+  list.setAttribute("aria-label", `Case ${index + 1} loaded faces`);
+  for (const face of load.faces) {
+    const item = document.createElement("li");
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "stress-chip";
+    chip.dataset.face = String(face);
+    chip.dataset.chip = "case";
+    chip.dataset.case = String(index);
+    chip.setAttribute("aria-label", `Remove face ${face + 1} from case ${index + 1}`);
+    chip.append(`Face ${face + 1}`, createElement(X, { width: 12, height: 12, "aria-hidden": "true", class: "ico" }));
+    item.append(chip);
+    list.append(item);
+  }
+  pickRow.append(pick, list);
+  const axis = document.createElement("div");
+  axis.className = "stress-axis";
+  axis.setAttribute("role", "group");
+  axis.setAttribute("aria-label", `Case ${index + 1} direction`);
+  const axisLabel = document.createElement("span");
+  axisLabel.className = "stress-axis-label";
+  axisLabel.textContent = "Direction (X, Y, Z)";
+  axis.append(axisLabel);
+  for (const [axisIndex, letter] of ["X", "Y", "Z"].entries()) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "0.1";
+    input.value = String(load.direction[axisIndex] ?? 0);
+    input.dataset.case = String(index);
+    input.dataset.caseField = "dir";
+    input.dataset.axis = String(axisIndex);
+    input.setAttribute("aria-label", `Case ${index + 1} direction ${letter}`);
+    axis.append(input);
+  }
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "btn ar-small";
+  remove.dataset.caseRemove = String(index);
+  remove.textContent = "Remove";
+  remove.setAttribute("aria-label", `Remove case ${index + 1}`);
+  box.append(legend, head, modes, magLabel, pickRow, axis, remove);
+  return box;
+}
+
 function readLoad(faces: number[]): StudyLoad {
   const num = (id: string, d: number) => {
     const v = Number($<HTMLInputElement>(id)?.value);
@@ -1446,7 +1853,18 @@ function onClick(ev: Event) {
   }
   if (target.dataset.removeRib) {
     run = toggleRemoved(run, Number(target.dataset.removeRib));
-    host.readout(run.removed.length ? "Edited: the material is recounted; the stiffness is not solved again." : "Check the plan, then Apply.");
+    host.readout(run.removed.length ? (run.plan?.frequencyHz ? "Edited: the material is recounted; the frequency is not solved again." : "Edited: the material is recounted; the stiffness is not solved again.") : "Check the plan, then Apply.");
+    return paint();
+  }
+  if (target.dataset.measure === "stiffness" || target.dataset.measure === "frequency") {
+    const quantity = target.dataset.measure;
+    let amount = card.amount;
+    if (quantity === "frequency" && (amount.kind === "deflection" || amount.kind === "budget")) {
+      amount = { kind: "slider", stop: 0 };
+      const slider = $<HTMLInputElement>("#autoRibsSlider");
+      if (slider) slider.value = "0";
+    }
+    card = { ...card, quantity, amount };
     return paint();
   }
   if (target.dataset.amount) {
@@ -1468,9 +1886,30 @@ function onClick(ev: Event) {
   }
   if (target.id === "autoRibsUseStress") {
     const stress = host.stress();
-    if (stress) card = { ...card, holds: structuredClone(stress.holds), loads: structuredClone(stress.loads) };
+    if (stress) {
+      const { cases: _gone, ...rest } = card;
+      card = { ...rest, holds: structuredClone(stress.holds), loads: structuredClone(stress.loads) };
+    }
     writeFields();
     return changed();
+  }
+  if (target.id === "autoRibsAddCase") {
+    addLoadCase();
+    return changed();
+  }
+  if (target.dataset.caseRemove) {
+    removeLoadCase(Number(target.dataset.caseRemove));
+    return changed();
+  }
+  if (target.dataset.caseKind && card.cases) {
+    const index = Number(target.dataset.case);
+    const kind = target.dataset.caseKind === "pressure" ? "pressure" : "force";
+    card = { ...card, cases: card.cases.map((row, i) => (i === index ? { ...row, loads: [{ ...(row.loads[0] ?? freshLoad()), kind, magnitude: kind === "pressure" ? 0.01 : 10 }] } : row)) };
+    return changed();
+  }
+  if (target.dataset.casePick) {
+    const index = Number(target.dataset.casePick);
+    return setPick({ kind: "load", case: index });
   }
   if (target.id === "autoRibsHoldFaces") {
     card = { ...card, holds: card.holds.some((h) => h.kind === "faces") ? [] : [{ kind: "faces", faces: [] }] };
@@ -1497,7 +1936,10 @@ function onClick(ev: Event) {
   if (target.dataset.chip) {
     const face = Number(target.dataset.face);
     if (target.dataset.chip === "hold") card = { ...card, holds: card.holds.map((h) => (h.kind === "faces" ? { ...h, faces: h.faces.filter((f) => f !== face) } : h)) };
-    else card = { ...card, loads: card.loads.map((l) => ({ ...l, faces: l.faces.filter((f) => f !== face) })) };
+    else if (target.dataset.chip === "case" && card.cases) {
+      const index = Number(target.dataset.case);
+      card = { ...card, cases: card.cases.map((row, i) => (i === index ? { ...row, loads: row.loads.map((l) => ({ ...l, faces: l.faces.filter((f) => f !== face) })) } : row)) };
+    } else card = { ...card, loads: card.loads.map((l) => ({ ...l, faces: l.faces.filter((f) => f !== face) })) };
     return changed();
   }
   if (target.dataset.addZone) {
@@ -1545,6 +1987,10 @@ function onInput(ev: Event) {
     card = { ...card, justThis: target.checked };
     return changed();
   }
+  if (target.id === "autoRibsFolded" && target instanceof HTMLInputElement) {
+    card = { ...card, folded: target.checked };
+    return changed();
+  }
   if (target.id === "autoRibsRimOn" && target instanceof HTMLInputElement) {
     card = { ...card, holeRim: { ...card.holeRim, on: target.checked } };
     return paint();
@@ -1567,9 +2013,19 @@ function onInput(ev: Event) {
     card = { ...card, amount: { kind: "slider", stop: value } };
     return paint();
   }
-  if (target.id === "autoRibsStiffer" && value > 1) {
-    card = { ...card, amount: { kind: "stiffer", factor: value } };
-    return paint();
+  if (target.id === "autoRibsStiffer") {
+    if (card.quantity === "frequency") {
+      if (!(value >= 1)) {
+        host?.readout("A frequency goal must be 1 or more.");
+        return;
+      }
+      card = { ...card, amount: { kind: "stiffer", factor: value } };
+      return paint();
+    }
+    if (value > 1) {
+      card = { ...card, amount: { kind: "stiffer", factor: value } };
+      return paint();
+    }
   }
   if (target.id === "autoRibsDeflection" && value > 0) {
     card = { ...card, amount: { kind: "deflection", mm: value } };
@@ -1582,6 +2038,38 @@ function onInput(ev: Event) {
   if (["autoRibsForce", "autoRibsDirX", "autoRibsDirY", "autoRibsDirZ"].includes(target.id)) {
     if (card.loads.length === 0 && !finished) return;
     card = { ...card, loads: [readLoad(card.loads[0]?.faces ?? [])] };
+    return finished ? changed() : undefined;
+  }
+  if (target.dataset.caseField && card.cases) {
+    const index = Number(target.dataset.case);
+    const row = card.cases[index];
+    if (!row) return;
+    const load = row.loads[0] ?? freshLoad();
+    const field = target.dataset.caseField;
+    let next = row;
+    if (field === "name") {
+      // Two cases never share a name (a Stress check finds each case's loads by it): a taken name gets " (2)", ….
+      const others = caseNames(card.cases).filter((_, i) => i !== index);
+      const name = finished ? freeCaseName(target.value.trim() || `Case ${index + 1}`, others) : target.value;
+      if (finished && name !== target.value) target.value = name;
+      next = { ...row, name };
+    }
+    else if (field === "weight") {
+      if (!(value > 0)) {
+        if (finished) target.value = String(row.weight);
+        return;
+      }
+      next = { ...row, weight: value };
+    } else if (field === "mag") {
+      if (!Number.isFinite(value)) return;
+      next = { ...row, loads: [{ ...load, magnitude: value }] };
+    } else if (field === "dir") {
+      if (!Number.isFinite(value)) return;
+      const direction: [number, number, number] = [load.direction[0], load.direction[1], load.direction[2]];
+      direction[Number(target.dataset.axis)] = value;
+      next = { ...row, loads: [{ ...load, direction }] };
+    }
+    card = { ...card, cases: card.cases.map((item, i) => (i === index ? next : item)) };
     return finished ? changed() : undefined;
   }
   const zoneId = Number(target.dataset.zone ?? target.dataset.zoneMode ?? target.dataset.zoneObject);
@@ -1667,7 +2155,14 @@ function wallExtent(): number {
 // --- For tests: the panel's state, read from the page (window.__limeAutoRibs).
 (globalThis as { __limeAutoRibs?: unknown }).__limeAutoRibs = {
   card: () => card,
+  wall: () => (read?.wall ? { faces: read.wall.faces, folded: read.wall.report.faces.folded ?? [] } : null),
   run: () => ({ phase: run.phase, stage: run.stage, fraction: run.fraction, ribs: run.ribs.length, plan: run.plan ? { ribs: run.plan.ribs.length, stoppedEarly: run.plan.stoppedEarly } : null, removed: run.removed }),
+  body: () => ranWith?.body ?? null,
+  plan: () => run.plan,
   zonesRead: () => (read?.wall ? read.wall.report.zones : null),
   faceRibs: () => faceRibs.map((rib) => ({ points: rib.points, heights: rib.heights })),
+  setBuild: (axis: V3) => {
+    buildOverride = axis;
+    paint();
+  },
 };

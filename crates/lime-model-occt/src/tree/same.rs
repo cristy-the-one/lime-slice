@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use super::EDGE_MATCH_MM;
 use super::joints::keep_built;
-use super::ops::{EdgePick, EdgeRef, FacePick, FaceRef, Op};
+use super::ops::{EdgePick, EdgeRef, FacePick, FaceRef, Neutral, Op};
 use super::partition::PartitionCut;
 
 /// Whether `incoming` asks for the op `stored` already is. A stored edge matches an index pick by
@@ -133,6 +133,29 @@ pub(super) fn same_request(stored: &Op, incoming: &Op) -> bool {
                 })
         }
         (
+            Op::Draft {
+                faces: stored_faces,
+                angle_deg: stored_angle,
+                pull: stored_pull,
+                neutral: stored_neutral,
+            },
+            Op::Draft {
+                faces: incoming_faces,
+                angle_deg: incoming_angle,
+                pull: incoming_pull,
+                neutral: incoming_neutral,
+            },
+        ) => {
+            return stored_angle == incoming_angle
+                && same_dir(stored_pull, incoming_pull)
+                && stored_faces.len() == incoming_faces.len()
+                && stored_faces
+                    .iter()
+                    .zip(incoming_faces)
+                    .all(|(stored, incoming)| same_face_pick(stored, incoming))
+                && same_neutral(stored_neutral, incoming_neutral)
+        }
+        (
             Op::Shell {
                 thickness: x,
                 open_faces: a,
@@ -190,6 +213,37 @@ pub(super) fn same_build(a: &Op, b: &Op) -> bool {
             p == q && a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_build(x, y))
         }
         _ => a == b,
+    }
+}
+
+fn same_dir(a: &[f64; 3], b: &[f64; 3]) -> bool {
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let left = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    let right = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+    left > 1e-12 && right > 1e-12 && (dot / (left * right) - 1.0).abs() < 1e-9
+}
+
+fn same_neutral(stored: &Option<Neutral>, incoming: &Option<Neutral>) -> bool {
+    match (stored, incoming) {
+        (None, None) => true,
+        (Some(Neutral::Face(stored)), Some(Neutral::Face(incoming))) => same_face_pick(stored, incoming),
+        (
+            Some(Neutral::Plane {
+                origin: stored_origin,
+                normal: stored_normal,
+            }),
+            Some(Neutral::Plane {
+                origin: incoming_origin,
+                normal: incoming_normal,
+            }),
+        ) => {
+            stored_origin
+                .iter()
+                .zip(incoming_origin)
+                .all(|(left, right)| (left - right).abs() < 1e-9)
+                && same_dir(stored_normal, incoming_normal)
+        }
+        _ => false,
     }
 }
 

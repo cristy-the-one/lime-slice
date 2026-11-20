@@ -45,14 +45,14 @@ const CHECK_PRESSURE = 0.01;
 const CHECK_CELL_MM = 2;
 
 /** The card the shell model uses for the selected filament (shared with ribs_plan), as the panel needs it. */
-function materialCard(): { card: MaterialCard; note: string } | null {
+function materialCard(): { card: MaterialCard; note: string; forFilament: boolean; id: string; polymer: string } | null {
   const library = loadMachineLibrary();
   const cards = cardsOf(library);
   const fallback = cards.find((card) => card.id === "inhouse-petg") ?? cards[0];
   if (!fallback) return null;
   const filament = selection(library)?.filament;
   const chosen = ribCardFor(cards, { name: filament?.name ?? "this filament", material: filament?.material ?? "" }, fallback);
-  return { card: chosen.card, note: chosen.row.note };
+  return { card: chosen.card, note: chosen.row.note, forFilament: chosen.row.forFilament, id: chosen.row.card, polymer: chosen.row.polymer };
 }
 
 /** The part as it was before the last Apply, for the Stress check: its study mesh and its faces. */
@@ -63,18 +63,17 @@ let beforeApply: { mesh: ReturnType<typeof stressMesh>; positions: ArrayLike<num
  * through the desktop's existing `sim_study` (the Stress panel's solve). Holds are the user's, else the faces the wall
  * joins; loads the user's, else an even pressure on the wall. Faces are found again on the ribbed part by where they lay.
  */
-async function stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { reason: string }> {
+type StressNumbers = { maxDisplacementMm: number; minSafetyFactor: number | null };
+
+async function stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[]; cases?: { name: string; loads: StudyLoad[] }[] }, progress: (text: string) => void): Promise<{ before: StressNumbers; after: StressNumbers } | { cases: { name: string; before: StressNumbers; after: StressNumbers }[] } | { reason: string }> {
   const after = viewed();
   if (!beforeApply || !after) return { reason: "Apply the ribs first: the check compares the part before and after." };
   const material = materialCard();
   if (!material) return { reason: "No material card is in the library." };
   const holds: StudyHold[] = setup.holds.length ? setup.holds : setup.joinedFaces.length ? [{ kind: "faces", faces: setup.joinedFaces }] : [];
   if (holds.length === 0) return { reason: "The check needs a hold: the wall is joined to nothing. Give one under Hold and load." };
-  const loads: StudyLoad[] = setup.loads.length ? setup.loads : [{ kind: "pressure", faces: setup.wallFaces, magnitude: CHECK_PRESSURE, direction: [0, 0, -1] }];
   const belt = beltStamp(loadMachineLibrary());
-  const study: ObjectStudy = { holds, loads, cardId: material.card.id, printer: true, buildAxis: belt ? beltLayerNormal(belt.angleDeg) : [0, 0, 1], gravity: false, edgeMm: CHECK_CELL_MM };
   const again = (faces: number[]) => (faces.length ? remapFaces({ positions: beforeApply!.positions, faceOf: beforeApply!.faceOf }, faces, { positions: after.positions, faceOf: after.triangles }) : faces);
-  const ribbed: ObjectStudy = { ...study, holds: study.holds.map((hold) => ({ ...hold, faces: again(hold.faces) })), loads: study.loads.map((load) => ({ ...load, faces: again(load.faces) })) };
   const solve = async (mesh: ReturnType<typeof stressMesh>, which: ObjectStudy) => {
     if (mesh && "reason" in mesh) return { reason: mesh.reason };
     const request = stressSliceRequest(undefined, mesh ?? undefined);
@@ -85,13 +84,30 @@ async function stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wall
     if ("error" in parsed) return { reason: parsed.error };
     return { maxDisplacementMm: parsed.maxDisplacementMm ?? 0, minSafetyFactor: parsed.minSafetyFactor ?? null };
   };
-  progress("Slicing and solving the part as it was… (1 of 2)");
-  const one = await solve(beforeApply.mesh, study);
-  if ("reason" in one) return one;
-  progress("Slicing and solving the ribbed part… (2 of 2)");
-  const two = await solve(stressMesh(), ribbed);
-  if ("reason" in two) return two;
-  return { before: one, after: two };
+  const pair = async (loads: StudyLoad[], beforeText: string, afterText: string) => {
+    const study: ObjectStudy = { holds, loads, cardId: material.card.id, printer: true, buildAxis: belt ? beltLayerNormal(belt.angleDeg) : [0, 0, 1], gravity: false, edgeMm: CHECK_CELL_MM };
+    const ribbed: ObjectStudy = { ...study, holds: study.holds.map((hold) => ({ ...hold, faces: again(hold.faces) })), loads: study.loads.map((load) => ({ ...load, faces: again(load.faces) })) };
+    progress(beforeText);
+    const one = await solve(beforeApply!.mesh, study);
+    if ("reason" in one) return one;
+    progress(afterText);
+    const two = await solve(stressMesh(), ribbed);
+    if ("reason" in two) return two;
+    return { before: one, after: two };
+  };
+  if (setup.cases && setup.cases.length >= 2) {
+    const reported: { name: string; before: StressNumbers; after: StressNumbers }[] = [];
+    const total = setup.cases.length * 2;
+    for (const [i, row] of setup.cases.entries()) {
+      const loads = row.loads.length ? row.loads : [{ kind: "pressure" as const, faces: setup.wallFaces, magnitude: CHECK_PRESSURE, direction: [0, 0, -1] as [number, number, number] }];
+      const done = await pair(loads, `Slicing and solving ${row.name}, the part as it was… (${i * 2 + 1} of ${total})`, `Slicing and solving ${row.name}, the ribbed part… (${i * 2 + 2} of ${total})`);
+      if ("reason" in done) return done;
+      reported.push({ name: row.name, before: done.before, after: done.after });
+    }
+    return { cases: reported };
+  }
+  const loads: StudyLoad[] = setup.loads.length ? setup.loads : [{ kind: "pressure", faces: setup.wallFaces, magnitude: CHECK_PRESSURE, direction: [0, 0, -1] }];
+  return pair(loads, "Slicing and solving the part as it was… (1 of 2)", "Slicing and solving the ribbed part… (2 of 2)");
 }
 
 let worker: Worker | null = null;
@@ -239,6 +255,10 @@ export function bindAutoRibs() {
       const own = buildDirection(obj?.orient ?? [1, 0, 0, 0, 1, 0, 0, 0, 1], p?.kind === "belt" ? p.belt : null);
       return turnDir(openPose(), own);
     },
+    plate() {
+      const obj = openObject();
+      return { orient: obj?.orient ?? [1, 0, 0, 0, 1, 0, 0, 0, 1], pose: openPose() };
+    },
     stress() {
       const sim = openObject()?.sim;
       return sim ? { holds: sim.holds, loads: sim.loads } : null;
@@ -263,7 +283,7 @@ export function bindAutoRibs() {
     apply: applyNet,
     material() {
       const chosen = materialCard();
-      return chosen ? { e: chosen.card.EInPlaneMPa, nu: chosen.card.nu, note: chosen.note } : null;
+      return chosen ? { e: chosen.card.EInPlaneMPa, nu: chosen.card.nu, densityGCm3: chosen.card.densityGCm3, name: chosen.card.polymer, note: chosen.note, forFilament: chosen.forFilament, card: chosen.id, polymer: chosen.polymer } : null;
     },
     // The desktop's sim_study runs the check; a page under test may answer it (`__limeSimStudy`). A browser has neither.
     stressAvailable: () => isTauri() || typeof (globalThis as { __limeSimStudy?: unknown }).__limeSimStudy === "function",

@@ -513,6 +513,27 @@ const chan = channel(100, 30, 2, 6, 150).solid();
   check("load on a place: the triangles inside it", pl.kind === "spreadForce" && pl.triangles.every((t) => Math.hypot(centroidOf(placed, t)[0] - 100, centroidOf(placed, t)[1] - 50) <= 10) && pl.triangles.length > 5);
 }
 
+// ---------------------------------------------------------------------------------------------- two load cases
+{
+  const floor = { kind: "pressure" as const, faces: [6], magnitude: 0.01, direction: [0, 0, -1] as V3 };
+  const side = { kind: "force" as const, faces: [3], magnitude: 20, direction: [-1, 0, 0] as V3 };
+  const both = wallOf(box1, { picked: [6], loadCases: [{ name: "press", loads: [floor] }, { name: "weigh", loads: [{ ...floor, magnitude: 0.02 }] }] });
+  const nt = both.request.mesh.triangles.length;
+  check("two cases: the request carries both, in order", both.request.loadCases.length === 2 && both.request.loadCases.every((c) => c.length === 1 && c[0]!.kind === "pressure" && c[0]!.triangles.length === nt), JSON.stringify(both.report.cases));
+  check("two cases: the report lists each case's load with its share", both.report.cases?.length === 2 && both.report.cases[0]!.name === "press" && both.report.cases[1]!.name === "weigh" && both.report.cases.every((c) => c.loads.length === 1 && c.loads[0]!.share === 1 && c.evenPressure === false), JSON.stringify(both.report.cases));
+  const p0 = both.request.loadCases[0]![0]!;
+  const p1 = both.request.loadCases[1]![0]!;
+  check("two cases: each case keeps its own magnitude", p0.kind === "pressure" && p0.pressure === 0.01 && p1.kind === "pressure" && p1.pressure === 0.02);
+  const refused = ribWall(box1, { picked: [6], loadCases: [{ name: "press", loads: [floor] }, { name: "sideways", loads: [side] }] });
+  check("a case that misses entirely: refused, named by its case", "reason" in refused && /of sideways/.test(refused.reason) && /not on the wall/.test(refused.reason), "reason" in refused ? refused.reason : "planned");
+  const swapped = wallOf(box1, { picked: [6], loadCases: [{ name: "press", loads: [floor] }, { name: "sideways", loads: [side] }], ifMissed: "evenPressure" });
+  const swappedSide = swapped.request.loadCases[1]![0]!;
+  check("a case that misses, asked to plan anyway: that case under even pressure, the other kept", swapped.request.loadCases.length === 2 && swapped.request.loadCases[0]![0]!.kind === "pressure" && swappedSide.kind === "pressure" && swappedSide.pressure === 0.001 && swappedSide.triangles.length === nt, JSON.stringify(swapped.report.cases));
+  check("a missed case is named in the report and the sentence", swapped.report.cases?.[1]?.evenPressure === true && swapped.report.cases[1]!.loads.length === 0 && swapped.report.cases[0]!.evenPressure === false && /case sideways misses the wall and is planned under even pressure/.test(swapped.report.substituted?.sentence ?? ""), swapped.report.substituted?.sentence ?? "");
+  const none = wallOf(box1, { picked: [6], loadCases: [{ name: "sideways", loads: [side] }], ifMissed: "evenPressure" });
+  check("every case misses, asked to plan anyway: the one case under even pressure, said so", none.request.loadCases.length === 1 && none.request.loadCases[0]![0]!.kind === "pressure" && none.report.substituted?.evenPressure === true && /case sideways/.test(none.report.substituted?.sentence ?? ""), none.report.substituted?.sentence ?? "");
+}
+
 // ---------------------------------------------------------------------------------------------- back onto the surface
 {
   const w = wallOf(box1, { picked: [6] });

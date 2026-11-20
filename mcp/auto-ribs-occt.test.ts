@@ -10,9 +10,13 @@
  * 3. A noRibs box zone (no added material inside it), an obstacle object (capped ribs under it), a cancel mid-plan (a
  *    usable partial plan, applied), apply:true in one job, a stale plan refused.
  * 4. verify:true: the sliced Stress study before and after (relative numbers).
- * 5. A curved wall: the cylinder-segment panel, planned and applied.
+ * 5. A curved wall: the cylinder-segment panel, planned and applied. Load cases (5b, 5c) are in auto-ribs-cases-occt.test.ts,
+ *    which runs in the folded-shell CI job so the shared Open CASCADE job stays inside its limit.
+ * 5d. A side wall under an open rim, resin defaults: the corner rib built with a sharp root (it stays in this file).
  * 6. The flange table: a tee with a 45° chamfered and a square flange, ribs along X, along Y and at 45°, model_check on a
  *    flat bed and on the 45° belt, against the rule auto-ribs.ts chooses by.
+ * The frequency goal is mcp/frequency-occt.test.ts, on the folded-shell job: this file plus those plans did not fit
+ * that job's 25 minutes (run 44698889099 reached this file's end at 20 minutes).
  * The planning cases use a 120 × 70 × 25 box: CI's debug engine plans and slices about fifty times slower than a release
  * build, and the 200 × 100 × 30 box took 19 minutes there. LIME_RIBS_FULL=1 runs them on 200 × 100 × 30.
  * Skips when LIME_OCCT_BRIDGE is unset, and fails in CI when it is unset.
@@ -461,7 +465,7 @@ let boxObject = "";
   addedAsPlanned("cylinder panel", done, applied);
 }
 
-// ===== 5b. A side wall with an open rim, resin defaults: drafted ribs with a root meet the rim at a slant
+// ===== 5d. A side wall with an open rim, resin defaults: drafted ribs with a root meet the rim at a slant
 // in the corners. ribNet refused the whole plan there (the root's footprint ran off the rim) until the ends were drawn
 // back for the footprint, or the rib built with a sharp root. =====
 {

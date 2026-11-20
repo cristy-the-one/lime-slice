@@ -28,6 +28,9 @@ pub struct IsotropicShell {
     pub e: f64,
     /// Poisson's ratio.
     pub nu: f64,
+    /// Mass density, N·s²/mm⁴. Absent until a frequency goal names it.
+    /// A stiffness plan does not read it.
+    pub density: Option<f64>,
 }
 
 impl IsotropicShell {
@@ -40,7 +43,21 @@ impl IsotropicShell {
                 "Poisson's ratio must be above -1 and below 0.5.",
             ));
         }
-        Ok(Self { e, nu })
+        Ok(Self {
+            e,
+            nu,
+            density: None,
+        })
+    }
+
+    /// Set the mass density, N·s²/mm⁴. A frequency goal refuses a material
+    /// that never had this called.
+    pub fn with_density(mut self, density: f64) -> Result<Self, SimError> {
+        if !(density.is_finite() && density > 0.0) {
+            return Err(SimError::new("The density must be above zero."));
+        }
+        self.density = Some(density);
+        Ok(self)
     }
 
     pub fn shear_modulus(&self) -> f64 {
