@@ -40,17 +40,17 @@ sources:
     resource: https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/README.md
     title: README.md
   - id: ribs-tool
-    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/mcp/session/ribs.ts
-    title: mcp/session/ribs.ts (feature/ribs-next)
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/mcp/session/ribs.ts
+    title: mcp/session/ribs.ts (03b1c1d6)
   - id: ribs-panel
-    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/src/auto-ribs.ts
-    title: src/auto-ribs.ts (feature/ribs-next)
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/auto-ribs.ts
+    title: src/auto-ribs.ts (03b1c1d6)
   - id: rib-wall
-    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/src/modeling/rib-wall.ts
-    title: src/modeling/rib-wall.ts (feature/ribs-next)
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/modeling/rib-wall.ts
+    title: src/modeling/rib-wall.ts (03b1c1d6)
   - id: moulding
-    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/src/modeling/moulding.ts
-    title: src/modeling/moulding.ts (feature/ribs-next)
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/modeling/moulding.ts
+    title: src/modeling/moulding.ts (03b1c1d6)
 ---
 
 # Solver
@@ -81,7 +81,7 @@ The README's worked example is a 100 × 10 × 10 mm box, 100% infill, one end he
 
 # Auto ribs additions
 
-Automatic ribs (6.11.0) plan ribs on one wall with a thin-shell model in `lime-sim`. `feature/ribs-next` adds three things, in the panel and in `ribs_plan`:
+Automatic ribs (6.11.0) plan ribs on one wall with a thin-shell model in `lime-sim`. 6.13.0 adds three things, in the panel and in `ribs_plan`:
 
 * **Load cases.** Up to 8 named cases, each with a weight (default 1) and its own loads, weighed as Σ wᵢ·Cᵢ/Cᵢ⁰. The result gives each case's stiffness factor and its bare and ribbed deflection. No two cases share a name: the tool refuses it, the panel adds " (2)".[^ribs-tool] [^ribs-panel]
 * **Folded walls.** `wall.folded` (the panel's "Include side walls (folded)", off by default) takes thin faces across sharp edges into one folded shell, with thick regions kept as stiff patches.[^rib-wall]
@@ -100,7 +100,7 @@ Automatic ribs (6.11.0) plan ribs on one wall with a thin-shell model in `lime-s
 [^ui]: src/ui/stress.ts
 [^desktop]: src/sim/desktop-solve.ts
 [^readme]: README.md
-[^ribs-tool]: mcp/session/ribs.ts (feature/ribs-next)
-[^ribs-panel]: src/auto-ribs.ts (feature/ribs-next)
-[^rib-wall]: src/modeling/rib-wall.ts (feature/ribs-next)
-[^moulding]: src/modeling/moulding.ts (feature/ribs-next)
+[^ribs-tool]: mcp/session/ribs.ts (03b1c1d6)
+[^ribs-panel]: src/auto-ribs.ts (03b1c1d6)
+[^rib-wall]: src/modeling/rib-wall.ts (03b1c1d6)
+[^moulding]: src/modeling/moulding.ts (03b1c1d6)
