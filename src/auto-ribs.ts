@@ -8,7 +8,7 @@
  *
  * Shared module: no DOM.
  */
-import type { StudyHold, StudyLoad, StudyPlace } from "./sim/study.ts";
+import type { StudyHold, StudyLoad } from "./sim/study.ts";
 import { readPlace, readRegion } from "./sim/study-data.ts";
 import type { NotOnWall, WallRegion, WallZoneInput, RibWallReport } from "./modeling/rib-wall.ts";
 import type { RibProcess } from "./modeling/auto-ribs.ts";
@@ -238,15 +238,6 @@ function asVec3(value: unknown): V3 | null {
   return [value[0] as number, value[1] as number, value[2] as number];
 }
 
-/** A `{point:[x,y,z]}` region: the card's place is a sphere of no radius, which is that point. */
-function pointPlace(value: unknown): StudyPlace | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const row = value as Record<string, unknown>;
-  if (Object.keys(row).length !== 1 || row.point === undefined) return null;
-  const at = asVec3(row.point);
-  return at ? { sphere: { centre: at, radiusMm: 0 } } : null;
-}
-
 function mapWall(wall: Record<string, unknown>, card: AutoRibsCard, omitted: string[]) {
   if (wall.faces !== undefined) {
     const faces = faceIndexes(wall.faces);
@@ -353,8 +344,7 @@ function mapLoad(value: unknown, name: string, omitted: string[]): StudyLoad | n
     return null;
   }
   if (row.region !== undefined) {
-    const place = pointPlace(row.region);
-    const region = place ?? readRegion(row.region);
+    const region = readRegion(row.region);
     if (!region) {
       omitted.push(name);
       return null;
@@ -363,7 +353,7 @@ function mapLoad(value: unknown, name: string, omitted: string[]): StudyLoad | n
     return { kind: row.kind, faces: [], magnitude: row.magnitude, direction, place: region };
   }
   if (row.place !== undefined) {
-    const place = readPlace(row.place) ?? pointPlace(row.place);
+    const place = readPlace(row.place);
     if (!place) {
       omitted.push(name);
       return null;

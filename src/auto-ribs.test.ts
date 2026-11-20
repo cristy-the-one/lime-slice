@@ -255,8 +255,9 @@ const sphereLoad = { kind: "force" as const, faces: [] as number[], magnitude: 2
 eq("a sphere place reopens on that sphere", ribsPlan({ wall: { faces: [6] }, loads: [{ kind: "force", region: { sphere: { centre: [1, 2, 3], radiusMm: 4 } }, magnitude: 20, direction: [0, 0, -1] }] })?.loads, [sphereLoad]);
 const boxLoad = { kind: "pressure" as const, faces: [] as number[], magnitude: 0.02, direction: [0, 1, 0] as [number, number, number], place: { box: { min: [0, 0, 0] as [number, number, number], max: [2, 3, 4] as [number, number, number] } } };
 eq("a box place reopens as that box", ribsPlan({ wall: { faces: [6] }, loads: [{ kind: "pressure", region: { box: { min: [0, 0, 0], max: [2, 3, 4] } }, magnitude: 0.02, direction: [0, 1, 0] }] })?.loads, [boxLoad]);
-const pointLoad = { kind: "force" as const, faces: [] as number[], magnitude: 7, direction: [0, 0, -1] as [number, number, number], place: { sphere: { centre: [4, 5, 6] as [number, number, number], radiusMm: 0 } } };
-eq("a point place reopens as a point", ribsPlan({ wall: { faces: [6] }, loads: [{ kind: "force", region: { point: [4, 5, 6] }, magnitude: 7, direction: [0, 0, -1] }] })?.loads, [pointLoad]);
+const pointed = ribsPlan({ wall: { faces: [6] }, loads: [{ kind: "force", region: { point: [4, 5, 6] }, magnitude: 7, direction: [0, 0, -1] }] });
+eq("a point region is not on the card", pointed?.loads, []);
+check("a point region is named in the left-out line", (pointed?.leftOut ?? "").includes("loads[0]"), pointed?.leftOut ?? "");
 const spread = { kind: "pressure" as const, faces: [6], magnitude: 0.01, direction: [0, 0, -1] as [number, number, number] };
 const pointCase = { kind: "force" as const, faces: [6], magnitude: 10, direction: [1, 0, 0] as [number, number, number] };
 const twoCases = ribsPlan({

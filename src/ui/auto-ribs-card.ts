@@ -1861,11 +1861,10 @@ function caseField(row: PanelLoadCase, index: number): HTMLElement {
   return box;
 }
 
-/** A place load, in the words the card uses: a point is a sphere of no radius. */
+/** A place load, in the words the card uses. */
 function placeLine(place: StudyPlace): string {
   if ("sphere" in place) {
     const at = place.sphere.centre.map((n) => fmt(n)).join(", ");
-    if (place.sphere.radiusMm === 0) return `Point at ${at}`;
     return `Sphere at ${at}, radius ${fmt(place.sphere.radiusMm)} mm`;
   }
   return `Box from ${place.box.min.map((n) => fmt(n)).join(", ")} to ${place.box.max.map((n) => fmt(n)).join(", ")}`;
