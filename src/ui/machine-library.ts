@@ -1320,29 +1320,11 @@ const PAST_STARTS: Record<string, string[]> = {
 };
 
 /**
- * The owner's IR3 V2 speeds and accelerations (2026-11-20): 80 % of their tuned profile's feeds, with the profile's
- * accelerations lowered (outer wall and top 2000, travel 5000, first layer 500) and slower gap fill and supports.
- * The default blend prints exactly these; Speed and Toughness move around them.
+ * The IR3 V2's own numbers (owner, 2026-11-20): Lime Slice's speeds, with a gentle first layer for belt adhesion and a
+ * slightly softer outer wall. Only accelerations lower than the blend's own are set; every speed stays the blend's.
  */
 export const IR3_V2_SPEEDS: PrinterSpeeds = {
-  outerWall: 96,
-  innerWall: 160,
-  sparseInfill: 160,
-  solidInfill: 200,
-  topSurface: 160,
-  gapInfill: 90,
-  support: 90,
-  supportInterface: 50,
-  travel: 200,
-  firstLayer: 40,
-  firstLayerInfill: 84,
-  accel: 4000,
   outerWallAccel: 2000,
-  innerWallAccel: 4000,
-  sparseInfillAccel: 4000,
-  solidInfillAccel: 4000,
-  topSurfaceAccel: 2000,
-  travelAccel: 5000,
   firstLayerAccel: 500,
 };
 

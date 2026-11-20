@@ -35,8 +35,8 @@ fn block(x: f64, y: f64, z: f64) -> Mesh {
     Mesh { triangles }
 }
 
-/// The owner's Ideaformer IR3 V2 numbers (2026-11-20, "80% of now").
-fn ir3_v2() -> PrinterSpeeds {
+/// A printer that names every feed and accel.
+fn table() -> PrinterSpeeds {
     PrinterSpeeds {
         outer_wall: Some(96.0),
         inner_wall: Some(160.0),
@@ -147,7 +147,7 @@ fn a_printer_with_no_speeds_slices_as_before() {
 
 #[test]
 fn the_default_blend_prints_the_printers_numbers() {
-    let all = moves(&slice(default_blend(), &printer(Some(ir3_v2()))));
+    let all = moves(&slice(default_blend(), &printer(Some(table()))));
     let above = |kind: &'static str| move |m: &Move| m.layer >= 3 && m.kind == kind;
     let outer = fastest(&all, above("OUTER"));
     let inner = fastest(&all, above("INNER"));
@@ -159,7 +159,7 @@ fn the_default_blend_prints_the_printers_numbers() {
 
 #[test]
 fn the_first_layer_keeps_to_the_printers_first_layer_feeds_and_accel() {
-    let all = moves(&slice(default_blend(), &printer(Some(ir3_v2()))));
+    let all = moves(&slice(default_blend(), &printer(Some(table()))));
     let first: Vec<&Move> = all.iter().filter(|m| m.layer == 0).collect();
     assert!(!first.is_empty());
     let walls = first
@@ -192,7 +192,7 @@ fn the_slider_ends_move_with_the_printer() {
     };
     let own_speed = outer(speed(), None);
     let own_mid = outer(default_blend(), None);
-    let ir3_speed = outer(speed(), Some(ir3_v2()));
+    let ir3_speed = outer(speed(), Some(table()));
     // Speed stays faster than the default blend by the same ratio it always was.
     let want = own_speed * 96.0 / own_mid;
     assert!(
@@ -200,4 +200,32 @@ fn the_slider_ends_move_with_the_printer() {
         "Speed end {ir3_speed}, expected {want} (own Speed {own_speed}, own default {own_mid})"
     );
     assert!(ir3_speed > 96.0);
+}
+
+/// The built-in IR3 V2's block (src/ui/machine-library.ts): accelerations only.
+fn ir3_v2() -> PrinterSpeeds {
+    PrinterSpeeds {
+        outer_wall_accel: Some(2000.0),
+        first_layer_accel: Some(500.0),
+        ..PrinterSpeeds::default()
+    }
+}
+
+#[test]
+fn the_ir3_v2_keeps_every_feed_and_softens_only_the_first_layer_and_outer_wall() {
+    let own = moves(&slice(default_blend(), &printer(None)));
+    let ir3 = moves(&slice(default_blend(), &printer(Some(ir3_v2()))));
+    assert_eq!(own.len(), ir3.len());
+    for (a, b) in own.iter().zip(&ir3) {
+        assert!(a.layer == b.layer && a.kind == b.kind && (a.feed - b.feed).abs() < 1e-9, "a feed moved: {} {} {} -> {}", a.layer, a.kind, a.feed, b.feed);
+    }
+    let first = ir3.iter().filter(|m| m.layer == 0).map(|m| m.accel).fold(0.0, f64::max);
+    let own_first = own.iter().filter(|m| m.layer == 0).map(|m| m.accel).fold(0.0, f64::max);
+    assert!(first <= 500.0 + 1e-6 && own_first > 500.0, "first layer {first}, before {own_first}");
+    let outer = ir3.iter().filter(|m| m.layer >= 3 && m.kind == "OUTER").map(|m| m.accel).fold(0.0, f64::max);
+    assert!((outer - 2000.0).abs() < 1e-6, "outer wall accel {outer}");
+    // Nothing else got harsher.
+    for (a, b) in own.iter().zip(&ir3) {
+        assert!(b.accel <= a.accel + 1e-6, "accel rose: {} {} {} -> {}", a.layer, a.kind, a.accel, b.accel);
+    }
 }
