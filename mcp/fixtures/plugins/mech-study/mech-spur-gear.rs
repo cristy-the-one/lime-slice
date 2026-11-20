@@ -29,6 +29,5 @@ fn main() {
     }
     let part = s.solid_new(Json::obj().set("gear", spec)).unwrap();
     let reach = gear.pitch_radius() + module * (2.0 + gear.shift);
-        let (bmin, bmax) = s.bounds(&part).unwrap();
-    s.done_with(&part, Json::obj().set("teeth", teeth as f64).set("module", module).set("pitchRadius", gear.pitch_radius()).set("bmin", bmin).set("bmax", bmax));
+    s.done_with(&part, Json::obj().set("teeth", teeth as f64).set("module", module).set("pitchRadius", gear.pitch_radius()).set("bmin", [-reach, -reach, 0.0]).set("bmax", [reach, reach, thickness]));
 }

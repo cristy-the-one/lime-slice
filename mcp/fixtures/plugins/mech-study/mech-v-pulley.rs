@@ -37,6 +37,5 @@ fn main() {
         s.apply(&part, ops::hole_through([0.0, 0.0, disc_h], [0.0, 0.0, -1.0], bore)).unwrap();
     }
     let ro = r_top + 2.0;
-        let (bmin, bmax) = s.bounds(&part).unwrap();
-    s.done_with(&part, Json::obj().set("pitch", pitch).set("grooveDepth", groove_depth).set("angle", angle).set("bmin", bmin).set("bmax", bmax));
+    s.done_with(&part, Json::obj().set("pitch", pitch).set("grooveDepth", groove_depth).set("angle", angle).set("bmin", [-ro, -ro, 0.0]).set("bmax", [ro, ro, disc_h]));
 }

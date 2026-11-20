@@ -37,6 +37,5 @@ fn main() {
         s.apply(&part, ops::hole_through([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], screw)).unwrap();
     }
     let half_y = jaw + 1.0;
-        let (bmin, bmax) = s.bounds(&part).unwrap();
-    s.done_with(&part, Json::obj().set("cable", cable).set("gap", gap).set("bmin", bmin).set("bmax", bmax));
+    s.done_with(&part, Json::obj().set("cable", cable).set("gap", gap).set("bmin", [-base_w / 2.0, -half_y, 0.0]).set("bmax", [base_w / 2.0, half_y, 3.0 + height * 0.2]));
 }

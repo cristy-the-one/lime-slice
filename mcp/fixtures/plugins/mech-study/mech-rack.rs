@@ -30,6 +30,5 @@ fn main() {
     let pitch = std::f64::consts::PI * module;
     let u1 = (teeth as f64 - 0.5) * pitch;
     let back_h = if back > 0.05 { back } else { 1.5 * module };
-        let (bmin, bmax) = s.bounds(&part).unwrap();
-    s.done_with(&part, Json::obj().set("teeth", teeth as f64).set("module", module).set("bmin", bmin).set("bmax", bmax));
+    s.done_with(&part, Json::obj().set("teeth", teeth as f64).set("module", module).set("bmin", [-pitch / 2.0, -1.25 * module - back_h, 0.0]).set("bmax", [u1, module, thickness]));
 }

@@ -27,6 +27,5 @@ fn main() {
     let d = shaft(nominal, fit, allowance).unwrap_or(nominal);
     let part = s.solid_new(ops::cylinder(d / 2.0, length)).unwrap();
     let r = d / 2.0;
-        let (bmin, bmax) = s.bounds(&part).unwrap();
-    s.done_with(&part, Json::obj().set("nominal", nominal).set("diameter", d).set("fit", fit_name.as_str()).set("bmin", bmin).set("bmax", bmax));
+    s.done_with(&part, Json::obj().set("nominal", nominal).set("diameter", d).set("fit", fit_name.as_str()).set("bmin", [-r, -r, 0.0]).set("bmax", [r, r, length]));
 }

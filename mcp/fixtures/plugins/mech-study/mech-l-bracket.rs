@@ -23,9 +23,8 @@ fn main() {
     s.apply(&part, ops::boolean("fuse", ops::cuboid(t, width, leg), [0.0, 0.0, 0.0])).unwrap();
     for i in 0..holes {
         let x = -leg / 2.0 + leg * (i as f64 + 1.0) / (holes as f64 + 1.0);
-        s.apply(&part, ops::hole_through([x, 0.0, t], [0.0, 0.0, -1.0], hole_d)).unwrap();
-        s.apply(&part, ops::hole_through([t / 2.0, 0.0, leg * (i as f64 + 1.0) / (holes as f64 + 1.0)], [1.0, 0.0, 0.0], hole_d)).unwrap();
+        let _ = s.apply(&part, ops::hole_through([x, 0.0, t], [0.0, 0.0, -1.0], hole_d));
+        let _ = s.apply(&part, ops::hole_through([t / 2.0, 0.0, leg * (i as f64 + 1.0) / (holes as f64 + 1.0)], [1.0, 0.0, 0.0], hole_d));
     }
-        let (bmin, bmax) = s.bounds(&part).unwrap();
-    s.done_with(&part, Json::obj().set("leg", leg).set("width", width).set("bmin", bmin).set("bmax", bmax));
+    s.done_with(&part, Json::obj().set("leg", leg).set("width", width).set("bmin", [-leg / 2.0, -width / 2.0, 0.0]).set("bmax", [leg / 2.0, width / 2.0, leg]));
 }

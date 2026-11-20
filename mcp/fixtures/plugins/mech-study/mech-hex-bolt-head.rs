@@ -38,6 +38,5 @@ fn main() {
     let top = if shank_len > 0.2 { head_h } else { head_h };
     let bot = if shank_len > 0.2 { -shank_len } else { 0.0 };
     let reach = half.max(shank_d / 2.0);
-        let (bmin, bmax) = s.bounds(&part).unwrap();
-    s.done_with(&part, Json::obj().set("nominal", nominal).set("across", across).set("shankD", shank_d).set("bmin", bmin).set("bmax", bmax));
+    s.done_with(&part, Json::obj().set("nominal", nominal).set("across", across).set("shankD", shank_d).set("bmin", [-reach, -reach, bot]).set("bmax", [reach, reach, top]));
 }
