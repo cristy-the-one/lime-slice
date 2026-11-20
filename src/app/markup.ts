@@ -20,6 +20,7 @@ export function mountMarkup(root: HTMLElement) {
         <nav>
           <button type="button" data-file-action="new" data-key="Ctrl N">New project</button>
           <button type="button" data-file-action="open" data-key="Ctrl O">Open…</button>
+          <button type="button" data-file-action="add" data-key="Ctrl Shift O">Add to plate…</button>
           <button type="button" data-file-action="save" data-key="Ctrl S">Save project</button>
           <details class="menu submenu" id="samples">
             <summary>Samples<span class="caret right" aria-hidden="true"></span></summary>
@@ -41,8 +42,8 @@ export function mountMarkup(root: HTMLElement) {
           <button type="button" id="machineOpen">Printers and filaments…</button>
         </nav>
       </details>
-      <input id="file" type="file" accept=".stl,.3mf,.step,.stp,.lime,.STL,.3MF,.STEP,.STP,.LIME" hidden />
-      <input id="plateAddFile" type="file" accept=".stl,.3mf,.step,.stp,.STL,.3MF,.STEP,.STP" hidden />
+      <input id="file" type="file" accept=".stl,.3mf,.step,.stp,.lime,.STL,.3MF,.STEP,.STP,.LIME" multiple hidden />
+      <input id="plateAddFile" type="file" accept=".stl,.3mf,.step,.stp,.STL,.3MF,.STEP,.STP" multiple hidden />
       <input id="projectFile" type="file" accept=".lime,application/json" hidden />
       <details class="menu" id="printerChip">
         <summary class="btn chip" aria-label="Printer, filament and nozzle" data-tip="Printer, filament and nozzle"><span id="printerChipLabel"></span><span class="caret" aria-hidden="true"></span></summary>
