@@ -5,7 +5,7 @@
 //! One long side of the border is open. The same panel with a rising border
 //! all round cannot be vented by ribs.
 
-use lime_sim::shell::planner::{plan_ribs, vent_pockets, BorderKind, BorderRun, EndKind, Goal, RibEndKind, RibPlanRequest, RibRun, PART_CUPS};
+use lime_sim::shell::planner::{plan_ribs, vent_pockets, BorderKind, BorderRun, EndKind, Goal, RibEndKind, RibPlanRequest, RibProfile, RibRun, PART_CUPS};
 use lime_sim::shell::{IsotropicShell, ShellMesh};
 use lime_sim::units::{norm, sub};
 
@@ -166,4 +166,59 @@ fn a_product_spacing_panel_with_an_open_rim_vents() {
         println!("unvented {:?} {}", item.at, item.message);
     }
     assert!(!vents.pockets.is_empty(), "spacing 9.6 width 2.4 minLength 5; pieces {}", pieces.join(" "));
+}
+
+/// The tray floor: 114 × 64 mm, the inner floor of a 120 × 70 × 25 box with 3 mm walls and one
+/// short wall gone. Product resin rules (width 2.4, spacing 64/6, least length 8). Three rising
+/// edges and one open. Prints ribs, crossings and closed cells for stiffer ×2, ×3 and a budget.
+#[test]
+fn tray_floor_goals_report_closed_cells() {
+    let (w, d) = (114.0, 64.0);
+    let goals = [
+        ("stiffer x2", Goal::Stiffer(2.0)),
+        ("stiffer x3", Goal::Stiffer(3.0)),
+        ("budget 8000", Goal::Budget { volume_mm3: 8000.0 }),
+    ];
+    for (name, goal) in goals {
+        let mut req = RibPlanRequest::new(
+            ShellMesh::rectangle([w, d], [16, 8], 3.0),
+            IsotropicShell::new(2000.0, 0.35).expect("material"),
+        );
+        req.vent = true;
+        req.build_axis = [0.0, 0.0, 1.0];
+        req.options.baselines = false;
+        req.rules.width = 2.4;
+        req.rules.min_spacing = d / 6.0;
+        req.rules.min_length = (d / 8.0).clamp(5.0, 40.0);
+        req.rules.profile = RibProfile::Drafted { draft_deg: 1.0, root_radius: 1.2 };
+        req.goal = goal;
+        req.borders = vec![
+            (vec![[0.0, 0.0, 0.0], [0.0, d, 0.0]], BorderKind::Rises),
+            (vec![[0.0, d, 0.0], [w, d, 0.0]], BorderKind::Rises),
+            (vec![[w, d, 0.0], [w, 0.0, 0.0]], BorderKind::Open),
+            (vec![[w, 0.0, 0.0], [0.0, 0.0, 0.0]], BorderKind::Rises),
+        ];
+        let plan = plan_ribs(&req).expect(name);
+        let vents = plan.vents.expect("vents");
+        let mut crossings = 0;
+        for (i, a) in plan.ribs.iter().enumerate() {
+            for b in plan.ribs.iter().skip(i + 1) {
+                let hit = a.points.iter().any(|p| b.points.iter().any(|q| norm(sub(*p, *q)) < 0.5));
+                if hit {
+                    crossings += 1;
+                }
+            }
+        }
+        let closed = vents.pockets.len() + vents.unvented.len();
+        println!(
+            "tray {name}: ribs {} crossings {crossings} closed {closed} pockets {} unvented {} factor {:.3} goal_met {}",
+            plan.ribs.len(),
+            vents.pockets.len(),
+            vents.unvented.len(),
+            plan.stiffness_factor,
+            plan.goal_met
+        );
+        assert!(closed > 0 && !vents.pockets.is_empty(), "{name} closed no cell");
+        assert!(vents.unvented.iter().all(|item| !item.message.is_empty()));
+    }
 }
