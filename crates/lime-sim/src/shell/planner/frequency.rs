@@ -16,8 +16,8 @@ use std::time::Instant;
 use super::select::{network_volume, CandChain, DRib};
 use super::trace;
 use super::{
-    edge_caps, restrictions, Clean, FrequencyHz, GRib, Goal, PlanStage, PlanStats, PlannedRib,
-    Reporter, Response, RibPlan, RibPlanRequest, TARGET_FLOOR,
+    draft_lost_notes, edge_caps, restrictions, Clean, FrequencyHz, GRib, Goal, PlanStage, PlanStats,
+    PlannedRib, Reporter, Response, RibPlan, RibPlanRequest, TARGET_FLOOR,
 };
 use crate::error::SimError;
 use crate::shell::modes::{cluster_count, ModeSet};
@@ -238,6 +238,8 @@ fn finish(
     }
     stats.seconds.total = started.elapsed().as_secs_f64();
     rep.stage(PlanStage::Done, 1.0);
+    let mut notes = frequency_notes(unreached);
+    notes.extend(draft_lost_notes(&ribs));
     Ok(RibPlan {
         ribs,
         rib_volume_mm3: clean.volume,
@@ -260,7 +262,7 @@ fn finish(
             ribbed: hz[1],
         }),
         frequency_factor: Some(achieved),
-        notes: frequency_notes(unreached),
+        notes,
     })
 }
 

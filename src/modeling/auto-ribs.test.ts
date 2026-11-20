@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, isOverhang, MOULD_BASE_RATIO, MOULD_DRAFT_DEG, MOULD_ROOT_FLOOR, mouldedDefaultRoot, mouldedDefaultWidth, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
+import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, isOverhang, MOULD_BASE_RATIO, MOULD_DRAFT_DEG, MOULD_ROOT_FLOOR, mouldedDefaultRoot, mouldedDefaultWidth, mouldedPlanRoot, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
 import { ribWall, type RibWallSolid } from "./rib-wall.ts";
 
 let failed = 0;
@@ -38,8 +38,11 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   const replied = Math.round(mouldedWidth * 1e6) / 1e6;
   const repliedBase = replied + 6 * Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
   check("moulded width is the shared rule at 3 × the wall, so the base is 0.6", near(moulded.width, mouldedWidth) && repliedBase <= MOULD_BASE_RATIO * 2 && near(repliedBase, MOULD_BASE_RATIO * 2, 1e-6), String(moulded.width));
-  check("a typed moulded width is kept", near(ribRules({ ...base, process: "moulded", given: { width: 1.4 } }).width, 1.4));
-  check("the moulded sentence says the base, and the root clamp in one sentence", moulded.defaults.some((row) => row.includes("0.6 × the wall at the rib's base")) && moulded.defaults.some((row) => row === "root radius half the top width, or 0.25 × the wall when half the top is smaller"), JSON.stringify(moulded.defaults));
+  check("a typed moulded width is kept, and its root is not clamped", near(ribRules({ ...base, process: "moulded", given: { width: 1.4 } }).width, 1.4) && ribRules({ ...base, process: "moulded", given: { width: 0.6 } }).mouldedRoot === undefined);
+  check("the moulded sentence says the width is at half height, and the root clamp in one sentence", moulded.defaults.some((row) => row.startsWith("width ") && row.includes("at half height, sized so the base is 0.6 × the thinnest wall")) && moulded.defaults.some((row) => row === "root radius half the top width, or 0.25 × the thickest wall when half the top is smaller"), JSON.stringify(moulded.defaults));
+  check("the default root is the clamp at 3 × the wall", moulded.mouldedRoot !== undefined && near(moulded.mouldedRoot, mouldedPlanRoot(mouldedWidth, 6, 2, 2).root, 1e-12) && near(moulded.mouldedRoot, 0.5, 1e-12));
+  const uneven = ribRules({ ...base, process: "moulded", thinnestMm: 1.9, thickestMm: 4 });
+  check("when the thickest is more than twice the thinnest, the width stays on the thinnest and the note says the root cannot", near(uneven.width, mouldedDefaultWidth(1.9, 6)) && uneven.mouldedRoot !== undefined && near(uneven.mouldedRoot, 0.5 * Math.max(0, uneven.width - 6 * Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180)), 1e-12) && /more than twice/.test(uneven.mouldedNote ?? ""), JSON.stringify(uneven));
   // The same six widths and roots the crate test locks, so the two languages match.
   const shared: [number, number, number, number, boolean][] = [
     [2, 2, 1.165089, 0.5650894350717824, false],

@@ -1478,9 +1478,7 @@ fn filament_and_resin_panels_stay_byte_identical() {
 /// 15 mm either way, so only the section changes.
 #[test]
 fn moulded_panels_old_half_height_width_against_the_base_rule() {
-    use lime_sim::shell::planner::{
-        choose_profile, moulded_default_width, Process, ProfileRules, RibProfile,
-    };
+    use lime_sim::shell::planner::{moulded_default_width, RibProfile};
     // bits: old volume, old factor, new volume, new factor.
     let panels = [
         PanelBits {
@@ -1499,14 +1497,8 @@ fn moulded_panels_old_half_height_width_against_the_base_rule() {
         },
     ];
     let width = moulded_default_width(2.0, 6.0);
-    let profile = choose_profile(&ProfileRules {
-        process: Process::Moulded,
-        flange: None,
-        width,
-        max_height: 6.0,
-        wall: 2.0,
-        force: None,
-    });
+    // The default, not choose_profile: a typed width keeps half the top.
+    let profile = RibProfile::moulded_default(width, 6.0, 2.0);
     assert!(
         matches!(profile, RibProfile::Drafted { root_radius, .. } if (root_radius - 0.5).abs() < 1e-12),
         "{profile:?}"

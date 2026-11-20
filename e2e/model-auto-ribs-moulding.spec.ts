@@ -15,8 +15,8 @@ test("moulded lists moulding flags, one rib inside the limits passes, and filame
   await page.locator("#autoRibsProcess").selectOption("moulded");
   await page.mouse.click(floor.x, floor.y);
   await expect(primary(page)).toBeEnabled();
-  await expect(page.locator("#autoRibsDefaults")).toContainText("0.6 × the wall at the rib's base");
-  await expect(page.locator("#autoRibsDefaults")).toContainText("0.25 × the wall when half the top is smaller");
+  await expect(page.locator("#autoRibsDefaults")).toContainText("at half height, sized so the base is 0.6 × the thinnest wall");
+  await expect(page.locator("#autoRibsDefaults")).toContainText("0.25 × the thickest wall when half the top is smaller");
   await primary(page).click();
   await expect(page.locator("#autoRibsResult")).toBeVisible({ timeout: 20_000 });
   const flags = page.locator("#autoRibsMoulding");
