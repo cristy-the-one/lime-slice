@@ -12,6 +12,7 @@
  * 4. verify:true: the sliced Stress study before and after (relative numbers).
  * 5. A curved wall: the cylinder-segment panel, planned and applied. Load cases (5b, 5c) are in auto-ribs-cases-occt.test.ts,
  *    which runs in the folded-shell CI job so the shared Open CASCADE job stays inside its limit.
+ * 5d. A side wall under an open rim, resin defaults: the corner rib built with a sharp root (it stays in this file).
  * 6. The flange table: a tee with a 45° chamfered and a square flange, ribs along X, along Y and at 45°, model_check on a
  *    flat bed and on the 45° belt, against the rule auto-ribs.ts chooses by.
  * The planning cases use a 120 × 70 × 25 box: CI's debug engine plans and slices about fifty times slower than a release
@@ -460,6 +461,24 @@ let boxObject = "";
   check("the panel's outside is unchanged", moved < 0.01, `moved ${moved} mm`);
   report.push(`cylinder panel: ${done.plan?.ribs?.length} ribs ${JSON.stringify(done.plan?.profiles)}, factor ${done.plan?.stiffnessFactor}, +${applied.added?.mm3} mm³ (${applied.added?.percent} %), plan ${planMs} ms, apply ${Date.now() - t1} ms, ribNet ${JSON.stringify({ runs: applied.ribNet?.runs, shortened: applied.ribNet?.shortened?.length ?? 0, skipped: applied.ribNet?.skipped?.length ?? 0 })}`);
   addedAsPlanned("cylinder panel", done, applied);
+}
+
+// ===== 5d. A side wall with an open rim, resin defaults: drafted ribs with a root meet the rim at a slant
+// in the corners. ribNet refused the whole plan there (the root's footprint ran off the rim) until the ends were drawn
+// back for the footprint, or the rib built with a sharp root. =====
+{
+  for (const process of ["resin"] as const) {
+    const object = await shellBox(BX, BY, BZ);
+    const t0 = Date.now();
+    const done = await waitJob(String((await call("ribs_plan", { object, wall: { face: { normal: [-1, 0, 0], nearPoint: [BX / 2 - 2, 0, BZ / 2] } }, process })).job));
+    check(`${process}: a default plan on the side wall under the open rim`, done.ok === true && done.plan.ribs.length > 0 && (done.plan.ribs as Reply[]).every((rib) => rib.profile === "drafted"), JSON.stringify(done).slice(0, 400));
+    const applied = await call("ribs_apply", { job: done.job });
+    check(`${process}: ribs_apply builds the app's own plan`, applied.ok === true, JSON.stringify(applied).slice(0, 600));
+    const why = (done.plan.ribs as Reply[]).map((rib) => String(rib.why));
+    // On the 120 × 70 × 25 box, resin's corner rib meets the rim too flat for its root's foot within 4 mm.
+    if (!FULL && process === "resin") check("resin: the corner rib is built with a sharp root, and says so", why.some((s) => /built with a sharp root/.test(s)) && (done.plan.ribs as Reply[]).some((rib) => (rib.sections as Reply[]).every((s) => s.rootRadius === 0)), JSON.stringify(why));
+    report.push(`side wall under the open rim, ${process}: ${done.plan?.ribs?.length} ribs, trimmed ${JSON.stringify((done.plan?.ribs as Reply[] | undefined)?.map((rib) => rib.trimmedMm ?? null))}, applied ${applied.ok} +${applied.added?.mm3} mm³, ${Date.now() - t0} ms`);
+  }
 }
 
 // ===== 6. The flange table: tees with a 45° chamfered and a square flange, along X, along Y and at 45°. =====

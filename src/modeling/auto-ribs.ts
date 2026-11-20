@@ -13,7 +13,7 @@
  *
  * Shared module: no Node builtins, no DOM, no MCP session. Same input, same output.
  */
-import { RibSurface, ribNetPlan, ribShape, type RibProfileKind } from "./rib-net.ts";
+import { RIB_NET_DEFAULTS, RibSurface, ribNetPlan, ribShape, type RibProfileKind } from "./rib-net.ts";
 import { ribPathsFromPlan, type RibWall, type RibWallSolid } from "./rib-wall.ts";
 
 type V3 = [number, number, number];
@@ -204,12 +204,11 @@ export function chooseSection(asked: "auto" | RibProfileKind, process: RibProces
 
 type P2 = [number, number];
 
-/** The area of a rib's section over the wall (v ≥ 0), mm²: rib volume per mm. */
-export function sectionArea(profile: RibProfileKind, width: number, height: number, fields: ProfileFields = {}): number {
-  if (profile === "straight" && !(fields.rootRadius && fields.rootRadius > 0)) return width * height;
+/** A rib's shape with ribNet's own defaults for the fields left out (rib-net.ts profileOf), sunk ribNet's 0.5 mm. */
+function shapeOf(profile: RibProfileKind, width: number, height: number, fields: ProfileFields): ReturnType<typeof ribShape> {
   const draftDeg = profile === "drafted" ? fields.draftDeg ?? 1 : 0;
   const top = width - height * Math.tan((draftDeg * Math.PI) / 180);
-  const shape = ribShape({
+  return ribShape({
     kind: profile,
     width,
     draftDeg,
@@ -217,7 +216,24 @@ export function sectionArea(profile: RibProfileKind, width: number, height: numb
     flangeWidth: profile === "tee" ? fields.flangeWidth ?? 3 * width : 0,
     flangeThickness: profile === "tee" ? fields.flangeThickness ?? width : 0,
     flangeChamferDeg: profile === "tee" ? fields.flangeChamferDeg ?? 45 : 0,
-  }, height, 0.5, 0.05);
+  }, height, RIB_NET_DEFAULTS.sinkMm, 0.05);
+}
+
+/**
+ * Half the footprint a stretch stands on, mm: the root's foot or a drafted base, as ribNet builds the stretch at this
+ * height (too low for its root, it is built straight: half its width). Half the width with no section.
+ */
+export function footHalf(section: Section | undefined, width: number, height: number): number {
+  if (!section) return width / 2;
+  if (!(height >= sectionLeast(section))) return section.width / 2;
+  const shape = shapeOf(section.profile, section.width, height, section);
+  return "reason" in shape ? section.width / 2 : Math.max(section.width / 2, shape.foot);
+}
+
+/** The area of a rib's section over the wall (v ≥ 0), mm²: rib volume per mm. */
+export function sectionArea(profile: RibProfileKind, width: number, height: number, fields: ProfileFields = {}): number {
+  if (profile === "straight" && !(fields.rootRadius && fields.rootRadius > 0)) return width * height;
+  const shape = shapeOf(profile, width, height, fields);
   if ("reason" in shape) return width * height;
   const poly = shape.section(height);
   const over: P2[] = [];
@@ -460,14 +476,35 @@ export function wallUnder(all: RibSurface, p: V3, n: V3, b: V3, half: number): n
  * wall under its foot runs out there, or its end runs into the thin rim and out past the part. Such an end starts a
  * rib width back from the edge, and is then drawn back 0.25 mm at a time, at most 4 mm, to where the wall under the
  * foot is WALL_UNDER_MM deep. An end against a wall (a box's side) is kept. Heights and sections keep their stretches.
+ *
+ * A root or a drafted base is wider than the rib, and ribNet refuses a rib whose footprint's edge stands over no wall
+ * (an end that meets an open rim at a slant). So the wall must lie under the whole footprint (`footHalf`) where the end
+ * is cut. Where no cut within the 4 mm finds that, the rib is built without its root (`rootless`: a sharp root, a
+ * drafted base only its draft wider than the rib) when that footprint finds the wall within 8 mm (an end meeting the
+ * rim at a shallow slant); else the ends are cut as for the rib's width alone, as before. A cut under the footprint
+ * keeps at least 1 mm of the rib. A rib with no root or base wider than itself is cut exactly as before.
  */
-export function trimThinEnds(points: V3[], heights: number[], sections: Section[], wallSurface: RibSurface, all: RibSurface, width: number): { points: V3[]; heights: number[]; sections: Section[]; trimmedMm: [number, number] } {
+export function trimThinEnds(points: V3[], heights: number[], sections: Section[], wallSurface: RibSurface, all: RibSurface, width: number): { points: V3[]; heights: number[]; sections: Section[]; trimmedMm: [number, number]; rootless?: true } {
+  const whole = trimEnds(points, heights, sections, wallSurface, all, width, true);
+  if (whole.fits) return whole.trimmed;
+  if (sections.some((s) => (s.rootRadius ?? (s.profile === "straight" ? 0 : 1)) > 0)) {
+    const sharp = sections.map((s): Section => ({ ...s, rootRadius: 0 }));
+    const bare = trimEnds(points, heights, sharp, wallSurface, all, width, true, 8);
+    if (bare.fits) return { ...bare.trimmed, rootless: true };
+  }
+  return trimEnds(points, heights, sections, wallSurface, all, width, false).trimmed;
+}
+
+/** trimThinEnds with one set of sections: the wall under the footprint (`footprint`) or under the rib's width alone. */
+function trimEnds(points: V3[], heights: number[], sections: Section[], wallSurface: RibSurface, all: RibSurface, width: number, footprint: boolean, most = 4): { trimmed: { points: V3[]; heights: number[]; sections: Section[]; trimmedMm: [number, number] }; fits: boolean } {
   const trimmedMm: [number, number] = [0, 0];
   let pts = points.map((p) => [...p] as V3);
   let hs = [...heights];
   let ss = [...sections];
+  let fits = true;
   for (const end of [0, 1] as const) {
     if (pts.length < 2) break;
+    let placed = false;
     const order = end === 0 ? pts : [...pts].reverse();
     let walked = 0;
     let k = 0;
@@ -487,7 +524,11 @@ export function trimThinEnds(points: V3[], heights: number[], sections: Section[
     const ahead = wallSurface.closest([e0[0] + out[0] * 1.5, e0[1] + out[1] * 1.5, e0[2] + out[2] * 1.5], 0.5);
     const free = run > 1e-9 && !ahead && !all.ray([e0[0] + n0[0] * lift - out[0], e0[1] + n0[1] * lift - out[1], e0[2] + n0[2] * lift - out[2]], out, 3);
     const start = free ? Math.min(4, Math.max(0.25, Math.ceil(width / 0.25) * 0.25)) : 0;
-    for (let s = start; s <= 4 + 1e-9; s += 0.25) {
+    // Under the footprint, a cut keeps at least 1 mm of the rib.
+    let length = 0;
+    for (let j = 1; j < order.length; j += 1) length += dist(order[j - 1]!, order[j]!);
+    const limit = footprint ? Math.min(most, length - 1) : 4;
+    for (let s = start; s <= limit + 1e-9; s += 0.25) {
       while (k + 1 < order.length - 1 && walked + dist(order[k]!, order[k + 1]!) < s) {
         walked += dist(order[k]!, order[k + 1]!);
         k += 1;
@@ -501,13 +542,18 @@ export function trimThinEnds(points: V3[], heights: number[], sections: Section[
       const n = wallSurface.closest(at, 5)?.normal ?? ([0, 0, 1] as V3);
       const t: V3 = [(b[0] - a[0]) / seg, (b[1] - a[1]) / seg, (b[2] - a[2]) / seg];
       const across: V3 = [n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]];
-      if (wallUnder(all, at, n, across, width / 2) >= WALL_UNDER_MM) {
+      // Under the whole footprint, or the rib's width alone.
+      const stretch = end === 0 ? k : pts.length - 2 - k;
+      const half = footprint ? Math.max(width / 2, footHalf(ss[stretch], width, hs[stretch] ?? 0)) : width / 2;
+      if (wallUnder(all, at, n, across, half) >= WALL_UNDER_MM) {
         found = s === 0 ? null : { at, k };
         if (s > 0) trimmedMm[end] = s;
+        placed = true;
         break;
       }
       if (f >= 1 && k + 1 >= order.length - 1) break;
     }
+    if (!placed) fits = false;
     if (!found) continue;
     // Keep the stretch the cut falls in, from the cut point on.
     const n = pts.length;
@@ -522,7 +568,7 @@ export function trimThinEnds(points: V3[], heights: number[], sections: Section[
       ss = ss.slice(0, j);
     }
   }
-  return { points: pts, heights: hs, sections: ss, trimmedMm };
+  return { trimmed: { points: pts, heights: hs, sections: ss, trimmedMm }, fits };
 }
 
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -649,8 +695,9 @@ export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | 
     const tee = fitted.sections.find((s) => s.profile === "tee");
     const cut = trimmed.trimmedMm.some((mm) => mm > 0);
     const r2 = (n: number) => Math.round(n * 100) / 100;
-    const why = fitted.notes.length || cut
-      ? [...fitted.notes, ...(cut ? [`an end stood on a free edge of the wall (nothing to run into, or too thin to sink into), so it was drawn back ${trimmed.trimmedMm.map(r2).join(" and ")} mm`] : [])].join("; ")
+    const rootless = trimmed.rootless === true;
+    const why = fitted.notes.length || cut || rootless
+      ? [...fitted.notes, ...(cut ? [`an end stood on a free edge of the wall (nothing to run into, or too thin to sink into), so it was drawn back ${trimmed.trimmedMm.map(r2).join(" and ")} mm`] : []), ...(rootless ? ["its flared root would have stood past a free edge of the wall at an end, so it is built with a sharp root"] : [])].join("; ")
       : tee ? `a tee with a ${(tee.flangeChamferDeg ?? 45) > 0 ? "45° chamfered" : "square"} flange where the rib's height is held under the greatest, straight elsewhere` : kinds[0] === "drafted" ? "drafted, as the process asks" : "straight";
     return {
       points,
