@@ -26,7 +26,8 @@ fn main() {
         .set("primitive", "cone")
         .set("radius", od / 2.0)
         .set("topRadius", top_r)
-        .set("height", height * 0.35);
+        .set("height", height * 0.35)
+        .set("centre", [0.0, 0.0, height - height * 0.175]);
     s.apply(&part, ops::boolean("fuse", cone, [0.0, 0.0, height * 0.65])).unwrap();
     s.apply(&part, ops::hole([0.0, 0.0, height], [0.0, 0.0, -1.0], bore, height + 0.5)).unwrap();
     let ro = od / 2.0;

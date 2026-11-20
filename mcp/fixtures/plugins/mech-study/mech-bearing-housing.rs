@@ -24,9 +24,8 @@ fn main() {
     let dy = b.outer + 2.0 * wall;
     let dz = b.width + 2.0 * wall;
     let part = s.solid_new(ops::cuboid(dx, dy, dz)).unwrap();
+    s.apply(&part, ops::hole_through([0.0, 0.0, dz], [0.0, 0.0, -1.0], seat)).unwrap();
     s.apply(&part, ops::hole_through([0.0, 0.0, dz], [0.0, 0.0, -1.0], b.bore)).unwrap();
-    let pocket = wall + 0.5;
-    s.apply(&part, ops::hole([0.0, 0.0, dz], [0.0, 0.0, -1.0], seat, pocket)).unwrap();
         let (bmin, bmax) = s.bounds(&part).unwrap();
     s.done_with(&part, Json::obj().set("bearing", name.as_str()).set("seat", seat).set("bore", b.bore).set("bmin", bmin).set("bmax", bmax));
 }
