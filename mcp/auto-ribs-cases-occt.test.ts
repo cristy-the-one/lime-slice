@@ -1,7 +1,7 @@
 /**
  * Auto ribs with load cases, end to end through the MCP server against real Open CASCADE and the release engine's rib
  * planner, on synthetic solids only. Sections 5b and 5c of mcp/auto-ribs-occt.test.ts, moved here unchanged so they
- * run in the "Folded shell against real Open CASCADE" CI job and the shared Open CASCADE job stays inside its limit.
+ * run in the "Auto ribs against real Open CASCADE" CI job and the shared Open CASCADE job stays inside its limit.
  *
  * 5b. Two load cases on a shelled box: a case whose loads all miss is refused by its name; per-case factors and
  *     deflections; the plan applies; the stored request re-plans the same ribs and the same factors.

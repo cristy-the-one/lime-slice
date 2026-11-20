@@ -322,7 +322,7 @@ jobs:
           # The rib network (ribNet) on flat, sloped, cylinder and freeform shells, and the ribs leak on a sloped floor.
           node --experimental-strip-types mcp/rib-net-occt.test.ts
           # Auto ribs end to end: ribWall on kernel meshes, ribs_plan as a job, ribs_apply, zones, an obstacle, cancel, verify, a curved wall, the flange table.
-          # Its load-case sections (5b, 5c) run in the folded-shell job (mcp/auto-ribs-cases-occt.test.ts).
+          # Its load-case sections (5b, 5c) run in the auto-ribs job (mcp/auto-ribs-cases-occt.test.ts).
           node --experimental-strip-types mcp/auto-ribs-occt.test.ts
           # The step guard on a ribbed shell: cuts at a wall are probed and applied, an edge-only touch is refused by both.
           node --experimental-strip-types mcp/step-guard-occt.test.ts
@@ -447,6 +447,78 @@ jobs:
           node --experimental-strip-types mcp/draft-occt.test.ts
           # Moulding report on a small synthetic shelled box. Kept here so the shared Open CASCADE job stays within its 25 minutes.
           node --experimental-strip-types mcp/moulding-occt.test.ts
+
+  # Auto ribs plans that solve many times (load cases, and later the frequency goal and resin vents), on their own
+  # so neither the shared Open CASCADE job nor the folded-shell job runs near its 25 minutes. Same setup as those jobs.
+  rust-ribs-occt:
+    name: Auto ribs against real Open CASCADE
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      LIME_REQUIRE_OCCT: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+
+      - name: Point at the OCCT install
+        run: |
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+
+      - name: Install the C++ toolchain Clipper2 links against
+        timeout-minutes: 10
+        run: |
+          command -v gcc g++ make pkg-config cmake ninja > /dev/null && exit 0
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-ribs-occt
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 180
+        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Auto ribs against real Open CASCADE
+        timeout-minutes: 25
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          cargo build -p lime-mcp-engine -p lime-model-occt --locked
+          export LIME_OCCT_BRIDGE="$PWD/target/debug/liblime_model_occt.so"
+          export LD_LIBRARY_PATH="${OCCT_ROOT}/lib:${LD_LIBRARY_PATH:-}"
           # Auto ribs with load cases, moved out of the shared job (auto-ribs-occt sections 5b and 5c):
           # two cases with per-case factors against a fresh solve and the stored request re-planned (5b),
           # and ribs_apply {verify:true} with two cases on a 64 × 40 × 14 box, each case before and after (5c).
@@ -630,15 +702,15 @@ jobs:
       - name: Build the Tauri crate
         run: cargo build -p lime-slice-desktop --locked
 
-  # The check the ruleset requires, under its old name. It runs nothing: it passes when the five jobs above pass,
+  # The check the ruleset requires, under its old name. It runs nothing: it passes when the six jobs above pass,
   # and it is skipped, like they are, when only docs or a version bump changed. Do not rename it.
   rust:
     name: test, clippy, and Tauri
-    needs: [changes, rust-tests, rust-mcp-occt, rust-folded-occt, rust-clippy, rust-tauri]
+    needs: [changes, rust-tests, rust-mcp-occt, rust-folded-occt, rust-ribs-occt, rust-clippy, rust-tauri]
     if: always() && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - name: All five Rust jobs passed
+      - name: All six Rust jobs passed
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
