@@ -25,7 +25,7 @@ Written 2026-11-19 by the Claude (Opus) session that has coordinated this work s
 - **Merge main into the feature branch at least weekly.** It was last done 2026-11-19 (#755). The only conflict so far is the `test:smoke` list in `package.json`: resolve it as the union of both sides' specs.
 - **Open CASCADE jobs** have a 25-minute limit (1500 s):
   - "MCP server against real Open CASCADE" (shared) was at about 1177 s on 2026-11-19, so keep new tests out of it.
-  - "Folded shell against real Open CASCADE" runs `folded-shell-occt`, `draft-occt` (after #761) and `moulding-occt`. It was about 480 s before the last two were added. Put new OCCT tests here, or in a job of their own.
+  - "Folded shell against real Open CASCADE" runs `folded-shell-occt`, `draft-occt` (after #761) and `moulding-occt`. It was about 480 s before the last two were added. Auto ribs OCCT tests that solve many times (`auto-ribs-cases-occt`, `frequency-occt`, `vents-occt`) go in "Auto ribs against real Open CASCADE" (`rust-ribs-occt`) instead.
 - **Known flakes** (re-run with `gh run rerun <run> --failed`; check first that the PR doesn't touch the area):
   - `e2e/model-gear.spec.ts` "a rack";
   - `e2e/xy-comp.spec.ts` (the slice form rebuilds under the test; the same race was fixed in `min-layer-time` by waiting for `#slice` to be enabled);
