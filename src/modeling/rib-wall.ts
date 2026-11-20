@@ -199,8 +199,8 @@ export interface WallLoop {
   lengthMm: number;
   class: LoopClass;
   joinedShare: number;
-  /** Runs along the loop of one class, in order. */
-  spans: { class: "joined" | "free"; lengthMm: number; from: V3; to: V3 }[];
+  /** Runs along the loop of one class, in order. `points` follows the run, including every corner. */
+  spans: { class: "joined" | "free"; lengthMm: number; from: V3; to: V3; points: V3[] }[];
 }
 
 export interface WallHole {
@@ -2532,12 +2532,14 @@ export function ribWall(solidIn: RibWallSolid, options: RibWallOptions): RibWall
         if (last && last.class === c) {
           last.lengthMm += l;
           last.to = r3v(V[b]!);
-        } else spans.push({ class: c, lengthMm: l, from: r3v(V[a]!), to: r3v(V[b]!) });
+          last.points.push(r3v(V[b]!));
+        } else spans.push({ class: c, lengthMm: l, from: r3v(V[a]!), to: r3v(V[b]!), points: [r3v(V[a]!), r3v(V[b]!)] });
       });
       if (spans.length > 1 && spans[0]!.class === spans[spans.length - 1]!.class) {
         const lastSpan = spans.pop()!;
         spans[0]!.lengthMm += lastSpan.lengthMm;
         spans[0]!.from = lastSpan.from;
+        spans[0]!.points = [...lastSpan.points.slice(0, -1), ...spans[0]!.points];
       }
       for (const span of spans) span.lengthMm = round(span.lengthMm, 2);
       const share = total > 0 ? joinedLen / total : 0;

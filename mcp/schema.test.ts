@@ -56,6 +56,7 @@ check(
   validateTool("model_apply", { op: { kind: "chamfer", edges: [0] } }) === "input.op.size is required. A chamfer op takes edges (required, list or object), size (required, number), size2 (number), angleDeg (number), flip (true or false), label (text). guide {kind:\"chamfer\"} has its full schema.",
 );
 check("a refused field outside an op is unchanged", validateTool("model_apply", { op: { kind: "scale", factor: 2 }, probe: 1 }) === "input.probe must be true or false.");
+check("a ribNet path may name an open end", validateTool("model_apply", { op: { kind: "ribNet", width: 2.4, height: 6, paths: [{ points: [[0, 0, 0], [1, 0, 0]], openEnds: [false, true] }] } }) === null);
 check("settings and selectors are tools", ["settings_schema", "settings_set", "faces_find", "edges_find"].every((name) => names.has(name)));
 
 function missingDescriptions(node: unknown, missing: string[]): void {

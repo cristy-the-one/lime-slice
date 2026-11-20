@@ -13,6 +13,7 @@
  * the solid's mesh is posed into it first, so points read and typed, zones and ribNet's paths agree.
  */
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
+import { GIVEN_AXIS, NO_RESIN_PRINTER, ventBodyOf, ventLoopsOf } from "../../src/modeling/vents.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wallSpan, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
@@ -70,8 +71,48 @@ function ribCard(this: Session): { card: ReturnType<Session["simCard"]>; row: Ro
 const r = (n: number, k = 3) => (Number.isFinite(n) ? Math.round(n * 10 ** k) / 10 ** k + 0 : n);
 const rv = (p: readonly number[]): V3 => [r(p[0]!, 4), r(p[1]!, 4), r(p[2]!, 4)];
 
+/** The notch on the face the ribs were built on: the midpoint of the two gap ends, so a ray aimed at the pocket meets the opening. */
+function faceNotchAt(ribs: readonly Row[], pocket: Row): V3 | null {
+  const index = typeof pocket.rib === "number" ? pocket.rib : -1;
+  const rib = ribs[index];
+  const points = rib?.points as number[][] | undefined;
+  const ends = rib?.ends as string[] | undefined;
+  const at = Array.isArray(pocket.at) ? (pocket.at as number[]) : null;
+  if (!points || points.length < 2 || !ends || !at) return null;
+  const mine = [ends[0] === "gap" ? points[0] : null, ends[1] === "gap" ? points[points.length - 1] : null].filter((p): p is number[] => p !== null);
+  if (!mine.length) return null;
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, (a[2] ?? 0) - (b[2] ?? 0));
+  const end = mine.reduce((best, p) => (dist(p, at) < dist(best, at) ? p : best));
+  let other: number[] | null = null;
+  let best = 2;
+  for (const row of ribs) {
+    if (row === rib) continue;
+    const pts = row.points as number[][] | undefined;
+    const kind = row.ends as string[] | undefined;
+    if (!pts || pts.length < 2 || !kind) continue;
+    for (const p of [kind[0] === "gap" ? pts[0] : null, kind[1] === "gap" ? pts[pts.length - 1] : null]) {
+      if (!p) continue;
+      const d = dist(p, end);
+      if (d > 0.2 && d < best) {
+        best = d;
+        other = p;
+      }
+    }
+  }
+  if (!other) return rv(end);
+  return rv([(end[0]! + other[0]!) / 2, (end[1]! + other[1]!) / 2, (end[2]! + other[2]!) / 2]);
+}
+
 function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** A build direction: three finite numbers, not all zero. */
+function readBuildAxis(value: unknown): V3 | null {
+  if (!Array.isArray(value) || value.length !== 3) return null;
+  const axis = value.map((v) => (typeof v === "number" ? v : Number.NaN));
+  if (axis.some((v) => !Number.isFinite(v)) || Math.hypot(axis[0]!, axis[1]!, axis[2]!) < 1e-9) return null;
+  return [axis[0]!, axis[1]!, axis[2]!];
 }
 
 /**
@@ -316,6 +357,9 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const goal = goalFromTool(input.goal, density);
   if ("reason" in goal) return refuse("bad-goal", String(goal.reason));
   const process: RibProcess = input.process === "resin" || input.process === "moulded" ? input.process : "filament";
+  const givenAxis = input.buildAxis === undefined ? null : readBuildAxis(input.buildAxis);
+  if (input.buildAxis !== undefined && process !== "resin") return refuse("bad-argument", "buildAxis is only read when process is resin. It is the build direction in the plate frame.");
+  if (process === "resin" && input.buildAxis !== undefined && !givenAxis) return refuse("bad-argument", "buildAxis is the build direction in the plate frame, from the platform toward the tank: three numbers, not all zero.");
   let pull: V3 | null = null;
   if (process === "moulded" && input.pull !== undefined) {
     pull = readPull(input.pull);
@@ -404,6 +448,9 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     options: planOptions(wall, input.baselines !== false),
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
     ...(sentLoads.caseWeights ? { caseWeights: sentLoads.caseWeights } : {}),
+    // Only resin. The panel builds this with the same function, so the same wall asks for the same pockets.
+    // Filament and moulded get nothing, and their bodies stay as they were.
+    ...ventBodyOf(process, { orient: obj.orient, pose: typed.pose }, ventLoopsOf(wall), givenAxis),
   };
   if (!this.engine.ribPlanStart || !this.engine.ribPlanPoll || !this.engine.ribPlanCancel) return refuse("solver-unavailable", "This engine has no rib planner. Rebuild the in-process engine.");
   stage("planning: starting", 0.05);
@@ -447,7 +494,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const engineRibs = (result.ribs ?? []) as Row[];
   // Each rib off the mid-surface onto the face, its ends drawn back from a free edge, its tee stretches checked against
   // its own direction (src/modeling/auto-ribs.ts ribsOnFace, shared with the Auto ribs panel).
-  const onSkin = ribsOnFace(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[], heights: (row.heights as number[]) ?? [], sections: (row.sections as Section[] | undefined) ?? [], ...(num(row.width) !== undefined ? { width: num(row.width)! } : {}), ...(num(row.height) !== undefined ? { height: num(row.height)! } : {}) })), build, rules.width);
+  const onSkin = ribsOnFace(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[], heights: (row.heights as number[]) ?? [], sections: (row.sections as Section[] | undefined) ?? [], ...(num(row.width) !== undefined ? { width: num(row.width)! } : {}), ...(num(row.height) !== undefined ? { height: num(row.height)! } : {}), ...(Array.isArray(row.ends) && (row.ends as unknown[]).length === 2 ? { ends: row.ends as [string, string] } : {}) })), build, rules.width);
   const ribs: Row[] = engineRibs.map((row, i) => {
     const face = onSkin.ribs[i]!;
     return {
@@ -516,11 +563,30 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     flange: { planned: flange, prints: { chamfered: flanges.chamfered, square: flanges.square } },
     profiles,
     snapMaxMm: onSkin.snapMaxMm,
-    // Rib ends left loose, each with why (a no-rib zone's border, or the budget); every other end meets a border, a
-    // hold or another rib.
+    // Rib ends left loose, each with why (a no-rib zone's border, or the budget). A gap end is a vent notch, not a free end.
     looseEnds: ((result.looseEnds as Row[] | undefined) ?? []).map((row) => ({ rib: row.rib, end: row.end, point: Array.isArray(row.point) ? rv(row.point as number[]) : null, reason: row.reason })),
     stats: result.stats,
   };
+  if (process === "resin") {
+    const vents = result.vents && typeof result.vents === "object" ? (result.vents as Row) : null;
+    // The plate's printer is a filament printer. The Form 4 is export-only, so it is never the plate's printer.
+    const planNotes = [givenAxis ? GIVEN_AXIS : NO_RESIN_PRINTER];
+    if (typeof vents?.note === "string") planNotes.push(vents.note);
+    const reasons = new Map<string, number>();
+    for (const item of (vents?.unvented as Row[] | undefined) ?? []) {
+      if (typeof item.message === "string") reasons.set(item.message, (reasons.get(item.message) ?? 0) + 1);
+    }
+    for (const [message, count] of reasons) planNotes.push(`${count} × ${message}`);
+    notes.push(...planNotes);
+    plan.notes = planNotes;
+    if (vents) {
+      const pockets = Array.isArray(vents.pockets) ? (vents.pockets as Row[]).map((pocket) => {
+        const at = faceNotchAt(ribs, pocket);
+        return at ? { ...pocket, at } : pocket;
+      }) : vents.pockets;
+      plan.vents = { ...vents, pockets };
+    }
+  }
   if (process === "moulded") {
     const mesh = wall.request.mesh;
     // A folded wall with no pull is checked rib by rib along its own wall: the report says so, and so do the notes.
@@ -679,7 +745,8 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     const width = num(row.width);
     if (width === undefined) return refuse("bad-rib-plan", `Rib ${i + 1} needs a width.`);
     const sections = Array.isArray(row.sections) && (row.sections as unknown[]).length === points.length - 1 ? (row.sections as Section[]) : undefined;
-    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}) });
+    const ends = Array.isArray(row.ends) && (row.ends as unknown[]).length === 2 ? (row.ends as [string, string]) : undefined;
+    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}), ...(ends ? { ends } : {}) });
   }
   const op = ribNetOf(built, label, record.request);
   if ("reason" in op) return refuse("bad-rib-plan", String(op.reason));

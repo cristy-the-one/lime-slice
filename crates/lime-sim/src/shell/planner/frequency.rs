@@ -272,7 +272,7 @@ fn finish(
     stats.loose_ends.after = loose_ends.len();
     stats.seconds.total = started.elapsed().as_secs_f64();
     rep.stage(PlanStage::Done, 1.0);
-    let mut notes = frequency_notes(unreached, !req.load_cases.is_empty());
+    let mut notes = frequency_notes(unreached, !req.load_cases.is_empty(), req.vent);
     notes.extend(draft_lost_notes(&ribs));
     Ok(RibPlan {
         ribs,
@@ -291,6 +291,7 @@ fn finish(
         loose_ends,
         mesh: clean.mesh,
         stats,
+        vents: None,
         frequency_hz: Some(FrequencyHz {
             bare: hz[0],
             ribbed: hz[1],
@@ -303,8 +304,9 @@ fn finish(
 /// What a frequency plan does, and does not do. `unreached` is the clean
 /// ratio when selection stopped short of the ask. The loads sentence is
 /// only there when the request carried loads: an empty request is planned
-/// under the default pressure, which was not given.
-fn frequency_notes(unreached: Option<f64>, loads_given: bool) -> Vec<String> {
+/// under the default pressure, which was not given. `vent` adds the note
+/// that a frequency plan is not notched.
+fn frequency_notes(unreached: Option<f64>, loads_given: bool, vent: bool) -> Vec<String> {
     let mut notes = vec![
         if loads_given {
             "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string()
@@ -313,6 +315,9 @@ fn frequency_notes(unreached: Option<f64>, loads_given: bool) -> Vec<String> {
         },
         "Loose ends are not extended or closed, and ribs stay at full height.".to_string(),
     ];
+    if vent {
+        notes.push("Venting was skipped: a frequency plan is not notched.".to_string());
+    }
     if let Some(ratio) = unreached {
         notes.push(format!(
             "The frequency ratio cannot be reached. The plan reaches ×{ratio:.6}."
@@ -355,12 +360,13 @@ fn empty(
         loose_ends: Vec::new(),
         mesh: req.mesh.clone(),
         stats,
+        vents: None,
         frequency_hz: Some(FrequencyHz {
             bare: hz,
             ribbed: hz,
         }),
         frequency_factor: Some(1.0),
-        notes: frequency_notes(None, !req.load_cases.is_empty()),
+        notes: frequency_notes(None, !req.load_cases.is_empty(), req.vent),
     }
 }
 
@@ -690,7 +696,16 @@ mod tests {
     use super::super::field::Field;
     use super::super::surface::Surface;
     use super::super::{Holds, RibPlanRequest};
-    use super::mode_results;
+    use super::{frequency_notes, mode_results};
+
+    #[test]
+    fn a_resin_frequency_plan_says_venting_was_skipped() {
+        let notes = frequency_notes(None, false, true);
+        assert!(notes.iter().any(|note| note == "Venting was skipped: a frequency plan is not notched."));
+        assert!(!frequency_notes(None, true, false).iter().any(|note| note.contains("Venting")));
+        assert!(frequency_notes(None, true, false).iter().any(|note| note.contains("Loads are ignored")));
+        assert!(frequency_notes(None, false, false).iter().any(|note| note == "Ribs follow the lowest mode shape."));
+    }
     use crate::shell::{IsotropicShell, ShellLoad, ShellMesh, ShellModel, ShellOptions};
     use crate::units::norm;
 

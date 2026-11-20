@@ -355,6 +355,8 @@ export interface BuiltRib {
   fields?: ProfileFields;
   /** One per stretch, as the planner gives them; absent, every stretch is `profile` with `fields`. */
   sections?: Section[];
+  /** The planner's end kinds. A "gap" end is a vent notch and is built square. */
+  ends?: [string, string];
 }
 
 const sectionKey = (s: Section | undefined) => (s ? JSON.stringify([s.profile, s.width, s.draftDeg, s.rootRadius, s.flangeWidth, s.flangeThickness, s.flangeChamferDeg]) : "");
@@ -472,15 +474,16 @@ export function ribNetOf(ribs: readonly BuiltRib[], label: string, auto: unknown
         last.heights.push(...hs);
       } else merged.push({ points: piece.points.map((p) => [...p] as V3), heights: hs, ...(piece.section ? { section: piece.section } : {}) });
     }
-    for (const piece of merged) {
+    const tall = merged.filter((piece) => piece.heights.some((x) => x >= 0.1));
+    tall.forEach((piece, i) => {
       const height = piece.heights.reduce((most, x) => Math.max(most, x), 0);
-      if (!(height >= 0.1)) continue;
       const section: Section = piece.section ?? { profile: rib.profile, width: rib.width, ...(rib.fields ?? {}) };
       // A stretch too low for its root and flange is built straight, as the planner solved it.
       const built: Section = height >= sectionLeast(section) ? section : { profile: "straight", width: section.width };
       const varies = piece.heights.some((x) => Math.abs(x - height) > 1e-9);
-      paths.push({ points: piece.points, height: Math.round(height * 1e4) / 1e4, ...(varies ? { heights: piece.heights.map((x) => Math.round(x * 1e4) / 1e4) } : {}), ...built });
-    }
+      const openEnds: [boolean, boolean] = [i === 0 && rib.ends?.[0] === "gap", i === tall.length - 1 && rib.ends?.[1] === "gap"];
+      paths.push({ points: piece.points, height: Math.round(height * 1e4) / 1e4, ...(varies ? { heights: piece.heights.map((x) => Math.round(x * 1e4) / 1e4) } : {}), ...(openEnds[0] || openEnds[1] ? { openEnds } : {}), ...built });
+    });
   }
   if (paths.length === 0) return { reason: "The plan has no rib tall enough to build (every stretch is under 0.1 mm)." };
   if (paths.length > 400) return { reason: `The plan splits into ${paths.length} runs of one height; a rib network takes at most 400. Plan with fewer ribs (a budget or a lighter goal), or fewer height caps.` };
@@ -750,6 +753,8 @@ export interface FaceRib {
   teeMm?: number;
   /** How far each end was drawn back from a free edge, mm, when either was. */
   trimmedMm?: [number, number];
+  /** The planner's end kinds. A "gap" end is a vent notch and is built square. */
+  ends?: [string, string];
   why: string;
 }
 
@@ -760,6 +765,8 @@ export interface PlanRibIn {
   sections?: Section[];
   width?: number;
   height?: number;
+  /** The planner's end kinds, when the plan names them. */
+  ends?: [string, string];
 }
 
 /**
@@ -798,6 +805,7 @@ export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | 
       profile: kinds.length === 1 ? kinds[0]! : kinds.join("+"),
       ...(tee ? { flangeChamferDeg: tee.flangeChamferDeg ?? 45, teeMm: length("tee") } : {}),
       ...(cut ? { trimmedMm: trimmed.trimmedMm } : {}),
+      ...(row.ends ? { ends: row.ends } : {}),
       why,
     };
   });
@@ -809,8 +817,8 @@ export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | 
  * skipped stretches, ends run into a wall or a rib left out, crossings counted once). Null when ribNet would refuse
  * them. The planner's own volume is the network on the mid-surface before any of that.
  */
-export function builtVolumeOf(solid: RibWallSolid, ribs: readonly Pick<FaceRib, "points" | "heights" | "sections" | "width">[]): number | null {
-  const built: BuiltRib[] = ribs.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: rib.sections[0]?.profile ?? "straight", sections: rib.sections }));
+export function builtVolumeOf(solid: RibWallSolid, ribs: readonly Pick<FaceRib, "points" | "heights" | "sections" | "width" | "ends">[]): number | null {
+  const built: BuiltRib[] = ribs.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: rib.sections[0]?.profile ?? "straight", sections: rib.sections, ...(rib.ends ? { ends: rib.ends } : {}) }));
   const op = ribNetOf(built, "estimate", undefined);
   if ("reason" in op) return null;
   const plan = ribNetPlan(op, { positions: solid.positions, faceOf: solid.faceOf });

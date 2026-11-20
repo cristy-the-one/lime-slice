@@ -51,6 +51,7 @@ mod profile;
 mod select;
 mod surface;
 mod trace;
+mod vents;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -71,6 +72,7 @@ pub use profile::{
     Process, ProfileRules, RibProfile, DRAFT_LOST_NOTE,
 };
 pub use trace::Family;
+pub use vents::{vent_pockets, BorderKind, BorderRun, EndKind, RibRun, VentPocket, VentPockets, Venting, PART_CUPS, RESIN_VENT_MM};
 
 /// The default load when none is given: 1 kPa on every triangle, along
 /// its normal. Only ratios matter for planning.
@@ -304,6 +306,18 @@ pub struct RibPlanRequest {
     pub rules: RibRules,
     pub goal: Goal,
     pub options: PlannerOptions,
+    /// Cut a vent through each pocket the ribs close, when the part is resin.
+    /// Filament and moulded leave this false, and the plan is unchanged.
+    pub vent: bool,
+    /// Plate frame, from the platform toward the tank. Default +Z, the part as
+    /// it sits. A pocket cups when the side the ribs stand on points along this.
+    pub build_axis: [f64; 3],
+    /// The wall's outer border is a side wall, so it closes a cell. A free
+    /// edge, and every hole, stays open. Filament and moulded leave this false.
+    /// Ignored when [`RibPlanRequest::borders`] is not empty.
+    pub rising_border: bool,
+    /// Wall borders in the wall frame. Empty uses [`RibPlanRequest::rising_border`].
+    pub borders: Vec<(Vec<[f64; 3]>, vents::BorderKind)>,
 }
 
 impl RibPlanRequest {
@@ -322,6 +336,10 @@ impl RibPlanRequest {
             rules: RibRules::default(),
             goal: Goal::Balanced,
             options: PlannerOptions::default(),
+            vent: false,
+            build_axis: [0.0, 0.0, 1.0],
+            rising_border: false,
+            borders: Vec::new(),
         }
     }
 }
@@ -333,6 +351,8 @@ pub enum RibEndKind {
     Hold,
     Rib,
     Free,
+    /// The end of a vent gap. It is not a loose end.
+    Gap,
 }
 
 #[derive(Clone, Debug)]
@@ -486,6 +506,9 @@ pub struct RibPlan {
     /// the returned ribs cut in. Rib vertices index it.
     pub mesh: ShellMesh,
     pub stats: PlanStats,
+    /// Resin only: the pockets the ribs closed, and the notches that open them.
+    /// The reported stiffness is the notched ribs. Absent for filament and moulded.
+    pub vents: Option<Venting>,
     /// Lowest natural frequency, Hz, bare then ribbed, on [`RibPlan::mesh`].
     /// Absent on a stiffness plan.
     pub frequency_hz: Option<FrequencyHz>,
@@ -772,6 +795,14 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             loose_ends: Vec::new(),
             mesh: req.mesh.clone(),
             stats,
+            vents: req.vent.then_some(Venting {
+                size_mm: RESIN_VENT_MM,
+                factor_before: 1.0,
+                factor_after: 1.0,
+                pockets: Vec::new(),
+                unvented: Vec::new(),
+                note: None,
+            }),
             frequency_hz: None,
             frequency_factor: None,
             notes: Vec::new(),
@@ -951,7 +982,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     // stiffer than it is. When the clean solve misses a stiffness or
     // deflection goal the selection reached, selection runs again with the
     // target moved by the gap (two more times at most).
-    let (outcome, closed, clean, goal_met) = loop {
+    let (outcome, mut closed, mut clean, mut goal_met) = loop {
         let outcome = select::run(&mut ev, &ctx, &cands, &rep)?;
         stats.seconds.select += outcome.seconds[0];
         stats.seconds.connect += outcome.seconds[1];
@@ -1049,6 +1080,83 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     stats.seconds.solver = ev.seconds;
     stats.loose_ends = closed.stats;
 
+    // Resin: the reported solve is the notched ribs. The selection above is
+    // the unnotched one, so filament and moulded (vent left false) are unchanged.
+    let vents = if req.vent {
+        let before = clean.factor;
+        let build = crate::units::normalize(req.build_axis).unwrap_or([0.0, 0.0, 1.0]);
+        // A loose end is not a drain. An open border and a through hole are.
+        let generated = if req.borders.is_empty() { rising_borders(&s0, req.rising_border) } else { Vec::new() };
+        let border_lines: &[(Vec<[f64; 3]>, vents::BorderKind)] = if req.borders.is_empty() { &generated } else { &req.borders };
+        let border_runs: Vec<vents::BorderRun<'_>> = border_lines
+            .iter()
+            .map(|(pts, kind)| vents::BorderRun { points: pts, kind: *kind })
+            .collect();
+        let mut found = match vents::opening_of(&req.mesh, req.rules.side) {
+            Some(opening) => vents::find(&closed.ribs, &[], &border_runs, opening, build),
+            None => vents::VentPockets {
+                cups: false,
+                closed: 0,
+                size_mm: RESIN_VENT_MM,
+                pockets: Vec::new(),
+                unvented: Vec::new(),
+                note: None,
+            },
+        };
+        let (after, pockets) = if found.pockets.is_empty() {
+            (before, found.pockets)
+        } else {
+            let loose_pts: Vec<([f64; 3], LooseEndReason)> = closed
+                .loose
+                .iter()
+                .map(|&(rib, end, reason)| {
+                    let pts = &closed.ribs[rib].points;
+                    let p = if end == 0 { pts[0] } else { *pts.last().expect("rib points") };
+                    (p, reason)
+                })
+                .collect();
+            let mut cut = vents::notch(&closed.ribs, &found.pockets);
+            vents::seat_gaps(&s0, &mut cut.ribs, &cut.pairs, &mut cut.pockets);
+            found.unvented.extend(cut.refused);
+            let pockets = cut.pockets;
+            let notched = cut.ribs;
+            closed.loose = remap_loose(&loose_pts, &notched);
+            closed.ribs = notched;
+            clean = clean_solve(req, &s0, &cases0, &closed.ribs)?;
+            stats.solves += 2;
+            goal_met = match req.goal {
+                Goal::Stiffer(f) => clean.factor >= f,
+                Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
+                Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
+                Goal::Balanced => goal_met,
+                // A frequency plan returns before the vent block.
+                Goal::Frequency { .. } => false,
+            };
+            // pocket.rib indexes the ribs this plan returns. A piece that did not embed is named, not dropped.
+            let mut placed = Vec::new();
+            for p in pockets {
+                match clean.kept.iter().position(|&i| i == p.rib) {
+                    Some(rib) => placed.push(vents::VentPocket { rib, at: p.at, size_mm: p.size_mm }),
+                    None => found.unvented.push(vents::VentUnvented {
+                        at: p.at,
+                        message: "the notched rib is not in the plan".to_string(),
+                    }),
+                }
+            }
+            (clean.factor, placed)
+        };
+        Some(Venting {
+            size_mm: found.size_mm,
+            factor_before: before,
+            factor_after: after,
+            pockets,
+            unvented: found.unvented,
+            note: found.note,
+        })
+    } else {
+        None
+    };
+
     let bare = clean.bare;
     let ribbed = clean.ribbed;
     let rib_volume = clean.volume;
@@ -1073,6 +1181,17 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             }
         }
         let length = points.windows(2).map(|w| norm(sub(w[1], w[0]))).sum();
+        let mut ends = clean.ends[k];
+        if let Some(v) = &vents {
+            for pocket in &v.pockets {
+                if norm(sub(points[0], pocket.at)) < 1.0 {
+                    ends[0] = RibEndKind::Gap;
+                }
+                if norm(sub(*points.last().expect("points"), pocket.at)) < 1.0 {
+                    ends[1] = RibEndKind::Gap;
+                }
+            }
+        }
         ribs.push(PlannedRib {
             vertices: d.chain.clone(),
             points,
@@ -1086,7 +1205,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 .map(|&h| d.profile.section_at(d.width, h))
                 .collect(),
             side: rules.side,
-            ends: clean.ends[k],
+            ends,
             family: d.family,
             length_mm: length,
             volume_mm3: d.volume(&clean.pos),
@@ -1178,10 +1297,53 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         loose_ends,
         mesh: clean.mesh,
         stats,
+        vents,
         frequency_hz: None,
         frequency_factor: None,
         notes,
     })
+}
+
+/// The outer boundary, when a side wall stands on it. A shorter loop of this mesh is an opening
+/// through it. A standing wall is not an opening: the panel and MCP send its outline in
+/// `req.borders` as a rising border, and this fallback is not used then.
+fn rising_borders(s0: &surface::Surface, rising: bool) -> Vec<(Vec<[f64; 3]>, vents::BorderKind)> {
+    if !rising {
+        return Vec::new();
+    }
+    let loops = s0.boundary_loops();
+    let longest = loops.iter().enumerate().max_by_key(|(_, loop_ix)| loop_ix.len()).map(|(i, _)| i);
+    loops
+        .into_iter()
+        .enumerate()
+        .map(|(i, loop_ix)| {
+            let mut pts: Vec<[f64; 3]> = loop_ix.iter().map(|&v| s0.pos[v as usize]).collect();
+            if let Some(first) = pts.first().copied() {
+                pts.push(first);
+            }
+            let kind = if Some(i) == longest { vents::BorderKind::Rises } else { vents::BorderKind::Hole };
+            (pts, kind)
+        })
+        .collect()
+}
+
+/// Loose ends survive a notch when their point is still a rib end. A gap's new ends are not loose ends.
+fn remap_loose(points: &[([f64; 3], LooseEndReason)], ribs: &[GRib]) -> Vec<(usize, usize, LooseEndReason)> {
+    let mut out = Vec::new();
+    for &(point, reason) in points {
+        for (i, rib) in ribs.iter().enumerate() {
+            if rib.points.len() < 2 {
+                continue;
+            }
+            if norm(sub(rib.points[0], point)) < 0.2 {
+                out.push((i, 0, reason));
+            }
+            if norm(sub(*rib.points.last().expect("rib points"), point)) < 0.2 {
+                out.push((i, 1, reason));
+            }
+        }
+    }
+    out
 }
 
 /// The draft-lost sentence, when any drafted stretch was built straight

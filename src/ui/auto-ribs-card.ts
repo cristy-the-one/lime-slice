@@ -16,9 +16,11 @@
  * State and sentences: src/auto-ribs.ts. The app side (solid, worker, apply, picks): src/app/model/auto-ribs.ts.
  */
 import { Check, X, createElement } from "lucide";
+import type { Affine } from "../model-space.ts";
 import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
+import { plateToWall, ventBodyOf, ventLoopsOf } from "../modeling/vents.ts";
 import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSpan, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
 import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
@@ -113,8 +115,10 @@ export interface AutoRibsHost {
   densityGCm3(): number;
   nozzleMm(): number;
   printerName(): string;
-  /** The printer's build direction in the panel's frame. */
+  /** The printer's build direction in the panel's frame. Filament flanges use it. Resin vents do not. */
   build(): V3;
+  /** The plate orientation and the part's pose, so a resin build axis turns the same way for the panel and ribs_plan. */
+  plate(): { orient: readonly number[]; pose: Affine };
   /** The object's Stress setup, when it has one. */
   stress(): { holds: StudyHold[]; loads: StudyLoad[] } | null;
   /** Other objects on the plate, for an obstacle. */
@@ -191,6 +195,8 @@ let liveDrawn = new Map<number, DrawnRib>();
 
 /** The run's request and the read it came from: what the plan answers. */
 let ranWith: { key: string; goal: PlanGoal; body: RibPlanBody; wall: RibWall; solid: AutoRibsSolid; caseNames: string[] | null; process: RibProcess } | null = null;
+/** Tests set the build axis the resin plan uses. Absent: the part as it sits. */
+let buildOverride: V3 | null = null;
 let balancedFactor: number | null = null;
 let edit: { head: string } | null = null;
 let applying = false;
@@ -250,6 +256,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
         <p class="model-note" id="autoRibsMouldingTitle">Moulding</p>
         <ul class="ar-lines" id="autoRibsMouldingList" aria-label="Moulding"></ul>
       </div>
+      <p class="model-note" id="autoRibsVents" hidden></p>
       <p class="model-note ar-faint" id="autoRibsRelative">${RELATIVE_NOTE}</p>
       <ul class="tc-list ar-ribs" id="autoRibsList" aria-label="Planned ribs"></ul>
       <p class="model-note is-warn" id="autoRibsEditedNote" hidden></p>
@@ -640,7 +647,20 @@ export async function autoRibsPrimary() {
 }
 
 function planStale(): boolean {
-  return !!ranWith && (ranWith.key !== readKey() || JSON.stringify(ranWith.goal) !== JSON.stringify(currentGoal()) || JSON.stringify(ranWith.body.rules) !== JSON.stringify(bodyRules(ranWith.wall)));
+  const axis = JSON.stringify(ranWith?.body.buildAxis ?? null);
+  const now = JSON.stringify(resinAxis());
+  return !!ranWith && (ranWith.key !== readKey() || JSON.stringify(ranWith.goal) !== JSON.stringify(currentGoal()) || JSON.stringify(ranWith.body.rules) !== JSON.stringify(bodyRules(ranWith.wall)) || axis !== now);
+}
+
+/** The resin build axis in the wall frame. Plate +Z unless the test named one. Filament plans carry none. */
+function resinAxis(): V3 | null {
+  if (!host || ranWith?.process !== "resin") return null;
+  const frame = host.plate();
+  return plateToWall(frame.orient, frame.pose, buildOverride ?? [0, 0, 1]);
+}
+
+function ventLoops(wall: RibWall) {
+  return ventLoopsOf(wall);
 }
 
 function currentGoal(): PlanGoal {
@@ -718,7 +738,8 @@ async function startRun() {
   hzCard = goal.kind === "frequency" ? fallbackHzNote(material?.forFilament === false && material.polymer && material.card ? { forFilament: false, polymer: material.polymer, id: material.card } : null) : "";
   ignoredLoads = pendingIgnored;
   const asked = loadRequest(card.loads, card.cases);
-  const body: RibPlanBody = { request: sent, ...(sentMaterial ? { material: sentMaterial } : {}), rules: bodyRules(wall), goal, options: planOptions(wall, true), holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
+  const vent = ventBodyOf(card.ribs.process, host.plate(), ventLoops(wall), buildOverride);
+  const body: RibPlanBody = { request: sent, ...(sentMaterial ? { material: sentMaterial } : {}), rules: bodyRules(wall), goal, options: planOptions(wall, true), holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}), ...vent };
 
   generation += 1;
   const mine = generation;
@@ -800,7 +821,7 @@ async function applyPlan() {
     host.readout("Every rib was taken out: there is nothing to apply.");
     return;
   }
-  const built: BuiltRib[] = keptFace.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: (rib.sections[0]?.profile ?? "straight"), sections: rib.sections }));
+  const built: BuiltRib[] = keptFace.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: (rib.sections[0]?.profile ?? "straight"), sections: rib.sections, ...(rib.ends ? { ends: rib.ends } : {}) }));
   const plan = run.plan!;
   const auto = { panel: card, plan: { ribs: kept.length, stiffnessFactor: plan.stiffnessFactor, ...(plan.frequencyHz ? { frequencyHz: plan.frequencyHz, frequencyFactor: plan.frequencyFactor } : {}), ribVolumeMm3: plan.ribVolumeMm3, stoppedEarly: plan.stoppedEarly, edited: run.removed.length > 0 } };
   const op = ribNetOf(built, AUTO_RIBS_LABEL, auto);
@@ -1089,6 +1110,28 @@ function paintResult() {
       if (i === all.length - 1 && plan.notBetterThanBaseline) li.className = "is-warn";
       return li;
     }));
+  }
+  const vents = $<HTMLElement>("#autoRibsVents");
+  if (vents) {
+    const n = plan.vents?.pockets.length ?? 0;
+    const unvented = plan.vents?.unvented ?? [];
+    const m = unvented.length;
+    const reasons = [...new Set(unvented.map((item) => item.message))].join("; ");
+    const extra = [plan.vents?.note, ...(plan.notes ?? [])].filter((line): line is string => typeof line === "string" && line.length > 0);
+    let sentence = "";
+    if (n > 0) sentence = `${n} pocket${n === 1 ? "" : "s"} vented, ${m} could not be vented`;
+    else if (m > 0) sentence = `${m} could not be vented: ${reasons}`;
+    else {
+      const refusal = extra.find((line) => !line.startsWith("Stand-in:"));
+      if (refusal) sentence = refusal;
+    }
+    if (sentence) {
+      const rest = extra.filter((line) => line !== sentence && !sentence.includes(line));
+      if (rest.length > 0) sentence = `${sentence}. ${rest.join(" ")}`;
+    }
+    const show = ranWith?.process === "resin" && sentence.length > 0;
+    vents.hidden = !show;
+    vents.textContent = show ? sentence : "";
   }
   const moulding = $<HTMLElement>("#autoRibsMoulding");
   const mouldingList = $<HTMLElement>("#autoRibsMouldingList");
@@ -2118,4 +2161,8 @@ function wallExtent(): number {
   plan: () => run.plan,
   zonesRead: () => (read?.wall ? read.wall.report.zones : null),
   faceRibs: () => faceRibs.map((rib) => ({ points: rib.points, heights: rib.heights })),
+  setBuild: (axis: V3) => {
+    buildOverride = axis;
+    paint();
+  },
 };
