@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, footHalf, isOverhang, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight, trimThinEnds, type Section } from "./auto-ribs.ts";
+import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, footHalf, isOverhang, MOULD_BASE_RATIO, MOULD_DRAFT_DEG, MOULD_ROOT_FLOOR, mouldedDefaultRoot, mouldedDefaultWidth, mouldedPlanRoot, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight, trimThinEnds, type Section } from "./auto-ribs.ts";
 import { RibSurface, ribNetPlan, ribShape } from "./rib-net.ts";
 import { ribWall, type RibWallSolid } from "./rib-wall.ts";
 
@@ -33,7 +33,31 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   const typed = ribRules({ ...base, given: { width: 1.0 } });
   check("a typed width is rounded to whole beads, at least 2", near(typed.width, 0.9) && typed.defaults.some((row) => row.includes("rounded to 2 beads")), JSON.stringify(typed));
   check("a wide typed width keeps its beads", near(ribRules({ ...base, given: { width: 2.3 } }).width, 2.25));
-  check("moulded is 0.6 of the wall, resin 0.8", near(ribRules({ ...base, process: "moulded" }).width, 1.2) && near(ribRules({ ...base, process: "resin" }).width, 1.6));
+  check("resin is 0.8 of the wall", near(ribRules({ ...base, process: "resin" }).width, 1.6));
+  const moulded = ribRules({ ...base, process: "moulded" });
+  const mouldedWidth = mouldedDefaultWidth(2, 6);
+  const replied = Math.round(mouldedWidth * 1e6) / 1e6;
+  const repliedBase = replied + 6 * Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
+  check("moulded width is the shared rule at 3 × the wall, so the base is 0.6", near(moulded.width, mouldedWidth) && repliedBase <= MOULD_BASE_RATIO * 2 && near(repliedBase, MOULD_BASE_RATIO * 2, 1e-6), String(moulded.width));
+  check("a typed moulded width is kept, and its root is not clamped", near(ribRules({ ...base, process: "moulded", given: { width: 1.4 } }).width, 1.4) && ribRules({ ...base, process: "moulded", given: { width: 0.6 } }).mouldedRoot === undefined);
+  check("the moulded sentence says the width is at half height, and the root clamp in one sentence", moulded.defaults.some((row) => row.startsWith("width ") && row.includes("at half height, sized so the base is 0.6 × the thinnest wall")) && moulded.defaults.some((row) => row === "root radius half the top width, or 0.25 × the thickest wall when half the top is smaller"), JSON.stringify(moulded.defaults));
+  check("the default root is the clamp at 3 × the wall", moulded.mouldedRoot !== undefined && near(moulded.mouldedRoot, mouldedPlanRoot(mouldedWidth, 6, 2, 2).root, 1e-12) && near(moulded.mouldedRoot, 0.5, 1e-12));
+  const uneven = ribRules({ ...base, process: "moulded", thinnestMm: 1.9, thickestMm: 4 });
+  check("when the thickest is more than twice the thinnest, the width stays on the thinnest and the note says the root cannot", near(uneven.width, mouldedDefaultWidth(1.9, 6)) && uneven.mouldedRoot !== undefined && near(uneven.mouldedRoot, 0.5 * Math.max(0, uneven.width - 6 * Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180)), 1e-12) && /more than twice/.test(uneven.mouldedNote ?? ""), JSON.stringify(uneven));
+  // The same six widths and roots the crate test locks, so the two languages match.
+  const shared: [number, number, number, number, boolean][] = [
+    [2, 2, 1.165089, 0.5650894350717824, false],
+    [2, 4, 1.130179, 0.5301793701435649, false],
+    [2, 6, 1.095269, 0.5, true],
+    [3, 3, 1.747634, 0.8476344026076735, false],
+    [3, 6, 1.695269, 0.7952693052153472, false],
+    [3, 9, 1.642904, 0.75, true],
+  ];
+  check(
+    "moulded width and root match the crate table, clamped only at 3 × wall",
+    shared.every(([wall, height, width, root, clamped]) => near(mouldedDefaultWidth(wall, height), width, 1e-12) && near(mouldedDefaultRoot(width, height, wall), root, 1e-12) && (clamped ? near(root, MOULD_ROOT_FLOOR * wall, 1e-12) : root > MOULD_ROOT_FLOOR * wall + 1e-6)),
+    shared.map(([wall, height]) => [wall, height, mouldedDefaultWidth(wall, height), mouldedDefaultRoot(mouldedDefaultWidth(wall, height), height, wall)]).join(" | "),
+  );
   check("a small wall keeps spacing at least four widths", near(ribRules({ ...base, areaMm2: 30 * 20, outerLoopMm: 100 }).minSpacing, 5.4));
 }
 

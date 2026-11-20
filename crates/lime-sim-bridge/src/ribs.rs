@@ -27,7 +27,7 @@ use std::time::Instant;
 use lime_sim::shell::planner::{
     choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, LoadCombine, LooseEndReason, PlanControl, PlanEvent,
     PlanStage, PlannerOptions, Process, ProfileRules, RibChange, RibEndKind, RibPlan,
-    RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode,
+    RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode, DRAFT_LOST_NOTE,
 };
 use lime_sim::shell::{IsotropicShell, RibSection, RibSide, ShellHold, ShellLoad, ShellMesh};
 use serde::Deserialize;
@@ -700,6 +700,17 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "baselines": r6(s.baselines), "solver": r6(s.solver), "total": r6(s.total),
         },
     });
+    // Only when a drafted rib lost its draft. An empty list, and the
+    // frequency notes, stay off the JSON so an unchanged plan stays unchanged.
+    let lost: Vec<&str> = plan
+        .notes
+        .iter()
+        .filter(|note| note.as_str() == DRAFT_LOST_NOTE)
+        .map(|note| note.as_str())
+        .collect();
+    if !lost.is_empty() {
+        out["notes"] = json!(lost);
+    }
     // Only a worst-case plan has one, and the tool asks for weighted plans.
     if !plan.worst_trace.is_empty() {
         out["worstTrace"] = json!(plan

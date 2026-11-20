@@ -19,7 +19,7 @@ import { Check, X, createElement } from "lucide";
 import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
-import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
+import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSpan, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
 import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
 import type { StudyHold, StudyLoad } from "../sim/study.ts";
@@ -585,10 +585,12 @@ async function readWall() {
 
 function rulesFor(wall: RibWall): RibRulesChosen {
   const outer = wall.report.loops.reduce((most, loop) => Math.max(most, loop.lengthMm), 0);
+  const span = wallSpan(wall.request.mesh.thickness);
   return ribRules({
     process: card.ribs.process,
     nozzleMm: host?.nozzleMm() ?? 0.4,
     thicknessMm: wall.report.thickness.medianMm,
+    ...(span ? { thinnestMm: span.thin, thickestMm: span.thick } : {}),
     areaMm2: wall.report.areaMm2,
     outerLoopMm: outer,
     given: { ...(card.ribs.width != null ? { width: card.ribs.width } : {}), ...(card.ribs.height != null ? { maxHeight: card.ribs.height } : {}) },
@@ -631,7 +633,7 @@ function bodyRules(wall: RibWall): RibPlanBody["rules"] {
   const chosen = rulesFor(wall);
   const step = Math.max(1, Math.floor(wall.normals.length / 64));
   const flange = planFlange(wall.normals.filter((_, i) => i % step === 0), host?.build() ?? [0, 0, 1]).flange;
-  return { width: chosen.width, maxHeight: chosen.maxHeight, minHeight: chosen.minHeight, minSpacing: chosen.minSpacing, minLength: chosen.minLength, profile: wireProfileOf(card.ribs.profile, card.ribs.process, flange) as RibPlanBody["rules"]["profile"] };
+  return { width: chosen.width, maxHeight: chosen.maxHeight, minHeight: chosen.minHeight, minSpacing: chosen.minSpacing, minLength: chosen.minLength, profile: wireProfileOf(card.ribs.profile, card.ribs.process, flange, {}, chosen.mouldedRoot) as RibPlanBody["rules"]["profile"] };
 }
 
 async function startRun() {
@@ -695,7 +697,8 @@ async function startRun() {
     const built = ribsOnFace({ positions: solid.positions, faceOf: solid.faceOf }, wall, reply.plan.ribs, host.build(), body.rules.width);
     faceRibs = built.ribs;
     if (goal.kind === "balanced" && !reply.plan.stoppedEarly) balancedFactor = reply.plan.stiffnessFactor;
-    host.readout(reply.plan.ribs.length === 0 ? (reply.plan.stoppedEarly ? "Stopped before the first rib: nothing to apply." : "No rib pays on this wall under these rules.") : reply.plan.stoppedEarly ? "Stopped early. The plan so far can be applied." : "Check the plan, then Apply.");
+    const said = reply.plan.ribs.length === 0 ? (reply.plan.stoppedEarly ? "Stopped before the first rib: nothing to apply." : "No rib pays on this wall under these rules.") : reply.plan.stoppedEarly ? "Stopped early. The plan so far can be applied." : "Check the plan, then Apply.";
+    host.readout(reply.plan.notes?.length ? `${said} ${reply.plan.notes.join(" ")}` : said);
   } else host.readout(reply.reason);
   paint();
 }
@@ -1289,9 +1292,11 @@ function paintSizes() {
   const height = $<HTMLInputElement>("#autoRibsHeight");
   if (height) height.placeholder = chosen ? fmt(chosen.maxHeight, 1) : "auto";
   const list = $<HTMLElement>("#autoRibsDefaults");
-  if (list) list.replaceChildren(...(chosen?.defaults ?? ["Pick the wall to see the defaults it gives."]).map((text) => {
+  const lines = chosen ? [...chosen.defaults, ...(chosen.mouldedNote ? [chosen.mouldedNote] : [])] : ["Pick the wall to see the defaults it gives."];
+  if (list) list.replaceChildren(...lines.map((text) => {
     const li = document.createElement("li");
-    li.textContent = text.charAt(0).toUpperCase() + text.slice(1) + ".";
+    const head = text.charAt(0).toUpperCase() + text.slice(1);
+    li.textContent = /[.!?]$/.test(head) ? head : `${head}.`;
     return li;
   }));
 }

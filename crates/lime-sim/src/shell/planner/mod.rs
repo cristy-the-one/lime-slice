@@ -66,7 +66,10 @@ use super::{
     ShellModel, ShellOptions,
 };
 
-pub use profile::{choose_profile, FlangeShape, Process, ProfileRules, RibProfile};
+pub use profile::{
+    choose_profile, moulded_default_root, moulded_default_width, moulded_plan_root, FlangeShape,
+    Process, ProfileRules, RibProfile, DRAFT_LOST_NOTE,
+};
 pub use trace::Family;
 
 /// The default load when none is given: 1 kPa on every triangle, along
@@ -1123,6 +1126,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     };
     stats.seconds.total = started.elapsed().as_secs_f64();
     rep.stage(PlanStage::Done, 1.0);
+    let notes = draft_lost_notes(&ribs);
     Ok(RibPlan {
         ribs,
         rib_volume_mm3: rib_volume,
@@ -1142,8 +1146,22 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         stats,
         frequency_hz: None,
         frequency_factor: None,
-        notes: Vec::new(),
+        notes,
     })
+}
+
+/// The draft-lost sentence, when any drafted stretch was built straight
+/// because its top closed. Empty otherwise, so a plan that keeps its
+/// draft stays as it was.
+pub(crate) fn draft_lost_notes(ribs: &[PlannedRib]) -> Vec<String> {
+    if ribs
+        .iter()
+        .any(|rib| rib.profile.loses_draft(rib.width, &rib.heights))
+    {
+        vec![DRAFT_LOST_NOTE.to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// A chosen rib by its geometry: points on the mid-surface and the height

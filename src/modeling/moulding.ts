@@ -6,9 +6,15 @@
  * The section is the one ribNet builds (`ribShape`). The junction circle is read from that outline, so the
  * check does not need the planner's Rust geometry.
  *
- * Thresholds are named constants. They are not product defaults: the moulded rib's width, draft and root
- * stay as the planner builds them.
+ * Thresholds are named constants. The report does not resize a rib. The moulded default's width and root
+ * are chosen in `ribRules` (the thinnest wall for the base, the thickest for the root). This report
+ * only measures the section it is given, against the local wall.
+ *
+ * The mesh thickness reaches the planner rounded to 4 decimals, the reported median to 3, and each
+ * worst ratio is shown to 4 decimals. The base and radius flags and their pass use that same 4-decimal
+ * rounding, so a rule cannot pass while its flag is listed. The 1.2 junction comparison stays strict.
  */
+import { mouldedDefaultRoot, mouldedDefaultWidth } from "./auto-ribs.ts";
 import { ribShape, type RibProfile, type RibShape } from "./rib-net.ts";
 
 type V3 = [number, number, number];
@@ -446,10 +452,13 @@ export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): Mou
   const push = (ruleId: MouldFlagRule, rib: number, row: { value: number; at: MouldAt }, threshold: number) => {
     flags.push({ rule: ruleId, rib, at: row.at, value: q4(row.value), threshold });
   };
-  for (const [rib, row] of baseOf) if (row.value > MOULD_ROOT_RATIO) push("base", rib, row, MOULD_ROOT_RATIO);
+  // The same rounding as the reported worst (`q4`): a ratio that prints on the limit is on the limit.
+  const past = (value: number, limit: number) => q4(value) > limit;
+  const under = (value: number, limit: number) => q4(value) < limit;
+  for (const [rib, row] of baseOf) if (past(row.value, MOULD_ROOT_RATIO)) push("base", rib, row, MOULD_ROOT_RATIO);
   for (const [rib, row] of radiusOf) {
-    if (row.value < MOULD_ROOT_RADIUS_MIN) push("radius", rib, row, MOULD_ROOT_RADIUS_MIN);
-    else if (row.value > MOULD_ROOT_RADIUS_MAX) push("radius", rib, row, MOULD_ROOT_RADIUS_MAX);
+    if (under(row.value, MOULD_ROOT_RADIUS_MIN)) push("radius", rib, row, MOULD_ROOT_RADIUS_MIN);
+    else if (past(row.value, MOULD_ROOT_RADIUS_MAX)) push("radius", rib, row, MOULD_ROOT_RADIUS_MAX);
   }
   for (const [rib, row] of heightOf) if (row.value > MOULD_HEIGHT_WALLS) push("height", rib, row, MOULD_HEIGHT_WALLS);
   for (const [rib, row] of draftOf) push("draft", rib, row, MOULD_MIN_DRAFT_DEG);
@@ -460,8 +469,8 @@ export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): Mou
   flags.sort((a, b) => a.rib - b.rib || a.rule.localeCompare(b.rule) || a.at.stretch - b.at.stretch);
   return {
     rules: [
-      rule("base", MOULD_ROOT_RATIO, baseWorst, baseWorst === null || baseWorst <= MOULD_ROOT_RATIO),
-      rule("radius", [MOULD_ROOT_RADIUS_MIN, MOULD_ROOT_RADIUS_MAX], radiusWorst, radiusWorst === null || radiusWorstMargin >= -1e-9),
+      rule("base", MOULD_ROOT_RATIO, baseWorst, baseWorst === null || !past(baseWorst, MOULD_ROOT_RATIO)),
+      rule("radius", [MOULD_ROOT_RADIUS_MIN, MOULD_ROOT_RADIUS_MAX], radiusWorst, radiusWorst === null || (!under(radiusWorst, MOULD_ROOT_RADIUS_MIN) && !past(radiusWorst, MOULD_ROOT_RADIUS_MAX))),
       rule("height", MOULD_HEIGHT_WALLS, heightWorst, heightWorst === null || heightWorst <= MOULD_HEIGHT_WALLS),
       rule("draft", MOULD_MIN_DRAFT_DEG, draftWorst, draftWorst === null || draftWorst >= MOULD_MIN_DRAFT_DEG),
       rule("junction", MOULD_JUNCTION_RATIO, junctionWorst, junctionWorst === null || junctionWorst <= MOULD_JUNCTION_RATIO),
@@ -521,16 +530,16 @@ export interface DefaultRow {
 }
 
 /**
- * Today's moulded default, measured: width 0.6 × the wall at half height, draft 1°, root half the top.
- * Base is the flanks at the wall, fillet left out. `filletAt` sizes the root; the outline is measured at `height`.
- * The product default is not changed.
+ * The moulded default, measured: the base at `filletAt` is 0.6 × the wall, draft 1°, root half the top
+ * or 0.25 × the wall when half the top is smaller. Base is the flanks at the wall, fillet left out.
+ * `filletAt` sizes the width and the root; the outline is measured at `height`.
  */
 export function mouldedDefaultRow(wall: number, heightOverWall: number, filletOverWall = heightOverWall): DefaultRow {
   const height = wall * heightOverWall;
   const filletAt = wall * filletOverWall;
-  const width = Math.max(0.4, 0.6 * wall);
+  const width = mouldedDefaultWidth(wall, filletAt);
   const sized = defaultDraftedSection(width, filletAt);
-  const section: MouldSection = { ...sized, width };
+  const section: MouldSection = { ...sized, width, rootRadius: mouldedDefaultRoot(width, filletAt, wall) };
   const base = baseWidth(section, height);
   const radius = builtRootRadius(section, height);
   const dia = junctionDiameter(section, height, wall);
