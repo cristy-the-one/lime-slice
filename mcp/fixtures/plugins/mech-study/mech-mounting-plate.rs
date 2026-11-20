@@ -45,5 +45,6 @@ fn main() {
             }
         }
     }
-    s.done_with(&part, Json::obj().set("holes", holes as f64).set("pcd", pcd).set("bmin", [-w / 2.0, -d / 2.0, 0.0]).set("bmax", [w / 2.0, d / 2.0, t]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("holes", holes as f64).set("pcd", pcd).set("bmin", bmin).set("bmax", bmax));
 }

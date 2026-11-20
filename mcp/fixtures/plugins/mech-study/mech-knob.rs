@@ -27,7 +27,7 @@ fn main() {
             let (sn, cs) = sin_cos_deg(a);
             let x = cs * cut_r;
             let y = sn * cut_r;
-            let _ = s.apply(&part, ops::boolean("cut", ops::cuboid(2.0, diameter * 0.35, height + 0.2), [x, y, -0.1]));
+            s.apply(&part, ops::boolean("cut", ops::cuboid(2.0, diameter * 0.35, height + 0.2), [x, y, -0.1])).unwrap();
         }
     }
     if bore > 0.2 {
@@ -36,5 +36,6 @@ fn main() {
         s.apply(&part, ops::boolean("cut", ops::cuboid(bore, flat, height + 0.4), [0.0, bore / 2.0 - flat / 4.0, -0.2])).unwrap();
     }
     let r = diameter / 2.0;
-    s.done_with(&part, Json::obj().set("diameter", diameter).set("bore", bore).set("bmin", [-r, -r, 0.0]).set("bmax", [r, r, height]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("diameter", diameter).set("bore", bore).set("bmin", bmin).set("bmax", bmax));
 }

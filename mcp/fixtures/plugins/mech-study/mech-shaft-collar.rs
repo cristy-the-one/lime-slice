@@ -27,5 +27,6 @@ fn main() {
     s.apply(&part, ops::hole([0.0, od / 2.0 - screw, width / 2.0], [0.0, -1.0, 0.0], screw, od)).unwrap();
     s.apply(&part, ops::boolean("cut", ops::cuboid(0.6, od, width + 0.2), [0.0, 0.0, -0.1])).unwrap();
     let ro = od / 2.0;
-    s.done_with(&part, Json::obj().set("bore", bore).set("od", od).set("bmin", [-ro, -ro, 0.0]).set("bmax", [ro, ro, width]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("bore", bore).set("od", od).set("bmin", bmin).set("bmax", bmax));
 }

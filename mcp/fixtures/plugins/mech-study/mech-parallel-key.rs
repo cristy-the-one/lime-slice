@@ -27,5 +27,6 @@ fn main() {
     let length = s.number("length", 30.0).range(5.0, 120.0).step(0.5).unit("mm").label("Key length").get();
     let (w, h) = key_size(shaft);
     let part = s.solid_new(ops::cuboid(w, h, length)).unwrap();
-    s.done_with(&part, Json::obj().set("width", w).set("height", h).set("length", length).set("bmin", [0.0, 0.0, 0.0]).set("bmax", [w, h, length]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("width", w).set("height", h).set("length", length).set("bmin", bmin).set("bmax", bmax));
 }

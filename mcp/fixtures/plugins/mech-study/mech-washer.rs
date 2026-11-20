@@ -27,5 +27,6 @@ fn main() {
         .set("height", thickness))
         .unwrap();
     let ro = outer / 2.0;
-    s.done_with(&part, Json::obj().set("nominal", nominal).set("bore", bore).set("outer", outer).set("bmin", [-ro, -ro, 0.0]).set("bmax", [ro, ro, thickness]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("nominal", nominal).set("bore", bore).set("outer", outer).set("bmin", bmin).set("bmax", bmax));
 }

@@ -31,5 +31,6 @@ fn main() {
     s.apply(&part, ops::boolean("fuse", cone, [0.0, 0.0, height * 0.65])).unwrap();
     s.apply(&part, ops::hole([0.0, 0.0, height], [0.0, 0.0, -1.0], bore, height + 0.5)).unwrap();
     let ro = od / 2.0;
-    s.done_with(&part, Json::obj().set("nominal", nominal).set("bore", bore).set("bmin", [-ro, -ro, 0.0]).set("bmax", [ro, ro, height]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("nominal", nominal).set("bore", bore).set("bmin", bmin).set("bmax", bmax));
 }

@@ -24,5 +24,6 @@ fn main() {
     if bore > 0.2 {
         s.apply(&part, ops::hole_through([0.0, 0.0, thick], [0.0, 0.0, -1.0], bore)).unwrap();
     }
-    s.done_with(&part, Json::obj().set("base", base).set("lift", lift).set("bmin", [-base, -base, 0.0]).set("bmax", [base + lobe_w, base, thick]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("base", base).set("lift", lift).set("bmin", bmin).set("bmax", bmax));
 }

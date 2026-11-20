@@ -26,5 +26,6 @@ fn main() {
     let part = s.solid_new(ops::cuboid(dx, dy, dz)).unwrap();
     s.apply(&part, ops::hole_through([0.0, 0.0, dz], [0.0, 0.0, -1.0], seat)).unwrap();
     s.apply(&part, ops::hole_through([0.0, 0.0, dz], [0.0, 0.0, -1.0], b.bore)).unwrap();
-    s.done_with(&part, Json::obj().set("bearing", name.as_str()).set("seat", seat).set("bore", b.bore).set("bmin", [-dx / 2.0, -dy / 2.0, 0.0]).set("bmax", [dx / 2.0, dy / 2.0, dz]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("bearing", name.as_str()).set("seat", seat).set("bore", b.bore).set("bmin", bmin).set("bmax", bmax));
 }

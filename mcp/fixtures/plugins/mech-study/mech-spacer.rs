@@ -30,7 +30,8 @@ fn main() {
         s.solid_new(ops::cylinder(r, length)).unwrap()
     };
     if hollow && id > 0.2 && id < od - 0.4 {
-        let _ = s.apply(&part, ops::hole_through([0.0, 0.0, length], [0.0, 0.0, -1.0], id));
+        s.apply(&part, ops::hole_through([0.0, 0.0, length], [0.0, 0.0, -1.0], id)).unwrap();
     }
-    s.done_with(&part, Json::obj().set("od", od).set("length", length).set("id", id).set("bmin", [-r, -r, 0.0]).set("bmax", [r, r, length]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("od", od).set("length", length).set("id", id).set("bmin", bmin).set("bmax", bmax));
 }

@@ -28,5 +28,6 @@ fn main() {
     }
     let part = s.solid_new(Json::obj().set("gear", gear)).unwrap();
     let od = if rim > 0.5 { rim } else { module * (teeth as f64 + 4.0) };
-    s.done_with(&part, Json::obj().set("teeth", teeth as f64).set("module", module).set("bmin", [-od / 2.0, -od / 2.0, 0.0]).set("bmax", [od / 2.0, od / 2.0, thickness]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("teeth", teeth as f64).set("module", module).set("bmin", bmin).set("bmax", bmax));
 }

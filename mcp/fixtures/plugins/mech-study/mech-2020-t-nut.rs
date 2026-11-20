@@ -32,5 +32,6 @@ fn main() {
         .set("flats", true)
         .set("height", head))
         .unwrap();
-    s.done_with(&part, Json::obj().set("slot", slot).set("neck", neck).set("bmin", [-head / 2.0, -head / 2.0, 0.0]).set("bmax", [head / 2.0, head / 2.0, length]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("slot", slot).set("neck", neck).set("bmin", bmin).set("bmax", bmax));
 }

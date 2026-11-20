@@ -27,5 +27,6 @@ fn main() {
         s.apply(&part, ops::hole_through([0.0, 0.0, width], [0.0, 0.0, -1.0], bore)).unwrap();
     }
     let r = diameter / 2.0;
-    s.done_with(&part, Json::obj().set("diameter", diameter).set("width", width).set("bmin", [-r, -r, 0.0]).set("bmax", [r, r, width]));
+        let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("diameter", diameter).set("width", width).set("bmin", bmin).set("bmax", bmax));
 }

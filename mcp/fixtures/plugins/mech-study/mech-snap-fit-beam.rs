@@ -38,5 +38,6 @@ fn main() {
             .set("loops", lp.clone()))
             .unwrap();
     }
-    s.done_with(&part, Json::obj().set("slot", slot).set("beam", beam).set("hook", hook).set("bmin", [-base_w / 2.0, -(t + 4.0) / 2.0, 0.0]).set("bmax", [slot / 2.0 + t + beam, (t + 4.0) / 2.0, 10.0]));
+    let (bmin, bmax) = s.bounds(&part).unwrap();
+    s.done_with(&part, Json::obj().set("slot", slot).set("beam", beam).set("hook", hook).set("bmin", bmin).set("bmax", bmax));
 }
