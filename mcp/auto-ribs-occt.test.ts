@@ -13,8 +13,8 @@
  * 5. A curved wall: the cylinder-segment panel, planned and applied.
  * 6. The flange table: a tee with a 45° chamfered and a square flange, ribs along X, along Y and at 45°, model_check on a
  *    flat bed and on the 45° belt, against the rule auto-ribs.ts chooses by.
- * 7. A frequency goal: the reply's Hz and factor, the notes, each refusal by its message, a load that misses the wall
- *    (ignored, named, not refused), and ribs_apply with and without verify.
+ * The frequency goal is mcp/frequency-occt.test.ts, on the folded-shell job: this file plus those plans did not fit
+ * that job's 25 minutes (run 44698889099 reached this file's end at 20 minutes).
  * The planning cases use a 120 × 70 × 25 box: CI's debug engine plans and slices about fifty times slower than a release
  * build, and the 200 × 100 × 30 box took 19 minutes there. LIME_RIBS_FULL=1 runs them on 200 × 100 × 30.
  * Skips when LIME_OCCT_BRIDGE is unset, and fails in CI when it is unset.
@@ -607,62 +607,6 @@ const flangeRows: Reply[] = [];
   for (const row of flangeRows) (row.flange.startsWith("45") ? (name: string, ok: boolean) => console.log(`  ${ok ? "agrees" : "DIFFERS"}: ${name}`) : check)(`flange table, ${row.printer}, ${row.dir}, ${row.flange}: model_check ${row.prints ? "prints" : `adds ${row.extraOverhangMm2} mm² overhang`}, the rule says ${row.rule ? "prints" : "does not"}`, row.prints === row.rule, JSON.stringify(row));
   // Back to a flat printer for anything after.
   await call("machine_select", { printerId: flatPrinter, filamentId: flatFilament });
-}
-
-// ===== 7. A frequency goal: Hz, notes, the refusals, a missed load, apply with and without verify. =====
-{
-  const object = await shellBox(BX, BY, BZ);
-  const floor = faceAt(object, [0, 0, 2], [0, 0, 1]);
-  const wall = { faces: [floor] };
-  const refusal = async (args: Reply, message: RegExp) => {
-    const asked = await call("ribs_plan", { object, wall, ...args });
-    const done = typeof asked.job === "string" ? await waitJob(asked.job) : asked;
-    check(`frequency refusal ${message}`, done.ok === false && message.test(String(done.reason)), JSON.stringify(done).slice(0, 400));
-  };
-  await refusal({ goal: { frequency: 0.5 } }, /A frequency goal must be 1 or more/);
-  await refusal({ goal: { frequency: 1.3, budgetMm3: 100 } }, /A plan has one goal: frequency and budgetMm3 cannot both be set/);
-  await refusal({ goal: { frequency: 1.3, stiffer: 2, budgetG: 1 } }, /A plan has one goal: frequency, stiffer and budgetG cannot all be set/);
-  const one = await waitJob(String((await call("ribs_plan", { object, wall, goal: { frequency: 1 } })).job));
-  check("×1 asks for no change and plans nothing", one.ok === true && one.plan.ribs.length === 0 && /×1 asks for no change/.test(String(one.sentence)), JSON.stringify({ sentence: one.sentence, ribs: one.plan?.ribs?.length }).slice(0, 300));
-  const started = await call("ribs_plan", { object, wall, goal: { frequency: 1.3 } });
-  const done = await waitJob(String(started.job));
-  const hz = done.plan?.frequencyHz;
-  const factor = Number(done.plan?.frequencyFactor);
-  check("the reply has frequencyHz and frequencyFactor", done.ok === true && hz && hz.bare > 0 && hz.ribbed > 0 && Number.isFinite(factor) && Math.abs(factor - hz.ribbed / hz.bare) < 1e-4, JSON.stringify({ hz, factor, sentence: done.sentence }).slice(0, 500));
-  check("the sentence names the Hz and the stiffness factor", /Hz/.test(String(done.sentence)) && /Stiffness /.test(String(done.sentence)) && /for information/.test(String(done.sentence)), String(done.sentence));
-  const notes = (done.notes ?? []) as string[];
-  check("no loads were given, so the notes do not say they are ignored", notes.some((line) => /mode shape/.test(line)) && notes.every((line) => !/ignored/.test(line)), JSON.stringify(notes));
-  const material = done.rules?.material as Reply | undefined;
-  if (material && material.forFilament === false) check("the Hz name the default card", notes.some((line) => /default/.test(line) && String(material.card) !== "" && line.includes(String(material.card))), JSON.stringify({ material, notes }));
-  report.push(`frequency plan on the ${BOX} box: ${hz?.bare} Hz → ${hz?.ribbed} Hz, ×${factor}, stiffness ×${done.plan?.stiffnessFactor}, ribs ${done.plan?.ribs?.length}, notes ${JSON.stringify(notes)}, sentence ${done.sentence}`);
-  const withoutGoal = { ...done.plan };
-  delete withoutGoal.goal;
-  let applied = await call("ribs_apply", { object, plan: withoutGoal });
-  if (applied.status === "running") applied = await waitJob(String(applied.job));
-  check("a plan applied without its goal does not take the stored frequency note", applied.ok === true && !/frequency to check/.test(String(applied.note ?? "")), JSON.stringify(applied).slice(0, 400));
-  await call("model_undo", { object });
-  let verified = await call("ribs_apply", { object, plan: done.plan, verify: true });
-  if (verified.status === "running") verified = await waitJob(String(verified.job));
-  check("ribs_apply with the plan's goal says a static check has no frequency", verified.ok === true && /no frequency to check/.test(String(verified.note ?? "")), JSON.stringify({ note: verified.note, ok: verified.ok }).slice(0, 400));
-  check("verify on a frequency plan says the check is static", verified.verify && /no frequency to check/.test(String(verified.verify.note)), JSON.stringify(verified.verify).slice(0, 400));
-  report.push(`frequency apply: without goal note ${JSON.stringify(applied.note ?? null)}; with verify note ${JSON.stringify(verified.note)}, verify ${JSON.stringify(verified.verify?.note)}`);
-
-  const missedObject = await shellBox(BX, BY, BZ);
-  const missedFloor = faceAt(missedObject, [0, 0, 2], [0, 0, 1]);
-  const side = faceAt(missedObject, [BX / 2 - 2, 0, BZ / 2], [-1, 0, 0]);
-  const missed = await waitJob(String((await call("ribs_plan", { object: missedObject, wall: { faces: [missedFloor] }, goal: { frequency: 1.3 }, loads: [{ kind: "force", faces: [side], magnitude: 20, direction: [1, 0, 0] }] })).job));
-  const missedNotes = (missed.notes ?? []) as string[];
-  check("a load that misses the wall does not refuse a frequency plan", missed.ok === true && missed.code !== "off-wall", JSON.stringify(missed).slice(0, 400));
-  check("the note names the load and says it is ignored", missedNotes.some((line) => /Load 1 misses the wall and is ignored/.test(line)), JSON.stringify(missedNotes));
-  report.push(`frequency, load off the wall: ${missed.ok === true ? "planned" : missed.code} ${JSON.stringify(missedNotes)}`);
-
-  const casesObject = await shellBox(BX, BY, BZ);
-  const casesFloor = faceAt(casesObject, [0, 0, 2], [0, 0, 1]);
-  const force = (magnitude: number) => ({ kind: "force", faces: [casesFloor], magnitude, direction: [0, 0, -1] });
-  const cases = await waitJob(String((await call("ribs_plan", { object: casesObject, wall: { faces: [casesFloor] }, goal: { frequency: 1.3 }, loadCases: [{ name: "spread", loads: [force(10)] }, { name: "point", loads: [force(20)] }] })).job));
-  check("loads that were given are named as ignored", ((cases.notes ?? []) as string[]).some((line) => /Loads are ignored/.test(line)), JSON.stringify(cases.notes));
-  check("each case factor is labelled stiffness", /Per case, stiffness: spread \S+×, point \S+×/.test(String(cases.sentence)), String(cases.sentence));
-  report.push(`frequency, two cases: ${cases.sentence}`);
 }
 
 console.log("  --- flange table: extra overhang of three 116 mm tee ribs (w 1.35, h 6) over the same straight ribs, mm² ---");

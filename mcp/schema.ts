@@ -2582,7 +2582,7 @@ export const TOOLS: ToolSpec[] = [
           description: "One of: stiffer (times bare), frequency, maxDeflectionMm, budgetMm3, budgetG, balanced. Default balanced.",
           properties: {
             stiffer: { type: "number", minimum: 1, maximum: 1000, description: "Reach this many times the bare wall's stiffness." },
-            frequency: { type: "number", minimum: 1, maximum: 1000, description: "Times the lowest natural frequency. The reply has frequencyHz and frequencyFactor; a free end's reason is open. Refused below 1, beside another goal, or with no density." },
+            frequency: { type: "number", minimum: 0, maximum: 1000, description: "Times the lowest natural frequency. The reply has frequencyHz and frequencyFactor; a free end's reason is open. Refused below 1, beside another goal, or with no density." },
             maxDeflectionMm: { type: "number", exclusiveMinimum: 0, description: "Keep the wall's largest deflection under this, mm (shell model, placeholder material)." },
             budgetMm3: { type: "number", exclusiveMinimum: 0, description: "The stiffest plan within this much rib material, mm³." },
             budgetG: { type: "number", exclusiveMinimum: 0, description: "The same budget in grams at the filament's density." },
