@@ -34,7 +34,8 @@ fn main() {
             .unwrap();
     }
     if screw > 0.2 {
-        s.apply(&part, ops::hole_through([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], screw)).unwrap();
+        let sx = base_w / 2.0 - screw - 1.0;
+        s.apply(&part, ops::hole_through([sx, 0.0, 3.0], [0.0, 0.0, -1.0], screw)).unwrap();
     }
     let half_y = jaw + 1.0;
         let (bmin, bmax) = s.bounds(&part).unwrap();

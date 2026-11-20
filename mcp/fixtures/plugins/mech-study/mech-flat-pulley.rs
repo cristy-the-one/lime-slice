@@ -19,12 +19,17 @@ fn main() {
     let bore = s.number("bore", 6.0).range(2.0, 30.0).step(0.1).unit("mm").label("Bore diameter").get();
     let crown = s.number("crown", 0.5).range(0.0, 3.0).step(0.05).unit("mm").label("Crown depth").get();
     let part = s.solid_new(ops::cylinder(diameter / 2.0, width)).unwrap();
-    if crown > 0.05 {
-        let groove_r = diameter / 2.0 - crown - 0.6;
-        s.apply(&part, ops::boolean("cut", ops::cylinder(groove_r, width + 0.2), [0.0, 0.0, -0.1])).unwrap();
-    }
     if bore > 0.2 {
         s.apply(&part, ops::hole_through([0.0, 0.0, width], [0.0, 0.0, -1.0], bore)).unwrap();
+    }
+    if crown > 0.05 {
+        let crown_r = (diameter / 2.0 - crown).max(bore / 2.0 + 0.3);
+        let crown_h = width * 0.35;
+        s.apply(
+            &part,
+            ops::boolean("cut", ops::cylinder(crown_r, crown_h), [0.0, 0.0, width - crown_h]),
+        )
+        .unwrap();
     }
     let r = diameter / 2.0;
         let (bmin, bmax) = s.bounds(&part).unwrap();
