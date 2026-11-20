@@ -325,7 +325,7 @@ jobs:
           # Its load-case sections (5b, 5c) run in the auto-ribs job (mcp/auto-ribs-cases-occt.test.ts).
           # The frequency goal is mcp/frequency-occt.test.ts on that same job, not here.
           node --experimental-strip-types mcp/auto-ribs-occt.test.ts
-          # ribs_plan replies against the planner at abeb0353 (mcp/fixtures/plan-refs-abeb0353.json). Clock fields only are stripped.
+          # ribs_plan replies against the planner at abeb0353 (mcp/fixtures/plan-refs-abeb0353.json). Clock fields are stripped. A resin reply with plan.vents may also drop notes, plan.notes and plan.vents.
           node --experimental-strip-types mcp/plan-refs-abeb0353.test.ts
           # The step guard on a ribbed shell: cuts at a wall are probed and applied, an edge-only touch is refused by both.
           node --experimental-strip-types mcp/step-guard-occt.test.ts

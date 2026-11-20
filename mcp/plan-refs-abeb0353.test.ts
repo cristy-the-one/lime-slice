@@ -16,14 +16,22 @@
  *   Both arrays are printed in full before they are dropped.
  * A number that is not finite is compared as null, because the fixtures were stored with JSON.stringify and JSON
  * has no Infinity or NaN. The log names the two raw values when they differ in JavaScript and match as JSON.
- * Everything else is compared field by field. A difference fails the test and prints the path and both values.
- * Resin notes and plan.vents are not stripped: they are this branch's output and a difference there fails.
+ *
+ * A resin reply whose plan.vents is a non-empty object may add exactly three keys, and only when each is present
+ * in the new reply and absent from the reference: notes, plan.notes, plan.vents. They are deleted before the
+ * compare. If the top-level sentence is the reference sentence plus vent sentences, only those sentences are
+ * removed. A vent sentence is one of: "N pocket(s) vented, M could not be vented", "M could not be vented: …",
+ * "The plate has no resin printer, so the build direction is the part as it sits, +Z.", "Build direction is the
+ * one given, in the plate frame, turned into the wall's frame.", "Venting was skipped: …", or a sentence that is
+ * one of the notes just deleted. Filament, moulded, and a resin reply with no vents get no allowance.
+ * The log prints the allowed keys for every fixture. Everything else is compared field by field.
  */
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { GIVEN_AXIS, NO_RESIN_PRINTER } from "../src/modeling/vents.ts";
 import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import { Session } from "./session.ts";
 
@@ -87,6 +95,76 @@ function shown(value: unknown): string {
 function asJson(value: unknown): unknown {
   if (typeof value === "number" && !Number.isFinite(value)) return null;
   return value;
+}
+
+/** plan.vents counts when it is an object with at least one field. Absent, null, and {} do not. */
+function ventsNonEmpty(reply: Reply): boolean {
+  const plan = reply.plan;
+  if (!plan || typeof plan !== "object") return false;
+  const vents = (plan as Reply).vents;
+  return vents !== null && typeof vents === "object" && !Array.isArray(vents) && Object.keys(vents as Reply).length > 0;
+}
+
+/** A sentence this branch may add after the reference sentence, and nothing else. */
+function isVentSentence(part: string, notes: readonly string[]): boolean {
+  const text = part.endsWith(".") ? part.slice(0, -1) : part;
+  if (/^\d+ pockets? vented, \d+ could not be vented/.test(text)) return true;
+  if (/^\d+ could not be vented:/.test(text)) return true;
+  if (text === NO_RESIN_PRINTER || part === NO_RESIN_PRINTER) return true;
+  if (text === GIVEN_AXIS || part === GIVEN_AXIS) return true;
+  if (text.startsWith("Venting was skipped")) return true;
+  return notes.some((note) => part === note || text === note || text === (note.endsWith(".") ? note.slice(0, -1) : note));
+}
+
+/**
+ * The reference sentence plus only vent sentences. Returns the text that was a vent sentence, or null when the
+ * sentence differs for any other reason (that difference stays in the compare).
+ */
+function ventSentenceAdded(live: string, ref: string, notes: readonly string[]): string | null {
+  if (live === ref || !live.startsWith(ref)) return null;
+  const extra = live.slice(ref.length).trim();
+  if (!extra) return null;
+  const parts = extra.split(/(?<=\.)\s+/).filter((part) => part.length > 0);
+  if (!parts.length || !parts.every((part) => isVentSentence(part, notes))) return null;
+  return extra;
+}
+
+/**
+ * On a resin reply with a non-empty plan.vents, require notes, plan.notes and plan.vents in the new reply and in
+ * neither place in the reference, then delete exactly those three keys. Returns a failure sentence, or null.
+ */
+function allowResinVents(name: string, live: Reply, ref: Reply): string | null {
+  if (!ventsNonEmpty(live)) {
+    console.log(`plan-refs: ${name} allowed keys: none`);
+    return null;
+  }
+  const livePlan = live.plan as Reply;
+  const refPlan = (ref.plan ?? {}) as Reply;
+  const problems: string[] = [];
+  if (!("notes" in live)) problems.push("notes missing from the new reply");
+  if ("notes" in ref) problems.push("notes is in the abeb0353 reply");
+  if (!("notes" in livePlan)) problems.push("plan.notes missing from the new reply");
+  if ("notes" in refPlan) problems.push("plan.notes is in the abeb0353 reply");
+  if (!("vents" in livePlan)) problems.push("plan.vents missing from the new reply");
+  if ("vents" in refPlan) problems.push("plan.vents is in the abeb0353 reply");
+  if (problems.length) {
+    console.log(`plan-refs: ${name} allowed keys: none (${problems.join("; ")})`);
+    return problems.join("; ");
+  }
+  const notes = Array.isArray(live.notes) ? live.notes.filter((note): note is string => typeof note === "string") : [];
+  delete live.notes;
+  delete livePlan.notes;
+  delete livePlan.vents;
+  const allowed = ["notes", "plan.notes", "plan.vents"];
+  if (typeof live.sentence === "string" && typeof ref.sentence === "string") {
+    const added = ventSentenceAdded(live.sentence, ref.sentence, notes);
+    if (added) {
+      live.sentence = ref.sentence;
+      allowed.push(`sentence vent text: ${added}`);
+    }
+  }
+  console.log(`plan-refs: ${name} allowed keys: ${allowed.join("; ")}`);
+  return null;
 }
 
 function diffs(path: string, live: unknown, ref: unknown, out: string[]): void {
@@ -154,13 +232,19 @@ for (const wall of walls) {
       const refEvents = (ref.ribs as Reply | undefined)?.events;
       console.log(`plan-refs: ${name} ribs.events live ${JSON.stringify(liveEvents)}`);
       console.log(`plan-refs: ${name} ribs.events abeb0353 ${JSON.stringify(refEvents)}`);
-      diffs(name, stripClock(reply), stripClock(ref), found);
+      const live = stripClock(reply);
+      const stored = stripClock(ref);
+      if (process === "resin") {
+        const refused = allowResinVents(name, live, stored);
+        if (refused) found.push(refused);
+      } else console.log(`plan-refs: ${name} allowed keys: none`);
+      if (!found.length) diffs(name, live, stored, found);
     }
     if (found.length) {
       failed += 1;
       console.error(`plan-refs FAIL ${name}`);
       for (const line of found) console.error(`  ${line}`);
-    } else console.log(`plan-refs: ${name} matches abeb0353 aside from seconds and wall.ms`);
+    } else console.log(`plan-refs: ${name} matches abeb0353 aside from the clock fields and the allowed keys printed above`);
   }
 }
 if (failed) {
