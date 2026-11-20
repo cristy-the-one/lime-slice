@@ -13,8 +13,8 @@ sources:
     resource: https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/mcp/groups.ts
     title: mcp/groups.ts
   - id: ribs
-    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/ribs-next/mcp/session/ribs.ts
-    title: mcp/session/ribs.ts (feature/ribs-next)
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/mcp/session/ribs.ts
+    title: mcp/session/ribs.ts (03b1c1d6)
 ---
 
 # How the list is built
@@ -413,7 +413,7 @@ Leave the last result.
 
 ### ribs_plan
 
-Added after 4.2.0. Plans ribs on one wall as a background job. On `feature/ribs-next` it also takes `wall.folded` (side walls across sharp edges), `loadCases` (up to 8 named, weighted cases; `plan.cases` gives each case's factor and deflections; two cases with one name are refused), and, with `process: "moulded"`, `pull` and `plan.moulding` (rules, flags, and notes).[^ribs]
+Added after 4.2.0. Plans ribs on one wall as a background job. Since 6.13.0 it also takes `wall.folded` (side walls across sharp edges), `loadCases` (up to 8 named, weighted cases; `plan.cases` gives each case's factor and deflections; two cases with one name are refused), and, with `process: "moulded"`, `pull` and `plan.moulding` (rules, flags, and notes).[^ribs]
 
 ### ribs_apply
 
@@ -421,4 +421,4 @@ Added after 4.2.0. Builds a plan as one `ribNet` History row; `verify: true` run
 
 [^schema]: mcp/schema.ts
 [^groups]: mcp/groups.ts
-[^ribs]: mcp/session/ribs.ts (feature/ribs-next)
+[^ribs]: mcp/session/ribs.ts (03b1c1d6)
