@@ -120,6 +120,8 @@ export interface RibPlanResult {
     unvented?: { at: V3; message: string }[];
     note?: string;
   };
+  /** The engine's notes, when it sent any. A frequency plan that was asked to vent says venting was skipped. */
+  notes?: string[];
 }
 
 /**
@@ -296,6 +298,7 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       stoppedEarly: row.stoppedEarly === true,
       looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" : "noRibZone" })),
       ...ventsOf(row.vents),
+      ...(Array.isArray(row.notes) ? { notes: (row.notes as unknown[]).filter((note): note is string => typeof note === "string") } : {}),
       ...perCase(row),
     },
   };
@@ -599,16 +602,24 @@ function standInVents(body: RibPlanBody, ribs: PlannedRib[], factor: number): No
   };
 }
 
-function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[], minLengthMm = 0): PlannedRib[] {
+function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[], minLengthMm = 0): { ribs: PlannedRib[]; pockets: VentPocket[]; refused: { at: V3; message: string }[] } {
   const out: PlannedRib[] = [];
+  const kept: VentPocket[] = [];
+  const refused: { at: V3; message: string }[] = [];
   ribs.forEach((rib, i) => {
     const cuts = pockets.filter((pocket) => pocket.rib === i);
     if (cuts.length === 0) {
       out.push(rib);
       return;
     }
-    const parts = notchRibs([{ points: rib.points, widthMm: rib.width }], cuts.map((cut) => ({ rib: 0, at: cut.at, sizeMm: cut.sizeMm })), minLengthMm);
-    for (const part of parts) {
+    const cut = notchRibs([{ points: rib.points, widthMm: rib.width }], cuts.map((row) => ({ rib: 0, at: row.at, sizeMm: row.sizeMm })), minLengthMm);
+    if (cut.refused.length > 0 || cut.ribs.length === 0) {
+      refused.push(...cut.refused.map((item) => ({ at: [item.at[0], item.at[1], item.at[2]] as V3, message: item.message })));
+      out.push(rib);
+      return;
+    }
+    const base = out.length;
+    for (const part of cut.ribs) {
       const points = part.points.map((p) => [p[0], p[1], p[2]] as V3);
       const heights = points.slice(1).map(() => rib.heights[0] ?? rib.height);
       let length = 0;
@@ -622,8 +633,11 @@ function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[], minLen
         volumeMm3: r3(volumeOf(points, heights, rib.width)),
       });
     }
+    for (const pocket of cut.pockets) {
+      kept.push({ rib: base + pocket.rib, at: [pocket.at[0], pocket.at[1], pocket.at[2]], sizeMm: pocket.sizeMm });
+    }
   });
-  return out;
+  return { ribs: out, pockets: kept, refused };
 }
 
 /** A deterministic stand-in for the engine's plan: same body, same events, same plan. */
@@ -681,7 +695,12 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           return { points: row.points, heights: row.heights, width, height: Math.max(...row.heights), sections: row.heights.map(() => (drafted ? { profile: "drafted" as const, width, draftDeg: 1, rootRadius: draftedRoot } : { profile, width })), lengthMm: r3(length), volumeMm3: r3(volumeOf(row.points, row.heights, width)), gain: 0.1 };
         });
         const vents = body.vent ? standInVents(body, ribs, r3(factor)) : undefined;
-        if (vents && vents.pockets.length > 0) ribs = notchPlanned(ribs, vents.pockets, body.rules.minLength);
+        if (vents && vents.pockets.length > 0) {
+          const cut = notchPlanned(ribs, vents.pockets, body.rules.minLength);
+          ribs = cut.ribs;
+          vents.pockets = cut.pockets.map((pocket) => ({ rib: pocket.rib, at: [pocket.at[0], pocket.at[1], pocket.at[2]] as V3, sizeMm: pocket.sizeMm }));
+          vents.unvented = [...(vents.unvented ?? []), ...cut.refused];
+        }
         const volume = totals().ribVolumeMm3;
         const thin = set.beatsNeither ? 0.8 : 1.9;
         const gridShare = set.beatsNeither ? 0.9 : 1.35;

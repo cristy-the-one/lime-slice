@@ -28,6 +28,9 @@ export const PART_CUPS = "the part itself cups here; ribs cannot vent it";
 /** A cupping cell has a way out, but no boundary rib can hold the gap. */
 export const TOO_SHORT = "no boundary rib is long enough for a vent";
 
+/** The finder chose a notch, and cutting it would leave a piece shorter than the minimum rib. */
+export const CUT_REFUSED = "the notch would leave a piece shorter than the minimum rib";
+
 /** Projection of a folded wall overlaps itself. */
 export const FOLDED_NOTE = "This wall's projection overlaps itself, so a rib on one face would land on a rib on another. Venting is left undone.";
 
@@ -40,7 +43,7 @@ export const GIVEN_AXIS = "Build direction is the one given, in the plate frame,
 export type V3 = readonly [number, number, number];
 export type EndKind = "closed" | "free" | "hold" | "gap";
 
-/** One rib run. A free end drains the cell. A hold or a gap end does not. Omitted ends are closed. */
+/** One rib run. A free end, a hold and a gap end do not drain: only an open border or a through hole does. Omitted ends are closed. */
 export interface VentRib {
   points: readonly V3[];
   ends?: readonly [EndKind, EndKind];
@@ -106,6 +109,17 @@ export interface VentLoopSpan {
 export interface VentLoop {
   hole: boolean;
   spans: readonly VentLoopSpan[];
+}
+
+/** The loops the panel and ribs_plan both hand to [`ventBodyOf`]. */
+export function ventLoopsOf(wall: {
+  loops: readonly { spans: readonly { class: "joined" | "free"; from: V3; to: V3; points?: readonly V3[] }[] }[];
+  report: { loops: readonly { hole?: boolean }[] };
+}): VentLoop[] {
+  return wall.loops.map((loop, i) => ({
+    hole: wall.report.loops[i]?.hole === true,
+    spans: loop.spans.map((span) => ({ class: span.class, from: span.from, to: span.to, points: span.points })),
+  }));
 }
 
 export type RibProcessName = "filament" | "resin" | "moulded";
@@ -197,7 +211,8 @@ function bordersOf(loops: readonly VentLoop[]): VentBorder[] {
   const out: VentBorder[] = [];
   for (const loop of loops) {
     if (loop.spans.length === 0) continue;
-    if (loop.hole) {
+    // An inner loop is a through hole only when it is open. A joined loop is a standing wall, and it closes the cell.
+    if (loop.hole && loop.spans.some((span) => span.class !== "joined")) {
       const points: [number, number, number][] = [];
       for (const span of loop.spans) {
         for (const p of spanPoints(span)) {
@@ -302,6 +317,7 @@ export function ventPockets(input: VentInput): VentReport {
   input.ribs.forEach((rib, i) => push(rib.points, "rib", i, rib.ends?.[0] === "free", rib.ends?.[1] === "free", rib.ends?.[0] === "gap", rib.ends?.[1] === "gap", rib.widthMm ?? 0));
   for (const border of input.borders ?? []) push(border.points, border.kind, -1, false, false, false, false, 0);
   if (segs.length === 0) return empty(cups);
+  seatBorders(segs, opening);
   if (selfOverlaps(segs)) return empty(cups, FOLDED_NOTE);
   joinEnds(segs);
   const pieces = splitSegs(segs);
@@ -371,7 +387,7 @@ export function ventPockets(input: VentInput): VentReport {
  * into the cell on the other side of the rib, and a later read must not treat them as loose ends.
  * A cut that would leave a piece shorter than `minLengthMm` is not made.
  */
-export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket[], minLengthMm = 0): VentRib[] {
+export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket[], minLengthMm = 0): { ribs: VentRib[]; pockets: VentPocket[]; refused: VentUnvented[] } {
   const cuts = new Map<number, V3[]>();
   for (const pocket of pockets) {
     const list = cuts.get(pocket.rib) ?? [];
@@ -379,18 +395,54 @@ export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket
     cuts.set(pocket.rib, list);
   }
   const out: VentRib[] = [];
+  const kept: VentPocket[] = [];
+  const refused: VentUnvented[] = [];
   ribs.forEach((rib, i) => {
     const at = cuts.get(i);
     if (!at?.length) {
       out.push({ points: rib.points.map((p) => [p[0], p[1], p[2]]), ...(rib.ends ? { ends: [rib.ends[0], rib.ends[1]] as [EndKind, EndKind] } : {}), ...(rib.widthMm !== undefined ? { widthMm: rib.widthMm } : {}) });
       return;
     }
-    out.push(...splitRib(rib, at, pockets.find((p) => p.rib === i)?.sizeMm ?? RESIN_VENT_MM, minLengthMm));
+    const size = pockets.find((p) => p.rib === i)?.sizeMm ?? RESIN_VENT_MM;
+    const pieces = splitRib(rib, at, size, minLengthMm);
+    if (!pieces) {
+      for (const pocket of pockets.filter((p) => p.rib === i)) refused.push({ at: pocket.at, message: CUT_REFUSED });
+      out.push({ points: rib.points.map((p) => [p[0], p[1], p[2]]), ...(rib.ends ? { ends: [rib.ends[0], rib.ends[1]] as [EndKind, EndKind] } : {}), ...(rib.widthMm !== undefined ? { widthMm: rib.widthMm } : {}) });
+      return;
+    }
+    const base = out.length;
+    out.push(...pieces);
+    for (const pocket of pockets.filter((p) => p.rib === i)) {
+      const ribIndex = out.findIndex((piece, k) => k >= base && piece.points.some((p) => Math.hypot(p[0] - pocket.at[0], p[1] - pocket.at[1], p[2] - pocket.at[2]) < 1));
+      kept.push({ ...pocket, rib: ribIndex >= 0 ? ribIndex : base });
+    }
   });
-  return out;
+  return { ribs: out, pockets: kept, refused };
+}
+
+/** Borders are drawn on the face and ribs on the mid-surface. Drop the borders onto the rib plane before the fold check. */
+function seatBorders(segs: Seg[], opening: [number, number, number]): void {
+  const origin = segs.find((seg) => seg.kind === "rib")?.a3;
+  if (!origin) return;
+  const drop = (p: [number, number, number]): [number, number, number] => {
+    const d = (p[0] - origin[0]) * opening[0] + (p[1] - origin[1]) * opening[1] + (p[2] - origin[2]) * opening[2];
+    return [p[0] - opening[0] * d, p[1] - opening[1] * d, p[2] - opening[2] * d];
+  };
+  for (const seg of segs) {
+    if (seg.kind === "rib") continue;
+    seg.a3 = drop(seg.a3);
+    seg.b3 = drop(seg.b3);
+  }
 }
 
 function selfOverlaps(segs: Seg[]): boolean {
+  const endOnBorder = (rib: Seg, other: Seg, t: number, u: number) => {
+    const ribEnd = t <= 1e-6 || t >= 1 - 1e-6;
+    const otherEnd = u <= 1e-6 || u >= 1 - 1e-6;
+    if (rib.kind === "rib" && other.kind !== "rib" && ribEnd) return true;
+    if (other.kind === "rib" && rib.kind !== "rib" && otherEnd) return true;
+    return false;
+  };
   for (let i = 0; i < segs.length; i += 1) {
     for (let j = i + 1; j < segs.length; j += 1) {
       const hit = intersect(segs[i]!, segs[j]!);
@@ -399,6 +451,7 @@ function selfOverlaps(segs: Seg[]): boolean {
       if (hit.t <= 1e-6 && hit.u >= 1 - 1e-6) continue;
       if (hit.t >= 1 - 1e-6 && hit.u <= 1e-6) continue;
       if (hit.t >= 1 - 1e-6 && hit.u >= 1 - 1e-6) continue;
+      if (endOnBorder(segs[i]!, segs[j]!, hit.t, hit.u)) continue;
       const p = lerp3(segs[i]!.a3, segs[i]!.b3, hit.t);
       const q = lerp3(segs[j]!.a3, segs[j]!.b3, hit.u);
       if (len(sub(p, q)) > OVERLAP_MM) return true;
@@ -407,8 +460,19 @@ function selfOverlaps(segs: Seg[]): boolean {
   return false;
 }
 
-/** An end that stops within half its rib's width of another rib or a border is extended onto it. */
+/** A rib end that stops within half its width of another rib or a border is extended onto it. An interior vertex of the polyline stays where it is. */
 function joinEnds(segs: Seg[]): void {
+  const same = (p: V2, q: V2) => dist2(p, q) <= WELD * WELD;
+  const ribEnd = (i: number, atStart: boolean) => {
+    const seg = segs[i]!;
+    const p = atStart ? seg.a : seg.b;
+    let n = 0;
+    for (const other of segs) {
+      if (other.kind !== "rib" || other.rib !== seg.rib) continue;
+      if (same(other.a, p) || same(other.b, p)) n += 1;
+    }
+    return n === 1;
+  };
   const move = (seg: Seg, atStart: boolean, q: V2, q3: [number, number, number]) => {
     if (atStart) {
       seg.a = q;
@@ -423,6 +487,7 @@ function joinEnds(segs: Seg[]): void {
     const reach = segs[i]!.width / 2;
     if (!(reach > WELD)) continue;
     for (const atStart of [true, false]) {
+      if (!ribEnd(i, atStart)) continue;
       const p = atStart ? segs[i]!.a : segs[i]!.b;
       let best: { d: number; q: V2; q3: [number, number, number] } | null = null;
       for (let j = 0; j < segs.length; j += 1) {
@@ -528,7 +593,7 @@ function drainThroughGaps(faces: Face[], built: { edges: Edge[]; gap: Set<number
 }
 
 function walkFaces(built: { xy: V2[]; xyz: [number, number, number][]; edges: Edge[]; loose: Set<number>; out: Half[][] }): Face[] {
-  const { xy, xyz, loose, out } = built;
+  const { xy, xyz, out } = built;
   const nextOf = (h: Half): Half => {
     const list = out[h.to] ?? [];
     let i = list.findIndex((row) => row.edge === h.edge);
@@ -580,7 +645,7 @@ function walkFaces(built: { xy: V2[]; xyz: [number, number, number][]; edges: Ed
       at3[1] /= n;
       at3[2] /= n;
       const bounded = area > 0;
-      const drains = halves.some((row) => row.kind === "open" || row.kind === "hole") || halves.some((row) => loose.has(row.from));
+      const drains = halves.some((row) => row.kind === "open" || row.kind === "hole");
       const wall = halves.every((row) => row.kind === "rib" || row.kind === "rises");
       faces.push({
         id: faces.length,
@@ -661,20 +726,22 @@ function reachable(roots: number[], adj: Link[][]): Set<number> {
   return seen;
 }
 
-function placeNotch(built: { xy: V2[]; edges: Edge[] }, link: Link, sizeMm: number, minLength: number, taken: { rib: number; at: V2 }[], gaps: Map<number, [number, number][]>): { rib: number; at: [number, number, number]; flat: V2; span: [number, number] } | null {
+function placeNotch(built: { xy: V2[]; xyz: [number, number, number][]; edges: Edge[]; out: Half[][] }, link: Link, sizeMm: number, minLength: number, taken: { rib: number; at: V2 }[], gaps: Map<number, [number, number][]>): { rib: number; at: [number, number, number]; flat: V2; span: [number, number] } | null {
   const edge = built.edges[link.edge];
   if (!edge || edge.rib < 0) return null;
-  const span = Math.hypot(edge.b3[0] - edge.a3[0], edge.b3[1] - edge.a3[1], edge.b3[2] - edge.a3[2]);
+  const chain = stretchEdges(built, link.edge);
+  const ids = orderedVerts(built, chain);
+  if (ids.length < 2) return null;
+  const points = ids.map((id) => built.xyz[id]!);
+  const span = polyLength(points);
   const clear = edge.width / 2 + CLEAR_EXTRA;
-  // The gap sits at the middle, so each end of the stretch stays half a width plus 0.5 mm clear of it.
+  // The gap sits at the middle of the stretch between crossings, so each end stays half a width plus 0.5 mm clear of it.
   if (span / 2 - sizeMm / 2 < clear - 1e-6) return null;
-  const at = lerp3(edge.a3, edge.b3, 0.5);
-  const pa = built.xy[edge.a]!;
-  const pb = built.xy[edge.b]!;
-  const flat: V2 = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2];
+  const at = pointAt(points, span / 2);
+  const flat = flatAt(built, ids, span / 2);
   if (taken.some((cut) => cut.rib === edge.rib && Math.hypot(cut.at[0] - flat[0], cut.at[1] - flat[1]) < sizeMm)) return null;
   const total = built.edges.filter((row) => row.rib === edge.rib).reduce((sum, row) => sum + Math.hypot(row.b3[0] - row.a3[0], row.b3[1] - row.a3[1], row.b3[2] - row.a3[2]), 0);
-  const s = arcTo(built.edges, link.edge) + span / 2;
+  const s = arcOf(built.edges, edge.rib, at);
   const lo = s - sizeMm / 2;
   const hi = s + sizeMm / 2;
   const existing = gaps.get(edge.rib) ?? [];
@@ -682,41 +749,108 @@ function placeNotch(built: { xy: V2[]; edges: Edge[] }, link: Link, sizeMm: numb
   return { rib: edge.rib, at, flat, span: [lo, hi] };
 }
 
-function arcTo(edges: Edge[], index: number): number {
-  const rib = edges[index]!.rib;
+/** Edges of one rib from the previous crossing or border to the next. Colinear samples in between stay in the stretch. */
+function stretchEdges(built: { edges: Edge[]; out: Half[][] }, index: number): number[] {
+  const rib = built.edges[index]?.rib ?? -1;
+  const stop = (vid: number) => {
+    const list = built.out[vid] ?? [];
+    const mine = new Set(list.filter((half) => built.edges[half.edge]?.rib === rib).map((half) => half.edge));
+    const foreign = list.some((half) => built.edges[half.edge]?.rib !== rib);
+    return foreign || mine.size !== 2;
+  };
+  const go = (vid: number, prev: number): number[] => {
+    const extra: number[] = [];
+    let at = vid;
+    let came = prev;
+    for (;;) {
+      if (stop(at)) break;
+      const next = (built.out[at] ?? []).find((half) => half.edge !== came && built.edges[half.edge]?.rib === rib);
+      if (!next) break;
+      extra.push(next.edge);
+      came = next.edge;
+      at = next.to;
+    }
+    return extra;
+  };
+  const edge = built.edges[index]!;
+  return [...go(edge.a, index).reverse(), index, ...go(edge.b, index)];
+}
+
+function orderedVerts(built: { edges: Edge[] }, edgeIds: number[]): number[] {
+  const first = built.edges[edgeIds[0]!];
+  if (!first) return [];
+  if (edgeIds.length === 1) return [first.a, first.b];
+  const second = built.edges[edgeIds[1]!]!;
+  const start = first.a === second.a || first.a === second.b ? first.b : first.a;
+  const verts = [start];
+  let prev = start;
+  for (const id of edgeIds) {
+    const edge = built.edges[id]!;
+    const next = edge.a === prev ? edge.b : edge.a;
+    verts.push(next);
+    prev = next;
+  }
+  return verts;
+}
+
+function flatAt(built: { xy: V2[] }, ids: number[], s: number): V2 {
+  let run = 0;
+  for (let i = 1; i < ids.length; i += 1) {
+    const a = built.xy[ids[i - 1]!]!;
+    const b = built.xy[ids[i]!]!;
+    const step = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (run + step >= s - 1e-9 || i === ids.length - 1) {
+      const t = step < 1e-12 ? 0 : Math.min(1, Math.max(0, (s - run) / step));
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+    run += step;
+  }
+  const last = built.xy[ids.at(-1)!]!;
+  return [last[0], last[1]];
+}
+
+/** Arc length along a rib, walked from the end with the smaller key, up to the point nearest `at`. */
+function arcOf(edges: Edge[], rib: number, at: [number, number, number]): number {
   const ofRib = edges.map((row, i) => ({ row, i })).filter((item) => item.row.rib === rib);
-  if (ofRib.length === 1) return 0;
-  const byVert = new Map<string, { i: number; length: number }[]>();
+  if (ofRib.length === 0) return 0;
   const key = (p: [number, number, number]) => `${Math.round(p[0] / WELD)}:${Math.round(p[1] / WELD)}:${Math.round(p[2] / WELD)}`;
+  const byVert = new Map<string, { i: number; length: number; a: [number, number, number]; b: [number, number, number] }[]>();
   for (const item of ofRib) {
     const length = Math.hypot(item.row.b3[0] - item.row.a3[0], item.row.b3[1] - item.row.a3[1], item.row.b3[2] - item.row.a3[2]);
     for (const p of [item.row.a3, item.row.b3]) {
       const list = byVert.get(key(p)) ?? [];
-      list.push({ i: item.i, length });
+      list.push({ i: item.i, length, a: item.row.a3, b: item.row.b3 });
       byVert.set(key(p), list);
     }
   }
-  // A vertex used once is an end of the rib. Walk from the end with the smaller key so the
-  // parameter is stable, and measure up to this edge.
   const ends: string[] = [];
   for (const [k, list] of byVert) if (list.length === 1) ends.push(k);
   ends.sort();
-  const start = ends[0];
-  if (!start) return 0;
-  let cursor = start;
+  let cursor = ends[0];
+  if (!cursor) return 0;
   let run = 0;
+  let best = 0;
+  let bestD = Infinity;
   const seen = new Set<number>();
   for (let guard = 0; guard < ofRib.length + 2; guard += 1) {
     const next = (byVert.get(cursor) ?? []).find((item) => !seen.has(item.i));
     if (!next) break;
     seen.add(next.i);
-    if (next.i === index) return run;
+    const a = key(next.a) === cursor ? next.a : next.b;
+    const b = a === next.a ? next.b : next.a;
+    const ab = sub(b, a);
+    const ab2 = dot(ab, ab);
+    const t = ab2 < 1e-18 ? 0 : Math.min(1, Math.max(0, dot(sub(at, a), ab) / ab2));
+    const q = lerp3(a, b, t);
+    const d = len(sub(at, q));
+    if (d < bestD) {
+      bestD = d;
+      best = run + Math.sqrt(ab2) * t;
+    }
     run += next.length;
-    const row = edges[next.i]!;
-    const a = key(row.a3);
-    cursor = a === cursor ? key(row.b3) : a;
+    cursor = key(b);
   }
-  return 0;
+  return best;
 }
 
 function piecesFit(total: number, gaps: [number, number][], minLength: number): boolean {
@@ -810,10 +944,10 @@ function intersect(p: Seg, q: Seg): { t: number; u: number } | null {
   return { t: Math.min(1, Math.max(0, t)), u: Math.min(1, Math.max(0, u)) };
 }
 
-function splitRib(rib: VentRib, centers: readonly V3[], size: number, minLength: number): VentRib[] {
+function splitRib(rib: VentRib, centers: readonly V3[], size: number, minLength: number): VentRib[] | null {
   const pts = rib.points;
   const total = polyLength(pts);
-  if (total < WELD) return [];
+  if (total < WELD) return null;
   const gaps: [number, number][] = [];
   for (const at of centers) {
     const s = paramOf(pts, at);
@@ -824,9 +958,7 @@ function splitRib(rib: VentRib, centers: readonly V3[], size: number, minLength:
     if (hi - lo < WELD) continue;
     gaps.push([lo, hi]);
   }
-  if (!piecesFit(total, gaps, minLength)) {
-    return [{ points: pts.map((p) => [p[0], p[1], p[2]]), ...(rib.ends ? { ends: [rib.ends[0], rib.ends[1]] as [EndKind, EndKind] } : {}), ...(rib.widthMm !== undefined ? { widthMm: rib.widthMm } : {}) }];
-  }
+  if (gaps.length === 0 || !piecesFit(total, gaps, minLength)) return null;
   gaps.sort((a, b) => a[0] - b[0]);
   const merged: [number, number][] = [];
   for (const gap of gaps) {

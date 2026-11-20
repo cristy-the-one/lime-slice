@@ -261,17 +261,20 @@ fn finish(
             ribbed: hz[1],
         }),
         frequency_factor: Some(achieved),
-        notes: frequency_notes(unreached),
+        notes: frequency_notes(unreached, req.vent),
     })
 }
 
 /// What a frequency plan does, and does not do. `unreached` is the clean
 /// ratio when selection stopped short of the ask.
-fn frequency_notes(unreached: Option<f64>) -> Vec<String> {
+fn frequency_notes(unreached: Option<f64>, vent: bool) -> Vec<String> {
     let mut notes = vec![
         "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string(),
         "Loose ends are not extended or closed, and ribs stay at full height.".to_string(),
     ];
+    if vent {
+        notes.push("Venting was skipped: a frequency plan is not notched.".to_string());
+    }
     if let Some(ratio) = unreached {
         notes.push(format!(
             "The frequency ratio cannot be reached. The plan reaches ×{ratio:.6}."
@@ -320,7 +323,7 @@ fn empty(
             ribbed: hz,
         }),
         frequency_factor: Some(1.0),
-        notes: frequency_notes(None),
+        notes: frequency_notes(None, req.vent),
     }
 }
 
@@ -601,7 +604,14 @@ mod tests {
     use super::super::field::Field;
     use super::super::surface::Surface;
     use super::super::{Holds, RibPlanRequest};
-    use super::mode_results;
+    use super::{frequency_notes, mode_results};
+
+    #[test]
+    fn a_resin_frequency_plan_says_venting_was_skipped() {
+        let notes = frequency_notes(None, true);
+        assert!(notes.iter().any(|note| note == "Venting was skipped: a frequency plan is not notched."));
+        assert!(!frequency_notes(None, false).iter().any(|note| note.contains("Venting")));
+    }
     use crate::shell::{IsotropicShell, ShellLoad, ShellMesh, ShellModel, ShellOptions};
     use crate::units::norm;
 

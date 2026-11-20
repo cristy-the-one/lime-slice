@@ -30,6 +30,9 @@ pub const PART_CUPS: &str = "the part itself cups here; ribs cannot vent it";
 /// A cupping cell has a way out, but no boundary rib can hold the gap.
 pub const TOO_SHORT: &str = "no boundary rib is long enough for a vent";
 
+/// The finder chose a notch, and cutting it would leave a piece shorter than the minimum rib.
+pub const CUT_REFUSED: &str = "the notch would leave a piece shorter than the minimum rib";
+
 /// Projection of a folded wall overlaps itself.
 pub const FOLDED_NOTE: &str = "This wall's projection overlaps itself, so a rib on one face would land on a rib on another. Venting is left undone.";
 
@@ -84,7 +87,7 @@ pub enum EndKind {
     Gap,
 }
 
-/// One run. A free end drains the cell. A hold or a gap end does not.
+/// One run. A free end, a hold and a gap end do not drain. Only an open border or a through hole does.
 pub struct RibRun<'a> {
     pub points: &'a [[f64; 3]],
     pub ends: [EndKind; 2],
@@ -165,7 +168,6 @@ struct Graph {
     xy: Vec<[f64; 2]>,
     xyz: Vec<[f64; 3]>,
     edges: Vec<Edge>,
-    loose: Vec<bool>,
     gap: Vec<bool>,
     out: Vec<Vec<Half>>,
 }
@@ -244,6 +246,7 @@ pub fn vent_pockets(ribs: &[RibRun<'_>], borders: &[BorderRun<'_>], opening: [f6
     if segs.is_empty() {
         return empty(cups, size_mm, None);
     }
+    seat_borders(&mut segs, opening);
     if self_overlaps(&segs) {
         return empty(cups, size_mm, Some(FOLDED_NOTE.to_string()));
     }
@@ -345,7 +348,7 @@ pub(crate) fn opening_of(mesh: &ShellMesh, side: RibSide) -> Option<[f64; 3]> {
     (l >= 1e-12).then_some(scale(n, sign / l))
 }
 
-/// The same pockets on the planner's ribs. Only a budget loose end drains; a hold or a boss closes.
+/// The same pockets on the planner's ribs. A loose end does not drain. A hold or a boss closes the cell it stands in.
 pub(crate) fn find(ribs: &[GRib], loose: &[(usize, usize)], borders: &[BorderRun<'_>], opening: [f64; 3], build: [f64; 3], min_length: f64) -> VentPockets {
     let runs: Vec<RibRun<'_>> = ribs
         .iter()
@@ -362,9 +365,17 @@ pub(crate) fn find(ribs: &[GRib], loose: &[(usize, usize)], borders: &[BorderRun
     vent_pockets(&runs, borders, opening, build, min_length)
 }
 
-/// Cut each vent out of its rib. The new ends are gaps. A pocket's rib index is a piece of the
-/// returned list whose end sits on the gap; a pocket that cannot be cut is left out.
-pub(crate) fn notch(ribs: &[GRib], pockets: &[VentPocket], min_length: f64) -> (Vec<GRib>, Vec<VentPocket>) {
+/// Cut each vent out of its rib. The new ends are gaps. A pocket the cut refuses is returned in
+/// `refused` instead of being dropped. `pairs` are the two ends of each notch, in `ribs` order.
+pub(crate) struct NotchCut {
+    pub ribs: Vec<GRib>,
+    pub pockets: Vec<VentPocket>,
+    pub refused: Vec<VentUnvented>,
+    /// (left rib, left end, right rib, right end) for each notch, in `ribs` order.
+    pub pairs: Vec<(usize, usize, usize, usize)>,
+}
+
+pub(crate) fn notch(ribs: &[GRib], pockets: &[VentPocket], min_length: f64) -> NotchCut {
     let mut cuts: Vec<Vec<[f64; 3]>> = vec![Vec::new(); ribs.len()];
     let mut size_of = vec![RESIN_VENT_MM; ribs.len()];
     for pocket in pockets {
@@ -374,22 +385,37 @@ pub(crate) fn notch(ribs: &[GRib], pockets: &[VentPocket], min_length: f64) -> (
         }
     }
     let mut out = Vec::new();
+    let mut kept = Vec::new();
+    let mut refused = Vec::new();
+    let mut pairs = Vec::new();
     for (i, rib) in ribs.iter().enumerate() {
         if cuts[i].is_empty() {
             out.push(rib.clone());
             continue;
         }
-        out.extend(split_rib(rib, &cuts[i], size_of[i], min_length));
+        let Some(pieces) = split_rib(rib, &cuts[i], size_of[i], min_length) else {
+            for pocket in pockets.iter().filter(|p| p.rib == i) {
+                refused.push(VentUnvented { at: pocket.at, message: CUT_REFUSED.to_string() });
+            }
+            out.push(rib.clone());
+            continue;
+        };
+        let base = out.len();
+        let n = pieces.len();
+        out.extend(pieces);
+        if n >= 2 {
+            for k in 0..n - 1 {
+                pairs.push((base + k, 1, base + k + 1, 0));
+            }
+        }
+        for pocket in pockets.iter().filter(|p| p.rib == i) {
+            let rib_index = out.iter().enumerate().skip(base).find(|(_, piece)| {
+                piece.points.first().is_some_and(|a| norm(sub(*a, pocket.at)) < 1.0) || piece.points.last().is_some_and(|b| norm(sub(*b, pocket.at)) < 1.0)
+            }).map(|(k, _)| k).unwrap_or(base);
+            kept.push(VentPocket { rib: rib_index, at: pocket.at, size_mm: pocket.size_mm });
+        }
     }
-    let pockets = pockets
-        .iter()
-        .filter_map(|p| {
-            out.iter().position(|rib| {
-                rib.points.first().is_some_and(|a| norm(sub(*a, p.at)) < 1.0) || rib.points.last().is_some_and(|b| norm(sub(*b, p.at)) < 1.0)
-            }).map(|rib| VentPocket { rib, at: p.at, size_mm: p.size_mm })
-        })
-        .collect();
-    (out, pockets)
+    NotchCut { ribs: out, pockets: kept, refused, pairs }
 }
 
 /// Slide a gap along its rib until surface embedding still leaves it open.
@@ -400,24 +426,8 @@ pub(crate) fn notch(ribs: &[GRib], pockets: &[VentPocket], min_length: f64) -> (
 /// [`RESIN_VENT_MM`]: the first end has to land just outside the snap radius, so the short edge
 /// it cuts is too small for the second end to snap onto it. Neither piece is left shorter than
 /// `min_length`.
-pub(crate) fn seat_gaps(surface: &Surface, ribs: &mut [GRib], min_length: f64) {
-    let mut pairs = Vec::new();
-    for i in 0..ribs.len() {
-        for end_i in 0..2 {
-            let Some(pi) = end_point(&ribs[i], end_i) else { continue };
-            for j in (i + 1)..ribs.len() {
-                for end_j in 0..2 {
-                    let Some(pj) = end_point(&ribs[j], end_j) else { continue };
-                    let d = norm(sub(pi, pj));
-                    // A vent is 0.75 mm. A wider window would slide rib ends that merely sit near each other.
-                    if (0.5..1.2).contains(&d) {
-                        pairs.push((i, end_i, j, end_j));
-                    }
-                }
-            }
-        }
-    }
-    for (i, end_i, j, end_j) in pairs {
+pub(crate) fn seat_gaps(surface: &Surface, ribs: &mut [GRib], pairs: &[(usize, usize, usize, usize)], pockets: &mut [VentPocket], min_length: f64) {
+    for &(i, end_i, j, end_j) in pairs {
         let Some(a) = end_point(&ribs[i], end_i) else { continue };
         let Some(b) = end_point(&ribs[j], end_j) else { continue };
         let dir = sub(b, a);
@@ -425,7 +435,6 @@ pub(crate) fn seat_gaps(surface: &Surface, ribs: &mut [GRib], min_length: f64) {
         if n < 1e-6 {
             continue;
         }
-        let axis = scale(dir, 1.0 / n);
         let mut best: Option<(f64, f64)> = None;
         for step in 0..80 {
             let mut hit = false;
@@ -434,13 +443,13 @@ pub(crate) fn seat_gaps(surface: &Surface, ribs: &mut [GRib], min_length: f64) {
                     continue;
                 }
                 let shift = sign * step as f64 * 0.1;
-                if shift != 0.0 && !shift_fits(&ribs[i], end_i, &ribs[j], end_j, axis, shift, min_length) {
+                if shift != 0.0 && !shift_fits(&ribs[i], &ribs[j], shift, min_length) {
                     continue;
                 }
                 let saved = (end_point(&ribs[i], end_i).unwrap(), end_point(&ribs[j], end_j).unwrap());
                 if shift != 0.0 {
-                    move_end(&mut ribs[i], end_i, axis, shift);
-                    move_end(&mut ribs[j], end_j, axis, shift);
+                    nudge(&mut ribs[i], end_i, shift);
+                    nudge(&mut ribs[j], end_j, -shift);
                 }
                 let gap = embedded_opening(surface, ribs, i, end_i, j, end_j);
                 set_end(&mut ribs[i], end_i, saved.0);
@@ -463,8 +472,16 @@ pub(crate) fn seat_gaps(surface: &Surface, ribs: &mut [GRib], min_length: f64) {
         }
         if let Some((shift, _)) = best {
             if shift != 0.0 {
-                move_end(&mut ribs[i], end_i, axis, shift);
-                move_end(&mut ribs[j], end_j, axis, shift);
+                nudge(&mut ribs[i], end_i, shift);
+                nudge(&mut ribs[j], end_j, -shift);
+            }
+        }
+        if let (Some(a), Some(b)) = (end_point(&ribs[i], end_i), end_point(&ribs[j], end_j)) {
+            let mid = scale(add(a, b), 0.5);
+            if let Some(pocket) = pockets.iter_mut().min_by(|p, q| norm(sub(p.at, mid)).total_cmp(&norm(sub(q.at, mid)))) {
+                if norm(sub(pocket.at, mid)) < 2.0 {
+                    pocket.at = mid;
+                }
             }
         }
     }
@@ -502,20 +519,32 @@ fn end_point(rib: &GRib, end: usize) -> Option<[f64; 3]> {
     Some(if end == 0 { rib.points[0] } else { *rib.points.last().unwrap() })
 }
 
-fn shift_fits(left: &GRib, end_l: usize, right: &GRib, end_r: usize, axis: [f64; 3], shift: f64, min_length: f64) -> bool {
-    // `axis` points from the left gap end toward the right. Moving that way lengthens the piece
-    // whose gap end is its last point, and shortens the piece whose gap end is its first.
-    let along = |rib: &GRib, end: usize| {
-        let other = if end == 0 { *rib.points.last().unwrap() } else { rib.points[0] };
-        let away = sub(end_point(rib, end).unwrap(), other);
-        let n = norm(away);
-        if n < 1e-9 { 0.0 } else { shift * dot(axis, scale(away, 1.0 / n)) }
+fn shift_fits(left: &GRib, right: &GRib, shift: f64, min_length: f64) -> bool {
+    let fits = |rib: &GRib, delta: f64| {
+        let length = poly_length(&rib.points) + delta;
+        let clear = rib.d.width / 2.0 + CLEAR_EXTRA;
+        length + 1e-6 >= min_length && length + 1e-6 >= clear
     };
-    poly_length(&left.points) + along(left, end_l) >= min_length - 1e-6 && poly_length(&right.points) + along(right, end_r) >= min_length - 1e-6
+    fits(left, shift) && fits(right, -shift)
 }
 
-fn move_end(rib: &mut GRib, end: usize, axis: [f64; 3], shift: f64) {
-    set_end(rib, end, add(end_point(rib, end).unwrap(), scale(axis, shift)));
+/// Move a gap end along its end segment. Positive `delta` lengthens the piece.
+fn nudge(rib: &mut GRib, end: usize, delta: f64) {
+    if rib.points.len() < 2 || delta == 0.0 {
+        return;
+    }
+    let (neighbor, tip) = if end == 0 {
+        (rib.points[1], rib.points[0])
+    } else {
+        let n = rib.points.len();
+        (rib.points[n - 2], rib.points[n - 1])
+    };
+    let away = sub(tip, neighbor);
+    let n = norm(away);
+    if n < 1e-9 {
+        return;
+    }
+    set_end(rib, end, add(tip, scale(away, delta / n)));
 }
 
 fn set_end(rib: &mut GRib, end: usize, p: [f64; 3]) {
@@ -554,13 +583,33 @@ fn snap_target(surface: &Surface, p: [f64; 3]) -> Option<u32> {
     }
 }
 
+fn seat_borders(segs: &mut [Seg], opening: [f64; 3]) {
+    let Some(origin) = segs.iter().find(|seg| seg.kind == Kind::Rib).map(|seg| seg.a3) else { return };
+    for seg in segs.iter_mut() {
+        if seg.kind == Kind::Rib {
+            continue;
+        }
+        let drop = |p: [f64; 3]| {
+            let d = dot(sub(p, origin), opening);
+            sub(p, scale(opening, d))
+        };
+        seg.a3 = drop(seg.a3);
+        seg.b3 = drop(seg.b3);
+    }
+}
+
 fn self_overlaps(segs: &[Seg]) -> bool {
+    let end_on_border = |rib: &Seg, other: &Seg, t: f64, u: f64| {
+        let rib_end = t <= 1e-6 || t >= 1.0 - 1e-6;
+        let other_end = u <= 1e-6 || u >= 1.0 - 1e-6;
+        (rib.kind == Kind::Rib && other.kind != Kind::Rib && rib_end) || (other.kind == Kind::Rib && rib.kind != Kind::Rib && other_end)
+    };
     for i in 0..segs.len() {
         for j in (i + 1)..segs.len() {
             let Some(hit) = intersect(&segs[i], &segs[j]) else { continue };
             let (t, u) = hit;
             let corner = (t <= 1e-6 || t >= 1.0 - 1e-6) && (u <= 1e-6 || u >= 1.0 - 1e-6);
-            if corner {
+            if corner || end_on_border(&segs[i], &segs[j], t, u) {
                 continue;
             }
             let p = lerp3(segs[i].a3, segs[i].b3, t);
@@ -584,6 +633,19 @@ fn join_ends(segs: &mut [Seg]) {
         }
         for at_start in [true, false] {
             let p = if at_start { segs[i].a } else { segs[i].b };
+            let rib = segs[i].rib;
+            let mut users = 0;
+            for other in segs.iter() {
+                if other.kind != Kind::Rib || other.rib != rib {
+                    continue;
+                }
+                if dist2(other.a, p) <= WELD * WELD || dist2(other.b, p) <= WELD * WELD {
+                    users += 1;
+                }
+            }
+            if users != 1 {
+                continue;
+            }
             let mut best: Option<(f64, [f64; 2], [f64; 3])> = None;
             for j in 0..segs.len() {
                 if j == i {
@@ -638,7 +700,6 @@ fn build_graph(pieces: &[Seg]) -> Option<Graph> {
         id_of.insert(key, id);
         id
     };
-    let mut loose = Vec::new();
     let mut gap = Vec::new();
     let mut edges = Vec::new();
     let mut seen_edge: BTreeMap<String, ()> = BTreeMap::new();
@@ -648,15 +709,8 @@ fn build_graph(pieces: &[Seg]) -> Option<Graph> {
         if a == b {
             continue;
         }
-        if loose.len() < xy.len() {
-            loose.resize(xy.len(), false);
+        if gap.len() < xy.len() {
             gap.resize(xy.len(), false);
-        }
-        if seg.loose_a {
-            loose[a] = true;
-        }
-        if seg.loose_b {
-            loose[b] = true;
         }
         if seg.gap_a {
             gap[a] = true;
@@ -675,7 +729,6 @@ fn build_graph(pieces: &[Seg]) -> Option<Graph> {
         seen_edge.insert(key, ());
         edges.push(Edge { a, b, kind: seg.kind, rib: seg.rib, a3: xyz[a], b3: xyz[b], width: seg.width });
     }
-    loose.resize(xy.len(), false);
     gap.resize(xy.len(), false);
     let mut out = vec![Vec::new(); xy.len()];
     for (i, edge) in edges.iter().enumerate() {
@@ -689,7 +742,7 @@ fn build_graph(pieces: &[Seg]) -> Option<Graph> {
             ap.total_cmp(&aq).then(p.edge.cmp(&q.edge))
         });
     }
-    Some(Graph { xy, xyz, edges, loose, gap, out })
+    Some(Graph { xy, xyz, edges, gap, out })
 }
 
 fn kind_tag(kind: Kind) -> u8 {
@@ -757,7 +810,7 @@ fn walk_faces(graph: &Graph) -> Vec<Face> {
             }
             at3 = scale(at3, 1.0 / n);
             let bounded = area > 0.0;
-            let drains = halves.iter().any(|row| row.kind == Kind::Open || row.kind == Kind::Hole) || halves.iter().any(|row| graph.loose[row.from]);
+            let drains = halves.iter().any(|row| row.kind == Kind::Open || row.kind == Kind::Hole);
             let wall = halves.iter().all(|row| row.kind == Kind::Rib || row.kind == Kind::Rises);
             faces.push(Face {
                 id: faces.len(),
@@ -925,23 +978,27 @@ fn place_notch(graph: &Graph, link: Link, size_mm: f64, min_length: f64, taken: 
     if edge.rib < 0 {
         return None;
     }
-    let span = norm(sub(edge.b3, edge.a3));
+    let chain = stretch_edges(graph, link.edge);
+    let ids = ordered_verts(graph, &chain);
+    if ids.len() < 2 {
+        return None;
+    }
+    let points: Vec<[f64; 3]> = ids.iter().map(|&id| graph.xyz[id]).collect();
+    let span = poly_length(&points);
     let clear = edge.width / 2.0 + CLEAR_EXTRA;
     if span / 2.0 - size_mm / 2.0 < clear - 1e-6 {
         return None;
     }
-    let at = lerp3(edge.a3, edge.b3, 0.5);
-    let pa = graph.xy[edge.a];
-    let pb = graph.xy[edge.b];
-    let flat = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
+    let at = point_at(&points, span / 2.0);
+    let flat = flat_at(graph, &ids, span / 2.0);
     if taken.iter().any(|(rib, cut)| *rib == edge.rib && ((cut[0] - flat[0]).powi(2) + (cut[1] - flat[1]).powi(2)).sqrt() < size_mm) {
         return None;
     }
     let total: f64 = graph.edges.iter().filter(|row| row.rib == edge.rib).map(|row| norm(sub(row.b3, row.a3))).sum();
-    let s = arc_to(&graph.edges, link.edge) + span / 2.0;
+    let s = arc_of(&graph.edges, edge.rib, at);
     let lo = s - size_mm / 2.0;
     let hi = s + size_mm / 2.0;
-    let mut existing = if edge.rib >= 0 && (edge.rib as usize) < gaps.len() { gaps[edge.rib as usize].clone() } else { Vec::new() };
+    let mut existing = if (edge.rib as usize) < gaps.len() { gaps[edge.rib as usize].clone() } else { Vec::new() };
     existing.push((lo, hi));
     if !pieces_fit(total, &existing, min_length) {
         return None;
@@ -949,18 +1006,82 @@ fn place_notch(graph: &Graph, link: Link, size_mm: f64, min_length: f64, taken: 
     Some(Placed { rib: edge.rib as usize, at, flat, span: (lo, hi) })
 }
 
-fn arc_to(edges: &[Edge], index: usize) -> f64 {
-    let rib = edges[index].rib;
+fn stretch_edges(graph: &Graph, index: usize) -> Vec<usize> {
+    let rib = graph.edges[index].rib;
+    let stop = |vid: usize| {
+        let list = &graph.out[vid];
+        let mine = list.iter().filter(|half| graph.edges[half.edge].rib == rib).map(|half| half.edge).collect::<std::collections::BTreeSet<_>>();
+        let foreign = list.iter().any(|half| graph.edges[half.edge].rib != rib);
+        foreign || mine.len() != 2
+    };
+    let go = |mut vid: usize, mut came: usize| {
+        let mut extra = Vec::new();
+        loop {
+            if stop(vid) {
+                break;
+            }
+            let Some(next) = graph.out[vid].iter().find(|half| half.edge != came && graph.edges[half.edge].rib == rib) else { break };
+            extra.push(next.edge);
+            came = next.edge;
+            vid = next.to;
+        }
+        extra
+    };
+    let edge = &graph.edges[index];
+    let mut back = go(edge.a, index);
+    back.reverse();
+    let mut out = back;
+    out.push(index);
+    out.extend(go(edge.b, index));
+    out
+}
+
+fn ordered_verts(graph: &Graph, edge_ids: &[usize]) -> Vec<usize> {
+    let Some(&first_id) = edge_ids.first() else { return Vec::new() };
+    let first = &graph.edges[first_id];
+    if edge_ids.len() == 1 {
+        return vec![first.a, first.b];
+    }
+    let second = &graph.edges[edge_ids[1]];
+    let start = if first.a == second.a || first.a == second.b { first.b } else { first.a };
+    let mut verts = vec![start];
+    let mut prev = start;
+    for &id in edge_ids {
+        let edge = &graph.edges[id];
+        let next = if edge.a == prev { edge.b } else { edge.a };
+        verts.push(next);
+        prev = next;
+    }
+    verts
+}
+
+fn flat_at(graph: &Graph, ids: &[usize], s: f64) -> [f64; 2] {
+    let mut run = 0.0;
+    for i in 1..ids.len() {
+        let a = graph.xy[ids[i - 1]];
+        let b = graph.xy[ids[i]];
+        let step = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+        if run + step >= s - 1e-9 || i + 1 == ids.len() {
+            let t = if step < 1e-12 { 0.0 } else { ((s - run) / step).clamp(0.0, 1.0) };
+            return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        }
+        run += step;
+    }
+    graph.xy[*ids.last().unwrap_or(&0)]
+}
+
+fn arc_of(edges: &[Edge], rib: i32, at: [f64; 3]) -> f64 {
     let of_rib: Vec<usize> = edges.iter().enumerate().filter(|(_, row)| row.rib == rib).map(|(i, _)| i).collect();
-    if of_rib.len() == 1 {
+    if of_rib.is_empty() {
         return 0.0;
     }
     let key = |p: [f64; 3]| format!("{}:{}:{}", (p[0] / WELD).round() as i64, (p[1] / WELD).round() as i64, (p[2] / WELD).round() as i64);
-    let mut by_vert: BTreeMap<String, Vec<(usize, f64)>> = BTreeMap::new();
+    type StretchLink = (usize, f64, [f64; 3], [f64; 3]);
+    let mut by_vert: BTreeMap<String, Vec<StretchLink>> = BTreeMap::new();
     for &i in &of_rib {
         let length = norm(sub(edges[i].b3, edges[i].a3));
         for p in [edges[i].a3, edges[i].b3] {
-            by_vert.entry(key(p)).or_default().push((i, length));
+            by_vert.entry(key(p)).or_default().push((i, length, edges[i].a3, edges[i].b3));
         }
     }
     let mut ends: Vec<String> = by_vert.iter().filter(|(_, list)| list.len() == 1).map(|(k, _)| k.clone()).collect();
@@ -968,19 +1089,27 @@ fn arc_to(edges: &[Edge], index: usize) -> f64 {
     let Some(start) = ends.first().cloned() else { return 0.0 };
     let mut cursor = start;
     let mut run = 0.0;
+    let mut best = 0.0;
+    let mut best_d = f64::INFINITY;
     let mut seen = vec![false; edges.len()];
     for _ in 0..of_rib.len() + 2 {
-        let Some(next) = by_vert.get(&cursor).and_then(|list| list.iter().find(|(i, _)| !seen[*i])).copied() else { break };
+        let Some(next) = by_vert.get(&cursor).and_then(|list| list.iter().find(|(i, _, _, _)| !seen[*i])).copied() else { break };
         seen[next.0] = true;
-        if next.0 == index {
-            return run;
+        let a = if key(next.2) == cursor { next.2 } else { next.3 };
+        let b = if a == next.2 { next.3 } else { next.2 };
+        let ab = sub(b, a);
+        let ab2 = dot(ab, ab);
+        let t = if ab2 < 1e-18 { 0.0 } else { (dot(sub(at, a), ab) / ab2).clamp(0.0, 1.0) };
+        let q = lerp3(a, b, t);
+        let d = norm(sub(at, q));
+        if d < best_d {
+            best_d = d;
+            best = run + ab2.sqrt() * t;
         }
         run += next.1;
-        let row = &edges[next.0];
-        let a = key(row.a3);
-        cursor = if a == cursor { key(row.b3) } else { a };
+        cursor = key(b);
     }
-    0.0
+    best
 }
 
 fn pieces_fit(total: f64, gaps: &[(f64, f64)], min_length: f64) -> bool {
@@ -1102,10 +1231,10 @@ fn intersect(p: &Seg, q: &Seg) -> Option<(f64, f64)> {
     Some((t.clamp(0.0, 1.0), u.clamp(0.0, 1.0)))
 }
 
-fn split_rib(rib: &GRib, centers: &[[f64; 3]], size: f64, min_length: f64) -> Vec<GRib> {
+fn split_rib(rib: &GRib, centers: &[[f64; 3]], size: f64, min_length: f64) -> Option<Vec<GRib>> {
     let total = poly_length(&rib.points);
     if total < WELD {
-        return Vec::new();
+        return None;
     }
     let mut gaps = Vec::new();
     for at in centers {
@@ -1117,8 +1246,8 @@ fn split_rib(rib: &GRib, centers: &[[f64; 3]], size: f64, min_length: f64) -> Ve
             gaps.push((lo, hi));
         }
     }
-    if !pieces_fit(total, &gaps, min_length) {
-        return vec![rib.clone()];
+    if gaps.is_empty() || !pieces_fit(total, &gaps, min_length) {
+        return None;
     }
     gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut merged: Vec<(f64, f64)> = Vec::new();
@@ -1142,7 +1271,7 @@ fn split_rib(rib: &GRib, centers: &[[f64; 3]], size: f64, min_length: f64) -> Ve
     if total - cursor > WELD {
         spans.push((cursor, total));
     }
-    spans
+    let pieces = spans
         .into_iter()
         .map(|(lo, hi)| {
             let (points, heights) = sample_rib(&rib.points, &rib.heights, lo, hi);
@@ -1152,7 +1281,8 @@ fn split_rib(rib: &GRib, centers: &[[f64; 3]], size: f64, min_length: f64) -> Ve
             piece
         })
         .filter(|piece| piece.points.len() >= 2)
-        .collect()
+        .collect::<Vec<_>>();
+    if pieces.len() < 2 { None } else { Some(pieces) }
 }
 
 fn sample_rib(points: &[[f64; 3]], heights: &[f64], lo: f64, hi: f64) -> (Vec<[f64; 3]>, Vec<f64>) {
@@ -1360,65 +1490,63 @@ mod tests {
         let runs: Vec<RibRun<'_>> = lines.iter().map(|p| RibRun { points: p, ends: [EndKind::Closed; 2], width_mm: 2.0 }).collect();
         let cup = vent_pockets(&runs, &[], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 2.0);
         assert_eq!(cup.pockets.len(), 1);
-        let ribs = notch_plain(&lines, &cup.pockets, 2.0);
-        let gap_ends = ribs.iter().filter(|rib| rib.1[0] == EndKind::Gap || rib.1[1] == EndKind::Gap).count();
-        let again_runs: Vec<RibRun<'_>> = ribs.iter().map(|(p, e)| RibRun { points: p, ends: *e, width_mm: 2.0 }).collect();
+        use super::super::profile::RibProfile;
+        use super::super::select::DRib;
+        let ribs: Vec<GRib> = lines.iter().map(|p| GRib {
+            points: p.clone(),
+            heights: vec![4.0; p.len() - 1],
+            d: DRib::fixed(vec![0, 1], 4.0, 2.0, RibProfile::Rectangular),
+        }).collect();
+        let cut_out = notch(&ribs, &cup.pockets, 2.0);
+        let cut = cut_out.ribs;
+        let kept = cut_out.pockets;
+        let refused = cut_out.refused;
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(kept.len(), 1);
+        let gap_end = |points: &[[f64; 3]]| {
+            let at = kept[0].at;
+            let start = norm(sub(points[0], at)) < 0.5;
+            let end = norm(sub(*points.last().unwrap(), at)) < 0.5;
+            (start, end)
+        };
+        let marked: Vec<(Vec<[f64; 3]>, [EndKind; 2])> = cut.iter().map(|rib| {
+            let (start, end) = gap_end(&rib.points);
+            (rib.points.clone(), [if start { EndKind::Gap } else { EndKind::Closed }, if end { EndKind::Gap } else { EndKind::Closed }])
+        }).collect();
+        let gap_ends = marked.iter().filter(|rib| rib.1[0] == EndKind::Gap || rib.1[1] == EndKind::Gap).count();
+        let again_runs: Vec<RibRun<'_>> = marked.iter().map(|(p, e)| RibRun { points: p, ends: *e, width_mm: 2.0 }).collect();
         let again = vent_pockets(&again_runs, &[], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 2.0);
-        assert_eq!(ribs.len(), 5, "{ribs:?}");
+        assert_eq!(cut.len(), 5, "{cut:?}");
         assert_eq!(gap_ends, 2);
         assert_eq!(again.closed, 0, "{again:?}");
         assert!(again.pockets.is_empty());
-        let gap_pts: Vec<[f64; 3]> = ribs.iter().flat_map(|(points, ends)| {
+        let gap_pts: Vec<[f64; 3]> = marked.iter().flat_map(|(points, ends)| {
             let mut found = Vec::new();
-            if ends[0] == EndKind::Gap {
-                found.push(points[0]);
-            }
-            if ends[1] == EndKind::Gap {
-                found.push(*points.last().unwrap());
-            }
+            if ends[0] == EndKind::Gap { found.push(points[0]); }
+            if ends[1] == EndKind::Gap { found.push(*points.last().unwrap()); }
             found
         }).collect();
         let gap = norm(sub(gap_pts[0], gap_pts[1]));
         assert!(near(gap, RESIN_VENT_MM), "{gap}");
-        for (points, _) in &ribs {
-            assert!(poly_length(points) + 1e-6 >= 2.0, "{}", poly_length(points));
+        for rib in &cut {
+            assert!(poly_length(&rib.points) + 1e-6 >= 2.0, "{}", poly_length(&rib.points));
         }
     }
 
-    fn notch_plain(lines: &[Vec<[f64; 3]>], pockets: &[VentPocket], min_length: f64) -> Vec<(Vec<[f64; 3]>, [EndKind; 2])> {
-        let mut out = Vec::new();
-        for (i, points) in lines.iter().enumerate() {
-            let centers: Vec<[f64; 3]> = pockets.iter().filter(|p| p.rib == i).map(|p| p.at).collect();
-            if centers.is_empty() {
-                out.push((points.clone(), [EndKind::Closed, EndKind::Closed]));
-                continue;
-            }
-            let total = poly_length(points);
-            let mut gaps = Vec::new();
-            for at in &centers {
-                let s = param_of(points, *at).unwrap();
-                gaps.push(((s - RESIN_VENT_MM / 2.0).max(0.0), (s + RESIN_VENT_MM / 2.0).min(total)));
-            }
-            assert!(pieces_fit(total, &gaps, min_length));
-            let mut cursor = 0.0;
-            let mut spans = Vec::new();
-            for gap in &gaps {
-                if gap.0 - cursor > WELD {
-                    spans.push((cursor, gap.0));
-                }
-                cursor = gap.1;
-            }
-            if total - cursor > WELD {
-                spans.push((cursor, total));
-            }
-            for (k, (lo, hi)) in spans.iter().enumerate() {
-                let (pts, _) = sample_rib(points, &[], *lo, *hi);
-                let start = if k == 0 { EndKind::Closed } else { EndKind::Gap };
-                let end = if k + 1 == spans.len() { EndKind::Closed } else { EndKind::Gap };
-                out.push((pts, [start, end]));
-            }
+    #[test]
+    fn a_thicker_wall_is_not_a_fold() {
+        for t in [1.0, 2.0, 3.0, 4.0] {
+            let z = t / 2.0;
+            let border = vec![[0.0, 0.0, z], [10.0, 0.0, z], [10.0, 10.0, z], [0.0, 10.0, z], [0.0, 0.0, z]];
+            let rib = vec![[0.0, 5.0, 0.0], [10.0, 5.0, 0.0]];
+            let runs = [RibRun { points: &rib, ends: [EndKind::Closed; 2], width_mm: 2.0 }];
+            let borders = [BorderRun { points: &border, kind: BorderKind::Rises }];
+            let got = vent_pockets(&runs, &borders, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 2.0);
+            assert!(got.note.is_none(), "t={t} called a fold: {:?}", got.note);
+            assert_eq!(got.closed, 2, "t={t}");
+            assert!(got.pockets.is_empty(), "t={t}");
+            assert!(got.unvented.iter().all(|item| item.message == PART_CUPS), "t={t} {:?}", got.unvented);
         }
-        out
     }
 
     #[test]
@@ -1439,7 +1567,9 @@ mod tests {
         ];
         let before = (snap_target(&surface, ribs[0].points[1]), snap_target(&surface, ribs[1].points[0]));
         assert_eq!(before.0, before.1, "the fixture must collapse before seating");
-        seat_gaps(&surface, &mut ribs, 2.0);
+        let pairs = [(0usize, 1usize, 1usize, 0usize)];
+        let mut pockets = Vec::new();
+        seat_gaps(&surface, &mut ribs, &pairs, &mut pockets, 2.0);
         let (embedded, design, kept, _) = super::super::embed_design(&surface, &ribs, &[]);
         assert_eq!(kept.len(), 2, "both pieces embed");
         let end = |k: usize, last: bool| {
@@ -1450,6 +1580,33 @@ mod tests {
         let gap = norm(sub(end(0, true), end(1, false)));
         assert!(gap + 1e-6 >= 0.7 && gap < 1.0, "embedded gap {gap} mm");
         println!("coarse mesh gap after embed: {gap:.4} mm");
+
+        use crate::shell::{IsotropicShell, Rib, ShellHold, ShellLoad, ShellModel, ShellOptions};
+        let compliance = |ribs: &[GRib]| {
+            let (s, design, kept, _) = super::super::embed_design(&surface, ribs, &[]);
+            assert_eq!(kept.len(), ribs.len(), "the comparison ribs embed");
+            let mesh = s.to_mesh();
+            let holds: Vec<ShellHold> = mesh
+                .vertices
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p[0] < 1e-4 || p[1] < 1e-4 || (p[0] - 40.0).abs() < 1e-4 || (p[1] - 30.0).abs() < 1e-4)
+                .map(|(i, _)| ShellHold::clamped(i as u32))
+                .collect();
+            let tris: Vec<u32> = (0..mesh.triangles.len() as u32).collect();
+            let solver: Vec<Rib> = design.iter().map(|d| {
+                let edges: Vec<(u32, u32)> = d.chain.windows(2).map(|w| (w[0], w[1])).collect();
+                Rib::rectangular(edges, 2.0, 4.0, crate::shell::RibSide::Positive)
+            }).collect();
+            let mut model = ShellModel::new(mesh, IsotropicShell::new(2000.0, 0.35).expect("material"), &holds, ShellOptions::default()).expect("model");
+            model.set_ribs(solver).expect("ribs");
+            model.solve(&[ShellLoad::Pressure { triangles: tris, pressure: 0.01 }]).expect("solve").compliance
+        };
+        let continuous = vec![make(vec![[0.0, 15.0, 0.0], [40.0, 15.0, 0.0]])];
+        let solid = compliance(&continuous);
+        let gapped = compliance(&ribs);
+        println!("coarse mesh compliance continuous {solid:.6} gapped {gapped:.6}");
+        assert!(gapped > solid * 1.001, "the solve did not see the gap: continuous {solid} gapped {gapped}");
     }
 
     fn read3(v: &serde_json::Value) -> [f64; 3] {

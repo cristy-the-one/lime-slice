@@ -613,6 +613,7 @@ fn end_name(e: RibEndKind) -> &'static str {
         RibEndKind::Hold => "hold",
         RibEndKind::Rib => "rib",
         RibEndKind::Free => "free",
+        RibEndKind::Gap => "gap",
     }
 }
 
@@ -765,6 +766,9 @@ pub fn plan_json(plan: &RibPlan) -> Value {
         });
     }
     // Only a worst-case plan has one, and the tool asks for weighted plans.
+    if plan.notes.iter().any(|note| note.starts_with("Venting was skipped")) {
+        out["notes"] = json!(plan.notes);
+    }
     if !plan.worst_trace.is_empty() {
         out["worstTrace"] = json!(plan
             .worst_trace

@@ -13,7 +13,7 @@
  * the solid's mesh is posed into it first, so points read and typed, zones and ribNet's paths agree.
  */
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
-import { GIVEN_AXIS, NO_RESIN_PRINTER, ventBodyOf } from "../../src/modeling/vents.ts";
+import { GIVEN_AXIS, NO_RESIN_PRINTER, ventBodyOf, ventLoopsOf } from "../../src/modeling/vents.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
@@ -404,7 +404,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     ...(sentLoads.caseWeights ? { caseWeights: sentLoads.caseWeights } : {}),
     // Only resin. The panel builds this with the same function, so the same wall asks for the same pockets.
     // Filament and moulded get nothing, and their bodies stay as they were.
-    ...ventBodyOf(process, { orient: obj.orient, pose: typed.pose }, wall.loops.map((loop, i) => ({ hole: wall.report.loops[i]?.hole === true, spans: loop.spans.map((span) => ({ class: span.class, from: span.from, to: span.to, points: span.points })) })), givenAxis),
+    ...ventBodyOf(process, { orient: obj.orient, pose: typed.pose }, ventLoopsOf(wall), givenAxis),
   };
   if (!this.engine.ribPlanStart || !this.engine.ribPlanPoll || !this.engine.ribPlanCancel) return refuse("solver-unavailable", "This engine has no rib planner. Rebuild the in-process engine.");
   stage("planning: starting", 0.05);
@@ -513,8 +513,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     flange: { planned: flange, prints: { chamfered: flanges.chamfered, square: flanges.square } },
     profiles,
     snapMaxMm: onSkin.snapMaxMm,
-    // Rib ends left loose, each with why (a no-rib zone's border, or the budget); every other end meets a border, a
-    // hold or another rib.
+    // Rib ends left loose, each with why (a no-rib zone's border, or the budget). A gap end is a vent notch, not a free end.
     looseEnds: ((result.looseEnds as Row[] | undefined) ?? []).map((row) => ({ rib: row.rib, end: row.end, point: Array.isArray(row.point) ? rv(row.point as number[]) : null, reason: row.reason })),
     stats: result.stats,
   };
@@ -523,9 +522,11 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     // The plate's printer is a filament printer. The Form 4 is export-only, so it is never the plate's printer.
     const planNotes = [givenAxis ? GIVEN_AXIS : NO_RESIN_PRINTER];
     if (typeof vents?.note === "string") planNotes.push(vents.note);
+    const reasons = new Map<string, number>();
     for (const item of (vents?.unvented as Row[] | undefined) ?? []) {
-      if (typeof item.message === "string") planNotes.push(item.message);
+      if (typeof item.message === "string") reasons.set(item.message, (reasons.get(item.message) ?? 0) + 1);
     }
+    for (const [message, count] of reasons) planNotes.push(`${count} × ${message}`);
     notes.push(...planNotes);
     plan.notes = planNotes;
     if (vents) plan.vents = vents;

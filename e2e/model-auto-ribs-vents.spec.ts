@@ -21,7 +21,8 @@ test("a walled floor says the part itself cups", async ({ page }) => {
   await expect(page.locator("#autoRibsResult")).toBeVisible({ timeout: 20_000 });
   const line = page.locator("#autoRibsVents");
   await expect(line).toBeVisible();
-  await expect(line).toHaveText("the part itself cups here; ribs cannot vent it");
+  await expect(line).toContainText("could not be vented");
+  await expect(line).toContainText("the part itself cups here; ribs cannot vent it");
   const shut = await page.evaluate(() => {
     const plan = (window as unknown as { __limeAutoRibs: { plan(): { vents?: { pockets: unknown[] } } } }).__limeAutoRibs.plan();
     return plan.vents?.pockets.length ?? -1;
@@ -44,7 +45,7 @@ test("a free plate vents toward the tank and not toward the platform", async ({ 
   await expect(page.locator("#autoRibsResult")).toBeVisible({ timeout: 20_000 });
   const line = page.locator("#autoRibsVents");
   await expect(line).toBeVisible({ timeout: 20_000 });
-  await expect(line).toHaveText(/^\d+ pockets? vented$/);
+  await expect(line).toHaveText(/^\d+ pockets? vented, \d+ could not be vented/);
   const vented = await page.evaluate(() => {
     const plan = (window as unknown as { __limeAutoRibs: { plan(): { ribs: { points: number[][] }[]; vents?: { pockets: { at: number[] }[]; sizeMm: number } } } }).__limeAutoRibs.plan();
     return { ribs: plan.ribs.length, pockets: plan.vents?.pockets.length ?? 0, sizeMm: plan.vents?.sizeMm ?? 0, points: plan.ribs.map((rib) => rib.points) };

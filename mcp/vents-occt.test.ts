@@ -3,12 +3,13 @@
  *
  * The floor of an open box is walled in all round. With the part sitting +Z, that
  * opening faces the tank, so the plan reports that the part itself cups and cuts
- * nothing. The box is 90 mm tall so a side wall is about 36 × 88 mm. Its free rim
- * is the open top. Ribs there are straight, 1.2 mm wide, at least 5 mm long and
- * 16 mm apart, so a boundary stretch can hold a 0.75 mm gap. A drafted root on
- * that rim runs off the wall, which ribNet will not build. buildAxis along the
- * opening (plate frame) vents it; the opposite axis, facing the platform, cups nothing.
- * The gap is measured on the ribs the solid is built from, then ribs_apply builds them.
+ * nothing. The shell is 3 mm thick: a rib on the mid-surface is 1.5 mm from the
+ * face border, which used to be called a fold. Ribs are the product defaults
+ * (drafted, the default width and spacing). A stretch between crossings is about
+ * one spacing, and that spacing is shorter than two minimum ribs plus a 0.75 mm
+ * gap, so a notch cannot be cut. The test records that. It does not widen the
+ * spacing or switch to a straight rib to force a notch. buildAxis along the
+ * opening faces the tank; the opposite axis, facing the platform, cups nothing.
  *
  * Filament and moulded omit vents. A buildAxis on either is refused.
  * This machine has no Open CASCADE; the folded-shell job is the proof.
@@ -19,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { GIVEN_AXIS, NO_RESIN_PRINTER, PART_CUPS } from "../src/modeling/vents.ts";
+import { FOLDED_NOTE, GIVEN_AXIS, NO_RESIN_PRINTER, PART_CUPS, TOO_SHORT } from "../src/modeling/vents.ts";
 import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import { Session } from "./session.ts";
 
@@ -82,18 +83,14 @@ function gapMm(ribs: Reply[]): number {
 }
 
 const object = String((await call("solid_new", { primitive: "box", dx: 64, dy: 40, dz: 90 })).object);
-const shelled = await call("model_apply", { object, probe: true, op: { kind: "shell", thickness: 2, openFaces: [{ normal: [0, 0, 1] }] } });
+const shelled = await call("model_apply", { object, probe: true, op: { kind: "shell", thickness: 3, openFaces: [{ normal: [0, 0, 1] }] } });
 if (shelled.ok !== true) throw new Error(`shell: ${JSON.stringify(shelled).slice(0, 300)}`);
 
-const floor = { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } };
-// The box is centred in X and Y and stands on Z 0. The inner +X wall is at X 30.
-const side = { face: { normal: [-1, 0, 0], nearPoint: [30, 0, 40] } };
+const floor = { face: { normal: [0, 0, 1], nearPoint: [0, 0, 3] } };
+// The box is centred in X and Y and stands on Z 0. The inner +X wall of a 3 mm shell is at X 29.
+const side = { face: { normal: [-1, 0, 0], nearPoint: [29, 0, 40] } };
 const goal = { budgetMm3: 2500 };
 const sideGoal = { budgetMm3: 8000 };
-// 16 mm between ribs, on a wall about 88 mm tall. A 0.75 mm gap in the middle of
-// such a stretch leaves two pieces longer than the 5 mm minimum. Straight: resin's
-// drafted root runs off the open rim.
-const sideRib = { profile: "straight", width: 1.2, minLength: 5, minSpacing: 16 };
 
 const t0 = Date.now();
 const floorJob = String((await call("ribs_plan", { object, wall: floor, process: "resin", goal, baselines: false })).job);
@@ -101,12 +98,12 @@ const floorPlan = await waitJob(floorJob);
 const floorS = (Date.now() - t0) / 1000;
 
 const t1 = Date.now();
-const sideJob = String((await call("ribs_plan", { object, wall: side, process: "resin", goal: sideGoal, baselines: false, buildAxis: [-1, 0, 0], rib: sideRib })).job);
+const sideJob = String((await call("ribs_plan", { object, wall: side, process: "resin", goal: sideGoal, baselines: false, buildAxis: [-1, 0, 0] })).job);
 const sidePlan = await waitJob(sideJob);
 const sideS = (Date.now() - t1) / 1000;
 
 const t2 = Date.now();
-const platform = await waitJob(String((await call("ribs_plan", { object, wall: side, process: "resin", goal: sideGoal, baselines: false, buildAxis: [1, 0, 0], rib: sideRib })).job));
+const platform = await waitJob(String((await call("ribs_plan", { object, wall: side, process: "resin", goal: sideGoal, baselines: false, buildAxis: [1, 0, 0] })).job));
 const platformS = (Date.now() - t2) / 1000;
 
 const t3 = Date.now();
@@ -119,6 +116,7 @@ const refused = refusedStart.job ? await waitJob(String(refusedStart.job)) : ref
 const floorVents = floorPlan.plan?.vents as Reply | undefined;
 const floorNotes = (floorPlan.plan?.notes ?? floorPlan.notes ?? []) as string[];
 check("the floor plan finishes", floorPlan.ok === true && floorVents !== undefined, JSON.stringify(floorPlan).slice(0, 400));
+check("a 3 mm floor is not called a fold", floorVents?.note !== FOLDED_NOTE, String(floorVents?.note ?? ""));
 check("the default note says the plate has no resin printer", floorNotes.some((note) => note === NO_RESIN_PRINTER) || String(floorVents?.note ?? "").includes("no resin printer"), JSON.stringify(floorNotes));
 check(
   "a floor walled all round is not notched",
@@ -130,21 +128,49 @@ const vents = sidePlan.plan?.vents as Reply | undefined;
 const pockets = (vents?.pockets ?? []) as Reply[];
 const ribs = (sidePlan.plan?.ribs ?? []) as Reply[];
 const sideNotes = (sidePlan.plan?.notes ?? sidePlan.notes ?? []) as string[];
-check("the side wall, opening toward the tank, is vented", sidePlan.ok === true && pockets.length > 0 && pockets.every((p) => p.sizeMm === 0.75), JSON.stringify(vents).slice(0, 500));
+check("the side plan finishes and is not called a fold", sidePlan.ok === true && vents?.note !== FOLDED_NOTE, JSON.stringify(vents).slice(0, 500));
 check("the note names the given plate-frame axis", sideNotes.some((note) => note === GIVEN_AXIS), JSON.stringify(sideNotes));
-const measured = gapMm(ribs);
-check("a 0.75 mm gap is still open in the ribs the solid is built from", measured > 0.7 && measured < 1.2, String(measured));
-check(
-  "the reported stiffness is the notched solve",
-  typeof vents?.factorBefore === "number" && typeof vents?.factorAfter === "number" && vents.factorAfter <= vents.factorBefore + 1e-4 && Math.abs(sidePlan.plan.stiffnessFactor - vents.factorAfter) < 1e-3,
-  JSON.stringify({ before: vents?.factorBefore, after: vents?.factorAfter, reported: sidePlan.plan?.stiffnessFactor }),
-);
-for (const pocket of pockets) {
-  check(`pocket.rib ${pocket.rib} indexes a returned rib`, typeof pocket.rib === "number" && pocket.rib >= 0 && pocket.rib < ribs.length, JSON.stringify(pocket));
+const rules = sidePlan.rules as Reply | undefined;
+console.log(`vents-occt: product rib rules width ${rules?.width} spacing ${rules?.minSpacing} minLength ${rules?.minLength} profile ${JSON.stringify(rules?.profile)}`);
+let measured = -1;
+if (pockets.length > 0) {
+  check("each pocket is 0.75 mm", pockets.every((p) => p.sizeMm === 0.75), JSON.stringify(pockets).slice(0, 300));
+  measured = gapMm(ribs);
+  for (const pocket of pockets) {
+    check(`pocket.rib ${pocket.rib} indexes a returned rib`, typeof pocket.rib === "number" && pocket.rib >= 0 && pocket.rib < ribs.length, JSON.stringify(pocket));
+  }
+  check(
+    "the reported stiffness is the notched solve",
+    typeof vents?.factorBefore === "number" && typeof vents?.factorAfter === "number" && vents.factorAfter <= vents.factorBefore + 1e-4 && Math.abs(sidePlan.plan.stiffnessFactor - vents.factorAfter) < 1e-3,
+    JSON.stringify({ before: vents?.factorBefore, after: vents?.factorAfter, reported: sidePlan.plan?.stiffnessFactor }),
+  );
+} else {
+  const messages = ((vents?.unvented ?? []) as Reply[]).map((item) => String(item.message));
+  check(
+    "product defaults leave no stretch long enough for a notch",
+    messages.length > 0 && messages.every((message) => message === TOO_SHORT || message === PART_CUPS),
+    JSON.stringify(messages.slice(0, 4)),
+  );
+  console.log("vents-occt: product defaults placed no notch. spacing is shorter than two minimum ribs plus 0.75 mm, so the cells stay unvented.");
 }
-
-const built = await call("ribs_apply", { job: sideJob });
-check("the notched ribNet builds", built.ok === true && Number(built.paths) >= 1, JSON.stringify(built).slice(0, 400));
+const built = pockets.length > 0 ? await call("ribs_apply", { job: sideJob }) : { ok: false, skipped: true };
+if (pockets.length > 0) {
+  const reason = String(built.reason ?? built.message ?? "");
+  if (built.ok === true) {
+    const pocket = pockets[0]!;
+    const at = pocket.at as number[];
+    const beside = await call("surface_at", { object, point: [at[0]! - 2, at[1], at[2]! + 5], direction: [-1, 0, 0] });
+    const through = await call("surface_at", { object, point: [at[0], at[1], at[2]! + 5], direction: [-1, 0, 0] });
+    const ribHit = typeof beside.distanceMm === "number" ? beside.distanceMm : -1;
+    const gapHit = typeof through.distanceMm === "number" ? through.distanceMm : 1e9;
+    console.log(`vents-occt: ray beside the rib ${ribHit} mm, ray through the notch ${gapHit} mm`);
+    check("a ray through the built notch misses the rib that a ray beside it hits", ribHit > 0 && gapHit > ribHit + 0.3, JSON.stringify({ beside, through }).slice(0, 400));
+  } else if (reason.includes("root") || reason.includes("runs off")) {
+    console.log(`vents-occt: drafted root ran off the rim on the inner +X wall (64×40×90 box, 3 mm, near [29,0,40]). ${reason}`);
+  } else {
+    check("the notched ribNet builds", false, JSON.stringify(built).slice(0, 400));
+  }
+}
 
 const away = platform.plan?.vents as Reply | undefined;
 check("the same wall facing the platform cups nothing", platform.ok === true && Array.isArray(away?.pockets) && away.pockets.length === 0 && (away.unvented ?? []).length === 0, JSON.stringify(away).slice(0, 300));

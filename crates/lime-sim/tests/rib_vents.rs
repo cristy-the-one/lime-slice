@@ -5,7 +5,7 @@
 //! One long side of the border is open. The same panel with a rising border
 //! all round cannot be vented by ribs.
 
-use lime_sim::shell::planner::{plan_ribs, vent_pockets, BorderKind, BorderRun, EndKind, Goal, RibPlanRequest, RibRun, PART_CUPS};
+use lime_sim::shell::planner::{plan_ribs, vent_pockets, BorderKind, BorderRun, EndKind, Goal, RibEndKind, RibPlanRequest, RibRun, PART_CUPS};
 use lime_sim::shell::{IsotropicShell, ShellMesh};
 use lime_sim::units::{norm, sub};
 
@@ -18,10 +18,8 @@ fn base(axis: [f64; 3], vent: bool) -> RibPlanRequest {
     req.build_axis = axis;
     req.options.baselines = false;
     req.rules.min_spacing = 12.0;
-    // 900 mm³ stops one rib in mid-wall. That end drains, so a rising border all round would still
-    // be notched. 8000 mm³ lets every rib reach a border: the open side can be vented, and the
-    // walled panel cannot.
-    req.goal = Goal::Budget { volume_mm3: 8000.0 };
+    // 900 mm³ stops one rib in mid-wall. That end does not drain. The rising border stays shut.
+    req.goal = Goal::Budget { volume_mm3: 900.0 };
     req
 }
 
@@ -65,6 +63,9 @@ fn resin_vents_the_pockets_and_a_rising_border_does_not() {
     for pocket in &vents.pockets {
         assert!(pocket.rib < down.ribs.len(), "pocket.rib {} is not a returned rib", pocket.rib);
     }
+    let gap_ends = down.ribs.iter().filter(|rib| rib.ends.contains(&RibEndKind::Gap)).count();
+    println!("gap ends in plan.ribs: {gap_ends}");
+    assert!(gap_ends >= 2, "a notch end is marked free, not gap: {:?}", down.ribs.iter().map(|rib| rib.ends).collect::<Vec<_>>());
 
     let borders = [
         BorderRun { points: &[[0.0, 0.0, 0.0], [80.0, 0.0, 0.0]], kind: BorderKind::Open },

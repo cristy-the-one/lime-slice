@@ -20,7 +20,7 @@ import type { Affine } from "../model-space.ts";
 import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
-import { plateToWall, ventBodyOf, type VentLoop } from "../modeling/vents.ts";
+import { plateToWall, ventBodyOf, ventLoopsOf } from "../modeling/vents.ts";
 import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
 import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
@@ -639,11 +639,8 @@ function resinAxis(): V3 | null {
   return plateToWall(frame.orient, frame.pose, buildOverride ?? [0, 0, 1]);
 }
 
-function ventLoops(wall: RibWall): VentLoop[] {
-  return wall.loops.map((loop, i) => ({
-    hole: wall.report.loops[i]?.hole === true,
-    spans: loop.spans.map((span) => ({ class: span.class, from: span.from, to: span.to, points: span.points })),
-  }));
+function ventLoops(wall: RibWall) {
+  return ventLoopsOf(wall);
 }
 
 function currentGoal(): PlanGoal {
@@ -1021,7 +1018,20 @@ function paintResult() {
   if (vents) {
     const n = plan.vents?.pockets.length ?? 0;
     const unvented = plan.vents?.unvented ?? [];
-    const sentence = n > 0 ? `${n} pocket${n === 1 ? "" : "s"} vented` : (unvented[0]?.message ?? "");
+    const m = unvented.length;
+    const reasons = [...new Set(unvented.map((item) => item.message))].join("; ");
+    const extra = [plan.vents?.note, ...(plan.notes ?? [])].filter((line): line is string => typeof line === "string" && line.length > 0);
+    let sentence = "";
+    if (n > 0) sentence = `${n} pocket${n === 1 ? "" : "s"} vented, ${m} could not be vented`;
+    else if (m > 0) sentence = `${m} could not be vented: ${reasons}`;
+    else {
+      const refusal = extra.find((line) => !line.startsWith("Stand-in:"));
+      if (refusal) sentence = refusal;
+    }
+    if (sentence) {
+      const rest = extra.filter((line) => line !== sentence && !sentence.includes(line));
+      if (rest.length > 0) sentence = `${sentence}. ${rest.join(" ")}`;
+    }
     const show = ranWith?.process === "resin" && sentence.length > 0;
     vents.hidden = !show;
     vents.textContent = show ? sentence : "";

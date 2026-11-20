@@ -330,6 +330,8 @@ pub enum RibEndKind {
     Hold,
     Rib,
     Free,
+    /// The end of a vent gap. It is not a loose end.
+    Gap,
 }
 
 #[derive(Clone, Debug)]
@@ -1027,21 +1029,15 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     let vents = if req.vent {
         let before = clean.factor;
         let build = crate::units::normalize(req.build_axis).unwrap_or([0.0, 0.0, 1.0]);
-        // A budget end is loose. A hold, and an end stopped by a boss or a zone, closes the cell.
-        let loose_ends: Vec<(usize, usize)> = closed
-            .loose
-            .iter()
-            .filter(|&&(_, _, reason)| reason == LooseEndReason::Budget)
-            .map(|&(rib, end, _)| (rib, end))
-            .collect();
+        // A loose end is not a drain. An open border and a through hole are.
         let generated = if req.borders.is_empty() { rising_borders(&s0, req.rising_border) } else { Vec::new() };
         let border_lines: &[(Vec<[f64; 3]>, vents::BorderKind)] = if req.borders.is_empty() { &generated } else { &req.borders };
         let border_runs: Vec<vents::BorderRun<'_>> = border_lines
             .iter()
             .map(|(pts, kind)| vents::BorderRun { points: pts, kind: *kind })
             .collect();
-        let found = match vents::opening_of(&req.mesh, req.rules.side) {
-            Some(opening) => vents::find(&closed.ribs, &loose_ends, &border_runs, opening, build, req.rules.min_length),
+        let mut found = match vents::opening_of(&req.mesh, req.rules.side) {
+            Some(opening) => vents::find(&closed.ribs, &[], &border_runs, opening, build, req.rules.min_length),
             None => vents::VentPockets {
                 cups: false,
                 closed: 0,
@@ -1063,8 +1059,11 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                     (p, reason)
                 })
                 .collect();
-            let (mut notched, pockets) = vents::notch(&closed.ribs, &found.pockets, req.rules.min_length);
-            vents::seat_gaps(&s0, &mut notched, req.rules.min_length);
+            let mut cut = vents::notch(&closed.ribs, &found.pockets, req.rules.min_length);
+            vents::seat_gaps(&s0, &mut cut.ribs, &cut.pairs, &mut cut.pockets, req.rules.min_length);
+            found.unvented.extend(cut.refused);
+            let pockets = cut.pockets;
+            let notched = cut.ribs;
             closed.loose = remap_loose(&loose_pts, &notched);
             closed.ribs = notched;
             clean = clean_solve(req, &s0, &cases0, &closed.ribs)?;
@@ -1077,14 +1076,18 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 // A frequency plan returns before the vent block.
                 Goal::Frequency { .. } => false,
             };
-            // pocket.rib indexes the ribs this plan returns. A piece that did not embed is omitted.
-            let pockets = pockets
-                .into_iter()
-                .filter_map(|p| {
-                    clean.kept.iter().position(|&i| i == p.rib).map(|rib| vents::VentPocket { rib, at: p.at, size_mm: p.size_mm })
-                })
-                .collect();
-            (clean.factor, pockets)
+            // pocket.rib indexes the ribs this plan returns. A piece that did not embed is named, not dropped.
+            let mut placed = Vec::new();
+            for p in pockets {
+                match clean.kept.iter().position(|&i| i == p.rib) {
+                    Some(rib) => placed.push(vents::VentPocket { rib, at: p.at, size_mm: p.size_mm }),
+                    None => found.unvented.push(vents::VentUnvented {
+                        at: p.at,
+                        message: "the notched rib is not in the plan".to_string(),
+                    }),
+                }
+            }
+            (clean.factor, placed)
         };
         Some(Venting {
             size_mm: found.size_mm,
@@ -1122,6 +1125,17 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             }
         }
         let length = points.windows(2).map(|w| norm(sub(w[1], w[0]))).sum();
+        let mut ends = clean.ends[k];
+        if let Some(v) = &vents {
+            for pocket in &v.pockets {
+                if norm(sub(points[0], pocket.at)) < 1.0 {
+                    ends[0] = RibEndKind::Gap;
+                }
+                if norm(sub(*points.last().expect("points"), pocket.at)) < 1.0 {
+                    ends[1] = RibEndKind::Gap;
+                }
+            }
+        }
         ribs.push(PlannedRib {
             vertices: d.chain.clone(),
             points,
@@ -1135,7 +1149,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 .map(|&h| d.profile.section_at(d.width, h))
                 .collect(),
             side: rules.side,
-            ends: clean.ends[k],
+            ends,
             family: d.family,
             length_mm: length,
             volume_mm3: d.volume(&clean.pos),
@@ -1233,7 +1247,9 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     })
 }
 
-/// The outer boundary, when a side wall stands on it, and the holes, which never close a cell.
+/// The outer boundary, when a side wall stands on it. A shorter loop of this mesh is an opening
+/// through it. A standing wall is not an opening: the panel and MCP send its outline in
+/// `req.borders` as a rising border, and this fallback is not used then.
 fn rising_borders(s0: &surface::Surface, rising: bool) -> Vec<(Vec<[f64; 3]>, vents::BorderKind)> {
     if !rising {
         return Vec::new();

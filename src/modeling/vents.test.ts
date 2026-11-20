@@ -7,7 +7,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildDirection } from "../belt.ts";
 import { IDENTITY_POSE } from "../model-space.ts";
-import { FOLDED_NOTE, GIVEN_AXIS, NO_RESIN_PRINTER, notchRibs, PART_CUPS, plateToWall, RESIN_VENT_MM, TOO_SHORT, ventBodyOf, ventPockets, ventSizeMm, type EndKind, type V3, type VentBorder, type VentRib } from "./vents.ts";
+import { ribWall, type RibWallSolid } from "./rib-wall.ts";
+import { FOLDED_NOTE, GIVEN_AXIS, NO_RESIN_PRINTER, notchRibs, PART_CUPS, plateToWall, RESIN_VENT_MM, TOO_SHORT, ventBodyOf, ventLoopsOf, ventPockets, ventSizeMm, type EndKind, type V3, type VentBorder, type VentRib } from "./vents.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -53,7 +54,9 @@ const square = fixture.cases[0]!;
 const width = fixture.widthMm;
 const ribs: VentRib[] = square.ribs.map((rib) => ({ ...rib, widthMm: width }));
 const cup = ventPockets({ ribs, opening: fixture.opening, buildAxis: [0, 0, 1], minLengthMm: fixture.minLengthMm });
-const notched = notchRibs(ribs, cup.pockets, fixture.minLengthMm);
+const cut = notchRibs(ribs, cup.pockets, fixture.minLengthMm);
+const notched = cut.ribs;
+check("a cut the finder chose is not dropped", cut.refused.length === 0 && cut.pockets.length === cup.pockets.length, JSON.stringify(cut.refused));
 const again = ventPockets({ ribs: notched, opening: fixture.opening, buildAxis: [0, 0, 1], minLengthMm: fixture.minLengthMm });
 const gapEnds = notched.filter((rib) => rib.ends?.[0] === "gap" || rib.ends?.[1] === "gap").length;
 check("the notch is a gap, and the square then drains", gapEnds === 2 && notched.length === 5 && again.closed === 0 && again.pockets.length === 0 && again.unvented.length === 0, `pieces ${notched.length} gapEnds ${gapEnds} again ${JSON.stringify(again)}`);
@@ -118,7 +121,97 @@ check("the notes name the plate frame", NO_RESIN_PRINTER.includes("no resin prin
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const cardSrc = readFileSync(`${root}/src/ui/auto-ribs-card.ts`, "utf8");
 const mcpSrc = readFileSync(`${root}/mcp/session/ribs.ts`, "utf8");
-check("the panel and ribs_plan both call ventBodyOf", cardSrc.includes("ventBodyOf(") && mcpSrc.includes("ventBodyOf("));
+check("the panel and ribs_plan both build loops with ventLoopsOf", cardSrc.includes("ventLoopsOf(") && mcpSrc.includes("ventLoopsOf("));
+
+function chain(from: V3, to: V3, step: number): V3[] {
+  const points: V3[] = [];
+  const d = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]);
+  const n = Math.max(1, Math.round(d / step));
+  for (let i = 0; i <= n; i += 1) {
+    const t = i / n;
+    points.push([from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t]);
+  }
+  return points;
+}
+for (const step of [10, 3, 2, 1]) {
+  const drawn: VentRib[] = [
+    { points: chain([0, 0, 0], [10, 0, 0], step), widthMm: 2 },
+    { points: chain([10, 0, 0], [10, 10, 0], step), widthMm: 2 },
+    { points: chain([10, 10, 0], [0, 10, 0], step), widthMm: 2 },
+    { points: chain([0, 10, 0], [0, 0, 0], step), widthMm: 2 },
+  ];
+  const got = ventPockets({ ribs: drawn, opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  check(`a 10 mm square in ${step} mm segments vents at the middle`, got.pockets.length === 1 && got.pockets[0]!.rib === 0 && sameAt(got.pockets[0]!.at, [5, 0, 0]) && got.unvented.length === 0, JSON.stringify(got));
+}
+{
+  const cells = 20;
+  const pitch = 6;
+  const span = cells * pitch;
+  const ribs: VentRib[] = [];
+  for (let i = 0; i <= cells; i += 1) {
+    const at = i * pitch;
+    ribs.push({ points: chain([at, 0, 0], [at, span, 0], 1), widthMm: 2 });
+    ribs.push({ points: chain([0, at, 0], [span, at, 0], 1), widthMm: 2 });
+  }
+  const got = ventPockets({ ribs, opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  check("a 20 by 20 grid of 6 mm cells drawn at 1 mm is vented", got.pockets.length > 0 && got.unvented.length === 0 && got.note === undefined, `pockets ${got.pockets.length} unvented ${got.unvented.length} ${got.note ?? ""}`);
+}
+for (const thickness of [1, 2, 3, 4]) {
+  const z = thickness / 2;
+  const border: VentBorder = { points: [[0, 0, z], [10, 0, z], [10, 10, z], [0, 10, z], [0, 0, z]], kind: "rises" };
+  const got = ventPockets({
+    ribs: [{ points: [[0, 5, 0], [10, 5, 0]], widthMm: 2 }],
+    borders: [border],
+    opening: [0, 0, 1],
+    buildAxis: [0, 0, 1],
+    minLengthMm: 2,
+  });
+  check(`a ${thickness} mm wall is not called a fold`, got.note === undefined && got.closed === 2 && got.pockets.length === 0 && got.unvented.length === 2 && got.unvented.every((item) => item.message === PART_CUPS), JSON.stringify(got));
+}
+{
+  const lines = [
+    { points: [[0, 10, 0], [30, 10, 0]] as V3[], widthMm: 2 },
+    { points: [[0, 20, 0], [30, 20, 0]] as V3[], widthMm: 2 },
+    { points: [[10, 0, 0], [10, 25, 0]] as V3[], widthMm: 2 },
+    { points: [[20, 0, 0], [20, 30, 0]] as V3[], widthMm: 2 },
+  ];
+  const border: VentBorder = { points: [[0, 0, 0], [30, 0, 0], [30, 30, 0], [0, 30, 0], [0, 0, 0]], kind: "rises" };
+  const got = ventPockets({ ribs: lines, borders: [border], opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  check("a rib 5 mm short of a rising wall vents nothing", got.pockets.length === 0 && got.closed === 8 && got.unvented.length === 8 && got.unvented.every((item) => item.message === PART_CUPS), JSON.stringify(got));
+}
+{
+  const joined = ventBodyOf("resin", { orient, pose: IDENTITY_POSE }, [{ hole: true, spans: [{ class: "joined", from: [2, 2, 0], to: [4, 2, 0], points: [[2, 2, 0], [4, 2, 0], [4, 4, 0], [2, 4, 0], [2, 2, 0]] }] }], null);
+  const kinds = joined && "borders" in joined ? joined.borders.map((border) => border.kind) : [];
+  check("a joined inner loop is a rising border", kinds.length === 1 && kinds[0] === "rises", JSON.stringify(kinds));
+}
+{
+  const inner: VentRib[] = [{ points: [[0, 5, 0], [10, 5, 0]], widthMm: 1 }];
+  const rises = ventPockets({ ribs: inner, borders: [{ points: [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 0]], kind: "rises" }, { points: [[4, 4, 0], [6, 4, 0], [6, 6, 0], [4, 6, 0], [4, 4, 0]], kind: "rises" }], opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  const hole = ventPockets({ ribs: inner, borders: [{ points: [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 0]], kind: "rises" }, { points: [[4, 4, 0], [6, 4, 0], [6, 6, 0], [4, 6, 0], [4, 4, 0]], kind: "hole" }], opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  check("a standing inner loop closes and a through hole drains", rises.unvented.every((item) => item.message === PART_CUPS) && rises.pockets.length === 0 && hole.closed === 0, JSON.stringify({ rises, hole }));
+}
+
+{
+  const b = { pos: [] as number[], face: [] as number[] };
+  const tri = (f: number, a: V3, b3: V3, c: V3) => { b.pos.push(...a, ...b3, ...c); b.face.push(f); };
+  const quad = (f: number, a: V3, b3: V3, c: V3, d: V3) => { tri(f, a, b3, c); tri(f, a, c, d); };
+  quad(0, [0, 0, 0], [20, 0, 0], [20, 16, 0], [0, 16, 0]);
+  quad(1, [0, 0, 2], [20, 0, 2], [20, 16, 2], [0, 16, 2]);
+  quad(2, [0, 0, 0], [0, 16, 0], [0, 16, 2], [0, 0, 2]);
+  quad(3, [20, 0, 0], [20, 16, 0], [20, 16, 2], [20, 0, 2]);
+  quad(4, [0, 0, 0], [20, 0, 0], [20, 0, 2], [0, 0, 2]);
+  quad(5, [0, 16, 0], [20, 16, 0], [20, 16, 2], [0, 16, 2]);
+  const solid: RibWallSolid = { positions: Float32Array.from(b.pos), faceOf: Uint32Array.from(b.face) };
+  const wall = ribWall(solid, { picked: [1] });
+  if ("reason" in wall) {
+    check("a real wall builds the panel request and the tool request", false, wall.reason);
+  } else {
+    const loops = ventLoopsOf(wall);
+    const panel = ventBodyOf("resin", { orient, pose: IDENTITY_POSE }, loops, null);
+    const tool = ventBodyOf("resin", { orient, pose: IDENTITY_POSE }, ventLoopsOf(wall), null);
+    check("a real wall builds the panel request and the tool request", JSON.stringify(panel) === JSON.stringify(tool) && loops.length > 0 && panel && "borders" in panel && panel.borders.length > 0, JSON.stringify(panel).slice(0, 240));
+  }
+}
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -105,8 +105,8 @@
         { "points": [[0, 10, 0], [0, 0, 0]] }
       ],
       "builds": [
-        { "axis": [0, 0, 1], "cups": true, "closed": 0, "pockets": [], "unvented": [] },
-        { "axis": [0, 0, -1], "cups": false, "closed": 0, "pockets": [], "unvented": [] }
+        { "axis": [0, 0, 1], "cups": true, "closed": 1, "pockets": [{ "rib": 0, "at": [5, 0, 0], "sizeMm": 0.75 }], "unvented": [] },
+        { "axis": [0, 0, -1], "cups": false, "closed": 1, "pockets": [], "unvented": [] }
       ]
     },
     {
@@ -125,16 +125,57 @@
       ]
     },
     {
-      "name": "rib ending on a hold",
+      "name": "rib boss rib",
       "ribs": [
-        { "points": [[0, 0, 0], [10, 0, 0]], "ends": ["hold", "closed"] },
-        { "points": [[10, 0, 0], [10, 10, 0]] },
-        { "points": [[10, 10, 0], [0, 10, 0]] },
-        { "points": [[0, 10, 0], [0, 0, 0]] }
+        { "points": [[0, 10, 0], [8, 10, 0]] },
+        { "points": [[12, 10, 0], [20, 10, 0]] }
+      ],
+      "borders": [
+        { "points": [[0, 0, 0], [20, 0, 0], [20, 20, 0], [0, 20, 0], [0, 0, 0]], "kind": "rises" },
+        { "points": [[8, 6, 0], [12, 6, 0], [12, 14, 0], [8, 14, 0], [8, 6, 0]], "kind": "rises" }
       ],
       "builds": [
-        { "axis": [0, 0, 1], "cups": true, "closed": 1, "pockets": [{ "rib": 0, "at": [5, 0, 0], "sizeMm": 0.75 }], "unvented": [] },
-        { "axis": [0, 0, -1], "cups": false, "closed": 1, "pockets": [], "unvented": [] }
+        {
+          "axis": [0, 0, 1],
+          "cups": true,
+          "closed": 3,
+          "pockets": [],
+          "unvented": [
+            { "at": [10, 6.5, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [10, 10, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [10, 13.5, 0], "message": "the part itself cups here; ribs cannot vent it" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "short rib in a rising box",
+      "ribs": [
+        { "points": [[0, 10, 0], [30, 10, 0]] },
+        { "points": [[0, 20, 0], [30, 20, 0]] },
+        { "points": [[10, 0, 0], [10, 25, 0]] },
+        { "points": [[20, 0, 0], [20, 30, 0]] }
+      ],
+      "borders": [
+        { "points": [[0, 0, 0], [30, 0, 0], [30, 30, 0], [0, 30, 0], [0, 0, 0]], "kind": "rises" }
+      ],
+      "builds": [
+        {
+          "axis": [0, 0, 1],
+          "cups": true,
+          "closed": 8,
+          "pockets": [],
+          "unvented": [
+            { "at": [5, 5, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [5, 15, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [10, 23.571428571428573, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [15, 5, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [15, 15, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [25, 5, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [25, 15, 0], "message": "the part itself cups here; ribs cannot vent it" },
+            { "at": [25, 25, 0], "message": "the part itself cups here; ribs cannot vent it" }
+          ]
+        }
       ]
     },
     {
