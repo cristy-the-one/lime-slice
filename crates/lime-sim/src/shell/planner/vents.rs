@@ -185,7 +185,7 @@ fn empty(cups: bool, size_mm: f64, note: Option<String>) -> VentPockets {
 }
 
 /// Closed cells, and one vent each for the cupping cells that can drain through a notch.
-pub fn vent_pockets(ribs: &[RibRun<'_>], borders: &[BorderRun<'_>], opening: [f64; 3], build: [f64; 3], min_length: f64) -> VentPockets {
+pub fn vent_pockets(ribs: &[RibRun<'_>], borders: &[BorderRun<'_>], opening: [f64; 3], build: [f64; 3]) -> VentPockets {
     let size_mm = vent_size_mm(None);
     let Some(opening) = normalize(opening) else { return empty(false, size_mm, None) };
     let Some(build) = normalize(build) else { return empty(false, size_mm, None) };
@@ -307,7 +307,7 @@ pub fn vent_pockets(ribs: &[RibRun<'_>], borders: &[BorderRun<'_>], opening: [f6
             }
         }
         for link in links {
-            let Some(placed) = place_notch(&graph, link, size_mm, min_length, &taken, &gaps) else { continue };
+            let Some(placed) = place_notch(&graph, link, size_mm, &taken, &gaps) else { continue };
             pockets.push(VentPocket { rib: placed.rib, at: placed.at, size_mm });
             taken.push((graph.edges[link.edge].rib, placed.flat));
             if placed.rib < gaps.len() {
@@ -349,7 +349,7 @@ pub(crate) fn opening_of(mesh: &ShellMesh, side: RibSide) -> Option<[f64; 3]> {
 }
 
 /// The same pockets on the planner's ribs. A loose end does not drain. A hold or a boss closes the cell it stands in.
-pub(crate) fn find(ribs: &[GRib], loose: &[(usize, usize)], borders: &[BorderRun<'_>], opening: [f64; 3], build: [f64; 3], min_length: f64) -> VentPockets {
+pub(crate) fn find(ribs: &[GRib], loose: &[(usize, usize)], borders: &[BorderRun<'_>], opening: [f64; 3], build: [f64; 3]) -> VentPockets {
     let runs: Vec<RibRun<'_>> = ribs
         .iter()
         .enumerate()
@@ -362,7 +362,7 @@ pub(crate) fn find(ribs: &[GRib], loose: &[(usize, usize)], borders: &[BorderRun
             width_mm: rib.d.width,
         })
         .collect();
-    vent_pockets(&runs, borders, opening, build, min_length)
+    vent_pockets(&runs, borders, opening, build)
 }
 
 /// Cut each vent out of its rib. The new ends are gaps. A pocket the cut refuses is returned in
@@ -375,7 +375,7 @@ pub(crate) struct NotchCut {
     pub pairs: Vec<(usize, usize, usize, usize)>,
 }
 
-pub(crate) fn notch(ribs: &[GRib], pockets: &[VentPocket], min_length: f64) -> NotchCut {
+pub(crate) fn notch(ribs: &[GRib], pockets: &[VentPocket]) -> NotchCut {
     let mut cuts: Vec<Vec<[f64; 3]>> = vec![Vec::new(); ribs.len()];
     let mut size_of = vec![RESIN_VENT_MM; ribs.len()];
     for pocket in pockets {
@@ -393,7 +393,7 @@ pub(crate) fn notch(ribs: &[GRib], pockets: &[VentPocket], min_length: f64) -> N
             out.push(rib.clone());
             continue;
         }
-        let Some(pieces) = split_rib(rib, &cuts[i], size_of[i], min_length) else {
+        let Some(pieces) = split_rib(rib, &cuts[i], size_of[i]) else {
             for pocket in pockets.iter().filter(|p| p.rib == i) {
                 refused.push(VentUnvented { at: pocket.at, message: CUT_REFUSED.to_string() });
             }
@@ -425,8 +425,8 @@ pub(crate) fn notch(ribs: &[GRib], pockets: &[VentPocket], min_length: f64) -> N
 /// 0.75 mm wide. The seat that survives is the one whose embedded opening is closest to
 /// [`RESIN_VENT_MM`]: the first end has to land just outside the snap radius, so the short edge
 /// it cuts is too small for the second end to snap onto it. Neither piece is left shorter than
-/// `min_length`.
-pub(crate) fn seat_gaps(surface: &Surface, ribs: &mut [GRib], pairs: &[(usize, usize, usize, usize)], pockets: &mut [VentPocket], min_length: f64) {
+/// the notch-piece minimum: half this rib's width plus 0.5 mm, and never less than its own width.
+pub(crate) fn seat_gaps(surface: &Surface, ribs: &mut [GRib], pairs: &[(usize, usize, usize, usize)], pockets: &mut [VentPocket]) {
     for &(i, end_i, j, end_j) in pairs {
         let Some(a) = end_point(&ribs[i], end_i) else { continue };
         let Some(b) = end_point(&ribs[j], end_j) else { continue };
@@ -443,7 +443,7 @@ pub(crate) fn seat_gaps(surface: &Surface, ribs: &mut [GRib], pairs: &[(usize, u
                     continue;
                 }
                 let shift = sign * step as f64 * 0.1;
-                if shift != 0.0 && !shift_fits(&ribs[i], &ribs[j], shift, min_length) {
+                if shift != 0.0 && !shift_fits(&ribs[i], &ribs[j], shift) {
                     continue;
                 }
                 let saved = (end_point(&ribs[i], end_i).unwrap(), end_point(&ribs[j], end_j).unwrap());
@@ -519,11 +519,10 @@ fn end_point(rib: &GRib, end: usize) -> Option<[f64; 3]> {
     Some(if end == 0 { rib.points[0] } else { *rib.points.last().unwrap() })
 }
 
-fn shift_fits(left: &GRib, right: &GRib, shift: f64, min_length: f64) -> bool {
+fn shift_fits(left: &GRib, right: &GRib, shift: f64) -> bool {
     let fits = |rib: &GRib, delta: f64| {
         let length = poly_length(&rib.points) + delta;
-        let clear = rib.d.width / 2.0 + CLEAR_EXTRA;
-        length + 1e-6 >= min_length && length + 1e-6 >= clear
+        length + 1e-6 >= notch_piece_min(rib.d.width, rib.d.width)
     };
     fits(left, shift) && fits(right, -shift)
 }
@@ -973,7 +972,22 @@ struct Placed {
     span: (f64, f64),
 }
 
-fn place_notch(graph: &Graph, link: Link, size_mm: f64, min_length: f64, taken: &[(i32, [f64; 2])], gaps: &[Vec<(f64, f64)>]) -> Option<Placed> {
+/// Half the crossing rib's width plus 0.5 mm, and never less than this rib's own width. A side wall has no rib width.
+fn notch_piece_min(own_width: f64, crossing_width: f64) -> f64 {
+    (crossing_width / 2.0 + CLEAR_EXTRA).max(own_width)
+}
+
+fn crossing_width(graph: &Graph, vid: usize, rib: i32) -> f64 {
+    graph.out[vid]
+        .iter()
+        .filter_map(|half| {
+            let edge = &graph.edges[half.edge];
+            (edge.rib >= 0 && edge.rib != rib).then_some(edge.width)
+        })
+        .fold(0.0, f64::max)
+}
+
+fn place_notch(graph: &Graph, link: Link, size_mm: f64, taken: &[(i32, [f64; 2])], gaps: &[Vec<(f64, f64)>]) -> Option<Placed> {
     let edge = &graph.edges[link.edge];
     if edge.rib < 0 {
         return None;
@@ -985,8 +999,10 @@ fn place_notch(graph: &Graph, link: Link, size_mm: f64, min_length: f64, taken: 
     }
     let points: Vec<[f64; 3]> = ids.iter().map(|&id| graph.xyz[id]).collect();
     let span = poly_length(&points);
-    let clear = edge.width / 2.0 + CLEAR_EXTRA;
-    if span / 2.0 - size_mm / 2.0 < clear - 1e-6 {
+    let left = notch_piece_min(edge.width, crossing_width(graph, ids[0], edge.rib));
+    let right = notch_piece_min(edge.width, crossing_width(graph, *ids.last().unwrap(), edge.rib));
+    let side = span / 2.0 - size_mm / 2.0;
+    if side + 1e-6 < left || side + 1e-6 < right {
         return None;
     }
     let at = point_at(&points, span / 2.0);
@@ -1000,7 +1016,7 @@ fn place_notch(graph: &Graph, link: Link, size_mm: f64, min_length: f64, taken: 
     let hi = s + size_mm / 2.0;
     let mut existing = if (edge.rib as usize) < gaps.len() { gaps[edge.rib as usize].clone() } else { Vec::new() };
     existing.push((lo, hi));
-    if !pieces_fit(total, &existing, min_length) {
+    if !pieces_fit(total, &existing, left.max(right)) {
         return None;
     }
     Some(Placed { rib: edge.rib as usize, at, flat, span: (lo, hi) })
@@ -1231,7 +1247,7 @@ fn intersect(p: &Seg, q: &Seg) -> Option<(f64, f64)> {
     Some((t.clamp(0.0, 1.0), u.clamp(0.0, 1.0)))
 }
 
-fn split_rib(rib: &GRib, centers: &[[f64; 3]], size: f64, min_length: f64) -> Option<Vec<GRib>> {
+fn split_rib(rib: &GRib, centers: &[[f64; 3]], size: f64) -> Option<Vec<GRib>> {
     let total = poly_length(&rib.points);
     if total < WELD {
         return None;
@@ -1246,7 +1262,8 @@ fn split_rib(rib: &GRib, centers: &[[f64; 3]], size: f64, min_length: f64) -> Op
             gaps.push((lo, hi));
         }
     }
-    if gaps.is_empty() || !pieces_fit(total, &gaps, min_length) {
+    // The finder required the crossing clearance. The cut itself keeps each piece at least this rib's width.
+    if gaps.is_empty() || !pieces_fit(total, &gaps, notch_piece_min(rib.d.width, rib.d.width)) {
         return None;
     }
     gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -1415,11 +1432,9 @@ mod tests {
         let raw = include_str!("../../../../../tools/fixtures/vent-graphs.json");
         let fixture: serde_json::Value = serde_json::from_str(raw).expect("fixture");
         let width = fixture["widthMm"].as_f64().unwrap();
-        let min_length = fixture["minLengthMm"].as_f64().unwrap();
         let opening = read3(&fixture["opening"]);
         for case in fixture["cases"].as_array().unwrap() {
             let w = case["widthMm"].as_f64().unwrap_or(width);
-            let min_l = case["minLengthMm"].as_f64().unwrap_or(min_length);
             let owned: Vec<(Vec<[f64; 3]>, [EndKind; 2])> = case["ribs"].as_array().unwrap().iter().map(|rib| {
                 let points = rib["points"].as_array().unwrap().iter().map(read3).collect();
                 let ends = match rib["ends"].as_array() {
@@ -1445,7 +1460,7 @@ mod tests {
             });
             for build in case["builds"].as_array().unwrap() {
                 let axis = read3(&build["axis"]);
-                let got = vent_pockets(&runs, &borders, opening, axis, min_l);
+                let got = vent_pockets(&runs, &borders, opening, axis);
                 let name = format!("{} {axis:?}", case["name"].as_str().unwrap());
                 assert_eq!(got.cups, build["cups"].as_bool().unwrap(), "{name} cups");
                 assert_eq!(got.closed, build["closed"].as_u64().unwrap() as usize, "{name} closed");
@@ -1488,7 +1503,7 @@ mod tests {
             vec![[0.0, 10.0, 0.0], [0.0, 0.0, 0.0]],
         ];
         let runs: Vec<RibRun<'_>> = lines.iter().map(|p| RibRun { points: p, ends: [EndKind::Closed; 2], width_mm: 2.0 }).collect();
-        let cup = vent_pockets(&runs, &[], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 2.0);
+        let cup = vent_pockets(&runs, &[], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
         assert_eq!(cup.pockets.len(), 1);
         use super::super::profile::RibProfile;
         use super::super::select::DRib;
@@ -1497,7 +1512,7 @@ mod tests {
             heights: vec![4.0; p.len() - 1],
             d: DRib::fixed(vec![0, 1], 4.0, 2.0, RibProfile::Rectangular),
         }).collect();
-        let cut_out = notch(&ribs, &cup.pockets, 2.0);
+        let cut_out = notch(&ribs, &cup.pockets);
         let cut = cut_out.ribs;
         let kept = cut_out.pockets;
         let refused = cut_out.refused;
@@ -1515,7 +1530,7 @@ mod tests {
         }).collect();
         let gap_ends = marked.iter().filter(|rib| rib.1[0] == EndKind::Gap || rib.1[1] == EndKind::Gap).count();
         let again_runs: Vec<RibRun<'_>> = marked.iter().map(|(p, e)| RibRun { points: p, ends: *e, width_mm: 2.0 }).collect();
-        let again = vent_pockets(&again_runs, &[], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 2.0);
+        let again = vent_pockets(&again_runs, &[], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
         assert_eq!(cut.len(), 5, "{cut:?}");
         assert_eq!(gap_ends, 2);
         assert_eq!(again.closed, 0, "{again:?}");
@@ -1534,6 +1549,43 @@ mod tests {
     }
 
     #[test]
+    fn a_notch_piece_is_held_by_the_crossing() {
+        // 9.6 mm cell, 2.4 mm ribs. Each side of a 0.75 mm gap is 4.425 mm, shorter than the
+        // product minimum of 5 mm and longer than max(2.4/2 + 0.5, 2.4) = 2.4 mm.
+        let cell = 9.6;
+        let lines = [
+            vec![[0.0, 0.0, 0.0], [cell, 0.0, 0.0]],
+            vec![[cell, 0.0, 0.0], [cell, cell, 0.0]],
+            vec![[cell, cell, 0.0], [0.0, cell, 0.0]],
+            vec![[0.0, cell, 0.0], [0.0, 0.0, 0.0]],
+        ];
+        let runs: Vec<RibRun<'_>> = lines.iter().map(|p| RibRun { points: p, ends: [EndKind::Closed; 2], width_mm: 2.4 }).collect();
+        let got = vent_pockets(&runs, &[], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
+        assert_eq!(got.pockets.len(), 1, "{got:?}");
+        assert!(near(got.pockets[0].at[0], cell / 2.0) && near(got.pockets[0].at[1], 0.0), "{:?}", got.pockets[0].at);
+
+        let wide = |side: f64| {
+            let lines = [
+                vec![[0.0, 0.0, 0.0], [side, 0.0, 0.0]],
+                vec![[side, 0.0, 0.0], [side, side, 0.0]],
+                vec![[side, side, 0.0], [0.0, side, 0.0]],
+                vec![[0.0, side, 0.0], [0.0, 0.0, 0.0]],
+            ];
+            let widths = [2.0, 8.0, 2.0, 8.0];
+            let runs: Vec<RibRun<'_>> = lines.iter().zip(widths).map(|(p, w)| RibRun { points: p, ends: [EndKind::Closed; 2], width_mm: w }).collect();
+            vent_pockets(&runs, &[], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+        };
+        // Crossing ribs are 8 mm, so the piece minimum is 4.5 mm. A 12 mm side leaves 5.625 mm.
+        let fits = wide(12.0);
+        assert_eq!(fits.pockets.len(), 1, "{fits:?}");
+        let at = fits.pockets[0].at;
+        assert!(near(at[0], 6.0) && (near(at[1], 0.0) || near(at[1], 12.0)), "{at:?}");
+        let short = wide(8.0);
+        assert!(short.pockets.is_empty(), "{short:?}");
+        assert!(short.unvented.iter().all(|item| item.message == TOO_SHORT), "{short:?}");
+    }
+
+    #[test]
     fn a_thicker_wall_is_not_a_fold() {
         for t in [1.0, 2.0, 3.0, 4.0] {
             let z = t / 2.0;
@@ -1541,7 +1593,7 @@ mod tests {
             let rib = vec![[0.0, 5.0, 0.0], [10.0, 5.0, 0.0]];
             let runs = [RibRun { points: &rib, ends: [EndKind::Closed; 2], width_mm: 2.0 }];
             let borders = [BorderRun { points: &border, kind: BorderKind::Rises }];
-            let got = vent_pockets(&runs, &borders, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 2.0);
+            let got = vent_pockets(&runs, &borders, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
             assert!(got.note.is_none(), "t={t} called a fold: {:?}", got.note);
             assert_eq!(got.closed, 2, "t={t}");
             assert!(got.pockets.is_empty(), "t={t}");
@@ -1569,7 +1621,7 @@ mod tests {
         assert_eq!(before.0, before.1, "the fixture must collapse before seating");
         let pairs = [(0usize, 1usize, 1usize, 0usize)];
         let mut pockets = Vec::new();
-        seat_gaps(&surface, &mut ribs, &pairs, &mut pockets, 2.0);
+        seat_gaps(&surface, &mut ribs, &pairs, &mut pockets);
         let (embedded, design, kept, _) = super::super::embed_design(&surface, &ribs, &[]);
         assert_eq!(kept.len(), 2, "both pieces embed");
         let end = |k: usize, last: bool| {

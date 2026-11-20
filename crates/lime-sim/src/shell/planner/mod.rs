@@ -1037,7 +1037,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             .map(|(pts, kind)| vents::BorderRun { points: pts, kind: *kind })
             .collect();
         let mut found = match vents::opening_of(&req.mesh, req.rules.side) {
-            Some(opening) => vents::find(&closed.ribs, &[], &border_runs, opening, build, req.rules.min_length),
+            Some(opening) => vents::find(&closed.ribs, &[], &border_runs, opening, build),
             None => vents::VentPockets {
                 cups: false,
                 closed: 0,
@@ -1059,8 +1059,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                     (p, reason)
                 })
                 .collect();
-            let mut cut = vents::notch(&closed.ribs, &found.pockets, req.rules.min_length);
-            vents::seat_gaps(&s0, &mut cut.ribs, &cut.pairs, &mut cut.pockets, req.rules.min_length);
+            let mut cut = vents::notch(&closed.ribs, &found.pockets);
+            vents::seat_gaps(&s0, &mut cut.ribs, &cut.pairs, &mut cut.pockets);
             found.unvented.extend(cut.refused);
             let pockets = cut.pockets;
             let notched = cut.ribs;

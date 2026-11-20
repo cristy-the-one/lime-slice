@@ -69,8 +69,6 @@ export interface VentInput {
   buildAxis?: V3;
   /** The printer's XY pixel, mm. Absent: the vent is exactly {@link RESIN_VENT_MM}. */
   pixelMm?: number;
-  /** Shortest rib piece a notch may leave, mm. */
-  minLengthMm?: number;
 }
 
 /** One notch: the rib it cuts, the point the gap is centred on, and the gap. */
@@ -286,7 +284,6 @@ interface Link {
 /** Closed cells, and one vent each for the cupping cells that can drain through a notch. */
 export function ventPockets(input: VentInput): VentReport {
   const sizeMm = ventSizeMm(input.pixelMm);
-  const minLength = input.minLengthMm ?? 0;
   const opening = unit(input.opening);
   const build = unit(input.buildAxis ?? [0, 0, 1]);
   const empty = (cups: boolean, note?: string): VentReport => ({ cups, closed: 0, pockets: [], unvented: [], sizeMm, ...(note ? { note } : {}) });
@@ -360,7 +357,7 @@ export function ventPockets(input: VentInput): VentReport {
       if (at > 0) links.unshift(links.splice(at, 1)[0]!);
     }
     for (const link of links) {
-      const placed = placeNotch(built, link, sizeMm, minLength, taken, gaps);
+      const placed = placeNotch(built, link, sizeMm, taken, gaps);
       if (!placed) continue;
       pockets.push({ rib: placed.rib, at: placed.at, sizeMm });
       taken.push({ rib: placed.rib, at: placed.flat });
@@ -385,9 +382,10 @@ export function ventPockets(input: VentInput): VentReport {
 /**
  * Cut each vent out of its rib. The gap is centred on `at`. Its new ends are gaps: they open only
  * into the cell on the other side of the rib, and a later read must not treat them as loose ends.
- * A cut that would leave a piece shorter than `minLengthMm` is not made.
+ * A piece beside a notch is held by the crossing, so the cut refuses one shorter than the rib's own
+ * width. The finder already required the crossing rib's clearance.
  */
-export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket[], minLengthMm = 0): { ribs: VentRib[]; pockets: VentPocket[]; refused: VentUnvented[] } {
+export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket[]): { ribs: VentRib[]; pockets: VentPocket[]; refused: VentUnvented[] } {
   const cuts = new Map<number, V3[]>();
   for (const pocket of pockets) {
     const list = cuts.get(pocket.rib) ?? [];
@@ -404,7 +402,7 @@ export function notchRibs(ribs: readonly VentRib[], pockets: readonly VentPocket
       return;
     }
     const size = pockets.find((p) => p.rib === i)?.sizeMm ?? RESIN_VENT_MM;
-    const pieces = splitRib(rib, at, size, minLengthMm);
+    const pieces = splitRib(rib, at, size);
     if (!pieces) {
       for (const pocket of pockets.filter((p) => p.rib === i)) refused.push({ at: pocket.at, message: CUT_REFUSED });
       out.push({ points: rib.points.map((p) => [p[0], p[1], p[2]]), ...(rib.ends ? { ends: [rib.ends[0], rib.ends[1]] as [EndKind, EndKind] } : {}), ...(rib.widthMm !== undefined ? { widthMm: rib.widthMm } : {}) });
@@ -726,7 +724,22 @@ function reachable(roots: number[], adj: Link[][]): Set<number> {
   return seen;
 }
 
-function placeNotch(built: { xy: V2[]; xyz: [number, number, number][]; edges: Edge[]; out: Half[][] }, link: Link, sizeMm: number, minLength: number, taken: { rib: number; at: V2 }[], gaps: Map<number, [number, number][]>): { rib: number; at: [number, number, number]; flat: V2; span: [number, number] } | null {
+/** Half the crossing rib's width plus 0.5 mm, and never less than this rib's own width. A side wall has no rib width. */
+function notchPieceMin(ownWidth: number, crossingWidth: number): number {
+  return Math.max(crossingWidth / 2 + CLEAR_EXTRA, ownWidth);
+}
+
+function crossingWidthAt(built: { edges: Edge[]; out: Half[][] }, vid: number, rib: number): number {
+  let width = 0;
+  for (const half of built.out[vid] ?? []) {
+    const edge = built.edges[half.edge];
+    if (!edge || edge.rib < 0 || edge.rib === rib) continue;
+    width = Math.max(width, edge.width);
+  }
+  return width;
+}
+
+function placeNotch(built: { xy: V2[]; xyz: [number, number, number][]; edges: Edge[]; out: Half[][] }, link: Link, sizeMm: number, taken: { rib: number; at: V2 }[], gaps: Map<number, [number, number][]>): { rib: number; at: [number, number, number]; flat: V2; span: [number, number] } | null {
   const edge = built.edges[link.edge];
   if (!edge || edge.rib < 0) return null;
   const chain = stretchEdges(built, link.edge);
@@ -734,9 +747,10 @@ function placeNotch(built: { xy: V2[]; xyz: [number, number, number][]; edges: E
   if (ids.length < 2) return null;
   const points = ids.map((id) => built.xyz[id]!);
   const span = polyLength(points);
-  const clear = edge.width / 2 + CLEAR_EXTRA;
-  // The gap sits at the middle of the stretch between crossings, so each end stays half a width plus 0.5 mm clear of it.
-  if (span / 2 - sizeMm / 2 < clear - 1e-6) return null;
+  const left = notchPieceMin(edge.width, crossingWidthAt(built, ids[0]!, edge.rib));
+  const right = notchPieceMin(edge.width, crossingWidthAt(built, ids.at(-1)!, edge.rib));
+  // The gap sits at the middle of the stretch. Each piece it leaves is held by the crossing there.
+  if (span / 2 - sizeMm / 2 + 1e-6 < left || span / 2 - sizeMm / 2 + 1e-6 < right) return null;
   const at = pointAt(points, span / 2);
   const flat = flatAt(built, ids, span / 2);
   if (taken.some((cut) => cut.rib === edge.rib && Math.hypot(cut.at[0] - flat[0], cut.at[1] - flat[1]) < sizeMm)) return null;
@@ -745,7 +759,7 @@ function placeNotch(built: { xy: V2[]; xyz: [number, number, number][]; edges: E
   const lo = s - sizeMm / 2;
   const hi = s + sizeMm / 2;
   const existing = gaps.get(edge.rib) ?? [];
-  if (!piecesFit(total, [...existing, [lo, hi]], minLength)) return null;
+  if (!piecesFit(total, [...existing, [lo, hi]], Math.max(left, right))) return null;
   return { rib: edge.rib, at, flat, span: [lo, hi] };
 }
 
@@ -944,7 +958,7 @@ function intersect(p: Seg, q: Seg): { t: number; u: number } | null {
   return { t: Math.min(1, Math.max(0, t)), u: Math.min(1, Math.max(0, u)) };
 }
 
-function splitRib(rib: VentRib, centers: readonly V3[], size: number, minLength: number): VentRib[] | null {
+function splitRib(rib: VentRib, centers: readonly V3[], size: number): VentRib[] | null {
   const pts = rib.points;
   const total = polyLength(pts);
   if (total < WELD) return null;
@@ -958,7 +972,8 @@ function splitRib(rib: VentRib, centers: readonly V3[], size: number, minLength:
     if (hi - lo < WELD) continue;
     gaps.push([lo, hi]);
   }
-  if (gaps.length === 0 || !piecesFit(total, gaps, minLength)) return null;
+  // The finder required the crossing clearance. The cut itself keeps each piece at least this rib's width.
+  if (gaps.length === 0 || !piecesFit(total, gaps, notchPieceMin(rib.widthMm ?? 0, rib.widthMm ?? 0))) return null;
   gaps.sort((a, b) => a[0] - b[0]);
   const merged: [number, number][] = [];
   for (const gap of gaps) {

@@ -88,7 +88,7 @@ fn resin_vents_the_pockets_and_a_rising_border_does_not() {
             }
         })
         .collect();
-    let again = vent_pockets(&runs, &borders, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 10.0);
+    let again = vent_pockets(&runs, &borders, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
     println!("re-run: closed {} pockets {} unvented {}", again.closed, again.pockets.len(), again.unvented.len());
     assert!(again.pockets.is_empty() && again.unvented.is_empty(), "the notched ribs still cup: {again:?}");
 
@@ -118,4 +118,52 @@ fn resin_vents_the_pockets_and_a_rising_border_does_not() {
     assert!(!shut.unvented.is_empty(), "the part itself cups, and that is reported");
     assert!(shut.unvented.iter().all(|item| item.message == PART_CUPS), "{:?}", shut.unvented);
     assert!((shut.factor_before - shut.factor_after).abs() < 1e-6, "nothing was cut, so the factor is unchanged");
+}
+
+/// The OCCT side wall is about 34 by 87 mm, open along the long rim, with the product resin
+/// rules the job logged (width 2.4, spacing 9.6, minimum rib 5). This is that panel, flat.
+#[test]
+fn a_product_spacing_panel_with_an_open_rim_vents() {
+    let mut req = RibPlanRequest::new(
+        ShellMesh::rectangle([34.0, 87.0], [8, 18], 3.0),
+        IsotropicShell::new(2000.0, 0.35).expect("material"),
+    );
+    req.vent = true;
+    req.build_axis = [0.0, 0.0, 1.0];
+    req.options.baselines = false;
+    req.rules.width = 2.4;
+    req.rules.min_spacing = 9.6;
+    req.rules.min_length = 5.0;
+    req.goal = Goal::Budget { volume_mm3: 8000.0 };
+    req.borders = vec![
+        (vec![[0.0, 0.0, 0.0], [34.0, 0.0, 0.0]], BorderKind::Rises),
+        (vec![[34.0, 0.0, 0.0], [34.0, 87.0, 0.0]], BorderKind::Rises),
+        (vec![[34.0, 87.0, 0.0], [0.0, 87.0, 0.0]], BorderKind::Open),
+        (vec![[0.0, 87.0, 0.0], [0.0, 0.0, 0.0]], BorderKind::Rises),
+    ];
+    let plan = plan_ribs(&req).expect("plan");
+    let vents = plan.vents.expect("vents");
+    let pieces: Vec<String> = plan
+        .ribs
+        .iter()
+        .enumerate()
+        .map(|(i, rib)| {
+            let mut n = 0.0;
+            for w in rib.points.windows(2) {
+                n += norm(sub(w[1], w[0]));
+            }
+            format!("{i}:{n:.2}")
+        })
+        .collect();
+    println!(
+        "open panel: ribs {} pockets {} unvented {} pieces {}",
+        plan.ribs.len(),
+        vents.pockets.len(),
+        vents.unvented.len(),
+        pieces.join(" ")
+    );
+    for item in &vents.unvented {
+        println!("unvented {:?} {}", item.at, item.message);
+    }
+    assert!(!vents.pockets.is_empty(), "spacing 9.6 width 2.4 minLength 5; pieces {}", pieces.join(" "));
 }

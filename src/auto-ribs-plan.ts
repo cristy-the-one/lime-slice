@@ -588,7 +588,6 @@ function standInVents(body: RibPlanBody, ribs: PlannedRib[], factor: number): No
         borders: body.borders,
         opening,
         buildAxis: body.buildAxis ?? [0, 0, 1],
-        minLengthMm: body.rules.minLength,
       })
     : { cups: false, closed: 0, pockets: [] as VentPocket[], unvented: [], sizeMm: 0.75 };
   return {
@@ -602,7 +601,7 @@ function standInVents(body: RibPlanBody, ribs: PlannedRib[], factor: number): No
   };
 }
 
-function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[], minLengthMm = 0): { ribs: PlannedRib[]; pockets: VentPocket[]; refused: { at: V3; message: string }[] } {
+function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[]): { ribs: PlannedRib[]; pockets: VentPocket[]; refused: { at: V3; message: string }[] } {
   const out: PlannedRib[] = [];
   const kept: VentPocket[] = [];
   const refused: { at: V3; message: string }[] = [];
@@ -612,7 +611,7 @@ function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[], minLen
       out.push(rib);
       return;
     }
-    const cut = notchRibs([{ points: rib.points, widthMm: rib.width }], cuts.map((row) => ({ rib: 0, at: row.at, sizeMm: row.sizeMm })), minLengthMm);
+    const cut = notchRibs([{ points: rib.points, widthMm: rib.width }], cuts.map((row) => ({ rib: 0, at: row.at, sizeMm: row.sizeMm })));
     if (cut.refused.length > 0 || cut.ribs.length === 0) {
       refused.push(...cut.refused.map((item) => ({ at: [item.at[0], item.at[1], item.at[2]] as V3, message: item.message })));
       out.push(rib);
@@ -696,7 +695,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         });
         const vents = body.vent ? standInVents(body, ribs, r3(factor)) : undefined;
         if (vents && vents.pockets.length > 0) {
-          const cut = notchPlanned(ribs, vents.pockets, body.rules.minLength);
+          const cut = notchPlanned(ribs, vents.pockets);
           ribs = cut.ribs;
           vents.pockets = cut.pockets.map((pocket) => ({ rib: pocket.rib, at: [pocket.at[0], pocket.at[1], pocket.at[2]] as V3, sizeMm: pocket.sizeMm }));
           vents.unvented = [...(vents.unvented ?? []), ...cut.refused];

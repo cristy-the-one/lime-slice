@@ -32,12 +32,11 @@ const sameAt = (a: readonly number[], b: readonly number[]) => a.length === b.le
 
 for (const row of fixture.cases) {
   const width = row.widthMm ?? fixture.widthMm;
-  const minLengthMm = row.minLengthMm ?? fixture.minLengthMm;
   const ribs: VentRib[] = row.ribs.map((rib) => ({ ...rib, widthMm: rib.widthMm ?? width, ...(rib.ends ? { ends: rib.ends as [EndKind, EndKind] } : {}) }));
   const partCups = row.builds.find((build) => build.unvented.length > 0 && build.unvented.every((item) => item.message === PART_CUPS));
   for (const build of row.builds) {
     const axis = build.axis;
-    const got = ventPockets({ ribs, borders: row.borders, opening: fixture.opening, buildAxis: [axis[0]!, axis[1]!, axis[2]!], minLengthMm });
+    const got = ventPockets({ ribs, borders: row.borders, opening: fixture.opening, buildAxis: [axis[0]!, axis[1]!, axis[2]!] });
     const expectUnvented = build.unventedSame ? (partCups?.unvented ?? []) : build.unvented;
     const name = `${row.name} ${JSON.stringify(build.axis)}`;
     check(`${name} cups`, got.cups === build.cups, `got ${got.cups}`);
@@ -53,11 +52,11 @@ for (const row of fixture.cases) {
 const square = fixture.cases[0]!;
 const width = fixture.widthMm;
 const ribs: VentRib[] = square.ribs.map((rib) => ({ ...rib, widthMm: width }));
-const cup = ventPockets({ ribs, opening: fixture.opening, buildAxis: [0, 0, 1], minLengthMm: fixture.minLengthMm });
-const cut = notchRibs(ribs, cup.pockets, fixture.minLengthMm);
+const cup = ventPockets({ ribs, opening: fixture.opening, buildAxis: [0, 0, 1] });
+const cut = notchRibs(ribs, cup.pockets);
 const notched = cut.ribs;
 check("a cut the finder chose is not dropped", cut.refused.length === 0 && cut.pockets.length === cup.pockets.length, JSON.stringify(cut.refused));
-const again = ventPockets({ ribs: notched, opening: fixture.opening, buildAxis: [0, 0, 1], minLengthMm: fixture.minLengthMm });
+const again = ventPockets({ ribs: notched, opening: fixture.opening, buildAxis: [0, 0, 1] });
 const gapEnds = notched.filter((rib) => rib.ends?.[0] === "gap" || rib.ends?.[1] === "gap").length;
 check("the notch is a gap, and the square then drains", gapEnds === 2 && notched.length === 5 && again.closed === 0 && again.pockets.length === 0 && again.unvented.length === 0, `pieces ${notched.length} gapEnds ${gapEnds} again ${JSON.stringify(again)}`);
 const piece = notched.map((rib) => {
@@ -69,7 +68,7 @@ const piece = notched.map((rib) => {
   }
   return length;
 });
-check("neither piece is shorter than the minimum rib", piece.every((length) => length + 1e-6 >= fixture.minLengthMm), JSON.stringify(piece));
+check("neither piece is shorter than the rib's own width", piece.every((length) => length + 1e-6 >= width), JSON.stringify(piece));
 const gap = (() => {
   const ends = notched.flatMap((rib) => {
     const found: V3[] = [];
@@ -114,7 +113,6 @@ const walled = ventPockets({
   borders: closedBorders,
   opening: [0, 0, 1],
   buildAxis: [0, 0, 1],
-  minLengthMm: 2,
 });
 check("a loop joined all round cannot be vented", walled.pockets.length === 0 && walled.unvented.length === 4 && walled.unvented.every((item) => item.message === PART_CUPS), JSON.stringify(walled));
 check("the notes name the plate frame", NO_RESIN_PRINTER.includes("no resin printer") && NO_RESIN_PRINTER.includes("+Z") && GIVEN_AXIS.includes("plate frame"));
@@ -140,7 +138,7 @@ for (const step of [10, 3, 2, 1]) {
     { points: chain([10, 10, 0], [0, 10, 0], step), widthMm: 2 },
     { points: chain([0, 10, 0], [0, 0, 0], step), widthMm: 2 },
   ];
-  const got = ventPockets({ ribs: drawn, opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  const got = ventPockets({ ribs: drawn, opening: [0, 0, 1], buildAxis: [0, 0, 1] });
   check(`a 10 mm square in ${step} mm segments vents at the middle`, got.pockets.length === 1 && got.pockets[0]!.rib === 0 && sameAt(got.pockets[0]!.at, [5, 0, 0]) && got.unvented.length === 0, JSON.stringify(got));
 }
 {
@@ -153,7 +151,7 @@ for (const step of [10, 3, 2, 1]) {
     ribs.push({ points: chain([at, 0, 0], [at, span, 0], 1), widthMm: 2 });
     ribs.push({ points: chain([0, at, 0], [span, at, 0], 1), widthMm: 2 });
   }
-  const got = ventPockets({ ribs, opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  const got = ventPockets({ ribs, opening: [0, 0, 1], buildAxis: [0, 0, 1] });
   check("a 20 by 20 grid of 6 mm cells drawn at 1 mm is vented", got.pockets.length > 0 && got.unvented.length === 0 && got.note === undefined, `pockets ${got.pockets.length} unvented ${got.unvented.length} ${got.note ?? ""}`);
 }
 for (const thickness of [1, 2, 3, 4]) {
@@ -164,7 +162,6 @@ for (const thickness of [1, 2, 3, 4]) {
     borders: [border],
     opening: [0, 0, 1],
     buildAxis: [0, 0, 1],
-    minLengthMm: 2,
   });
   check(`a ${thickness} mm wall is not called a fold`, got.note === undefined && got.closed === 2 && got.pockets.length === 0 && got.unvented.length === 2 && got.unvented.every((item) => item.message === PART_CUPS), JSON.stringify(got));
 }
@@ -176,7 +173,7 @@ for (const thickness of [1, 2, 3, 4]) {
     { points: [[20, 0, 0], [20, 30, 0]] as V3[], widthMm: 2 },
   ];
   const border: VentBorder = { points: [[0, 0, 0], [30, 0, 0], [30, 30, 0], [0, 30, 0], [0, 0, 0]], kind: "rises" };
-  const got = ventPockets({ ribs: lines, borders: [border], opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  const got = ventPockets({ ribs: lines, borders: [border], opening: [0, 0, 1], buildAxis: [0, 0, 1] });
   check("a rib 5 mm short of a rising wall vents nothing", got.pockets.length === 0 && got.closed === 8 && got.unvented.length === 8 && got.unvented.every((item) => item.message === PART_CUPS), JSON.stringify(got));
 }
 {
@@ -186,8 +183,8 @@ for (const thickness of [1, 2, 3, 4]) {
 }
 {
   const inner: VentRib[] = [{ points: [[0, 5, 0], [10, 5, 0]], widthMm: 1 }];
-  const rises = ventPockets({ ribs: inner, borders: [{ points: [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 0]], kind: "rises" }, { points: [[4, 4, 0], [6, 4, 0], [6, 6, 0], [4, 6, 0], [4, 4, 0]], kind: "rises" }], opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
-  const hole = ventPockets({ ribs: inner, borders: [{ points: [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 0]], kind: "rises" }, { points: [[4, 4, 0], [6, 4, 0], [6, 6, 0], [4, 6, 0], [4, 4, 0]], kind: "hole" }], opening: [0, 0, 1], buildAxis: [0, 0, 1], minLengthMm: 2 });
+  const rises = ventPockets({ ribs: inner, borders: [{ points: [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 0]], kind: "rises" }, { points: [[4, 4, 0], [6, 4, 0], [6, 6, 0], [4, 6, 0], [4, 4, 0]], kind: "rises" }], opening: [0, 0, 1], buildAxis: [0, 0, 1] });
+  const hole = ventPockets({ ribs: inner, borders: [{ points: [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 0]], kind: "rises" }, { points: [[4, 4, 0], [6, 4, 0], [6, 6, 0], [4, 6, 0], [4, 4, 0]], kind: "hole" }], opening: [0, 0, 1], buildAxis: [0, 0, 1] });
   check("a standing inner loop closes and a through hole drains", rises.unvented.every((item) => item.message === PART_CUPS) && rises.pockets.length === 0 && hole.closed === 0, JSON.stringify({ rises, hole }));
 }
 
@@ -211,6 +208,40 @@ for (const thickness of [1, 2, 3, 4]) {
     const tool = ventBodyOf("resin", { orient, pose: IDENTITY_POSE }, ventLoopsOf(wall), null);
     check("a real wall builds the panel request and the tool request", JSON.stringify(panel) === JSON.stringify(tool) && loops.length > 0 && panel && "borders" in panel && panel.borders.length > 0, JSON.stringify(panel).slice(0, 240));
   }
+}
+
+{
+  // A 9.6 mm cell of a 2.4 mm rib. The product minimum rib is 5 mm, which cannot fit here
+  // (each side of a 0.75 mm gap is 4.425 mm). The crossing is the same rib, so the notch piece
+  // minimum is max(1.2 + 0.5, 2.4) = 2.4 mm and the pocket is cut.
+  const cell = 9.6;
+  const ribs: VentRib[] = [
+    { points: [[0, 0, 0], [cell, 0, 0]], widthMm: 2.4 },
+    { points: [[cell, 0, 0], [cell, cell, 0]], widthMm: 2.4 },
+    { points: [[cell, cell, 0], [0, cell, 0]], widthMm: 2.4 },
+    { points: [[0, cell, 0], [0, 0, 0]], widthMm: 2.4 },
+  ];
+  const got = ventPockets({ ribs, opening: [0, 0, 1], buildAxis: [0, 0, 1] });
+  const cut = notchRibs(ribs, got.pockets);
+  const lengths = cut.ribs.map((rib) => {
+    let n = 0;
+    for (let i = 1; i < rib.points.length; i += 1) n += Math.hypot(rib.points[i]![0] - rib.points[i - 1]![0], rib.points[i]![1] - rib.points[i - 1]![1], rib.points[i]![2] - rib.points[i - 1]![2]);
+    return n;
+  });
+  check("a product-spacing cell vents, and each piece stays at least the rib's width", got.pockets.length === 1 && sameAt(got.pockets[0]!.at, [cell / 2, 0, 0]) && cut.refused.length === 0 && lengths.filter((n) => n > 0.2 && n < cell - 0.2).every((n) => n + 1e-6 >= 2.4), JSON.stringify({ pockets: got.pockets, lengths }));
+}
+{
+  // The crossing ribs are 8 mm wide, so the piece minimum is 4.5 mm. A 12 mm side leaves 5.625 mm, which fits.
+  // An 8 mm side leaves 3.625 mm, which does not.
+  const squareOf = (side: number): VentRib[] => [
+    { points: [[0, 0, 0], [side, 0, 0]], widthMm: 2 },
+    { points: [[side, 0, 0], [side, side, 0]], widthMm: 8 },
+    { points: [[side, side, 0], [0, side, 0]], widthMm: 2 },
+    { points: [[0, side, 0], [0, 0, 0]], widthMm: 8 },
+  ];
+  const fits = ventPockets({ ribs: squareOf(12), opening: [0, 0, 1], buildAxis: [0, 0, 1] });
+  const short = ventPockets({ ribs: squareOf(8), opening: [0, 0, 1], buildAxis: [0, 0, 1] });
+  check("half the crossing rib's width plus 0.5 mm is the piece minimum", fits.pockets.length === 1 && (sameAt(fits.pockets[0]!.at, [6, 0, 0]) || sameAt(fits.pockets[0]!.at, [6, 12, 0])) && short.pockets.length === 0 && short.unvented.length === 1 && short.unvented[0]!.message === TOO_SHORT, JSON.stringify({ fits: fits.pockets, short: short.unvented }));
 }
 
 if (failed) {
