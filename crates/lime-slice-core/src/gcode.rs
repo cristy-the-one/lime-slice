@@ -731,10 +731,55 @@ fn emitted_slow(layers: &[PlateLayer]) -> Vec<f64> {
         .collect()
 }
 
-/// The feed a path prints at before any slowdown: the first layer never goes over 30 mm/s.
-fn planned_feed(layer: &PlateLayer, path: &Extrusion) -> f64 {
+/// The first layer's feeds and accel: the printer's own, else 30 mm/s and no accel limit.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FirstLayer {
+    pub(crate) speed: f64,
+    pub(crate) infill_speed: f64,
+    pub(crate) accel: Option<f64>,
+}
+
+impl FirstLayer {
+    pub(crate) fn of(profile: &PrinterProfile) -> Self {
+        Self::from_speeds(profile.speeds.as_ref())
+    }
+
+    pub(crate) fn from_speeds(speeds: Option<&crate::PrinterSpeeds>) -> Self {
+        Self {
+            speed: crate::PrinterSpeeds::first_layer_speed(speeds),
+            infill_speed: crate::PrinterSpeeds::first_layer_infill_speed(speeds),
+            accel: crate::PrinterSpeeds::first_layer_accel(speeds),
+        }
+    }
+
+    /// The most a path of `kind` prints at on the first layer.
+    pub(crate) fn cap(&self, kind: crate::toolpath::PathKind) -> f64 {
+        use crate::toolpath::PathKind;
+        match kind {
+            PathKind::Infill
+            | PathKind::Sparse
+            | PathKind::Solid
+            | PathKind::Top
+            | PathKind::GapFill
+            | PathKind::Bridge
+            | PathKind::Ironing => self.infill_speed,
+            _ => self.speed,
+        }
+    }
+
+    /// `accel` limited to the first layer's when the printer names one.
+    pub(crate) fn accel(&self, accel: f64) -> f64 {
+        match self.accel {
+            Some(cap) => accel.min(cap),
+            None => accel,
+        }
+    }
+}
+
+/// The feed a path prints at before any slowdown: the first layer keeps to the printer's first-layer feeds.
+fn planned_feed(layer: &PlateLayer, path: &Extrusion, first: &FirstLayer) -> f64 {
     if layer.own == 0 {
-        path.speed.min(30.0)
+        path.speed.min(first.cap(path.kind))
     } else {
         path.speed
     }
@@ -758,7 +803,7 @@ fn slowed_layers(cfg: &EmitCfg, layers: &[PlateLayer], min: MinLayer) -> Vec<Pla
             let at_feed: f64 = layer
                 .paths()
                 .filter(|(_, p)| p.points.len() >= 2)
-                .map(|(_, p)| path_length(&p.points) / planned_feed(layer, p).max(1.0))
+                .map(|(_, p)| path_length(&p.points) / planned_feed(layer, p, &cfg.first).max(1.0))
                 .sum();
             if at_feed >= min.time_s {
                 return 1.0;
@@ -795,7 +840,7 @@ fn slow_factor(cfg: &EmitCfg, entry: Carry, layer: &PlateLayer, min: MinLayer) -
     let fastest = layer
         .paths()
         .filter(|(_, p)| p.points.len() >= 2)
-        .map(|(_, p)| planned_feed(layer, p))
+        .map(|(_, p)| planned_feed(layer, p, &cfg.first))
         .fold(0.0, f64::max);
     if fastest <= min.floor_mm_s {
         return 1.0;
@@ -877,6 +922,8 @@ struct EmitCfg {
     klipper: Option<KlipperCfg>,
     /// The printer's part fan, set at emit so a fan change never re-plans.
     fans: Fans,
+    /// The printer's first-layer feeds and accel, set at emit like the fan.
+    first: FirstLayer,
 }
 
 /// The fan values a request names, as PWM. `None` leaves each bead at the
@@ -975,6 +1022,7 @@ impl EmitCfg {
             klipper: (profile.firmware == Some(Firmware::Klipper) && !classic_estimator)
                 .then(|| KlipperCfg::new(profile)),
             fans: Fans::of(profile),
+            first: FirstLayer::of(profile),
         }
     }
 }
@@ -1366,6 +1414,7 @@ struct Writer {
     slow_floor: f64,
     klipper: Option<KlipperCfg>,
     fans: Fans,
+    first: FirstLayer,
     capped_mm: f64,
     capped_feed: f64,
 }
@@ -1451,6 +1500,7 @@ impl Writer {
             slow_floor: cfg.min_layer.map_or(0.0, |m| m.floor_mm_s),
             klipper: cfg.klipper,
             fans: cfg.fans,
+            first: cfg.first,
             capped_mm: 0.0,
             capped_feed: 0.0,
         }
@@ -1625,7 +1675,7 @@ impl Writer {
         } else {
             self.set_fan(0);
         }
-        let speed = planned_feed(layer, path);
+        let speed = planned_feed(layer, path, &self.first);
         // A path already slower than the floor stays where it was planned.
         let speed = if self.slow < 1.0 {
             (speed * self.slow).max(self.slow_floor).min(speed)
@@ -1641,8 +1691,12 @@ impl Writer {
         }
         let bead_h = bead_height(layer, path);
         self.kind = "travel";
-        let travel_accel = cap_accel(path.travel_accel, self.max_accel);
-        let print_accel = cap_accel(path.accel, self.max_accel);
+        let mut travel_accel = cap_accel(path.travel_accel, self.max_accel);
+        let mut print_accel = cap_accel(path.accel, self.max_accel);
+        if layer.own == 0 {
+            travel_accel = self.first.accel(travel_accel);
+            print_accel = self.first.accel(print_accel);
+        }
         self.set_accel(travel_accel);
         let (hop, (retract_mm, min_travel), z_hop) = match entry {
             Entry::AsPlanned => {

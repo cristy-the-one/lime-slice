@@ -447,6 +447,8 @@ impl RigidPose {
 #[derive(Clone, Debug)]
 pub struct SliceSettings {
     pub layer_height: f64,
+    /// The printer's own speeds, applied to every resolved strategy. `None` keeps the blend's numbers.
+    pub printer_speeds: Option<crate::PrinterSpeeds>,
     pub line_width: f64,
     pub adaptive: bool,
     pub adaptive_min: f64,
@@ -599,6 +601,7 @@ impl Default for SliceSettings {
     fn default() -> Self {
         Self {
             layer_height: 0.2,
+            printer_speeds: None,
             line_width: 0.45,
             adaptive: false,
             adaptive_min: 0.08,
@@ -711,6 +714,7 @@ impl SliceSettings {
         };
         Self {
             layer_height,
+            printer_speeds: req.printer.as_ref().and_then(|p| p.speeds),
             line_width,
             adaptive: req.adaptive,
             adaptive_min: adaptive_min.clamp(0.04, 0.48),

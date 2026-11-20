@@ -1,4 +1,6 @@
+import { readPrinterSpeeds } from "../profiles.ts";
 import {
+  IR3_V2_SPEEDS,
   acceptsArcs,
   advanceFor,
   builtinLibrary,
@@ -465,6 +467,25 @@ check("a corrupt library grows the built-ins back", restored.printers.some((prin
   check("the plate's selection never is the Form 4", sliced !== null && !isExportOnly(sliced.printer));
   // @ts-expect-error The slicer takes a library printer only: an export-only record is not one.
   void (() => enginePrinter(form4, sliced!.filament, 0.4));
+}
+
+{
+  // The IR3 V2's own speeds ride on the slice request; other printers send none.
+  const lib = builtinLibrary();
+  const ir3Row = lib.printers.find((printer) => printer.id === "ideaformer-ir3-v2")!;
+  const lime = lib.printers.find((printer) => printer.id === "lime-220")!;
+  const pla = lib.filaments[0]!;
+  check("the IR3 V2 carries the owner's speeds", JSON.stringify(ir3Row.speeds) === JSON.stringify(IR3_V2_SPEEDS) && IR3_V2_SPEEDS.outerWall === 96 && IR3_V2_SPEEDS.firstLayer === 40 && IR3_V2_SPEEDS.firstLayerAccel === 500);
+  check("the IR3 V2 sends its speeds", JSON.stringify(enginePrinter(ir3Row, pla, 0.4).speeds) === JSON.stringify(IR3_V2_SPEEDS));
+  check("a printer without speeds sends no speeds key", !("speeds" in enginePrinter(lime, pla, 0.4)));
+  // A library stored before the speeds existed: the built-in IR3 V2 takes the catalog's.
+  const stale = parseLibrary(JSON.stringify({ ...lib, printers: lib.printers.map((printer) => (printer.id === "ideaformer-ir3-v2" ? { ...printer, speeds: undefined } : printer)) }));
+  check("a stored built-in IR3 V2 takes the catalog speeds", JSON.stringify(ensureBuiltins(stale).printers.find((printer) => printer.id === "ideaformer-ir3-v2")!.speeds) === JSON.stringify(IR3_V2_SPEEDS));
+  const edited = parseLibrary(JSON.stringify({ ...lib, printers: lib.printers.map((printer) => (printer.id === "ideaformer-ir3-v2" ? { ...printer, speeds: { outerWall: 50 } } : printer)) }));
+  check("a built-in's stored speeds never win over the catalog", JSON.stringify(ensureBuiltins(edited).printers.find((printer) => printer.id === "ideaformer-ir3-v2")!.speeds) === JSON.stringify(IR3_V2_SPEEDS));
+  const copy = parseLibrary(JSON.stringify({ ...lib, printers: [...lib.printers, { ...ir3Row, id: "my-ir3", name: "My IR3", builtin: false, speeds: { outerWall: 70, firstLayer: 30 } }] }));
+  check("a user copy keeps its own speeds", JSON.stringify(ensureBuiltins(copy).printers.find((printer) => printer.id === "my-ir3")!.speeds) === JSON.stringify({ outerWall: 70, firstLayer: 30 }));
+  check("stored speeds keep only positive numbers", JSON.stringify(readPrinterSpeeds({ outerWall: 80, innerWall: -1, travel: "fast", topSurface: Infinity, bogus: 3 })) === JSON.stringify({ outerWall: 80 }) && readPrinterSpeeds({ innerWall: 0 }) === undefined && readPrinterSpeeds(null) === undefined);
 }
 
 if (failed) {

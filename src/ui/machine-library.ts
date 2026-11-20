@@ -12,7 +12,7 @@
  */
 import { escapeHtml, html, joinHtml, raw, type Html } from "./html.ts";
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
-import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../profiles.ts";
+import { KLIPPER_NUMBERS, readPrinterSpeeds, type KlipperLimits, type PrinterProfile, type PrinterSpeeds } from "../profiles.ts";
 import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settings-rules.ts";
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
 import { fanDefaults, fanOf, readFan, withFan, type FanSettings } from "../fan.ts";
@@ -59,6 +59,8 @@ export interface PrinterRecord extends KlipperLimits {
   firmwareArcs?: boolean;
   /** Cartesian bed, or a conveyor. */
   kind: PrinterKind;
+  /** The printer's own speeds and accelerations, sent as `printer.speeds`. A built-in takes the catalog's. */
+  speeds?: PrinterSpeeds;
   /** Sent beside `printer` on the slice request when `kind` is a belt. */
   belt: BeltSettings;
 }
@@ -294,6 +296,14 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
 }
 
 function refreshBuiltin(stored: PrinterRecord, catalog: PrinterRecord | undefined): PrinterRecord {
+  const row = refreshBuiltinGcode(stored, catalog);
+  // A built-in cannot be edited, only duplicated, so its speeds are always the catalog's.
+  if (!row.builtin || !catalog) return row;
+  const { speeds: _old, ...rest } = row;
+  return catalog.speeds ? { ...rest, speeds: catalog.speeds } : rest;
+}
+
+function refreshBuiltinGcode(stored: PrinterRecord, catalog: PrinterRecord | undefined): PrinterRecord {
   if (stored.builtin && catalog && PAST_STARTS[stored.id]?.includes(stored.startGcode.trim())) {
     return { ...stored, startGcode: catalog.startGcode };
   }
@@ -328,6 +338,7 @@ export function enginePrinter(printer: PrinterRecord, filament: FilamentRecord, 
     linearAdvance: advanceFor(filament.linearAdvance, nozzleMm),
     ...klipperLimits(printer),
     ...fanOf(filament),
+    ...(printer.speeds ? { speeds: printer.speeds } : {}),
   };
 }
 
@@ -1308,6 +1319,33 @@ const PAST_STARTS: Record<string, string[]> = {
   "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST, IR3_V2_START_5_2_1],
 };
 
+/**
+ * The owner's IR3 V2 speeds and accelerations (2026-11-20): 80 % of their tuned profile's feeds, with the profile's
+ * accelerations lowered (outer wall and top 2000, travel 5000, first layer 500) and slower gap fill and supports.
+ * The default blend prints exactly these; Speed and Toughness move around them.
+ */
+export const IR3_V2_SPEEDS: PrinterSpeeds = {
+  outerWall: 96,
+  innerWall: 160,
+  sparseInfill: 160,
+  solidInfill: 200,
+  topSurface: 160,
+  gapInfill: 90,
+  support: 90,
+  supportInterface: 50,
+  travel: 200,
+  firstLayer: 40,
+  firstLayerInfill: 84,
+  accel: 4000,
+  outerWallAccel: 2000,
+  innerWallAccel: 4000,
+  sparseInfillAccel: 4000,
+  solidInfillAccel: 4000,
+  topSurfaceAccel: 2000,
+  travelAccel: 5000,
+  firstLayerAccel: 500,
+};
+
 const IR3_V2_LIMITS: KlipperLimits = {
   squareCornerVelocity: 8,
   minimumCruiseRatio: 0.5,
@@ -1328,6 +1366,7 @@ function builtinPrinters(): PrinterRecord[] {
     {
       ...printer("ideaformer-ir3-v2", "Ideaformer IR3 V2", 250, 250, 250, 12, 20000),
       ...IR3_V2_LIMITS,
+      speeds: IR3_V2_SPEEDS,
       kind: "belt",
       // Its printer.cfg has no [gcode_arcs], and Ideaformer's own slicer writes no arcs.
       firmwareArcs: false,
@@ -1475,6 +1514,7 @@ function readPrinterBody(value: unknown, missing: KlipperLimits = KLIPPER_NUMBER
   if (row.kind !== "cartesian" && row.kind !== "belt") return null;
   if (!row.belt || typeof row.belt !== "object" || Array.isArray(row.belt)) return null;
   const hostType = coerceHostKind(row.hostType);
+  const speeds = readPrinterSpeeds(row.speeds);
   return {
     name: row.name.trim(),
     bedX: row.bedX,
@@ -1493,6 +1533,7 @@ function readPrinterBody(value: unknown, missing: KlipperLimits = KLIPPER_NUMBER
     startPrint: row.startPrint,
     firmware: row.firmware === "marlin" ? "marlin" : "klipper",
     ...(typeof row.firmwareArcs === "boolean" ? { firmwareArcs: row.firmwareArcs } : {}),
+    ...(speeds ? { speeds } : {}),
     kind: row.kind,
     belt: coerceBelt(row.belt, row.bedX),
     squareCornerVelocity: atLeast(row.squareCornerVelocity, missing.squareCornerVelocity),

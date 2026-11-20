@@ -26,6 +26,71 @@ export interface PrinterProfile extends FanSettings {
   /** The belt axis on a belt printer. 0 adds no limit. */
   maxZVelocity: number;
   maxZAccel: number;
+  /** The printer's own feature speeds and accelerations. Left out, the blend's numbers. Sent as `printer.speeds`. */
+  speeds?: PrinterSpeeds;
+}
+
+/**
+ * A printer's own speeds (mm/s) and accelerations (mm/s²). Each is what the default blend prints that feature at on
+ * this printer; the slider's ends move by the same ratio. The engine reads the same names (`PrinterSpeeds` in Rust).
+ */
+export interface PrinterSpeeds {
+  outerWall?: number;
+  innerWall?: number;
+  sparseInfill?: number;
+  solidInfill?: number;
+  topSurface?: number;
+  gapInfill?: number;
+  support?: number;
+  supportInterface?: number;
+  travel?: number;
+  /** Walls, skirt and supports on the first layer, and a belt printer's belt-contact edge. Left out, 30. */
+  firstLayer?: number;
+  /** Infill, solid and top on the first layer. Left out, `firstLayer`. */
+  firstLayerInfill?: number;
+  accel?: number;
+  outerWallAccel?: number;
+  innerWallAccel?: number;
+  sparseInfillAccel?: number;
+  solidInfillAccel?: number;
+  topSurfaceAccel?: number;
+  travelAccel?: number;
+  /** Every move on the first layer. Left out, no first-layer limit. */
+  firstLayerAccel?: number;
+}
+
+export const PRINTER_SPEED_KEYS: readonly (keyof PrinterSpeeds)[] = [
+  "outerWall",
+  "innerWall",
+  "sparseInfill",
+  "solidInfill",
+  "topSurface",
+  "gapInfill",
+  "support",
+  "supportInterface",
+  "travel",
+  "firstLayer",
+  "firstLayerInfill",
+  "accel",
+  "outerWallAccel",
+  "innerWallAccel",
+  "sparseInfillAccel",
+  "solidInfillAccel",
+  "topSurfaceAccel",
+  "travelAccel",
+  "firstLayerAccel",
+];
+
+/** The positive, finite numbers of a stored speeds block; `undefined` when it holds none. */
+export function readPrinterSpeeds(value: unknown): PrinterSpeeds | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  const out: PrinterSpeeds = {};
+  for (const key of PRINTER_SPEED_KEYS) {
+    const n = row[key];
+    if (typeof n === "number" && Number.isFinite(n) && n > 0 && n <= 100000) out[key] = n;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export type KlipperLimits = Pick<PrinterProfile, "squareCornerVelocity" | "minimumCruiseRatio" | "extruderCornerVelocity" | "maxVelocity" | "maxZVelocity" | "maxZAccel">;

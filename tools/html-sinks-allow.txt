@@ -18,10 +18,10 @@ src/app/settings.ts :: if (est) est.innerHTML = estimateHtml();
 # The banner rail: bannerLine escapes its text and label; the progress bar is numbers.
 src/app/settings.ts :: rail.innerHTML = bits.join("");
 # The blend's parameter table: setting labels and numbers.
-src/app/settings.ts :: if (node) node.innerHTML = paramTable(resolved(state.toughness, state.layerHeight));
-src/app/settings.ts :: if (node) node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
-src/app/viewer.ts :: if (resolvedNode && state.blendKind === "byLayer") resolvedNode.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
-src/app/viewer.ts :: if (node && state.blendKind === "byRegion") node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+src/app/settings.ts :: if (node) node.innerHTML = paramTable(resolved(state.toughness, state.layerHeight, undefined, undefined, state.profile.speeds));
+src/app/settings.ts :: if (node) node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight, undefined, undefined, state.profile.speeds));
+src/app/viewer.ts :: if (resolvedNode && state.blendKind === "byLayer") resolvedNode.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight, undefined, undefined, state.profile.speeds));
+src/app/viewer.ts :: if (node && state.blendKind === "byRegion") node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight, undefined, undefined, state.profile.speeds));
 # The feature legend: built-in feature labels and numbers.
 src/app/viewer.ts :: legend.innerHTML = legendMarkup(previewFeatureRows(), (state.result?.estimate?.scarfedLoops ?? 0) > 0) || `<p class="fly-note">Slice to list the features.</p>`;
 # The layer readout: numbers; the engine's layer note is escaped.

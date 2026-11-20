@@ -143,8 +143,8 @@ impl Raft {
     }
 }
 
-/// Layer-0 speed and flow, applied to the belt-contact edge of later layers.
-pub(crate) const WALL_SPEED_MM_S: f64 = 30.0;
+/// Layer-0 flow, applied to the belt-contact edge of later layers. Its speed is the
+/// printer's first-layer feed (`gcode::FirstLayer`).
 pub(crate) const WALL_FLOW: f64 = 1.06;
 
 const ANGLE_MIN: f64 = 10.0;
@@ -455,9 +455,10 @@ pub(crate) fn retouch(
     height: f64,
     frame: &Frame,
     slow_all: bool,
+    first: &crate::gcode::FirstLayer,
 ) -> Vec<Extrusion> {
     if slow_all {
-        return vec![slow(path)];
+        return vec![slow(path, first.cap(path.kind))];
     }
     if !matches!(path.kind, PathKind::Outer | PathKind::Wall | PathKind::Support) {
         return vec![path.clone()];
@@ -474,14 +475,14 @@ pub(crate) fn retouch(
         return vec![path.clone()];
     }
     if on.iter().all(|hit| *hit) {
-        return vec![slow(path)];
+        return vec![slow(path, first.speed)];
     }
-    split_contact(path, &on)
+    split_contact(path, &on, first.speed)
 }
 
-fn slow(path: &Extrusion) -> Extrusion {
+fn slow(path: &Extrusion, speed: f64) -> Extrusion {
     let mut path = path.clone();
-    path.speed = path.speed.min(WALL_SPEED_MM_S);
+    path.speed = path.speed.min(speed);
     path.flow *= WALL_FLOW;
     path.fan = 0;
     path.fan_role = FanRole::Off;
@@ -490,7 +491,7 @@ fn slow(path: &Extrusion) -> Extrusion {
 
 /// Split an outer wall into contact and free runs. A contact run under 0.8 mm
 /// stays at the path's own speed: a corner speck is not a belt wall.
-fn split_contact(path: &Extrusion, on: &[bool]) -> Vec<Extrusion> {
+fn split_contact(path: &Extrusion, on: &[bool], speed: f64) -> Vec<Extrusion> {
     let mut groups = Vec::new();
     let mut start = 0usize;
     for i in 1..=on.len() {
@@ -516,7 +517,7 @@ fn split_contact(path: &Extrusion, on: &[bool]) -> Vec<Extrusion> {
     }
     if merged.len() == 1 {
         return vec![if merged[0].2 {
-            slow(path)
+            slow(path, speed)
         } else {
             path.clone()
         }];
@@ -541,7 +542,7 @@ fn split_contact(path: &Extrusion, on: &[bool]) -> Vec<Extrusion> {
             piece.flow_frac = slice_frac(&path.flow_frac, from, end);
         }
         if contact {
-            piece = slow(&piece);
+            piece = slow(&piece, speed);
         }
         out.push(piece);
     }

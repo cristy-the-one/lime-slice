@@ -71,6 +71,7 @@ pub use step::{
 };
 pub use strategy::{
     strategy_card, Axis, BlendMode, Firmware, FuzzySkin, Gyroid3d, Ironing, PrinterProfile,
+    PrinterSpeeds,
     ScarfSeam, SeamPlacement, StrategyCard, StrategyId, ZHopMode,
 };
 pub use support::edit::{EditStatus, SupportEdit, TipSite};

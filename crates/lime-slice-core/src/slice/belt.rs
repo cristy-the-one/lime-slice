@@ -51,6 +51,8 @@ pub(super) struct BeltJob {
     pub(super) raft: Option<crate::belt::Raft>,
     /// Set when supports grow to the tilted belt. `None` forces supports off.
     pub(super) floor: Option<FloorPlane>,
+    /// The printer's first-layer feeds, for the belt-contact edge.
+    pub(super) first: crate::gcode::FirstLayer,
 }
 
 /// How far the belt raft reaches past the plate's footprint on every side.
@@ -178,6 +180,7 @@ pub(super) fn prepare_belt(
         lab_bounds,
         raft,
         floor,
+        first: crate::gcode::FirstLayer::from_speeds(settings.printer_speeds.as_ref()),
     })
 }
 
@@ -248,7 +251,7 @@ pub(super) fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<Pla
     }
     for layer in &mut layers {
         if layer.index != 0 {
-            retouch_layer(layer, &job.belt.frame, false);
+            retouch_layer(layer, &job.belt.frame, false, &job.first);
         }
     }
     let stride = job.belt.stride(job.extent);
@@ -257,7 +260,7 @@ pub(super) fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<Pla
         for layer in &layers {
             let mut layer = layer.clone();
             if copy > 0 && layer.index == 0 {
-                retouch_layer(&mut layer, &job.belt.frame, true);
+                retouch_layer(&mut layer, &job.belt.frame, true, &job.first);
             }
             layer.belt_shift = f64::from(copy) * stride;
             layer.index = out.len();
@@ -269,7 +272,12 @@ pub(super) fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<Pla
 
 /// Slow the belt-contact edge. Runs that share one path list are rebuilt
 /// together, so a split wall does not leave the head and the body on different lists.
-pub(super) fn retouch_layer(layer: &mut PlateLayer, frame: &crate::belt::Frame, slow_all: bool) {
+pub(super) fn retouch_layer(
+    layer: &mut PlateLayer,
+    frame: &crate::belt::Frame,
+    slow_all: bool,
+    first: &crate::gcode::FirstLayer,
+) {
     let mut seen = vec![false; layer.runs.len()];
     for i in 0..layer.runs.len() {
         if seen[i] {
@@ -298,7 +306,8 @@ pub(super) fn retouch_layer(layer: &mut PlateLayer, frame: &crate::belt::Frame, 
         for (k, path) in paths.iter().enumerate() {
             let start = next.len();
             if touched[k] {
-                let pieces = crate::belt::retouch(path, layer.z, layer.height, frame, slow_all);
+                let pieces =
+                    crate::belt::retouch(path, layer.z, layer.height, frame, slow_all, first);
                 if pieces.len() != 1
                     || pieces[0].points.len() != path.points.len()
                     || pieces[0].speed != path.speed
