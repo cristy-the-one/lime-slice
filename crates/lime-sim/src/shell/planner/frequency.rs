@@ -8,16 +8,18 @@
 //! by the lower eigenvalue of the projected pair, and the shortlist is
 //! re-solved exactly.
 //!
-//! Loose ends are left where the trace stopped. They are not extended or
-//! closed, and every rib stays at full height. The result's notes say so.
+//! Loose ends are left where the trace stopped. They are listed, not
+//! extended or closed, and every rib stays at full height. The result's
+//! notes say so.
 
 use std::time::Instant;
 
 use super::select::{network_volume, CandChain, DRib};
 use super::trace;
 use super::{
-    draft_lost_notes, edge_caps, restrictions, Clean, FrequencyHz, GRib, Goal, PlanStage, PlanStats,
-    PlannedRib, Reporter, Response, RibPlan, RibPlanRequest, TARGET_FLOOR,
+    draft_lost_notes, edge_caps, restrictions, Clean, FrequencyHz, GRib, Goal, LooseEnd,
+    LooseEndReason, PlanStage, PlanStats, PlannedRib, Reporter, Response, RibEndKind, RibPlan,
+    RibPlanRequest, TARGET_FLOOR,
 };
 use crate::error::SimError;
 use crate::shell::modes::{cluster_count, ModeSet};
@@ -155,8 +157,14 @@ pub(crate) fn plan(
             ctx_profile,
             rules.side,
             rules.min_height,
+            rep,
         )?;
         stats.seconds.select += t.elapsed().as_secs_f64();
+        // Cancel before any rib: the bare frequencies, and one factor per
+        // load case. A partial design gets one clean solve, then stops.
+        if grown.stopped && grown.design.is_empty() {
+            return Ok(shell_only(req, &bare_modes, stats, started, rep));
+        }
         let design = grown.design;
         gribs = design
             .iter()
@@ -174,6 +182,9 @@ pub(crate) fn plan(
         let got = if bare_hz > 0.0 { rib_hz / bare_hz } else { 1.0 };
         stats.selection_factor = got;
         clean = Some(solved);
+        if grown.stopped {
+            break;
+        }
         if got + 1e-9 >= factor {
             break;
         }
@@ -237,9 +248,31 @@ fn finish(
             },
         });
     }
+    // Ends the trace left in mid-wall. They are not extended or closed.
+    let mut loose_ends = Vec::new();
+    for (k, ends) in clean.ends.iter().enumerate() {
+        for (e, &kind) in ends.iter().enumerate() {
+            if kind != RibEndKind::Free {
+                continue;
+            }
+            let points = &ribs[k].points;
+            loose_ends.push(LooseEnd {
+                rib: k,
+                end: e,
+                point: if e == 0 {
+                    points[0]
+                } else {
+                    *points.last().expect("points")
+                },
+                reason: LooseEndReason::Open,
+            });
+        }
+    }
+    stats.loose_ends.before = loose_ends.len();
+    stats.loose_ends.after = loose_ends.len();
     stats.seconds.total = started.elapsed().as_secs_f64();
     rep.stage(PlanStage::Done, 1.0);
-    let mut notes = frequency_notes(unreached, req.vent);
+    let mut notes = frequency_notes(unreached, !req.load_cases.is_empty(), req.vent);
     notes.extend(draft_lost_notes(&ribs));
     Ok(RibPlan {
         ribs,
@@ -255,7 +288,7 @@ fn finish(
         grid: None,
         not_better_than_baseline: false,
         stopped_early: rep.cancelled(),
-        loose_ends: Vec::new(),
+        loose_ends,
         mesh: clean.mesh,
         stats,
         vents: None,
@@ -269,10 +302,17 @@ fn finish(
 }
 
 /// What a frequency plan does, and does not do. `unreached` is the clean
-/// ratio when selection stopped short of the ask.
-fn frequency_notes(unreached: Option<f64>, vent: bool) -> Vec<String> {
+/// ratio when selection stopped short of the ask. The loads sentence is
+/// only there when the request carried loads: an empty request is planned
+/// under the default pressure, which was not given. `vent` adds the note
+/// that a frequency plan is not notched.
+fn frequency_notes(unreached: Option<f64>, loads_given: bool, vent: bool) -> Vec<String> {
     let mut notes = vec![
-        "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string(),
+        if loads_given {
+            "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string()
+        } else {
+            "Ribs follow the lowest mode shape.".to_string()
+        },
         "Loose ends are not extended or closed, and ribs stay at full height.".to_string(),
     ];
     if vent {
@@ -326,7 +366,7 @@ fn empty(
             ribbed: hz,
         }),
         frequency_factor: Some(1.0),
-        notes: frequency_notes(None, req.vent),
+        notes: frequency_notes(None, !req.load_cases.is_empty(), req.vent),
     }
 }
 
@@ -424,7 +464,16 @@ fn grow(
     profile: super::RibProfile,
     side: crate::shell::RibSide,
     min_height: f64,
+    rep: &Reporter,
 ) -> Result<Grown, SimError> {
+    // Cancel at the Select stage, before this solve: nothing was chosen.
+    if rep.cancelled() {
+        return Ok(Grown {
+            design: Vec::new(),
+            reached: false,
+            stopped: true,
+        });
+    }
     // The model arrives with no ribs. Clearing them drops a factor, so the
     // bare modes are solved once, after that, and reused for the first round.
     model.set_ribs(Vec::new())?;
@@ -437,6 +486,13 @@ fn grow(
     let mut first_eff: Option<f64> = None;
     let mut reached = false;
     for _round in 0..cands.len() {
+        if rep.cancelled() {
+            return Ok(Grown {
+                design,
+                reached: false,
+                stopped: true,
+            });
+        }
         if omega / omega0 >= factor {
             reached = true;
             break;
@@ -463,6 +519,15 @@ fn grow(
         let base_volume = network_volume(pos, &design);
         let mut pool: Vec<(f64, usize, f64)> = Vec::new();
         for (i, c) in cands.iter().enumerate() {
+            // A cancel here keeps the ribs already accepted and does not
+            // finish this round or start another.
+            if rep.cancelled() {
+                return Ok(Grown {
+                    design,
+                    reached: false,
+                    stopped: true,
+                });
+            }
             if used[i] {
                 continue;
             }
@@ -495,6 +560,13 @@ fn grow(
         pool.truncate(keep);
         let mut best: Option<(f64, usize, DRib, f64)> = None;
         for &(_, i, dv) in &pool {
+            if rep.cancelled() {
+                return Ok(Grown {
+                    design,
+                    reached: false,
+                    stopped: true,
+                });
+            }
             let d = candidate_rib(&cands[i], i, width, max_height, profile);
             let mut trial = design.clone();
             trial.push(d.clone());
@@ -530,11 +602,25 @@ fn grow(
         design.push(d);
         let with: Vec<Rib> = design.iter().flat_map(|r| r.solver_ribs(side)).collect();
         model.set_ribs(with)?;
+        let ratio = if omega0 > 0.0 { omega / omega0 } else { 1.0 };
+        let within = if factor > 1.0 {
+            ((ratio - 1.0) / (factor - 1.0)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        rep.stage(PlanStage::Select, within);
+        if let Some(last) = design.last().cloned() {
+            rep.frequency_rib(&last, pos, &design, ratio);
+        }
     }
     if omega / omega0 >= factor {
         reached = true;
     }
-    Ok(Grown { design, reached })
+    Ok(Grown {
+        design,
+        reached,
+        stopped: false,
+    })
 }
 
 /// What [`grow`] accepted, and whether the lowest frequency met the ask
@@ -542,6 +628,9 @@ fn grow(
 struct Grown {
     design: Vec<DRib>,
     reached: bool,
+    /// The caller cancelled. An empty design is the shell alone; a partial
+    /// one is solved once and not asked again.
+    stopped: bool,
 }
 
 fn candidate_rib(
@@ -611,9 +700,11 @@ mod tests {
 
     #[test]
     fn a_resin_frequency_plan_says_venting_was_skipped() {
-        let notes = frequency_notes(None, true);
+        let notes = frequency_notes(None, false, true);
         assert!(notes.iter().any(|note| note == "Venting was skipped: a frequency plan is not notched."));
-        assert!(!frequency_notes(None, false).iter().any(|note| note.contains("Venting")));
+        assert!(!frequency_notes(None, true, false).iter().any(|note| note.contains("Venting")));
+        assert!(frequency_notes(None, true, false).iter().any(|note| note.contains("Loads are ignored")));
+        assert!(frequency_notes(None, false, false).iter().any(|note| note == "Ribs follow the lowest mode shape."));
     }
     use crate::shell::{IsotropicShell, ShellLoad, ShellMesh, ShellModel, ShellOptions};
     use crate::units::norm;

@@ -251,6 +251,45 @@ test("a load that misses the wall is refused by name; Plan without it plans unde
   await shot(page, "9b-even-pressure.png");
 });
 
+test("a side-face load refuses Stiffer, Higher frequency runs, and Stiffer refuses again", async ({ page }) => {
+  test.setTimeout(180_000);
+  await openPart(page);
+  const floor = await findFloor(page);
+  const box = (await page.locator("#model").boundingBox())!;
+  let side: { x: number; y: number } | null = null;
+  for (let row = 0; row < 24 && !side; row += 1) {
+    for (let col = 0; col < 24 && !side; col += 1) {
+      const x = box.x + box.width * (0.2 + col * 0.025);
+      const y = box.y + box.height * (0.2 + row * 0.025);
+      await page.mouse.click(x, y);
+      if (/^Face (9|10|11|12) /.test(await readout(page).innerText())) side = { x, y };
+    }
+  }
+  expect(side, "an inner side wall on screen").not.toBeNull();
+  await page.keyboard.press("Escape");
+  await openCard(page);
+  await page.mouse.click(floor.x, floor.y);
+  await expect(primary(page)).toBeEnabled();
+  await page.locator("#autoRibsHoldLoad > summary").click();
+  await page.locator("#autoRibsLoadPick").click();
+  await page.mouse.click(side!.x, side!.y);
+  await page.locator("#autoRibsLoadPick").click();
+  await expect(readout(page)).toContainText("Load 1: The load is not on the wall or on its far side", { timeout: 20_000 });
+
+  await page.locator("#autoRibsHowMuch > summary").click();
+  await page.getByRole("button", { name: "Higher frequency" }).click();
+  await primary(page).click();
+  await expect(page.locator("#autoRibsGain")).toHaveText(/\d+(\.\d+)? Hz → \d+(\.\d+)? Hz/, { timeout: 30_000 });
+  await expect(page.locator("#autoRibsNotes")).toContainText("Load 1 misses the wall and is ignored");
+
+  await page.getByRole("button", { name: "Stiffer", exact: true }).click();
+  await expect(primary(page)).toHaveText("Run again");
+  await primary(page).click();
+  await expect(readout(page)).toContainText("Load 1: The load is not on the wall or on its far side", { timeout: 20_000 });
+  await expect(page.locator("#autoRibsGain")).toHaveText(/\d+(\.\d+)? Hz → \d+(\.\d+)? Hz/);
+  await expect(readout(page)).not.toContainText(/^Planned under even pressure/);
+});
+
 test("an engine refusal, a failed apply and a surfaces-only import each say what happened and change nothing", async ({ page, browser }) => {
   test.setTimeout(180_000);
   await openPart(page, { refuse: "The wall's thickness must be above zero everywhere." });

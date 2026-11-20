@@ -40,7 +40,7 @@ for (const key of ["status", "stage", "fraction", "events", "dropped", "totals",
 check("start answers {id} or {error}", bridge.includes('json!({ "id": id })') && bridge.includes('json!({ "error": err })'));
 const eventKeys = ["kind", "change", "id", "points", "heights", "ribs", "ribVolumeMm3", "compliance", "stiffnessFactor", "fraction"];
 for (const key of eventKeys) check(`a rib event has ${key}`, bridge.includes(`"${key}":`), key);
-for (const key of ["ribs", "ribVolumeMm3", "bare", "ribbed", "stiffnessFactor", "goalMet", "thickening", "grid", "notBetterThanBaseline", "stoppedEarly", "sections", "maxDeflectionMm", "addedThicknessMm", "addedVolumeMm3", "pitchMm", "volumeMm3", "gridVolumeMm3", "reached", "caseFactors", "caseDeflectionMm"]) check(`the plan has ${key}`, bridge.includes(`"${key}":`), key);
+for (const key of ["ribs", "ribVolumeMm3", "bare", "ribbed", "stiffnessFactor", "goalMet", "thickening", "grid", "notBetterThanBaseline", "stoppedEarly", "sections", "maxDeflectionMm", "addedThicknessMm", "addedVolumeMm3", "pitchMm", "volumeMm3", "gridVolumeMm3", "reached", "caseFactors", "caseDeflectionMm", "frequencyHz", "frequencyFactor"]) check(`the plan has ${key}`, bridge.includes(`"${key}":`), key);
 // Every stage name the bridge writes has a name on screen.
 const stages = [...(/fn stage_name[\s\S]*?\n\}/.exec(bridge)?.[0] ?? "").matchAll(/=> "([^"]+)"/g)].map((m) => m[1]!);
 check("the bridge's stage names were read", stages.length === 10, stages);
@@ -112,6 +112,10 @@ eq("two cases come back with their factors and deflections", twoCases.ok ? [twoC
 const oneCase = readPlan({ ok: true, ribs: [], stiffnessFactor: 2, caseFactors: [2], caseDeflectionMm: [{ bare: 0.8, ribbed: 0.4 }] });
 check("a single case factor is left off", oneCase.ok && oneCase.plan.caseFactors === undefined, oneCase);
 eq("a refusal in the result is the sentence", readPlan({ ok: false, reason: "The wall has no triangles to plan on." }), { ok: false, reason: "The wall has no triangles to plan on." });
+const withNotes = readPlan({ ok: true, ribs: [], stiffnessFactor: 1.2, frequencyHz: { bare: 100, ribbed: 130 }, frequencyFactor: 1.3, notes: ["Loads are ignored for the goal. Ribs follow the lowest mode shape.", ""] });
+eq("the plan's notes come back", withNotes.ok ? withNotes.plan.notes : null, ["Loads are ignored for the goal. Ribs follow the lowest mode shape."]);
+const noNotes = readPlan({ ok: true, ribs: [], stiffnessFactor: 2 });
+check("a stiffness plan has no notes", noNotes.ok && noNotes.plan.notes === undefined, noNotes);
 eq("an event of another kind is skipped", readEvent({ kind: "later" }), null);
 
 // A cancel goes once, and the plan so far comes back.

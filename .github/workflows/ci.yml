@@ -323,6 +323,7 @@ jobs:
           node --experimental-strip-types mcp/rib-net-occt.test.ts
           # Auto ribs end to end: ribWall on kernel meshes, ribs_plan as a job, ribs_apply, zones, an obstacle, cancel, verify, a curved wall, the flange table.
           # Its load-case sections (5b, 5c) run in the auto-ribs job (mcp/auto-ribs-cases-occt.test.ts).
+          # The frequency goal is mcp/frequency-occt.test.ts on that same job, not here.
           node --experimental-strip-types mcp/auto-ribs-occt.test.ts
           # The step guard on a ribbed shell: cuts at a wall are probed and applied, an edge-only touch is refused by both.
           node --experimental-strip-types mcp/step-guard-occt.test.ts
@@ -525,6 +526,9 @@ jobs:
           node --experimental-strip-types mcp/auto-ribs-cases-occt.test.ts
           # Resin vent notches on the tray floor. In this job, not the folded-shell job.
           node --experimental-strip-types mcp/vents-occt.test.ts
+          # A frequency goal through ribs_plan: Hz, the refusals, a missed load, apply with and without verify.
+          # On this job, not the shared one and not the folded-shell one.
+          node --experimental-strip-types mcp/frequency-occt.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:
