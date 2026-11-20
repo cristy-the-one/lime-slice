@@ -7324,6 +7324,7 @@ TopoDS_Shape build_draft(
     const TopoDS_Shape& current,
     double before,
     const std::vector<TopoDS_Face>& faces,
+    const std::vector<int>& names,
     double angle_deg,
     const gp_Dir& pull,
     const TopoDS_Face* neutral,
@@ -7347,22 +7348,26 @@ TopoDS_Shape build_draft(
         error = "Draft works on a part of one body.";
         return {};
     }
+    // A refusal names the face as the caller picked it: its index on the solid, not its place in the list.
+    const auto face_name = [&](size_t i) {
+        return "Face " + std::to_string(names.size() == faces.size() ? names[i] : static_cast<int>(i));
+    };
     // A floor faces along the pull. Draft tilts walls, and a face this close to the pull is a floor.
     const double floor_cos = std::cos(1.0 * kPi / 180.0);
     for (size_t i = 0; i < faces.size(); ++i) {
         const GeomAbs_SurfaceType kind = face_surface(faces[i]);
         if (kind != GeomAbs_Plane && kind != GeomAbs_Cylinder && kind != GeomAbs_Cone) {
-            error = "Face " + std::to_string(i) + " is not a flat, cylindrical, or conical face. Draft tilts walls, not this surface.";
+            error = face_name(i) + " is not a flat, cylindrical, or conical face. Draft tilts walls, not this surface.";
             return {};
         }
         if (kind == GeomAbs_Plane) {
             gp_Dir outward;
             if (!outward_normal(faces[i], outward)) {
-                error = "Face " + std::to_string(i) + " has no direction, so it cannot be drafted.";
+                error = face_name(i) + " has no direction, so it cannot be drafted.";
                 return {};
             }
             if (std::abs(outward.Dot(pull)) > floor_cos) {
-                error = "Face " + std::to_string(i) + " is a floor, parallel to the pull. Draft tilts walls, not floors.";
+                error = face_name(i) + " is a floor, parallel to the pull. Draft tilts walls, not floors.";
                 return {};
             }
         }
@@ -7411,7 +7416,7 @@ TopoDS_Shape build_draft(
             try {
                 draft.Add(faces[i], pull, angle_deg * kPi / 180.0, plane, Standard_True);
             } catch (const Standard_Failure&) {
-                error = "Face " + std::to_string(i) + ": Open CASCADE could not draft that face.";
+                error = face_name(i) + ": Open CASCADE could not draft that face.";
                 return {};
             }
             if (!draft.AddDone()) {
@@ -7425,7 +7430,7 @@ TopoDS_Shape build_draft(
                     }
                 } catch (const Standard_Failure&) {
                 }
-                error = "Face " + std::to_string(i) + ": " + draft_problem(status) + ".";
+                error = face_name(i) + ": " + draft_problem(status) + ".";
                 return {};
             }
         }
@@ -7440,7 +7445,18 @@ TopoDS_Shape build_draft(
             return {};
         }
         volume = volume_of(out);
-        if (!(volume > 1e-6) || std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+        if (!(volume > 1e-6)) {
+            error = "Open CASCADE could not build this draft.";
+            return {};
+        }
+        // A draft about a plane through the middle of a wall removes as much as it adds, so the volume alone cannot
+        // tell. A tilted face is longer than it was (1 / cos of the angle), so the surface area changes whenever a
+        // face really tilts. Nothing changed only when both stay.
+        const bool same_volume = std::abs(volume - before) <= 1e-6 * std::max(1.0, before);
+        const double area_before = face_area(current);
+        const double area_after = face_area(out);
+        const bool same_area = std::abs(area_after - area_before) <= 1e-7 * std::max(1.0, area_before);
+        if (same_volume && same_area) {
             error = "The draft does not change the part.";
             return {};
         }

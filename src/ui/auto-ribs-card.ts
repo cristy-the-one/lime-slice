@@ -43,6 +43,8 @@ import {
   caseResultLines,
   goalLine,
   loadRequest,
+  caseNames,
+  freeCaseName,
   looseLine,
   MAX_LOAD_CASES,
   goalOf,
@@ -670,7 +672,7 @@ async function startRun() {
   faceRibs = [];
   liveDrawn = new Map();
   lit = null;
-  ranWith = { key: read.key, goal, body, wall, solid, caseNames: (card.cases?.length ?? 0) >= 2 ? card.cases!.map((row) => row.name) : null, process: card.ribs.process };
+  ranWith = { key: read.key, goal, body, wall, solid, caseNames: asked.loadCases ? asked.loadCases.map((row) => row.name) : null, process: card.ribs.process };
   const source = host.source();
   const note = $<HTMLElement>("#autoRibsSourceNote");
   if (note) note.hidden = source.kind !== "stand-in";
@@ -774,7 +776,7 @@ async function applyPlan() {
   const density = host.densityGCm3();
   applied = { measured: measuredLine(done.beforeMm3, done.afterMm3, density), check: null, problems: [] };
   stressRun = null;
-  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)), ...((card.cases?.length ?? 0) >= 2 ? { cases: card.cases!.map((row) => ({ name: row.name, loads: row.loads })) } : {}) };
+  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)), ...((card.cases?.length ?? 0) >= 2 ? { cases: caseNames(card.cases!).map((name, i) => ({ name, loads: card.cases![i]!.loads })) } : {}) };
   edit = null;
   // Apply closed the card with the tool: it opens again on the new solid, with what was measured.
   root()?.toggleAttribute("hidden", false);
@@ -946,6 +948,32 @@ function builtNow(): number | null {
   return built.mm3;
 }
 
+/**
+ * The moulding lines of the kept ribs. The wall thickness under every rib point (a nearest-vertex search each) is read
+ * once per plan; the report is made again only when the kept ribs change, not on every paint.
+ */
+let moulded: { ribs: FaceRib[]; plan: string; walls: number[][]; removed: string; lines: string[] } | null = null;
+function mouldingNow(from: NonNullable<typeof ranWith>): string[] {
+  if (moulded?.ribs !== faceRibs || moulded.plan !== from.key) {
+    const mesh = from.wall.request.mesh;
+    moulded = { ribs: faceRibs, plan: from.key, walls: faceRibs.map((rib) => rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p))), removed: "", lines: [] };
+  }
+  const removed = JSON.stringify(run.removed);
+  if (moulded.removed !== removed || moulded.lines.length === 0) {
+    const walls = moulded.walls;
+    // A folded wall with no pull (the panel has none) is checked rib by rib along its own wall: the report says so.
+    const folded = (from.wall.report.faces.folded?.length ?? 0) > 0;
+    const report = mouldingReport(
+      faceRibs.map((rib, i) => (run.removed.includes(i) ? { points: [], heights: [], sections: [], normals: [], wallMm: [] } : { points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: walls[i] ?? [] })),
+      null,
+      { folded },
+    );
+    moulded.removed = removed;
+    moulded.lines = mouldingLines(report);
+  }
+  return moulded.lines;
+}
+
 function paintResult() {
   const section = $<HTMLElement>("#autoRibsResult");
   const plan = run.plan;
@@ -999,9 +1027,7 @@ function paintResult() {
     const show = ranWith?.process === "moulded" && plan.ribs.length > 0;
     moulding.hidden = !show;
     if (show && ranWith) {
-      const mesh = ranWith.wall.request.mesh;
-      const report = mouldingReport(faceRibs.map((rib, i) => (run.removed.includes(i) ? { points: [], heights: [], sections: [], normals: [], wallMm: [] } : { points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p)) })));
-      const lines = mouldingLines(report);
+      const lines = mouldingNow(ranWith);
       mouldingList.replaceChildren(...lines.map((text) => {
         const li = document.createElement("li");
         li.textContent = text;
@@ -1522,8 +1548,9 @@ function withFace(load: StudyLoad, face: number): StudyLoad {
 function addLoadCase() {
   if ((card.cases?.length ?? 0) >= MAX_LOAD_CASES) return;
   const cases = (card.cases?.length ?? 0) >= 2 ? card.cases! : [{ name: "Case 1", weight: 1, loads: card.loads.length ? structuredClone(card.loads) : [freshLoad()] }];
-  const n = cases.length + 1;
-  card = { ...card, loads: [], cases: [...cases, { name: `Case ${n}`, weight: 1, loads: [freshLoad()] }] };
+  // A free name: after a case was taken out, "Case 3" may already be there.
+  const name = freeCaseName(`Case ${cases.length + 1}`, cases.map((row) => row.name.trim()));
+  card = { ...card, loads: [], cases: [...cases, { name, weight: 1, loads: [freshLoad()] }] };
 }
 
 /** Drop one case. The last remaining case becomes today's single load, and the case list goes away. */
@@ -1856,7 +1883,13 @@ function onInput(ev: Event) {
     const load = row.loads[0] ?? freshLoad();
     const field = target.dataset.caseField;
     let next = row;
-    if (field === "name") next = { ...row, name: target.value };
+    if (field === "name") {
+      // Two cases never share a name (a Stress check finds each case's loads by it): a taken name gets " (2)", ….
+      const others = caseNames(card.cases).filter((_, i) => i !== index);
+      const name = finished ? freeCaseName(target.value.trim() || `Case ${index + 1}`, others) : target.value;
+      if (finished && name !== target.value) target.value = name;
+      next = { ...row, name };
+    }
     else if (field === "weight") {
       if (!(value > 0)) {
         if (finished) target.value = String(row.weight);

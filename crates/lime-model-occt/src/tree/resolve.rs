@@ -448,10 +448,15 @@ fn resolve_draft(
     let pull = unit_dir(pull, "pull direction")?;
     let mut refs = Vec::with_capacity(faces.len());
     let mut picks = Vec::with_capacity(faces.len());
-    for (at, face) in faces.iter().copied().enumerate() {
+    for face in faces.iter().copied() {
         let found = resolve_one_face(from, face)?;
         if picks.contains(&found.index) {
-            return Err(format!("Face {at} is listed twice."));
+            // Named as the caller gave it, not by its place in the list.
+            let given = match face {
+                FacePick::Index(index) => index,
+                FacePick::Ref(stored) => stored.index,
+            };
+            return Err(format!("Face {given} is listed twice."));
         }
         refs.push(FacePick::Ref(found));
         picks.push(found.index);

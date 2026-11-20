@@ -1,5 +1,5 @@
 import { eulerOrient } from "./mesh-place.ts";
-import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, matchFaces, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditPanel } from "./model-edit.ts";
+import { builtBranch, crossEdit, crossPlan, draftPanelOp, editHead, editNotes, editPanel,editRefusal, editedOp, forked, matchEdges, matchFaces, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditPanel } from "./model-edit.ts";
 import { stepEdges } from "./model-request.ts";
 import { historyLayout } from "./model-history.ts";
 import { planeFor, splitBase } from "./model-plane.ts";
@@ -194,6 +194,33 @@ eq("an open shell keeps its thickness and its faces", [openShell.tool, openShell
 const closedShell = editPanel({ kind: "shell", thickness: 1.5 }, identity, center);
 eq("a closed shell opens with the box on and no faces", [closedShell.fields, closedShell.shellClosed, closedShell.faces], [{ modelShell: 1.5 }, true, []]);
 eq("a pose does not change a shell's thickness", editPanel({ kind: "shell", thickness: 2, openFaces: [1] }, skew, center).fields.modelShell, 2);
+
+// A draft on a turned part: the panel shows the pull in model space, and an untouched edit sends the stored op again.
+const draftBack = (stored: ModelOp, pose: Affine, angle?: number) => {
+  const panel = editPanel(stored, pose, center);
+  const f = fields(panel);
+  const model = draftPanelOp(panel.faces!, angle ?? f("modelDraft"), [f("modelDraftPullX"), f("modelDraftPullY"), f("modelDraftPullZ")], stored, pose);
+  return { panel, op: model && (toSolidOp(model, pose) as Extract<ModelOp, { kind: "draft" }>) };
+};
+// The part lies on its side: turned 90° about X, so its own +Z (the default pull) points along model −Y.
+const onSide: Affine = { m: eulerOrient(90, 0, 0), t: [40, 0, 10] };
+const plainDraft: ModelOp = { kind: "draft", faces: [2], angleDeg: 3 };
+const sidePanel = draftBack(plainDraft, onSide);
+const sidePull = [sidePanel.panel.fields.modelDraftPullX!, sidePanel.panel.fields.modelDraftPullY!, sidePanel.panel.fields.modelDraftPullZ!];
+const solidZ = [onSide.m[2], onSide.m[5], onSide.m[8]];
+check("a turned part's draft shows its default pull as the solid's +Z in model space", nearVec(sidePull, solidZ, 1e-9), JSON.stringify(sidePull));
+eq("an untouched edit of a turned part's draft is the stored op", sidePanel.op, plainDraft);
+eq("only the angle changed: the pull stays the solid's own +Z", draftBack(plainDraft, onSide, 5).op, { kind: "draft", faces: [2], angleDeg: 5 });
+const slantDraft: ModelOp = { kind: "draft", faces: [1, 4], angleDeg: -2, pull: [0.6, 0, 0.8], neutral: { origin: [0, 0, 10], normal: [0, 0, 1] } };
+const slantBack = draftBack(slantDraft, skew).op!;
+check(
+  "a slanted pull and a neutral plane come back under a skewed pose",
+  nearVec(slantBack.pull!, [0.6, 0, 0.8]) && typeof slantBack.neutral === "object" && "origin" in slantBack.neutral
+    && nearVec(slantBack.neutral.origin, [0, 0, 10]) && nearVec(slantBack.neutral.normal, [0, 0, 1]) && slantBack.angleDeg === -2 && JSON.stringify(slantBack.faces) === "[1,4]",
+  JSON.stringify(slantBack),
+);
+eq("a neutral face is kept by an edit", draftBack({ kind: "draft", faces: [3], angleDeg: 2, neutral: 0 }, onSide).op, { kind: "draft", faces: [3], angleDeg: 2, neutral: 0 });
+eq("a zero angle cannot run", draftPanelOp([1], 0, [0, 0, 1], null, identity), null);
 
 // The `.lime` round trip of a tree with an edit fork, a root edit among it.
 const rerooted = forked(edited, 0, [{ id: 9, op: { kind: "root", ...boxSpec, origin: [-15, -15, 0], size: [30, 30, 20] }, fingerprint: fp(18000) }, { id: 10, op: cut, fingerprint: fp(17875) }], 10);

@@ -84,6 +84,19 @@ export interface MouldRule {
 export interface MouldingReport {
   rules: MouldRule[];
   flags: MouldFlag[];
+  /** What the rules could not see, in plain words. Absent when there is nothing to say, so other reports keep their shape. */
+  notes?: string[];
+}
+
+/**
+ * Said when a folded wall (side walls taken across sharp edges) is checked with no pull: each rib's draft is then read
+ * along its own wall's normal, so a rib on a side wall passes although one mould pull would leave it an undercut.
+ */
+export const MOULD_FOLDED_NO_PULL_NOTE = "This wall folds over sharp edges and no pull was given, so each rib's draft was checked against its own wall, not one mould pull: ribs on the side walls may be undercuts.";
+
+/** How the report was asked for. `folded`: the wall takes faces across sharp edges (its report's folded faces). */
+export interface MouldingOptions {
+  folded?: boolean;
 }
 
 /**
@@ -350,9 +363,10 @@ function radiusMargin(ratio: number): number {
 
 /**
  * The moulding report for these ribs. `pull` is the mould's pull direction; absent, each rib is checked along
- * the wall normal it stands on. Flags name a rib index, the stretch or the other rib, the number and the threshold.
+ * the wall normal it stands on, and a folded wall says so in `notes`. Flags name a rib index, the stretch or the
+ * other rib, the number and the threshold.
  */
-export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): MouldingReport {
+export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null, options: MouldingOptions = {}): MouldingReport {
   const stretches = stretchesOf(ribs);
   const flags: MouldFlag[] = [];
   let baseWorst: number | null = null;
@@ -468,6 +482,7 @@ export function mouldingReport(ribs: readonly MouldRib[], pull?: V3 | null): Mou
       rule("spacing", MOULD_SPACING_WALLS, spacingWorst, spacingWorst === null || spacingWorst >= MOULD_SPACING_WALLS),
     ],
     flags,
+    ...(options.folded === true && !pull && stretches.length > 0 ? { notes: [MOULD_FOLDED_NO_PULL_NOTE] } : {}),
   };
 }
 
@@ -497,12 +512,13 @@ function flagLine(flag: MouldFlag): string {
   return `${rib}: gap ${fmt(flag.value)} × the wall, under ${fmt(flag.threshold)}`;
 }
 
-/** The lines under the result: one per flag, or one line when every rule passes. */
+/** The lines under the result: the report's notes first, then one per flag, or one line when every rule passes. */
 export function mouldingLines(report: MouldingReport): string[] {
-  if (report.flags.length === 0) return [`Moulding checks pass (${report.rules.length} rules)`];
+  const notes = report.notes ?? [];
+  if (report.flags.length === 0) return [...notes, `Moulding checks pass (${report.rules.length} rules)`];
   const shown = report.flags.slice(0, 8).map(flagLine);
   if (report.flags.length > 8) shown.push(`and ${report.flags.length - 8} more`);
-  return shown;
+  return [...notes, ...shown];
 }
 
 export interface DefaultRow {

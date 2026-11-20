@@ -2,9 +2,13 @@
  * Draft from the face menu: pick a side wall, Draft 3°, the History row appears, and undo removes it.
  * The kernel is mocked here. The volume against the frustum is the Open CASCADE test.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree } from "./model-tree-mock";
+
+const shots = process.env.LIME_SHOTS ?? path.join("test-results", "model-draft");
 
 type V = [number, number, number];
 
@@ -75,13 +79,14 @@ test("a side wall drafts from the face menu and undo removes the row", async ({ 
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume");
-  await page.screenshot({ path: "/opt/cursor/artifacts/draft-before.png" });
+  fs.mkdirSync(shots, { recursive: true });
+  await page.screenshot({ path: path.join(shots, "draft-before.png") });
 
   const side = await facePoint(page, (normal) => normal[0]! > 0.5);
   await page.mouse.click(side.x, side.y);
   const action = page.locator("#modelContextBar [data-action=draft]");
   await expect(action).toBeVisible();
-  await page.screenshot({ path: "/opt/cursor/artifacts/draft-menu.png" });
+  await page.screenshot({ path: path.join(shots, "draft-menu.png") });
   await action.click();
   await expect(page.locator("#modelDraft")).toBeVisible();
   await page.locator("#modelDraft").fill("3");
@@ -91,8 +96,7 @@ test("a side wall drafts from the face menu and undo removes the row", async ({ 
   await apply.click();
   await expect(page.locator("#modelHistoryTree")).toContainText("Draft 1 wall 3°");
   expect(applied.at(-1)).toEqual({ kind: "draft", faces: [5], angleDeg: 3 });
-  await page.screenshot({ path: "/opt/cursor/artifacts/draft-history.png" });
-  await page.screenshot({ path: "/opt/cursor/artifacts/draft-after.png" });
+  await page.screenshot({ path: path.join(shots, "draft-after.png") });
 
   const rail = page.locator("#toolRail");
   expect(await rail.evaluate((node) => node.scrollHeight <= node.clientHeight + 1)).toBe(true);
