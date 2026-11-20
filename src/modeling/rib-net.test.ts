@@ -149,7 +149,8 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
     const opening = inner.length >= 2 ? inner[inner.length - 1]! - inner[0]! : -1;
     check("the named ends stay square and 2.4 mm apart", named.ends.square === 2 && named.ends.joint === 0 && Math.abs(opening - 2.4) < 0.05, JSON.stringify({ ends: named.ends, opening, inner }));
   }
-  // The notch is on the rib that crosses it. The pieces beside it stay short; the crossing rib is split and a cut takes the opening.
+  // A rib crosses the named opening. The two gap ends stay square and 0.75 mm apart. The crossing rib is not split:
+  // the tray solid measured its gap with no split and no box cut (run 44740317446, pocket 1, 0.700 mm).
   const crossed = plan({
     width: 2.4,
     height: 6,
@@ -171,11 +172,13 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
       const box = boxOfMesh(toolMesh(step));
       return box.min[1] < -0.4 && box.max[1] > 0.4;
     });
-    const cut = crossed.cuts[0];
+    const full = crossed.steps.flatMap((step) => (step.kind === "loft" ? step.sections : [])).filter((row) => Math.max(...row.profile!.map((p) => p[1])) > 5);
+    const inner = full.map((row) => row.origin[0]).filter((x) => Math.abs(x) < 3).sort((a, b) => a - b);
+    const opening = inner.length >= 2 ? inner[inner.length - 1]! - inner[0]! : -1;
     check(
-      "the crossing rib is split and the opening is a 0.75 mm cut",
-      !through && crossed.cuts.length === 1 && !!cut && Math.abs(cut.size[2] - 0.75) < 0.05 && cut.op === "cut" && crossed.ends.joint === 0 && crossed.ends.square >= 4,
-      JSON.stringify({ through, ends: crossed.ends, cuts: crossed.cuts.length, size: cut?.size, runs: spans.length }),
+      "the gap ends stay square and 0.75 mm apart, and the crossing rib is one run",
+      through && spans.length === 1 && crossed.ends.joint === 0 && crossed.ends.square === 2 && Math.abs(opening - 0.75) < 0.05 && !("cuts" in crossed),
+      JSON.stringify({ through, ends: crossed.ends, opening, inner, runs: spans.length }),
     );
   }
 }

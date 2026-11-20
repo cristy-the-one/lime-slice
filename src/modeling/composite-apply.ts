@@ -267,9 +267,6 @@ export async function runCombined(raw: Record<string, unknown>, port: CombinedPo
   const expanded = net ? [] : copies === null ? expand(raw, context, (op) => port.pieceOf(op)) : copies;
   if ("reason" in expanded) return { refused: { reason: expanded.reason } };
   const steps: ModelOp[] = net ? net.steps.map((step) => toSolidOp(step as unknown as ModelOp, port.pose())) : [];
-  // A notch is a cut, and a combined boolean is one kind only. The fuses go on first; the cuts take the openings out.
-  const ventCuts = Boolean(net && net.cuts.length > 0);
-  if (net && ventCuts) for (const cut of net.cuts) steps.push(toSolidOp(cut as unknown as ModelOp, port.pose()));
   for (const one of expanded) {
     if (copies !== null) {
       const baked = port.bakeCopy(one as Record<string, unknown>);
@@ -282,7 +279,7 @@ export async function runCombined(raw: Record<string, unknown>, port: CombinedPo
     steps.push(toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec, ...(piece.merge ? { merge: true as const } : {}) }, port.pose()));
   }
   const count = steps.length;
-  const combine = ventCuts ? null : combineOf(steps);
+  const combine = combineOf(steps);
   if (combine !== null && typeof combine !== "string") return { refused: combine };
   let source: unknown = raw;
   try {
@@ -305,18 +302,15 @@ export async function runCombined(raw: Record<string, unknown>, port: CombinedPo
   const report = (done.combined ?? {}) as { failed?: { index: number; reason: string }[]; missed?: number[] };
   const left = report.failed?.[0];
   if (left) {
-    const notch = net !== null && left.index >= net.steps.length;
-    const reason = notch
-      ? `Vent notch ${left.index - net.steps.length + 1} did not cut: ${left.reason}`
-      : net
-        ? `Run ${left.index + 1} of ${net.steps.length} (path ${net.stepPath[left.index] ?? "?"}): ${left.reason}`
-        : `Copy ${left.index + 1} of ${count}: ${left.reason}`;
+    const reason = net
+      ? `Run ${left.index + 1} of ${net.steps.length} (path ${net.stepPath[left.index] ?? "?"}): ${left.reason}`
+      : `Copy ${left.index + 1} of ${count}: ${left.reason}`;
     return refuse({ reason, step: left.index + 1, of: count, failedStep: left.index + 1 });
   }
   const after = port.solid();
   if (prior && after) {
     // With a notch the group is fuses then cuts. The part must still be there: a fuse that drops the solid is refused.
-    const lost = lostVolume({ kind: "boolean", op: ventCuts ? "fuse" : combine! }, prior.volumeMm3, after.volumeMm3, null);
+    const lost = lostVolume({ kind: "boolean", op: combine! }, prior.volumeMm3, after.volumeMm3, null);
     if (lost) return refuse({ reason: lost });
     if (net) {
       // The outside must be as it was: every guard ray meets the part where it did, and the part grew only rib-side.

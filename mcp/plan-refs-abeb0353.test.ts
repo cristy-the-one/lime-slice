@@ -11,7 +11,13 @@
  * - reply.seconds: wall, plan, total, and planner.bare, planner.field, planner.trace, planner.embed,
  *   planner.select, planner.connect, planner.prune, planner.size, planner.baselines, planner.solver, planner.total
  * - reply.wall.ms: select, remesh, measure, total
+ * - reply.ribs.events: the progress events still queued when the slice_wait that returns the finished plan drains
+ *   them. Each wait takes what has arrived, so the array is whichever stages and rib changes fell in that wait.
+ *   Both arrays are printed in full before they are dropped.
+ * A number that is not finite is compared as null, because the fixtures were stored with JSON.stringify and JSON
+ * has no Infinity or NaN. The log names the two raw values when they differ in JavaScript and match as JSON.
  * Everything else is compared field by field. A difference fails the test and prints the path and both values.
+ * Resin notes and plan.vents are not stripped: they are this branch's output and a difference there fails.
  */
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,19 +69,44 @@ function stripClock(reply: Reply): Reply {
   delete copy.seconds;
   const wall = copy.wall;
   if (wall && typeof wall === "object") delete (wall as Reply).ms;
+  const ribs = copy.ribs;
+  if (ribs && typeof ribs === "object") delete (ribs as Reply).events;
   return copy;
+}
+
+/** What the value is, including NaN and Infinity, which JSON.stringify turns into null. */
+function shown(value: unknown): string {
+  if (typeof value === "number" && Number.isNaN(value)) return "NaN";
+  if (value === Infinity) return "Infinity";
+  if (value === -Infinity) return "-Infinity";
+  if (value === undefined) return "undefined";
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/** JSON.stringify writes a non-finite number as null. The fixtures were stored that way. */
+function asJson(value: unknown): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) return null;
+  return value;
 }
 
 function diffs(path: string, live: unknown, ref: unknown, out: string[]): void {
   if (out.length >= 24) return;
+  const liveJson = asJson(live);
+  const refJson = asJson(ref);
+  if (liveJson === refJson && (typeof liveJson !== "object" || liveJson === null)) {
+    if (live !== ref) console.log(`plan-refs: ${path} live ${shown(live)}, fixture ${shown(ref)} (the same JSON value)`);
+    return;
+  }
   if (live === ref) return;
   if (typeof live !== typeof ref || live === null || ref === null || typeof live !== "object") {
-    out.push(`${path}: ${JSON.stringify(live)?.slice(0, 180)} != ${JSON.stringify(ref)?.slice(0, 180)}`);
+    out.push(`${path}: ${shown(live).slice(0, 400)} != ${shown(ref).slice(0, 400)}`);
     return;
   }
   if (Array.isArray(live) || Array.isArray(ref)) {
     if (!Array.isArray(live) || !Array.isArray(ref) || live.length !== ref.length) {
       out.push(`${path}: length ${Array.isArray(live) ? live.length : typeof live} != ${Array.isArray(ref) ? ref.length : typeof ref}`);
+      out.push(`${path} live ${JSON.stringify(live)}`);
+      out.push(`${path} abeb0353 ${JSON.stringify(ref)}`);
       return;
     }
     live.forEach((item, i) => diffs(`${path}[${i}]`, item, ref[i], out));
@@ -85,8 +116,10 @@ function diffs(path: string, live: unknown, ref: unknown, out: string[]): void {
   const b = ref as Reply;
   const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
   for (const key of keys) {
-    if (!(key in a) || !(key in b)) out.push(`${path}.${key}: ${key in a ? "only in this reply" : "only in abeb0353"}`);
-    else diffs(`${path}.${key}`, a[key], b[key], out);
+    if (!(key in a) || !(key in b)) {
+      const value = key in a ? a[key] : b[key];
+      out.push(`${path}.${key}: ${key in a ? "only in this reply" : "only in abeb0353"} ${JSON.stringify(value)}`);
+    } else diffs(`${path}.${key}`, a[key], b[key], out);
   }
 }
 
@@ -116,7 +149,13 @@ for (const wall of walls) {
     const found: string[] = [];
     if (!ref) found.push("no fixture");
     else if (reply.ok !== true) found.push(`reply not ok: ${JSON.stringify(reply).slice(0, 300)}`);
-    else diffs(name, stripClock(reply), stripClock(ref), found);
+    else {
+      const liveEvents = (reply.ribs as Reply | undefined)?.events;
+      const refEvents = (ref.ribs as Reply | undefined)?.events;
+      console.log(`plan-refs: ${name} ribs.events live ${JSON.stringify(liveEvents)}`);
+      console.log(`plan-refs: ${name} ribs.events abeb0353 ${JSON.stringify(refEvents)}`);
+      diffs(name, stripClock(reply), stripClock(ref), found);
+    }
     if (found.length) {
       failed += 1;
       console.error(`plan-refs FAIL ${name}`);
