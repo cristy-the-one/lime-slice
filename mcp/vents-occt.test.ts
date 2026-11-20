@@ -9,7 +9,7 @@
  * unvented. The gap of each vented cell is measured by rays through the built solid.
  *
  * Filament and moulded omit vents. A buildAxis on either is refused.
- * This machine has no Open CASCADE; the folded-shell job is the proof.
+ * This machine has no Open CASCADE; the Auto ribs job is the proof.
  * Skips without LIME_OCCT_BRIDGE; fails in CI when it is unset.
  */
 import { existsSync, mkdtempSync } from "node:fs";
