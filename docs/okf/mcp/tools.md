@@ -15,6 +15,15 @@ sources:
   - id: ribs
     resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/mcp/session/ribs.ts
     title: mcp/session/ribs.ts (03b1c1d6)
+  - id: ribs-schema
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/mcp/schema.ts
+    title: mcp/schema.ts (03b1c1d6)
+  - id: ribs-panel
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/auto-ribs.ts
+    title: src/auto-ribs.ts (03b1c1d6)
+  - id: ribnet
+    resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/modeling/auto-ribs.ts
+    title: src/modeling/auto-ribs.ts (03b1c1d6)
 ---
 
 # How the list is built
@@ -413,12 +422,15 @@ Leave the last result.
 
 ### ribs_plan
 
-Added after 4.2.0. Plans ribs on one wall as a background job. Since 6.13.0 it also takes `wall.folded` (side walls across sharp edges), `loadCases` (up to 8 named, weighted cases; `plan.cases` gives each case's factor and deflections; two cases with one name are refused), and, with `process: "moulded"`, `pull` and `plan.moulding` (rules, flags, and notes).[^ribs]
+Added after 4.2.0. Plans ribs on one wall as a background job. Since 6.13.0 it also takes `wall.folded` (side walls across sharp edges), `loadCases` (up to 8 named, weighted cases; `plan.cases` gives each case's factor and deflections; two cases with one name are refused), and, with `process: "moulded"`, `pull` and `plan.moulding` (rules, flags, and notes).[^ribs] `goal` is one key. `goal.frequency` is how many times the lowest natural frequency to reach. A value below 1 is refused, and so is `frequency` beside another key: the refusal says a plan has one goal.[^ribs-schema] [^ribs-panel] A frequency reply adds `plan.frequencyHz` (`bare` and `ribbed`, hertz before and after) and `plan.frequencyFactor`.[^ribs] A resin reply adds `plan.vents`, the pockets that were cut and the pockets that were not. Filament and moulded omit it.[^ribs] [^ribs-schema]
 
 ### ribs_apply
 
-Added after 4.2.0. Builds a plan as one `ribNet` History row; `verify: true` runs the sliced Stress study before and after, once per load case when the plan has cases.[^ribs]
+Added after 4.2.0. Builds a plan as one `ribNet` History row; `verify: true` runs the sliced Stress study before and after, once per load case when the plan has cases.[^ribs] Each path may set `openEnds`, two booleans for its start and its end. `true` keeps that end square: a vent notch, not run into the facing rib and not tapered. A plan end whose kind is `gap` is sent with that flag.[^ribs-schema] [^ribnet]
 
 [^schema]: mcp/schema.ts
 [^groups]: mcp/groups.ts
 [^ribs]: mcp/session/ribs.ts (03b1c1d6)
+[^ribs-schema]: mcp/schema.ts (03b1c1d6)
+[^ribs-panel]: src/auto-ribs.ts (03b1c1d6)
+[^ribnet]: src/modeling/auto-ribs.ts (03b1c1d6)
