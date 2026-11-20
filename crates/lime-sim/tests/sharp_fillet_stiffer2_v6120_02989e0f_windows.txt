@@ -1,0 +1,206 @@
+wall fillet_stiffer2
+head ribs 2 factor 2.0919904853686373 volume 673.5748457035465 bare 0.003203070247119351 0.003933865911451931 ribbed 0.0015311112882786014 0.001453283180258851 goal_met true not_better false stopped false
+thick 0.58114157778106 2219.6845342340753 0.001531090192140239 4
+grid true 60.0 [1, 1] 881.7029482452862 0.0012672626195400854 Some(881.7029482452862) 2
+mesh 360 649 14c7fc6fb1184c0a
+rib 0 h 6.0 w 1.2 len 63.78773724275233 vol 459.2717081478167 gain 0.44876378423981056 share 0.24812282451486084 ends Boundary Boundary Major Positive
+profile Rectangular
+pt 30.666219769921398 40.0 0.0 v 304
+pt 30.68596851189391 38.57670433575097 0.0 v 305
+pt 30.704792239409375 37.22007464282925 0.0 v 306
+pt 30.723262923071527 35.888888888888886 0.0 v 307
+pt 30.762660641591566 33.04948767391978 0.0 v 308
+pt 30.78030607622166 31.77777777777778 0.0 v 309
+pt 30.820529043773757 28.878900705010306 0.0 v 310
+pt 30.833245694479125 27.96240922226624 0.0 v 311
+pt 30.837349229371792 27.666666666666664 0.0 v 312
+pt 30.878397445955947 24.70831373610083 0.0 v 313
+pt 30.894392382521925 23.555555555555557 0.0 v 314
+pt 30.93192300830998 20.850716075905012 0.0 v 315
+pt 30.936265848138138 20.53772676719136 0.0 v 316
+pt 30.951435535672058 19.444444444444443 0.0 v 317
+pt 30.994134250320325 16.367139798281887 0.0 v 318
+pt 31.008478688822187 15.333333333333332 0.0 v 319
+pt 31.052002652502516 12.196552829372413 0.0 v 320
+pt 31.135613799648635 11.222222222222221 0.0 v 321
+pt 31.438918348806475 7.687778363726681 0.0 v 322
+pt 31.488404437161858 7.111111111111114 0.0 v 323
+pt 32.0 3.0 0.0 v 152
+pt 32.0 1.5000000000000002 0.401923788646684 v 168
+pt 32.0 0.8748898764118359 1.027033912234848 v 324
+pt 32.0 0.401923788646684 1.4999999999999996 v 184
+pt 32.0 0.0 3.0 v 200
+pt 32.0 0.0 6.666666666666666 v 216
+pt 32.0 0.0 10.333333333333332 v 232
+pt 32.0 0.0 14.0 v 248
+pt 32.0 0.0 17.666666666666664 v 264
+pt 32.0 0.0 21.333333333333332 v 280
+pt 32.55677570494594 0.0 24.0553577496177 v 325
+pt 32.74999728361065 0.0 25.0 v 326
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+rib 1 h 3.0 w 1.2 len 60.72868566830404 vol 218.62326840589452 gain 0.14825730700908904 share 0.08624385939405532 ends Boundary Boundary Minor Positive
+profile Rectangular
+pt 60.0 22.172012668159628 0.0 v 327
+pt 57.5001224708002 22.013763016122017 0.0 v 328
+pt 56.0 21.918800820476406 0.0 v 329
+pt 55.48469480466549 22.12965787509507 0.0 v 330
+pt 55.56168959501963 21.728444289396876 0.0 v 331
+pt 53.73219681550284 21.775242161844304 0.0 v 332
+pt 52.0 21.665588972793188 0.0 v 333
+pt 49.96427116020548 21.53672130756659 0.0 v 334
+pt 48.0 21.41237712510997 0.0 v 335
+pt 46.196345504908116 21.298200453288878 0.0 v 336
+pt 44.0 21.159165277426748 0.0 v 337
+pt 42.428419849610755 21.059679599011165 0.0 v 338
+pt 40.0 20.90595342974353 0.0 v 339
+pt 38.58636952734921 20.897342430224416 0.0 v 340
+pt 36.0 20.88158779901978 0.0 v 341
+pt 34.609936948708174 20.873120358272153 0.0 v 342
+pt 32.0 20.85722216829603 0.0 v 343
+pt 31.620680840811243 20.85491158065622 0.0 v 344
+pt 30.93192300830998 20.850716075905012 0.0 v 315
+pt 30.633504370067136 20.848898286319887 0.0 v 345
+pt 28.0 20.83285653757228 0.0 v 346
+pt 26.59386480246062 20.889638953026587 0.0 v 347
+pt 24.0 20.994384150432474 0.0 v 348
+pt 22.43027528682513 21.05777262187417 0.0 v 349
+pt 20.0 21.155911763292668 0.0 v 350
+pt 18.266685771189643 21.225906290721756 0.0 v 351
+pt 16.0 21.475726433345933 0.0 v 352
+pt 13.786222948630897 21.719715302796022 0.0 v 353
+pt 12.0 21.916581792830655 0.0 v 354
+pt 9.305760126072153 22.213524314870288 0.0 v 355
+pt 8.0 22.357437152315377 0.0 v 356
+pt 4.825297303513409 22.707333326944553 0.0 v 357
+pt 4.0 22.798292511800096 0.0 v 358
+pt 3.006460629260659 22.986385173794336 0.0 v 359
+pt 0.0 23.555555555555557 0.0 v 64
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+ht 3.0
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }

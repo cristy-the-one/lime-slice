@@ -4,6 +4,7 @@
  * One load stays `loads` alone.
  */
 import { loadRequest } from "../src/auto-ribs.ts";
+import { planOptions } from "../src/auto-ribs-plan.ts";
 import { ribWall, type RibWall, type RibWallSolid } from "../src/modeling/rib-wall.ts";
 import type { StudyLoad } from "../src/sim/study.ts";
 
@@ -132,6 +133,16 @@ refusal("a weight that is not above zero is refused, naming the case", badWeight
 const tooMany = ribsLoadRequest(read, { loadCases: Array.from({ length: 9 }, () => ({ name: "c", loads: [rawPressure] })) });
 refusal("more than 8 cases is refused, saying 8 is the most", tooMany, "bad-argument", "loadCases takes up to 8 cases; this has 9.");
 eq("the panel still turns a weight of 0 into 1", loadRequest([], [{ name: "a", weight: 0, loads: [force] }, { name: "b", weight: 2, loads: [pressure] }]).caseWeights, [1, 2]);
+
+// Creases go to the planner only for a wall read with folded; any other wall plans as v6.12 did.
+eq("a plain wall's plan options carry no creases", planOptions(oneToolWall, true), { baselines: true });
+eq("baselines off stays off", planOptions(oneToolWall, false), { baselines: false });
+const foldedWall = ribWall(solid, { picked: [6], loads: oneTool.loads, folded: true });
+if ("reason" in foldedWall) {
+  console.error(`FAIL the folded wall: ${foldedWall.reason}`);
+  process.exit(1);
+}
+eq("a folded wall's plan options ask for creases", planOptions(foldedWall, true), { baselines: true, creases: true });
 
 if (failed) {
   console.error(`${failed} failed`);
