@@ -5,13 +5,14 @@
  */
 import { formatMm } from "./model-plane.ts";
 import { boreGhostOutline, gearGhostOutline, gearLabel, rackBack, rackGhostOutline, ringGhostOutline, ringRim, tipRadius, type GearFields } from "./model-gear.ts";
+import { partLabel, resolvedPart, type PartFields, type PartSpec } from "./model-part.ts";
 
 // Lives in ./model-space.ts, which loads with the app (the plate places solids with it), so it need not load this module.
 export { turnCentre } from "./model-space.ts";
 
 type Vec3 = [number, number, number];
 
-export type PrimitiveKind = "box" | "cylinder" | "sphere" | "ellipsoid" | "cone" | "torus" | "wedge" | "polygon" | "tube" | "gear";
+export type PrimitiveKind = "box" | "cylinder" | "sphere" | "ellipsoid" | "cone" | "torus" | "wedge" | "polygon" | "tube" | "gear" | "part";
 
 /** Every primitive, in the order the picker lists them, with its name for a new object. */
 export const PRIMITIVES: readonly { kind: PrimitiveKind; label: string }[] = [
@@ -25,6 +26,7 @@ export const PRIMITIVES: readonly { kind: PrimitiveKind; label: string }[] = [
   { kind: "polygon", label: "Polygon" },
   { kind: "tube", label: "Tube" },
   { kind: "gear", label: "Gear" },
+  { kind: "part", label: "Part" },
 ];
 
 export function isPrimitiveKind(value: unknown): value is PrimitiveKind {
@@ -75,6 +77,15 @@ export interface PrimitiveSpec {
   /** A straight rack (stage 3) and its bar under the roots. */
   rack?: boolean;
   back?: number;
+  // --- A fastener (src/model-part.ts). `height` 0 is the table row. Only a part carries these.
+  partKind?: PartFields["partKind"];
+  nominal?: string;
+  allowance?: number;
+  length?: number;
+  headDiameter?: number;
+  headHeight?: number;
+  socketDepth?: number;
+  boreKind?: PartFields["boreKind"];
 }
 
 /** A gear spec's gear numbers, or null for any other kind. */
@@ -98,6 +109,8 @@ export interface PrimitiveFields {
   flats: boolean;
   /** A gear's numbers; absent for the panel's other kinds. */
   gear?: GearFields;
+  /** A fastener's numbers; absent for the panel's other kinds. `height` 0 is the table row. */
+  part?: PartSpec;
 }
 
 /** The spec of `kind` from the panel's numbers: the newer fields only where that kind reads them. A sphere does not turn. */
@@ -125,6 +138,10 @@ export function primitiveSpec(kind: PrimitiveKind, fields: PrimitiveFields, orig
       const gear = Object.fromEntries(Object.entries(fields.gear ?? { teeth: 20, module: 1.5 }).filter(([, value]) => value !== undefined));
       return { ...base, ...gear };
     }
+    case "part": {
+      const part = Object.fromEntries(Object.entries(fields.part ?? { partKind: "nut" }).filter(([, value]) => value !== undefined));
+      return { ...base, ...part };
+    }
     default:
       return base;
   }
@@ -142,6 +159,7 @@ const READS: Record<PrimitiveKind, { size: boolean; radius: boolean; height: boo
   polygon: { size: false, radius: false, height: true },
   tube: { size: false, radius: true, height: true },
   gear: { size: false, radius: false, height: true },
+  part: { size: false, radius: false, height: true },
 };
 
 /**
@@ -197,6 +215,11 @@ export function primitiveBounds(spec: PrimitiveSpec): { min: Vec3; max: Vec3 } {
       const reach = spec.radius + tube;
       return at([-reach, -reach, -tube], [reach, reach, tube]);
     }
+    case "part": {
+      const part = resolvedPart(partSpec(spec));
+      if (!part) return at([0, 0, 0], [0, 0, 0]);
+      return at(part.min, part.max);
+    }
     case "polygon": {
       const corners = polygonCorners(spec.sides ?? 0, spec.across ?? 0, spec.flats ?? false);
       if (corners.length === 0) return at([0, 0, 0], [0, 0, spec.height]);
@@ -245,7 +268,23 @@ export function primitiveLabel(spec: PrimitiveSpec): string {
       return `tube ⌀${n(spec.radius * 2)} inside ⌀${n((spec.innerRadius ?? 0) * 2)} h ${n(spec.height)}`;
     case "gear":
       return gearLabel(gearOf(spec)!, spec.height, n);
+    case "part":
+      return partLabel(partSpec(spec));
   }
+}
+
+function partSpec(spec: PrimitiveSpec): PartSpec {
+  return {
+    partKind: spec.partKind,
+    nominal: spec.nominal,
+    allowance: spec.allowance,
+    length: spec.length,
+    headDiameter: spec.headDiameter,
+    headHeight: spec.headHeight,
+    socketDepth: spec.socketDepth,
+    boreKind: spec.boreKind,
+    height: spec.height,
+  };
 }
 
 /** The plate name of a new solid: the primitive's name and the first number no object of that kind has yet. */
@@ -310,6 +349,24 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
       const corner = spec.flats ? across / 2 / Math.cos(Math.PI / sides) : across / 2;
       // One flat faces −Y, as the engine builds it.
       lathe(quad, sides, -Math.PI / 2 - Math.PI / sides, corner, corner, spec.height, 0);
+      break;
+    }
+    case "part": {
+      const part = resolvedPart(partSpec(spec));
+      if (!part) break;
+      const shift = (dz: number): Quad => {
+        const up = (p: Vec3): Vec3 => [p[0], p[1], p[2] + dz];
+        return (a, b, c, d) => quad(up(a), up(b), up(c), up(d));
+      };
+      if (part.hex && part.hex.z1 > part.hex.z0) {
+        const corner = part.hex.across / 2 / Math.cos(Math.PI / 6);
+        lathe(shift(part.hex.z0), 6, -Math.PI / 2 - Math.PI / 6, corner, corner, part.hex.z1 - part.hex.z0, part.hex.hole);
+      }
+      for (const round of part.rounds) {
+        if (round.z1 > round.z0 && round.radius > 0 && round.hole < round.radius) {
+          lathe(shift(round.z0), ROUND, 0, round.radius, round.radius, round.z1 - round.z0, round.hole);
+        }
+      }
       break;
     }
     case "gear": {

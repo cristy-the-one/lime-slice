@@ -115,7 +115,7 @@ async function sessionInfo(this: Session, verbose = false): Promise<Record<strin
     ...(whole ? { model: {
       ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "draft", "hole", "fillet", "chamfer", "transition", "split", "partition", "scale", "join", "root"],
       composite: [...COMPOSITE_KINDS],
-      primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
+      primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube", "part"],
       // --- 3.1 F16. A limit per call, as the app's composite tools have it, not per history: one object's history
       // passed 500 steps over several calls, which is fine, and maxSteps read as if it should have stopped there.
       maxStepsPerCall: MAX_PIECES,

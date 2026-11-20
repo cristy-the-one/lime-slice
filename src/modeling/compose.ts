@@ -6,6 +6,7 @@
 import { eulerOrient, matMul, orientEuler, type Mat3 } from "../mesh-place.ts";
 import { GEAR_DEFAULTS, isBoreShape, type GearFields } from "../model-gear.ts";
 import { isPrimitiveKind, primitiveSpec, turnCentre, type PrimitiveFields, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive.ts";
+import { partFrom } from "../model-part.ts";
 import { framePose, GLOBAL_WORKPLANE as GLOBAL_PLANE, planePrimitive, planePoint, type Workplane } from "../workplane.ts";
 import { ribNetPlan, type RibSurfaceInput } from "./rib-net.ts";
 import { pathSamples } from "./sweep.ts";
@@ -96,6 +97,13 @@ export function primitiveFrom(input: Record<string, unknown>, fallback: Primitiv
   };
   // A gear's thickness is `thickness` (the op's word) or `height` (the stored one).
   if (kind === "gear") fields.height = numOr(input.thickness, numOr(input.height, GEAR_DEFAULTS.thickness));
+  // A fastener's height of 0 is the table row. Left out, it must not become the box default.
+  if (kind === "part") {
+    const part = partFrom(input);
+    if ("reason" in part) return part;
+    fields.part = { ...part.fields, height: part.height };
+    fields.height = part.height;
+  }
   if (kind === "polygon" && (fields.sides < 3 || fields.sides > 64)) return { reason: "A polygon has from 3 to 64 sides." };
   if (kind === "tube" && fields.innerRadius >= fields.radius) return { reason: "The tube's hole must be smaller than its outside." };
   if (kind === "cone" && fields.topRadius > fields.radius) return { reason: "The cone's top must be no wider than its base." };
@@ -131,6 +139,7 @@ const READS: Record<PrimitiveKind, readonly string[]> = {
   torus: ["radius", "tubeRadius"],
   polygon: ["height", "sides", "across", "flats"],
   gear: ["height", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreShape", "boreFlat", "hubDiameter", "hubHeight", "internal", "rim", "rack", "back"],
+  part: ["height", "partKind", "nominal", "allowance", "length", "headDiameter", "headHeight", "socketDepth", "boreKind"],
 };
 
 /** An op as a caller reads it back: a primitive keeps only the fields its kind reads. */
@@ -185,6 +194,7 @@ const LOCAL_FLIP: Partial<Record<PrimitiveKind, Mat3>> = {
   ellipsoid: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
   torus: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
   polygon: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
+  part: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
 };
 
 /** `spec` moved by `motion`: its centre goes through the motion and its turn takes the motion's turn. */
@@ -198,7 +208,7 @@ export function movedSpec(spec: PrimitiveSpec, motion: Motion): PrimitiveSpec | 
     let r = matMul(motion.m, eulerOrient(spec.turn[0], spec.turn[1], spec.turn[2]));
     if (motion.reflect) {
       const flip = LOCAL_FLIP[spec.primitive];
-      if (!flip) return { reason: `A ${spec.primitive} cannot be mirrored. Mirror works on box, cylinder, cone, tube, sphere, ellipsoid, torus, and polygon.` };
+      if (!flip) return { reason: `A ${spec.primitive} cannot be mirrored. Mirror works on box, cylinder, cone, tube, sphere, ellipsoid, torus, polygon, and part.` };
       r = matMul(r, flip);
     }
     const euler = orientEuler(r);

@@ -47,7 +47,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   gcode_export: [{ name: "bracket.gcode" }, { job: "job_1", name: "bracket.gcode" }],
   export_3mf: [{ name: "plate.3mf" }, { object: "obj_2", name: "part-2.3mf" }, { object: "obj_1", name: "bracket.3mf", pieces: true }],
   mesh_stats: [{ object: "obj_1" }],
-  solid_new: [{ primitive: "box", dx: 70, dy: 40, dz: 10 }, { primitive: "cylinder", radius: 8, height: 20, name: "post" }, { gear: { teeth: 20, module: 2, thickness: 6, bore: 5 } }],
+  solid_new: [{ primitive: "box", dx: 70, dy: 40, dz: 10 }, { primitive: "cylinder", radius: 8, height: 20, name: "post" }, { gear: { teeth: 20, module: 2, thickness: 6, bore: 5 } }, { primitive: "part", kind: "nut", nominal: "M6" }],
   model_describe: [{ object: "obj_1", bbox: true }],
   faces_find: [{ object: "obj_1", normal: [0, 0, 1] }, { object: "obj_1", kind: "cylinder", areaMinMm2: 20 }],
   edges_find: [{ object: "obj_1", direction: [0, 0, 1], convex: true }, { object: "obj_1", onFace: { normal: [0, 0, 1] } }],

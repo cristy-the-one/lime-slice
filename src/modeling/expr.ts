@@ -119,6 +119,8 @@ export function evaluate(text: string, params: Params): number {
  */
 export const TEXT_FIELDS: ReadonlySet<string> = new Set([
   "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode", "along", "fit", "anchor", "point", "part", "var", "text", "font", "fontFile", "align", "caps", "capStart", "capEnd",
+  // A fastener's size is a table name (M6), not a number and not a parameter.
+  "nominal",
   // --- Split to print: the target printer's id and process, the orientation, and a connector's type.
   "printer", "process", "orient", "type",
 ]);

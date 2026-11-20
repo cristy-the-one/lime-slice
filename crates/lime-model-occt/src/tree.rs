@@ -30,6 +30,7 @@ mod k1;
 mod lettering;
 mod ops;
 mod outcome;
+mod part;
 mod partition;
 mod request;
 mod resolve;

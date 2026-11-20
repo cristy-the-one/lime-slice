@@ -16,6 +16,7 @@ use super::ffi::{
 use super::group::extrude_cells;
 use super::k1::{encode_loops, extent_flags, k1_has_loops, push_shape};
 use super::gear::build_gear;
+use super::part::build_part;
 use super::ops::{Op, Primitive, Solid};
 use super::shape::Shape;
 
@@ -23,6 +24,9 @@ impl Shape {
     pub(super) fn primitive(solid: &Solid) -> Result<Shape, String> {
         if solid.primitive == Primitive::Gear {
             return build_gear(solid);
+        }
+        if solid.primitive == Primitive::Part {
+            return build_part(solid);
         }
         let p = solid.numbers();
         Shape::made(|error| unsafe {

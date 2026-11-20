@@ -148,8 +148,8 @@ pub(super) fn build(
                 )
             })
         }
-        // A gear is built in Rust from loops, then meets the solid as a join's tool does, where it already stands.
-        Op::Boolean { op: which, tool, .. } if tool.primitive == Primitive::Gear => {
+        // A gear or a fastener is built in Rust, then meets the solid as a join's tool does, where it already stands.
+        Op::Boolean { op: which, tool, .. } if tool.primitive == Primitive::Gear || tool.primitive == Primitive::Part => {
             let gear = Shape::primitive(tool).map_err(BuildFail::plain)?;
             let place = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
             Shape::made(|error| unsafe {

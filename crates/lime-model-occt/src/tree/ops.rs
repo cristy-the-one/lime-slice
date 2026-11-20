@@ -40,6 +40,8 @@ pub enum Primitive {
     Ellipsoid,
     /// A spur gear with true involute flanks (`gear.rs`), built in Rust from loops: never handed to `spec_of`.
     Gear,
+    /// A fastener (`part.rs`): nut, socket screw, hex screw, or washer. Built in Rust, never handed to `spec_of`.
+    Part,
 }
 
 /// A gear's bore: a round hole, a hexagon (`bore` across its flats), or a D (`bore` across, `boreFlat` from the flat).
@@ -64,6 +66,7 @@ impl Primitive {
             Primitive::Tube => c"tube",
             Primitive::Ellipsoid => c"ellipsoid",
             Primitive::Gear => c"gear",
+            Primitive::Part => c"part",
         }
     }
 }
@@ -153,6 +156,31 @@ pub struct Solid {
     /// A rack's bar under its roots, mm; 1.5 modules when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back: Option<f64>,
+    // --- A fastener (docs/plan-mech-parts.md). `height` 0 is the table row. Written only on a part.
+    /// nut, socket, hex, or washer. Not `kind`: a boolean op is already tagged `kind`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_kind: Option<String>,
+    /// M3, M4, M5, M6, M8, M10, M12, M16, M20, M24. M6 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nominal: Option<String>,
+    /// Millimetres added to a nut's tap drill or a washer's hole. 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowance: Option<f64>,
+    /// Length under the head, mm. 0 is a head with no shank. A socket defaults to 25, a hex screw to 20.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<f64>,
+    /// Socket head diameter, mm. 0 or absent is the ISO 4762 row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_diameter: Option<f64>,
+    /// Socket head height, mm. 0 or absent is the row. `height` is the same override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_height: Option<f64>,
+    /// Socket depth, mm. 0 or absent is the row's t min.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_depth: Option<f64>,
+    /// "tap" or "thread". A modelled thread is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bore_kind: Option<String>,
 }
 
 impl Solid {

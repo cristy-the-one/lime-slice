@@ -7,6 +7,7 @@
 import { SCREWS } from "../../model-hole";
 import { SPLIT_TILT_MAX_DEG } from "../../model-plane";
 import { PRIMITIVES } from "../../model-primitive";
+import { PART_KINDS, PART_NOMINALS } from "../../model-part";
 import { DEFAULT_TEXT_FONT, PEN_FONTS, TEXT_FONTS } from "../../modeling/text-fonts";
 
 const RAIL = `
@@ -199,12 +200,27 @@ const DOCK = `
                     <label data-gear-kind="external ring" data-snap="15" data-tip="Turns the teeth about the axis."><span class="scrub-label" data-scrub>Phase°</span><input id="modelGearPhase" type="number" step="1" value="0" aria-label="Phase, degrees"></label>
                   </div>
                 </details>
+                <!-- Fasteners (docs/plan-mech-parts.md): one Part button, one kind, the table row on the card, overrides under More. -->
+                <label data-for="boolean create" data-with="primitive" data-prim="part"><span>Kind</span><select id="modelPartKind" aria-label="Part kind"><optgroup label="Fasteners">${PART_KINDS.map((entry) => `<option value="${entry.id}">${entry.label}</option>`).join("")}</optgroup></select></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="part"><span>Nominal</span><select id="modelPartNominal" aria-label="Nominal size">${PART_NOMINALS.map((nominal) => `<option value="${nominal}"${nominal === "M6" ? " selected" : ""}>${nominal}</option>`).join("")}</select></label>
+                <p class="model-part-row" id="modelPartRow" data-for="boolean create" data-with="primitive" data-prim="part"></p>
+                <label data-for="boolean create" data-with="primitive" data-prim="part" data-part-kind="socket hex" data-snap="0.5" data-tip="Under the head. 0 is the head alone. A socket starts at 25, a hex screw at 20."><span class="scrub-label" data-scrub>Length</span><input id="modelPartLength" type="number" step="0.5" min="0" max="200" value="25" aria-label="Length under the head, mm"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="part" data-part-kind="nut washer" data-snap="0.1" data-tip="Added to the hole, 0 to 1 mm."><span class="scrub-label" data-scrub>Allowance</span><input id="modelPartAllowance" type="number" step="0.05" min="0" max="1" value="0" aria-label="Hole allowance, mm"></label>
+                <details class="stress-more model-part-more" id="modelPartMore" data-for="boolean create" data-with="primitive" data-prim="part">
+                  <summary>More</summary>
+                  <div class="model-fields">
+                    <label data-part-kind="nut hex washer" data-snap="0.1" data-tip="0 uses the table row."><span class="scrub-label" data-scrub>Thickness</span><input id="modelPartThick" type="number" step="0.1" min="0" max="1000" value="0" aria-label="Thickness override, mm; 0 for the table row"></label>
+                    <label data-part-kind="socket" data-snap="0.1" data-tip="0 uses the ISO 4762 head."><span class="scrub-label" data-scrub>Head ⌀</span><input id="modelPartHeadD" type="number" step="0.1" min="0" value="0" aria-label="Head diameter, mm; 0 for the table row"></label>
+                    <label data-part-kind="socket" data-snap="0.1" data-tip="0 uses the ISO 4762 head."><span class="scrub-label" data-scrub>Head height</span><input id="modelPartHeadH" type="number" step="0.1" min="0" value="0" aria-label="Head height, mm; 0 for the table row"></label>
+                    <label data-part-kind="socket" data-snap="0.1" data-tip="0 uses the ISO 4762 socket."><span class="scrub-label" data-scrub>Socket depth</span><input id="modelPartSocket" type="number" step="0.1" min="0" value="0" aria-label="Socket depth, mm; 0 for the table row"></label>
+                  </div>
+                </details>
                 <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
                 <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
                 <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
-                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube gear" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
-                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube gear" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
-                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube gear" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
+                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube gear part" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
+                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube gear part" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
+                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube gear part" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
                 <label data-for="split" data-snap="1"><span class="scrub-label" id="modelPlaneLabel" data-scrub>Plane Z</span><input id="modelPlane" type="number" step="any" value="5" aria-label="Split plane Z, mm"></label>
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>

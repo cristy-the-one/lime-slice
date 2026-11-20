@@ -14,12 +14,13 @@ The pictures are the web UI in the dark theme against a local engine with the Op
 
 ### Model a part
 
-Model edits a STEP solid, or starts one from a primitive, a gear, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
+Model edits a STEP solid, or starts one from a primitive, a gear, a fastener, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
 
 ![Sketching a 40 × 24 mm rectangle on the bed, extruding it 16 mm, cutting a 10 mm hole up through it, then editing the first extrude down to 12 mm from History.](docs/screenshots/clip-model.gif)
 
 - **Text** in Inter, IBM Plex Mono and Serif, Allerta Stencil, two pen fonts and five Hershey fonts, or a font file of your own. Letters go on flat faces and wrap round cylinders, cones, spheres, tori and freeform faces at their true size, raised or engraved.
 - **Gears.** New solid makes an involute spur gear, a ring (internal) gear or a rack. The gear card says whether it meshes with the gear it reaches, or how far off it is.
+- **Fasteners.** New solid's Part makes a hex nut (ISO 4032), a socket-head cap screw (ISO 4762), a hex-head screw (ISO 4017) or a washer (ISO 7089) from the standard's row. The shank is plain. A modelled thread is not available yet.
 - **Split to print** cuts a part that is too large for the printer into pieces that fit, with straight or shaped cuts (lap, zig-zag, tongue, dovetail, or a sketched line) and dowels, plugs, keys or hardware holes to join them. The pieces become plate objects, each with its number on a cut face. It can also cut for the Formlabs Form 4 and export STEP, 3MF or STL.
 - **Draft** tilts walls that are already there, a STEP part's included, so a moulded or cast part releases: pick the walls, then Draft in the face menu, an angle and the pull direction. A positive angle opens them toward the pull.
 - **Print transition** adds a flat wedge in a concave corner, or a gusset under a lip, so each row stands on the row before.

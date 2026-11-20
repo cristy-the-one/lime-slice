@@ -67,6 +67,10 @@ const ghosts: [string, PrimitiveSpec, [V, V]][] = [
   ["hexagon across corners", spec("polygon", { sides: 6, across: 10, flats: false, height: 5 }), [[-5, -4.33, 0], [5, 4.33, 5]]],
   ["triangle", spec("polygon", { sides: 3, across: 10, flats: false, height: 2 }), [[-4.33, -2.5, 0], [4.33, 5, 2]]],
   ["tube", spec("tube", { radius: 10, innerRadius: 6, height: 5 }), [[-10, -10, 0], [10, 10, 5]]],
+  ["nut M6", spec("part", { partKind: "nut", nominal: "M6" }), [[-5.774, -5, 0], [5.774, 5, 5.2]]],
+  ["socket screw M6", spec("part", { partKind: "socket", nominal: "M6" }), [[-5, -5, -25], [5, 5, 6]]],
+  ["hex screw M6", spec("part", { partKind: "hex", nominal: "M6" }), [[-5.774, -5, -20], [5.774, 5, 4]]],
+  ["washer M6", spec("part", { partKind: "washer", nominal: "M6" }), [[-6, -6, 0], [6, 6, 1.6]]],
 ];
 for (const [name, primitive, want] of ghosts) {
   const mesh = primitiveMesh(primitive);
@@ -117,6 +121,7 @@ eq("a root box keeps its size and nothing round", rootSpec(spec("box", { size: [
 eq("a root is untilted", rootSpec(spec("cylinder", { radius: 1, height: 1, turn: [90, 0, 0] })).turn, [0, 0, 0]);
 
 eq("turn centres", [spec("box", { size: [2, 4, 6] }), spec("wedge", { size: [2, 4, 6] }), spec("torus", { radius: 5 }), spec("tube", { height: 8 })].map(turnCentre), [[1, 2, 3], [1, 2, 3], [0, 0, 0], [0, 0, 4]]);
+eq("a nut turns about the middle of its box", turnCentre(spec("part", { partKind: "nut", nominal: "M6" })), [0, 0, 2.6]);
 
 // Labels.
 const labels: [PrimitiveSpec, string][] = [
@@ -129,6 +134,10 @@ const labels: [PrimitiveSpec, string][] = [
   [spec("polygon", { sides: 6, across: 5.5, flats: true, height: 2.4 }), "hexagon 5.5 across flats h 2.4"],
   [spec("polygon", { sides: 12, across: 30, flats: false, height: 3 }), "12-gon 30 across corners h 3"],
   [spec("tube", { radius: 10, innerRadius: 6, height: 5 }), "tube ⌀20 inside ⌀12 h 5"],
+  [spec("part", { partKind: "nut", nominal: "M6" }), "Nut M6"],
+  [spec("part", { partKind: "socket", nominal: "M6" }), "Socket screw M6 × 25"],
+  [spec("part", { partKind: "hex", nominal: "M6" }), "Hex screw M6 × 20"],
+  [spec("part", { partKind: "washer", nominal: "M6", allowance: 0.2 }), "Washer M6 +0.2"],
 ];
 for (const [primitive, want] of labels) eq(`label of ${want}`, primitiveLabel(primitive), want);
 eq("a boolean with a new primitive names it", opLabel({ kind: "boolean", op: "cut", ...spec("polygon", { sides: 6, across: 5.5, flats: true, height: 2.4 }) }), "Cut hexagon 5.5 across flats h 2.4");
@@ -141,7 +150,7 @@ eq("the first box is Box 1", primitiveName([], "box"), "Box 1");
 eq("the next box is Box 2", primitiveName(["Box 1", "Cone 1", "bracket.step"], "box"), "Box 2");
 eq("a gap is filled first", primitiveName(["Cone 1", "Cone 3"], "cone"), "Cone 2");
 eq("each kind counts its own", primitiveName(["Box 1", "Box 2"], "torus"), "Torus 1");
-eq("every kind has a name", PRIMITIVES.map((entry) => primitiveName([], entry.kind)), ["Box 1", "Cylinder 1", "Sphere 1", "Ellipsoid 1", "Cone 1", "Torus 1", "Wedge 1", "Polygon 1", "Tube 1", "Gear 1"]);
+eq("every kind has a name", PRIMITIVES.map((entry) => primitiveName([], entry.kind)), ["Box 1", "Cylinder 1", "Sphere 1", "Ellipsoid 1", "Cone 1", "Torus 1", "Wedge 1", "Polygon 1", "Tube 1", "Gear 1", "Part 1"]);
 
 // A gear's ghost is closed, every edge shared by two triangles: no cap fan meets a tooth's radial root line edge-on,
 // which the view's edge pass would draw as a spoke.
