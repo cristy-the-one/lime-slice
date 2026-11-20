@@ -26,7 +26,7 @@
 use rayon::prelude::*;
 
 use crate::error::SimError;
-use crate::shell::{LoadCase, ShellModel, ShellOptions};
+use crate::shell::{LoadCase, ShellModel};
 use crate::units::{norm, normalize, sub};
 
 use super::select::{self, DRib, Eval, Mix};
@@ -129,7 +129,7 @@ fn solve_all(
         .par_iter()
         .map(|d| {
             let mut m =
-                ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default())?;
+                ShellModel::new(mesh.clone(), req.material, &holds, req.options.shell())?;
             m.set_threads(1);
             select::evaluate(&mut m, &cases, req.rules.side, d, mix)
         })

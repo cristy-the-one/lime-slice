@@ -5,6 +5,7 @@
  * One load stays `loads` alone.
  */
 import { loadRequest } from "../src/auto-ribs.ts";
+import { planOptions } from "../src/auto-ribs-plan.ts";
 import { ribWall, type RibWall, type RibWallSolid } from "../src/modeling/rib-wall.ts";
 import type { StudyLoad } from "../src/sim/study.ts";
 
@@ -138,6 +139,16 @@ const blankClash = ribsLoadRequest(read, { loadCases: [{ name: "Case 2", loads: 
 refusal("a blank name that is Case N clashes as well", blankClash, "bad-argument", 'Two load cases are named "Case 2" (a case with no name is "Case N" by its place): give each case its own name.');
 eq("the panel suffixes a shared name instead", loadRequest([], [{ name: "lid", weight: 1, loads: [pressure] }, { name: "lid", weight: 1, loads: [force] }]).loadCases?.map((row) => row.name), ["lid", "lid (2)"]);
 eq("the panel still turns a weight of 0 into 1", loadRequest([], [{ name: "a", weight: 0, loads: [force] }, { name: "b", weight: 2, loads: [pressure] }]).caseWeights, [1, 2]);
+
+// Creases go to the planner only for a wall read with folded; any other wall plans as v6.12 did.
+eq("a plain wall's plan options carry no creases", planOptions(oneToolWall, true), { baselines: true });
+eq("baselines off stays off", planOptions(oneToolWall, false), { baselines: false });
+const foldedWall = ribWall(solid, { picked: [6], loads: oneTool.loads, folded: true });
+if ("reason" in foldedWall) {
+  console.error(`FAIL the folded wall: ${foldedWall.reason}`);
+  process.exit(1);
+}
+eq("a folded wall's plan options ask for creases", planOptions(foldedWall, true), { baselines: true, creases: true });
 
 if (failed) {
   console.error(`${failed} failed`);

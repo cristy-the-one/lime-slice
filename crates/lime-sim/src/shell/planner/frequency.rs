@@ -21,7 +21,7 @@ use super::{
 };
 use crate::error::SimError;
 use crate::shell::modes::{cluster_count, ModeSet};
-use crate::shell::{LoadCase, Rib, ShellLoad, ShellModel, ShellOptions, ShellResult};
+use crate::shell::{LoadCase, Rib, ShellLoad, ShellModel, ShellResult};
 use crate::units::{norm, sub};
 
 /// How many modes to ask for. A repeated pair is two; a few more keep a
@@ -42,7 +42,8 @@ pub(crate) fn plan(
         ..PlanStats::default()
     };
     let rules = &req.rules;
-    let s0 = super::surface::Surface::new(&req.mesh, rules.clearance.as_deref());
+    let mut s0 = super::surface::Surface::new(&req.mesh, rules.clearance.as_deref());
+    s0.creases = req.options.creases;
     // The goal does not use the loads. They are solved once, afterwards,
     // so the result can quote a stiffness factor beside the frequency.
     let cases0 = if req.load_cases.is_empty() {
@@ -61,7 +62,7 @@ pub(crate) fn plan(
         req.mesh.clone(),
         req.material,
         &holds0,
-        ShellOptions::default(),
+        req.options.shell(),
     )?;
     model0.set_threads(1);
     let bare_modes = model0.lowest_modes(density, MODES)?;
@@ -120,7 +121,7 @@ pub(crate) fn plan(
         return Ok(shell_only(req, &bare_modes, stats, started, rep));
     }
 
-    let mut model = ShellModel::new(mesh1, req.material, &holds1, ShellOptions::default())?;
+    let mut model = ShellModel::new(mesh1, req.material, &holds1, req.options.shell())?;
     model.set_threads(1);
     let ctx_width = rules.width;
     let ctx_profile = rules.profile;
@@ -578,7 +579,7 @@ fn frequencies(
         clean.mesh.clone(),
         req.material,
         &clean.holds,
-        ShellOptions::default(),
+        req.options.shell(),
     )?;
     model.set_threads(1);
     let bare = model.lowest_modes(density, 1)?;

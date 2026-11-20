@@ -314,7 +314,10 @@ fn grid_design(
     let mesh = s.to_mesh();
     let holds = resolve_holds(&s, input.holds);
     let cases = remap_cases(&s, input.cases, input.surface.tris.len());
-    let mut model = ShellModel::new(mesh, input.material, &holds, ShellOptions::default())?;
+    let mut model = ShellModel::new(mesh, input.material, &holds, ShellOptions {
+            creases: s.creases,
+            ..ShellOptions::default()
+        })?;
     model.set_threads(1);
     let ribs = design.iter().flat_map(|d| d.solver_ribs(r.side)).collect();
     model.set_ribs(ribs)?;

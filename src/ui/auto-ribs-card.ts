@@ -23,7 +23,7 @@ import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSpan, wa
 import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
 import type { StudyHold, StudyLoad } from "../sim/study.ts";
-import { stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
+import { planOptions, stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
 import {
   AUTO_RIBS_LABEL,
   AUTO_RIBS_TITLE,
@@ -665,7 +665,7 @@ async function startRun() {
   const material = host.material();
   materialNote = material?.note ?? "";
   const asked = loadRequest(card.loads, card.cases);
-  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
+  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: planOptions(wall, true), holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
 
   generation += 1;
   const mine = generation;

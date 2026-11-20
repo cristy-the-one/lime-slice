@@ -6,7 +6,8 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, isOverhang, MOULD_BASE_RATIO, MOULD_DRAFT_DEG, MOULD_ROOT_FLOOR, mouldedDefaultRoot, mouldedDefaultWidth, mouldedPlanRoot, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
+import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, footHalf, isOverhang, MOULD_BASE_RATIO, MOULD_DRAFT_DEG, MOULD_ROOT_FLOOR, mouldedDefaultRoot, mouldedDefaultWidth, mouldedPlanRoot, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight, trimThinEnds, type Section } from "./auto-ribs.ts";
+import { RibSurface, ribNetPlan, ribShape } from "./rib-net.ts";
 import { ribWall, type RibWallSolid } from "./rib-wall.ts";
 
 let failed = 0;
@@ -213,6 +214,57 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   const sections = heights.map((h) => ({ profile: h < 6 ? "tee" : "straight", width: 1.35 }) as const);
   const lean = dropStraightPoints(pts, heights, sections);
   check("straight points go (zigs of a tenth of a millimetre too), the height change and the turn stay", JSON.stringify(lean.points) === JSON.stringify([[0, 0, 2], [15, 0, 2], [25, 0, 2], [35, 8, 2]]) && JSON.stringify(lean.heights) === "[6,3,3]" && lean.sections.map((s) => s.profile).join() === "straight,tee,tee", JSON.stringify(lean));
+}
+
+// --- A rib that ends on an open rim at a slant: its end is drawn back until the whole footprint (root, drafted base)
+// stands on the wall, so ribNet builds what the plan proposes. A plate 60 × 40 × 2, the rib on its top (z 2), its free
+// edge y 40. Resin's default section: drafted 1°, 1.6 mm wide, a 0.75 mm root, 6 mm tall.
+{
+  const pos: number[] = [];
+  const faceOf: number[] = [];
+  const quad = (face: number, a: V3, b: V3, c: V3, d: V3) => {
+    pos.push(...a, ...b, ...c, ...a, ...c, ...d);
+    faceOf.push(face, face);
+  };
+  const [x0, y0, z0, x1, y1, z1] = [0, 0, 0, 60, 40, 2];
+  quad(0, [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]);
+  quad(1, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]);
+  quad(2, [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]);
+  quad(3, [x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]);
+  quad(4, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]);
+  quad(5, [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]);
+  const all = new RibSurface({ positions: pos, faceOf });
+  const top = new RibSurface({ positions: pos.slice(18, 36), faceOf: [1, 1] });
+  const resin: Section = { profile: "drafted", width: 1.6, draftDeg: 1, rootRadius: 0.75 };
+  const shape = ribShape({ kind: "drafted", width: 1.6, draftDeg: 1, rootRadius: 0.75, flangeWidth: 0, flangeThickness: 0, flangeChamferDeg: 0 }, 6, 0.5, 0.05);
+  check("footHalf is ribNet's own footprint: the root's foot of a drafted rib, half the width of a plain one, half the width under a root's least height", !("reason" in shape) && near(footHalf(resin, 1.6, 6), shape.foot, 1e-12) && shape.foot > 1.5 && near(footHalf({ profile: "straight", width: 1.35 }, 1.35, 6), 0.675) && near(footHalf(resin, 1.6, 0.5), 0.8) && near(footHalf(undefined, 1.2, 6), 0.6), JSON.stringify({ foot: "reason" in shape ? shape : shape.foot }));
+  /** The rib from the rim at `deg` to it, 40 mm long, trimmed and built as ribNet would; the refusal or null. */
+  const run = (deg: number, section: Section) => {
+    const a = (deg * Math.PI) / 180;
+    const points: V3[] = [[10, 40, 2], [10 + 40 * Math.cos(a), 40 - 40 * Math.sin(a), 2]];
+    const t = trimThinEnds(points, [6], [section], top, all, section.width);
+    const op = ribNetOf([{ points: t.points, heights: t.heights, width: section.width, profile: section.profile, sections: t.sections }], "test", undefined);
+    const built = "reason" in op ? op : ribNetPlan(op, { positions: pos, faceOf });
+    return { t, refused: "reason" in built ? built.reason : null };
+  };
+  // At 35° the footprint's reach to the rim is 1.3 mm: a cut 2.5 mm back keeps it on the wall (one for the width alone
+  // stopped at 1.75 mm, and ribNet refused the root hanging over the rim).
+  const steep = run(35, resin);
+  check(`a drafted rib meeting the rim at 35°: drawn back ${steep.t.trimmedMm[0]} mm, its root kept, and ribNet builds it`, steep.refused === null && near(steep.t.trimmedMm[0], 2.5) && steep.t.trimmedMm[1] === 0 && steep.t.rootless === undefined && steep.t.sections[0]!.rootRadius === 0.75, JSON.stringify({ trimmed: steep.t.trimmedMm, rootless: steep.t.rootless, refused: steep.refused }));
+  // The cut for the width alone (1.75 mm, before): ribNet still refuses it, the root hanging over the rim.
+  const a35 = (35 * Math.PI) / 180;
+  const widthCut = ribNetOf([{ points: [[10 + 1.75 * Math.cos(a35), 40 - 1.75 * Math.sin(a35), 2], [10 + 40 * Math.cos(a35), 40 - 40 * Math.sin(a35), 2]], heights: [6], width: 1.6, profile: "drafted", sections: [resin] }], "test", undefined);
+  const hung = "reason" in widthCut ? widthCut : ribNetPlan(widthCut, { positions: pos, faceOf });
+  check("cut for its width alone, the same rib is refused by ribNet: its root runs off the wall", "reason" in hung && /footprint \(its 0.75 mm root\) runs off the wall there/.test(String(hung.reason)), JSON.stringify("reason" in hung ? hung.reason : "built"));
+  // At 15° and 10° the root's foot would need 6 and 9 mm, past the 4 mm an end is drawn back with it: the rib is built
+  // with a sharp root, its base then only its 1° draft wider than the rib.
+  const shallow = run(15, resin);
+  const flat = run(10, resin);
+  check(`a drafted rib meeting the rim at 15° and 10°: built with a sharp root, drawn back ${shallow.t.trimmedMm[0]} and ${flat.t.trimmedMm[0]} mm, and ribNet builds them`, shallow.refused === null && flat.refused === null && [shallow, flat].every((row) => row.t.rootless === true && row.t.sections.every((s) => s.rootRadius === 0 && s.profile === "drafted" && s.draftDeg === 1)) && near(shallow.t.trimmedMm[0], 3.25) && near(flat.t.trimmedMm[0], 5), JSON.stringify({ trimmed: [shallow.t.trimmedMm, flat.t.trimmedMm], refused: [shallow.refused, flat.refused] }));
+  // A plain rib's footprint is its width: cut where it was before, 1.5 mm at 35° and 2.75 mm at 15°.
+  const plain35 = run(35, { profile: "straight", width: 1.35 });
+  const plain15 = run(15, { profile: "straight", width: 1.35 });
+  check("a plain rib is cut for its width as before, 1.5 mm at 35° and 2.75 mm at 15°, and builds", plain35.refused === null && plain15.refused === null && near(plain35.t.trimmedMm[0], 1.5) && near(plain15.t.trimmedMm[0], 2.75) && plain35.t.rootless === undefined && plain15.t.rootless === undefined, JSON.stringify({ p35: plain35.t.trimmedMm, p15: plain15.t.trimmedMm, r35: plain35.refused, r15: plain15.refused }));
 }
 
 if (failed > 0) {

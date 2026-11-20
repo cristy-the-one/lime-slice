@@ -18,6 +18,7 @@ import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "..
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wallSpan, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
 import { duplicateCaseName, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { planOptions } from "../../src/auto-ribs-plan.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -393,7 +394,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     material: { e: card.EInPlaneMPa, nu: card.nu },
     rules: { width: rules.width, maxHeight: rules.maxHeight, minHeight: rules.minHeight, minSpacing: rules.minSpacing, minLength: rules.minLength, profile },
     goal,
-    options: { baselines: input.baselines !== false },
+    options: planOptions(wall, input.baselines !== false),
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
     ...(sentLoads.caseWeights ? { caseWeights: sentLoads.caseWeights } : {}),
   };
