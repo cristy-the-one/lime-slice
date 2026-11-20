@@ -376,6 +376,8 @@ export interface Job {
   stamp: string;
   status: string;
   gcode?: string;
+  /** True when the engine holds lazy parked G-code that `sliceGcode` formats on demand. */
+  hasParkedGcode?: boolean;
   wire?: Record<string, unknown>;
   error?: string;
   /** A poll asked of the slicer and not yet answered: the next wait takes its answer rather than asking again. */

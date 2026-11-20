@@ -33,6 +33,8 @@ struct SliceJob {
     watch: Watch,
     status: &'static str,
     result: Option<String>,
+    /// Lazy G-code parked when `includeGcode` was false; formatted on demand by `slice_gcode`.
+    gcode: Option<lime_slice_core::GcodeText>,
     error: Option<String>,
     deadline: Instant,
 }
@@ -97,21 +99,21 @@ fn start_slice(body: String) -> Result<usize, String> {
         watch: watch.clone(),
         status: "running",
         result: None,
+        gcode: None,
         error: None,
         deadline: Instant::now() + slice_timeout(),
     });
     drop(guard);
     std::thread::spawn(move || {
-        // `includeGcode: false` parks the text and leaves it out of the wire.
-        // Put it back so the session can export it. `includeGcode: true` already
-        // carries `gcode`, and this closure is not called.
-        let parked: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        // `includeGcode: false` parks the lazy GcodeText without formatting it;
+        // `slice_gcode` formats it on demand when the caller reads or exports G-code.
+        // `includeGcode: true` embeds `gcode` in the wire JSON and does not call this closure.
+        let parked: Arc<Mutex<Option<lime_slice_core::GcodeText>>> = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&parked);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             slice_payload_watched(&body, None, Job::default(), &watch, move |gcode| {
-                let text = gcode.text();
                 if let Ok(mut guard) = slot.lock() {
-                    *guard = Some(text);
+                    *guard = Some(gcode);
                 }
                 "parked".to_string()
             })
@@ -126,7 +128,8 @@ fn start_slice(body: String) -> Result<usize, String> {
         match outcome {
             Ok(Ok(text)) => {
                 job.status = "done";
-                job.result = Some(restore_parked_gcode(&text, &parked));
+                job.gcode = parked.lock().ok().and_then(|mut g| g.take());
+                job.result = Some(text);
             }
             Ok(Err(err)) => {
                 let message = err.to_string();
@@ -142,12 +145,12 @@ fn start_slice(body: String) -> Result<usize, String> {
     Ok(id)
 }
 
-/// The wire JSON, with parked G-code written back into `gcode`.
-fn restore_parked_gcode(wire: &str, parked: &Mutex<Option<String>>) -> String {
-    let text = parked.lock().ok().and_then(|mut guard| guard.take());
-    let Some(text) = text else {
+/// The wire JSON, with parked G-code written back into `gcode` (used only by legacy `poll_slice`).
+fn restore_parked_gcode(wire: &str, gcode: Option<&lime_slice_core::GcodeText>) -> String {
+    let Some(gcode) = gcode else {
         return wire.to_string();
     };
+    let text = gcode.text();
     let mut value: Value = match serde_json::from_str(wire) {
         Ok(value) => value,
         Err(_) => return wire.to_string(),
@@ -168,7 +171,13 @@ fn poll_slice(id: usize) -> String {
         return json!({ "error": "That slice job is not in this session." }).to_string();
     };
     let snap = job.watch.snapshot();
-    let result = if job.status == "done" { job.result.take() } else { job.result.clone() };
+    let result = if job.status == "done" {
+        job.result
+            .take()
+            .map(|wire| restore_parked_gcode(&wire, job.gcode.as_ref()))
+    } else {
+        job.result.clone()
+    };
     json!({
         "status": job.status,
         "stage": snap.stage,
@@ -177,6 +186,62 @@ fn poll_slice(id: usize) -> String {
         "error": job.error,
     })
     .to_string()
+}
+
+/// Fast poll for the MCP session: splices the finished wire JSON verbatim (no double-escaping)
+/// and leaves parked `GcodeText` lazy until `slice_gcode` is called.
+fn poll_slice_wire(id: usize) -> String {
+    let mut guard = match jobs().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let Some(job) = guard.iter_mut().find(|job| job.id == id) else {
+        return json!({ "error": "That slice job is not in this session." }).to_string();
+    };
+    let snap = job.watch.snapshot();
+    let has_parked = job.gcode.is_some();
+    if job.status == "done" {
+        if let Some(wire) = job.result.take() {
+            let stage = serde_json::to_string(&snap.stage).unwrap_or_else(|_| "\"\"".to_string());
+            let mut out = String::with_capacity(wire.len() + 128);
+            out.push_str(r#"{"status":"done","stage":"#);
+            out.push_str(&stage);
+            out.push_str(r#","fraction":"#);
+            out.push_str(&snap.fraction.to_string());
+            out.push_str(r#","hasParkedGcode":"#);
+            out.push_str(if has_parked { "true" } else { "false" });
+            out.push_str(r#","wire":"#);
+            out.push_str(&wire);
+            out.push_str(r#","error":null}"#);
+            return out;
+        }
+    }
+    json!({
+        "status": job.status,
+        "stage": snap.stage,
+        "fraction": snap.fraction,
+        "hasParkedGcode": has_parked,
+        "error": job.error,
+    })
+    .to_string()
+}
+
+/// Format and return the parked G-code for a finished slice job on demand.
+fn slice_gcode(id: usize) -> String {
+    let gcode = {
+        let guard = match jobs().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let Some(job) = guard.iter().find(|job| job.id == id) else {
+            return json!({ "error": "That slice job is not in this session." }).to_string();
+        };
+        job.gcode.clone()
+    };
+    let Some(gcode) = gcode else {
+        return json!({ "error": "No parked G-code for that slice job." }).to_string();
+    };
+    json!({ "ok": true, "gcode": gcode.text() }).to_string()
 }
 
 fn cancel_slice(id: usize) -> String {
@@ -361,7 +426,8 @@ fn occt_ready() -> bool {
 mod napi_host {
     use super::{
         calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice,
-        rib_plan_cancel, rib_plan_poll, rib_plan_start, sim_study_json, slice_field_json, start_slice,
+        poll_slice_wire, rib_plan_cancel, rib_plan_poll, rib_plan_start, sim_study_json, slice_field_json, slice_gcode,
+        start_slice,
     };
     use serde_json::json;
     #[cfg(not(windows))]
@@ -619,6 +685,22 @@ unsafe extern "C" fn slice_poll_cb(env: NapiEnv, info: NapiCallbackInfo) -> Napi
     return_string(env, &poll_slice(id))
 }
 
+unsafe extern "C" fn slice_poll_wire_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    let id = body.parse::<usize>().unwrap_or(usize::MAX);
+    return_string(env, &poll_slice_wire(id))
+}
+
+unsafe extern "C" fn slice_gcode_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    let id = body.parse::<usize>().unwrap_or(usize::MAX);
+    return_string(env, &slice_gcode(id))
+}
+
 unsafe extern "C" fn slice_cancel_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
     let Ok(body) = arg_string(env, info) else {
         return ptr::null_mut();
@@ -716,6 +798,8 @@ pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValu
     export_fn(env, exports, "version", version_cb);
     export_fn(env, exports, "sliceStart", slice_start_cb);
     export_fn(env, exports, "slicePoll", slice_poll_cb);
+    export_fn(env, exports, "slicePollWire", slice_poll_wire_cb);
+    export_fn(env, exports, "sliceGcode", slice_gcode_cb);
     export_fn(env, exports, "sliceCancel", slice_cancel_cb);
     export_fn(env, exports, "meshPreview", mesh_preview_cb);
     export_fn(env, exports, "modelTree", model_tree_cb);
@@ -880,6 +964,62 @@ mod tests {
         assert_eq!(reply["triangles"], 12);
         assert!(reply["positionsB64"].as_str().unwrap().len() > 10);
         assert!(reply.get("error").is_none());
+    }
+
+    #[test]
+    fn wire_poll_and_lazy_gcode_match_eager_slice() {
+        let req_lazy = serde_json::json!({
+            "filename": "cube.stl",
+            "dataB64": cube_stl(),
+            "layerHeight": 0.2,
+            "lineWidth": 0.45,
+            "baseline": false,
+            "compare": false,
+            "includePreview": false,
+            "includeGcode": false,
+        });
+        let id = super::start_slice(req_lazy.to_string()).unwrap();
+        let mut wire = None;
+        let mut has_parked = false;
+        for _ in 0..400 {
+            let poll: serde_json::Value = serde_json::from_str(&super::poll_slice_wire(id)).unwrap();
+            if poll["status"] == "done" {
+                has_parked = poll["hasParkedGcode"].as_bool().unwrap_or(false);
+                wire = Some(poll["wire"].clone());
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let wire = wire.expect("lazy slice finishes");
+        assert!(has_parked, "includeGcode:false parks lazy GcodeText");
+        assert!(wire.get("gcode").is_none(), "wire omits gcode when parked");
+        assert!(wire["estimate"]["seconds"].as_f64().unwrap() > 0.0);
+        let lazy_gcode: serde_json::Value = serde_json::from_str(&super::slice_gcode(id)).unwrap();
+        assert_eq!(lazy_gcode["ok"], true);
+        let text = lazy_gcode["gcode"].as_str().unwrap();
+
+        let req_eager = serde_json::json!({
+            "filename": "cube.stl",
+            "dataB64": cube_stl(),
+            "layerHeight": 0.2,
+            "lineWidth": 0.45,
+            "baseline": false,
+            "compare": false,
+            "includePreview": false,
+            "includeGcode": true,
+        });
+        let id2 = super::start_slice(req_eager.to_string()).unwrap();
+        let mut eager_text = String::new();
+        for _ in 0..400 {
+            let poll: serde_json::Value = serde_json::from_str(&super::poll_slice(id2)).unwrap();
+            if poll["status"] == "done" {
+                let inner: serde_json::Value = serde_json::from_str(poll["result"].as_str().unwrap()).unwrap();
+                eager_text = inner["gcode"].as_str().unwrap().to_string();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(text, eager_text, "lazy parked G-code is byte-identical to eager G-code");
     }
 
     fn box_stl(x: f64, y: f64, z: f64) -> String {

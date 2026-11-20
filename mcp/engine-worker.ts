@@ -78,6 +78,12 @@ process.on("message", (msg: { id: number; method: string; arg: string; bytes?: U
       case "slicePoll":
         result = engine.slicePoll(msg.arg) as string;
         break;
+      case "slicePollWire":
+        result = engine.slicePollWire ? (engine.slicePollWire(msg.arg) as string) : (engine.slicePoll(msg.arg) as string);
+        break;
+      case "sliceGcode":
+        result = engine.sliceGcode ? (engine.sliceGcode(msg.arg) as string) : JSON.stringify({ error: "No parked G-code on this engine." });
+        break;
       case "sliceCancel":
         result = engine.sliceCancel(msg.arg) as string;
         break;

@@ -261,12 +261,13 @@ function layerImage(this: Session, input: Record<string, unknown>): Record<strin
   return input.inline === false ? body : withImages(body, [pngImage(png)]);
 }
 
-function gcodeRead(this: Session, input: Record<string, unknown>): Record<string, unknown> {
+async function gcodeRead(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const job = this.finished(typeof input.job === "string" ? input.job : undefined);
-  if (!job?.gcode) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  const gcode = job ? await this.ensureGcode(job) : null;
+  if (!job || !gcode) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
   if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
-  const lines = job.gcode.split("\n");
+  const lines = gcode.split("\n");
   const start = typeof input.fromLine === "number" ? Math.max(1, Math.round(input.fromLine)) : 1;
   const count = typeof input.count === "number" ? Math.min(500, Math.max(1, Math.round(input.count))) : 40;
   const grep = typeof input.grep === "string" ? input.grep : "";

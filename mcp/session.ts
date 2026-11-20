@@ -9,7 +9,7 @@ import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { bytesToBase64 } from "../src/base64.ts";
 import { bridgeHasPlateUpdate, type BridgeMessage } from "../src/bridge.ts";
-import { fnv1aHex } from "../src/slice-action.ts";
+import { fnv1aHex, meshKeyHex } from "../src/slice-action.ts";
 import type { Mat3 } from "../src/mesh-place.ts";
 import type { SolidView } from "../src/modeling/model-calls.ts";
 import { expandOpsWithTexts, type PartDef } from "../src/modeling/macro.ts";
@@ -116,7 +116,19 @@ export class Session {
   sourceHash = "";
   sourcePath = "";
   profileTouched = false;
-  lastBridge: Record<string, unknown> | null = null;
+  private _lastBridge: Record<string, unknown> | null = null;
+  private _pendingBridge: (() => Record<string, unknown>) | null = null;
+  get lastBridge(): Record<string, unknown> | null {
+    if (this._pendingBridge) {
+      this._lastBridge = this._pendingBridge();
+      this._pendingBridge = null;
+    }
+    return this._lastBridge;
+  }
+  set lastBridge(value: Record<string, unknown> | null) {
+    this._pendingBridge = null;
+    this._lastBridge = value;
+  }
   /** The last sliced study's cells, for `layer_image`'s stress and safety colours. */
   stressCells: StressCells | null = null;
   lastPreview: SolidView | null = null;
@@ -135,6 +147,8 @@ export class Session {
   /** Snapshots whose desktop outcome a reply could not give yet; the next call's reply gives it. Oldest first. */
   readonly tandemPending: { seq: number; at: number }[] = [];
   readonly meshHashes = new WeakMap<Uint8Array, string>();
+  readonly meshKeys = new WeakMap<ArrayBufferView, string>();
+  readonly stlCache = new WeakMap<Float32Array, Map<string, Uint8Array>>();
   /** STEP solids from projects saved before version 3 that a commit already tried to write again in the binary format. */
   readonly legacySolids = new WeakSet<Uint8Array>();
   /** STEP roots a commit already tried to write as the engine's binary solid, so an engine that cannot is asked once. */
@@ -353,15 +367,19 @@ export class Session {
       let receipt: Record<string, unknown> | undefined;
       let earlier: Record<string, unknown>[] = [];
       if (!this.isolated) {
-        const { payload, carriedAll } = this.bridgePayload(name, input, value);
-        this.lastBridge = payload;
-        const sent = mirror(payload, this.bridgeLink, carriedAll);
-        if (changes && bridgeTarget() && bridgeHasPlateUpdate(payload as BridgeMessage)) {
-          // Wait briefly for the window's own answer, so the reply says whether the change is in the app (section 2).
-          // A step of a plan does not wait; its outcome comes with the next reply.
-          receipt = await tandemOutcome(this, this.bridgeSeq, sent, inPlan ? 0 : RECEIPT_WAIT_MS);
+        if (bridgeTarget()) {
+          const { payload, carriedAll } = this.bridgePayload(name, input, value);
+          this.lastBridge = payload;
+          const sent = mirror(payload, this.bridgeLink, carriedAll);
+          if (changes && bridgeHasPlateUpdate(payload as BridgeMessage)) {
+            // Wait briefly for the window's own answer, so the reply says whether the change is in the app (section 2).
+            // A step of a plan does not wait; its outcome comes with the next reply.
+            receipt = await tandemOutcome(this, this.bridgeSeq, sent, inPlan ? 0 : RECEIPT_WAIT_MS);
+          }
+          earlier = await tandemEarlier(this, receipt ? Number(receipt.seq) : null);
+        } else {
+          this.recordLazyBridge(name, input, value);
         }
-        earlier = await tandemEarlier(this, receipt ? Number(receipt.seq) : null);
       }
       const answer = withPicks(withCode(this.withAutosaveHint(value)), picks);
       if (receipt) answer.tandemReceipt = receipt;
@@ -743,6 +761,100 @@ export class Session {
     return { payload, carriedAll };
   }
 
+  /**
+   * Headless fast path when no desktop bridge is active: updates bridge sequence and known-hash tracking without
+   * Base64-encoding meshes/B-reps or serializing model trees, materializing `lastBridge` only if `bridgeSnapshot()` is read.
+   */
+  recordLazyBridge(name: string, input: Record<string, unknown>, value: Record<string, unknown>): void {
+    const objectId = typeof input.object === "string" ? input.object : "";
+    const obj = objectId ? this.find(objectId) : null;
+    const settings = (name === "settings_apply" || name === "settings_set") && value.ok === true && value.dryRun !== true
+      ? {
+          layerHeight: this.settings.layerHeight,
+          supports: this.settings.supports,
+          blendKind: this.settings.blendKind,
+          strategy: this.settings.strategy,
+          toughness: this.settings.toughness,
+          ...(name === "settings_set" && Array.isArray(value.changed) ? { values: changedValues(value.changed) } : {}),
+        }
+      : undefined;
+    const shown = this.objects.filter((row) => row.bytes.byteLength > 0);
+    const bridgeTool = name === "object_select" && typeof input.name === "string" ? "plate_sync" : name;
+    const plateSnapshot = bridgeHasPlateUpdate({ tool: bridgeTool, ok: value.ok === true, plate: [] });
+    const known = this.bridgeLink.known;
+    const pendingMeshes: Array<{ hash: string; fileName: string; bytes: Uint8Array; source: Float32Array; seatMm: number }> = [];
+    const seenMeshHashes = new Set<string>();
+    const newShape = new Set<string>();
+    for (const row of shown) {
+      const hash = this.meshHashOf(row.bytes);
+      if (!known.has(hash) || !this.bridgeObjectIds.has(row.id)) newShape.add(row.id);
+      if ((known.has(hash) && this.bridgeObjectIds.has(row.id)) || seenMeshHashes.has(hash)) continue;
+      seenMeshHashes.add(hash);
+      pendingMeshes.push({ hash, fileName: row.fileName, bytes: row.bytes, source: row.source, seatMm: row.seatMm });
+    }
+    known.clear();
+    for (const row of shown) known.add(this.meshHashOf(row.bytes));
+    if (plateSnapshot) {
+      this.bridgeObjectIds.clear();
+      for (const row of shown) this.bridgeObjectIds.add(row.id);
+    }
+    const commit = name === "model_commit" && value.ok === true && obj && obj.bytes.byteLength > 0
+      ? { object: obj.id, meshHash: this.meshHashOf(obj.bytes) }
+      : null;
+    const historyRows = plateSnapshot
+      ? shown.filter((row) => name === "plate_sync" || (name === "model_commit" && row.id === obj?.id) || newShape.has(row.id))
+      : [];
+    const change = commit && this.commitChange?.object === obj?.id ? this.commitChange?.change : undefined;
+    this.bridgeSeq += 1;
+    if (plateSnapshot) this.bridgePlateSeq = this.bridgeSeq;
+    const seq = this.bridgeSeq;
+    const plate = shown.map((row) => ({
+      object: row.id,
+      name: shownName(row.name),
+      scalePercent: row.scale * 100,
+      centered: row.centered,
+      offset: { ...row.offset },
+      orient: [...row.orient],
+      meshHash: this.meshHashOf(row.bytes),
+      modelPose: { m: [...row.modelPose.m], t: [...row.modelPose.t] },
+      ...(row.frame === "part" ? { frame: row.frame } : {}),
+      ...(row.sim ? { sim: structuredClone(row.sim) } : {}),
+    }));
+    const ok = value.ok === true;
+    const objId = obj?.id;
+    const objName = obj?.name;
+    this._lastBridge = null;
+    this._pendingBridge = () => {
+      const meshes: Record<string, unknown> = {};
+      for (const m of pendingMeshes) {
+        meshes[m.hash] = {
+          fileName: m.fileName,
+          bytesB64: bytesToBase64(m.bytes),
+          positionsB64: bytesToBase64(new Uint8Array(m.source.buffer, m.source.byteOffset, m.source.byteLength)),
+          seatMm: m.seatMm,
+        };
+      }
+      const modelHistories: NonNullable<BridgeMessage["modelHistories"]> = {};
+      for (const row of historyRows) {
+        const tree = this.savedModelTree(row);
+        if (tree) modelHistories[row.id] = { tree, ...(row.brep ? { brepB64: bytesToBase64(row.brep) } : {}) };
+      }
+      return {
+        tool: bridgeTool,
+        session: this.bridgeSession,
+        seq,
+        plate,
+        ...(Object.keys(meshes).length > 0 ? { meshes } : {}),
+        ...(objId ? { objectId: objId, objectName: objName } : {}),
+        ok,
+        ...(settings ? { settings } : {}),
+        ...(commit ? { commit } : {}),
+        ...(Object.keys(modelHistories).length ? { modelHistories } : {}),
+        ...(change ? { change } : {}),
+      };
+    };
+  }
+
   /** A new desktop answered: send it the whole plate with every mesh. */
   resyncBridge(): void {
     this.bridgeLink.known.clear();
@@ -755,6 +867,16 @@ export class Session {
     if (!hash) {
       hash = fnv1aHex(bytes);
       this.meshHashes.set(bytes, hash);
+    }
+    return hash;
+  }
+
+  meshKeyOf(view: ArrayBufferView): string {
+    let hash = this.meshKeys.get(view);
+    if (!hash) {
+      const bytes = view instanceof Uint8Array ? view : new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      hash = meshKeyHex(bytes);
+      this.meshKeys.set(view, hash);
     }
     return hash;
   }

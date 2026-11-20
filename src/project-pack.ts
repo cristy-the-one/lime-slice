@@ -133,12 +133,55 @@ export function prepareProject(project: LimeProject): PreparedProject {
   return { wire: copy, jobs };
 }
 
+/** Bounded cache of gzip+base64 packed records, so repeated saves and autosaves skip re-compressing unchanged meshes and B-reps. */
+const PACK_CACHE_MAX_ENTRIES = 24;
+const PACK_CACHE_MAX_CHARS = 32 * 1024 * 1024;
+const packCache = new Map<string, { raw: string; packed: string }>();
+let packCacheChars = 0;
+
+function packCacheGet(key: string, raw: string): string | null {
+  const hit = packCache.get(key);
+  if (!hit || hit.raw !== raw) return null;
+  // Refresh LRU order.
+  packCache.delete(key);
+  packCache.set(key, hit);
+  return hit.packed;
+}
+
+function packCacheSet(key: string, raw: string, packed: string): void {
+  if (packed.length > PACK_CACHE_MAX_CHARS / 2) return;
+  const prev = packCache.get(key);
+  if (prev) {
+    packCacheChars -= prev.packed.length;
+    packCache.delete(key);
+  }
+  packCache.set(key, { raw, packed });
+  packCacheChars += packed.length;
+  while (packCache.size > PACK_CACHE_MAX_ENTRIES || packCacheChars > PACK_CACHE_MAX_CHARS) {
+    const oldest = packCache.keys().next().value;
+    if (oldest === undefined) break;
+    const removed = packCache.get(oldest);
+    packCache.delete(oldest);
+    if (removed) packCacheChars -= removed.packed.length;
+  }
+}
+
 /** The asynchronous half: pack each record, then write the text. */
 export async function finishProject(prepared: PreparedProject): Promise<string> {
   await eachLimited(prepared.jobs, async ({ record, bytesBase64 }) => {
     if (record.encoding === ENCODING_PLAIN) {
       record.data = bytesBase64;
       return;
+    }
+    const cacheKey = typeof record.hash === "string" && record.hash && typeof record.byteLength === "number"
+      ? `${record.hash}:${record.byteLength}`
+      : "";
+    if (cacheKey) {
+      const cached = packCacheGet(cacheKey, bytesBase64);
+      if (cached !== null) {
+        record.data = cached;
+        return;
+      }
     }
     const bytes = base64ToBytes(bytesBase64);
     if (!bytes) {
@@ -147,7 +190,9 @@ export async function finishProject(prepared: PreparedProject): Promise<string> 
       record.data = bytesBase64;
       return;
     }
-    record.data = await bytesToBase64Async(await gzip(bytes));
+    const packed = await bytesToBase64Async(await gzip(bytes));
+    if (cacheKey) packCacheSet(cacheKey, bytesBase64, packed);
+    record.data = packed;
   });
   return JSON.stringify(prepared.wire, null, 2);
 }

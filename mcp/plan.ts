@@ -64,7 +64,7 @@ export function planProblem(steps: PlanStep[]): string | null {
 }
 
 /** One reference's value from the results so far, or a sentence naming the step and the path that holds nothing. */
-function lookUp(text: string, results: unknown[], n: number): { value: unknown } | { reason: string } {
+function lookUp(text: string, results: unknown[], n: number): { value: unknown } | { reason: string; available?: string[] } {
   const match = REFERENCE.exec(text)!;
   const target = Number(match[1]);
   const segments = match[2] ? match[2].slice(1).split(".") : [];
@@ -76,7 +76,13 @@ function lookUp(text: string, results: unknown[], n: number): { value: unknown }
       : node && typeof node === "object" && !Array.isArray(node) ? (node as Record<string, unknown>)[segment] : undefined;
     if (next === undefined) {
       const held = segments.slice(0, i).join(".");
-      return { reason: `Step ${n}: ${text} names nothing: step ${target}'s result${held ? ` at ${held}` : ""} has no ${segment}.` };
+      const available = node && typeof node === "object" && !Array.isArray(node)
+        ? Object.keys(node as Record<string, unknown>).slice(0, 16)
+        : Array.isArray(node) ? [`0..${Math.max(0, node.length - 1)} (${node.length} items)`] : undefined;
+      return {
+        reason: `Step ${n}: ${text} names nothing: step ${target}'s result${held ? ` at ${held}` : ""} has no ${segment}.`,
+        ...(available && available.length > 0 ? { available } : {}),
+      };
     }
     node = next;
   }
@@ -84,7 +90,7 @@ function lookUp(text: string, results: unknown[], n: number): { value: unknown }
 }
 
 /** The step's arguments with every reference replaced, or the sentence for the first that names nothing. */
-export function resolveReferences(value: unknown, results: unknown[], n: number): { value: unknown } | { reason: string } {
+export function resolveReferences(value: unknown, results: unknown[], n: number): { value: unknown } | { reason: string; available?: string[] } {
   if (typeof value === "string") {
     if (value.startsWith("$$")) return { value: value.slice(1) };
     return isReference(value) ? lookUp(value, results, n) : { value };

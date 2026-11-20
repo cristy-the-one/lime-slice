@@ -208,7 +208,7 @@ async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta, mode?: "
     const tool = steps[i]!.tool;
     if (ctx.signal?.aborted) return end(refuse("plan-cancelled", `The plan was cancelled before step ${n} (${tool}). The steps before it stay applied.`, { failedStep: n }));
     const resolved = resolveReferences(steps[i]!.args ?? {}, results, n);
-    if ("reason" in resolved) return end(refuse("plan-reference", resolved.reason, { failedStep: n }));
+    if ("reason" in resolved) return end(refuse("plan-reference", resolved.reason, { failedStep: n, ...(resolved.available ? { available: resolved.available } : {}) }));
     const label = `plan step ${n} of ${steps.length}: ${tool}`;
     this.noteStage(label, i / steps.length);
     let value: Record<string, unknown>;

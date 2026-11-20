@@ -65,9 +65,11 @@ async function sessionInfo(this: Session, verbose = false): Promise<Record<strin
   let reason = "";
   let where: { path: string; installed: boolean } | null = null;
   try {
-    engine = await this.ask(this.engine.version());
-    occt = await this.ask(this.engine.occt());
-    where = (await this.ask(this.engine.where?.())) ?? null;
+    [engine, occt, where] = await Promise.all([
+      this.ask(this.engine.version()),
+      this.ask(this.engine.occt()),
+      this.ask(this.engine.where?.()).then((value) => value ?? null),
+    ]);
   } catch (err) {
     reason = err instanceof Error ? err.message : "The engine did not answer.";
   }
@@ -159,7 +161,23 @@ function guide(this: Session, input: Record<string, unknown>): Record<string, un
     return { ok: true, query: input.query, found: hits.map(hitLine), next: "Read one with the call after ->; run a tool with call {tool, args}." };
   }
   if (typeof input.tool === "string") {
-    const name = input.tool.trim();
+    const names = [...new Set(input.tool.split(",").map((part) => part.trim()).filter(Boolean))];
+    if (names.length > 1) {
+      if (names.length > 8) return refuse("bad-argument", "guide {tool} reads up to 8 tools at once.");
+      const docs: Record<string, unknown>[] = [];
+      const missing: string[] = [];
+      for (const name of names) {
+        const doc = toolDoc(name, input.schema === true);
+        if (doc) docs.push(doc);
+        else missing.push(name);
+      }
+      if (docs.length === 0) {
+        const near = nearestTools(missing[0]!);
+        return refuse("unknown-topic", `There is no tool named ${missing.join(", ")}.${near.length ? ` Close: ${near.join(", ")}.` : ""} guide {query} finds tools by task.`, undefined, NEXT.guide);
+      }
+      return { ok: true, tools: docs, ...(missing.length ? { missing } : {}) };
+    }
+    const name = names[0] ?? input.tool.trim();
     const doc = toolDoc(name, input.schema === true);
     if (doc) return doc;
     const near = nearestTools(name);
@@ -170,7 +188,20 @@ function guide(this: Session, input: Record<string, unknown>): Record<string, un
     return areaDoc(area) ?? refuse("unknown-topic", `There is no group named ${area}. Groups: ${AREA_NAMES.join(", ")}.`, undefined, NEXT.guide);
   }
   if (typeof input.kind === "string") {
-    const kind = input.kind.trim();
+    const kinds = [...new Set(input.kind.split(",").map((part) => part.trim()).filter(Boolean))];
+    if (kinds.length > 1) {
+      if (kinds.length > 8) return refuse("bad-argument", "guide {kind} reads up to 8 kinds at once.");
+      const docs: Record<string, unknown>[] = [];
+      const missing: string[] = [];
+      for (const kind of kinds) {
+        const one = this.guide({ kind });
+        if (one.ok === true) docs.push(one);
+        else missing.push(kind);
+      }
+      if (docs.length === 0) return refuse("unknown-topic", `There is no op kind ${missing.join(", ")}. Kinds: ${OP_KINDS.join(", ")}.`, undefined, NEXT.guide);
+      return { ok: true, kinds: docs, ...(missing.length ? { missing } : {}) };
+    }
+    const kind = kinds[0] ?? input.kind.trim();
     if (kind === "recipes") return this.guide({ topic: "recipes" });
     const text = Object.hasOwn(KIND_GUIDES, kind) ? KIND_GUIDES[kind] : undefined;
     const answer = text ? { ok: true, kind, text } : this.opGuide(kind);
