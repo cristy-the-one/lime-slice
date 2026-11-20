@@ -37,7 +37,7 @@ import { eventLoopTurn } from "../animation-run.ts";
 import { modelMass } from "./mass.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, PLACE_KEYS, type PlateObject, posedPositions, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
-import { NEXT, refuse } from "../refusals.ts";
+import { NEXT, refuse, type Refusal } from "../refusals.ts";
 
 const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_describe: (s, obj, input) => s.describe(obj, input),
@@ -918,11 +918,11 @@ async function rebuildStale(this: Session, obj: PlateObject, depth: number): Pro
 }
 
 /** `solid_new` says `kind` for a fastener. Stored JSON and a boolean say `partKind`, because `kind` is the op tag. */
-function fastenerArgs(input: Record<string, unknown>): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } {
+function fastenerArgs(input: Record<string, unknown>): { ok: true; args: Record<string, unknown> } | Refusal {
   if (input.primitive !== "part") return { ok: true, args: input };
   const named = input.kind;
   const stored = input.partKind;
-  if (typeof named === "string" && typeof stored === "string" && named !== stored) return { ok: false, reason: "Give kind or partKind, not two different ones." };
+  if (typeof named === "string" && typeof stored === "string" && named !== stored) return refuse("conflicting-arguments", "Give kind or partKind, not two different ones.");
   const next = { ...input };
   if (typeof named === "string" && stored === undefined) next.partKind = named;
   delete next.kind;
@@ -934,7 +934,7 @@ async function solidNew(this: Session, input: Record<string, unknown>): Promise<
   const gear = input.gear && typeof input.gear === "object" ? (input.gear as Record<string, unknown>) : null;
   if (gear && input.primitive !== undefined) return refuse("bad-argument", "Give a primitive or a gear, not both.");
   const prepared = fastenerArgs(input);
-  if (!prepared.ok) return refuse("bad-argument", prepared.reason);
+  if (!prepared.ok) return prepared;
   const typed = gear ? primitiveFrom({ ...gear, primitive: "gear", origin: [0, 0, 0], turn: [0, 0, 0] }, "gear") : primitiveFrom(prepared.args);
   if ("reason" in typed) return refuse("bad-argument", typed.reason);
   const gearWhy = gear ? gearRefusal(gearOf(typed)!, typed.height) : null;
