@@ -455,7 +455,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const engineRibs = (result.ribs ?? []) as Row[];
   // Each rib off the mid-surface onto the face, its ends drawn back from a free edge, its tee stretches checked against
   // its own direction (src/modeling/auto-ribs.ts ribsOnFace, shared with the Auto ribs panel).
-  const onSkin = ribsOnFace(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[], heights: (row.heights as number[]) ?? [], sections: (row.sections as Section[] | undefined) ?? [], ...(num(row.width) !== undefined ? { width: num(row.width)! } : {}), ...(num(row.height) !== undefined ? { height: num(row.height)! } : {}) })), build, rules.width);
+  const onSkin = ribsOnFace(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[], heights: (row.heights as number[]) ?? [], sections: (row.sections as Section[] | undefined) ?? [], ...(num(row.width) !== undefined ? { width: num(row.width)! } : {}), ...(num(row.height) !== undefined ? { height: num(row.height)! } : {}), ...(Array.isArray(row.ends) && (row.ends as unknown[]).length === 2 ? { ends: row.ends as [string, string] } : {}) })), build, rules.width);
   const ribs: Row[] = engineRibs.map((row, i) => {
     const face = onSkin.ribs[i]!;
     return {
@@ -690,7 +690,8 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     const width = num(row.width);
     if (width === undefined) return refuse("bad-rib-plan", `Rib ${i + 1} needs a width.`);
     const sections = Array.isArray(row.sections) && (row.sections as unknown[]).length === points.length - 1 ? (row.sections as Section[]) : undefined;
-    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}) });
+    const ends = Array.isArray(row.ends) && (row.ends as unknown[]).length === 2 ? (row.ends as [string, string]) : undefined;
+    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}), ...(ends ? { ends } : {}) });
   }
   const op = ribNetOf(built, label, record.request);
   if ("reason" in op) return refuse("bad-rib-plan", String(op.reason));

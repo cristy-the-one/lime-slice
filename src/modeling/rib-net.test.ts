@@ -131,6 +131,24 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
     const opening = inner.length >= 2 ? inner[inner.length - 1]! - inner[0]! : -1;
     check("the facing ends stay square and 0.75 mm apart", made.ends.square === 2 && made.ends.joint === 0 && Math.abs(opening - 0.75) < 0.05, JSON.stringify({ ends: made.ends, opening, gap, xs }));
   }
+  // The last 0.2 mm of each path turns square to the rib. The opening is still read off the run, not that jag.
+  const jagged = plan({ width: 2.4, height: 6, paths: [{ points: [[-40, 0, 2], [-0.375, 0, 2], [-0.375, 0.2, 2]] }, { points: [[0.375, 0.2, 2], [0.375, 0, 2], [40, 0, 2]] }] });
+  check("a jagged tip still leaves the notch", ok(jagged), JSON.stringify(jagged).slice(0, 200));
+  if (ok(jagged)) {
+    const full = jagged.steps.flatMap((step) => (step.kind === "loft" ? step.sections : [])).filter((row) => Math.max(...row.profile!.map((p) => p[1])) > 5);
+    const inner = full.map((row) => row.origin[0]).filter((x) => Math.abs(x) < 2).sort((a, b) => a - b);
+    const opening = inner.length >= 2 ? inner[inner.length - 1]! - inner[0]! : -1;
+    check("the jag does not close the 0.75 mm opening", jagged.ends.square === 2 && jagged.ends.joint === 0 && Math.abs(opening - 0.75) < 0.05, JSON.stringify({ ends: jagged.ends, opening, inner }));
+  }
+  // Farther than a facing pair is recognised, and still inside a joint's reach: the plan's own "gap" end stays square.
+  const named = plan({ width: 2.4, height: 6, paths: [{ points: [[-40, 0, 2], [-1.2, 0, 2]], openEnds: [false, true] }, { points: [[1.2, 0, 2], [40, 0, 2]], openEnds: [true, false] }] });
+  check("a named gap stays open past the facing test", ok(named), JSON.stringify(named).slice(0, 200));
+  if (ok(named)) {
+    const full = named.steps.flatMap((step) => (step.kind === "loft" ? step.sections : [])).filter((row) => Math.max(...row.profile!.map((p) => p[1])) > 5);
+    const inner = full.map((row) => row.origin[0]).filter((x) => Math.abs(x) < 3).sort((a, b) => a - b);
+    const opening = inner.length >= 2 ? inner[inner.length - 1]! - inner[0]! : -1;
+    check("the named ends stay square and 2.4 mm apart", named.ends.square === 2 && named.ends.joint === 0 && Math.abs(opening - 2.4) < 0.05, JSON.stringify({ ends: named.ends, opening, inner }));
+  }
 }
 
 // --- What a network adds (volumeMm3), against the closed form of what it builds.
