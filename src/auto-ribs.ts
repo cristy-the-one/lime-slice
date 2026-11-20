@@ -8,7 +8,8 @@
  *
  * Shared module: no DOM.
  */
-import type { StudyHold, StudyLoad } from "./sim/study.ts";
+import type { StudyHold, StudyLoad, StudyPlace } from "./sim/study.ts";
+import { readPlace, readRegion } from "./sim/study-data.ts";
 import type { NotOnWall, WallRegion, WallZoneInput, RibWallReport } from "./modeling/rib-wall.ts";
 import type { RibProcess } from "./modeling/auto-ribs.ts";
 import type { PlanGoal, PlanProgress, PlannedRib, RibPlanResult, V3 } from "./auto-ribs-plan.ts";
@@ -90,6 +91,11 @@ export interface AutoRibsCard {
   ribs: { width: number | null; height: number | null; profile: ProfileChoice; process: RibProcess };
   /** A hold or load that misses the wall: refuse (default), or plan without it and say so. */
   ifMissed: "refuse" | "evenPressure";
+  /**
+   * Set only when a ribs_plan request was reopened and some of it cannot be shown. One line, naming those items as
+   * ribs_plan names them. Absent on a panel card and on a request the card can show whole. Not kept when the panel Applies.
+   */
+  leftOut?: string;
 }
 
 export function newAutoRibsCard(): AutoRibsCard {
@@ -188,19 +194,360 @@ export function ribNetSource(op: { kind: string; source?: unknown }): Record<str
 }
 
 /**
- * The card a rib network step reopens with: the panel's own request when the panel made it (`auto.panel`), the wall
- * faces and `folded` when ribs_plan made it (`auto.wall`), else null (a hand-typed network: pick its wall again).
+ * The card a rib network step reopens with. The panel's own request (`auto.panel`) comes back whole. A ribs_plan
+ * request (`auto` is the request itself) is mapped onto the fields the card can show: the wall, the goal, the process,
+ * the loads and load cases, and the options. Anything the card cannot show is named in `leftOut`, in one line, as
+ * ribs_plan names it. Null for a hand-typed network: pick its wall again.
+ *
+ * `densityGCm3` turns a `budgetMm3` goal into the card's grams, the same way the panel turns grams back into a volume
+ * when it plans. The default is the density ribs_plan uses when the filament has none.
  */
-export function cardFromRibNet(source: Record<string, unknown>): AutoRibsCard | null {
+export function cardFromRibNet(source: Record<string, unknown>, densityGCm3 = 1.24): AutoRibsCard | null {
   const auto = source.auto as Record<string, unknown> | undefined;
   if (!auto || typeof auto !== "object") return null;
   const panel = cardFromStored(auto.panel);
   if (panel) return panel;
-  // ribs_plan's request: its wall's faces, and whether it took side walls across sharp edges. Its loads are typed in
-  // the tool's own form (places, selectors), which the panel cannot read back here, so they are picked again.
-  const wall = auto.wall as { faces?: unknown; folded?: unknown } | undefined;
-  const faces = wall?.faces;
-  if (Array.isArray(faces) && faces.every((f) => Number.isInteger(f))) return { ...newAutoRibsCard(), picked: faces as number[], ...(wall?.folded === true ? { folded: true } : {}) };
+  const wall = auto.wall;
+  if (!wall || typeof wall !== "object" || Array.isArray(wall)) return null;
+  const omitted: string[] = [];
+  const card = newAutoRibsCard();
+  mapWall(wall as Record<string, unknown>, card, omitted);
+  mapGoal(auto.goal, card, densityGCm3 > 0 ? densityGCm3 : 1.24, omitted);
+  mapProcess(auto.process, card, omitted);
+  mapIfMissed(auto.ifMissed, card, omitted);
+  mapHoleRim(auto.holeRimMm, card);
+  mapLoadsAndCases(auto, card, omitted);
+  card.holds = mapHolds(auto.holds, omitted);
+  card.zones = mapZones(auto.zones, omitted);
+  mapRib(auto.rib, card, omitted);
+  if (auto.buildAxis !== undefined) omitted.push("buildAxis");
+  if (auto.pull !== undefined) omitted.push("pull");
+  if (auto.baselines === false) omitted.push("baselines");
+  if (omitted.length === 0) return card;
+  return { ...card, leftOut: `Left out, because the Auto ribs card cannot show them: ${omitted.join(", ")}. Run plans without them.` };
+}
+
+/** Face indexes, or null when any entry is not one (a selector, for instance). */
+function faceIndexes(value: unknown): number[] | null {
+  if (!Array.isArray(value) || !value.every((n) => Number.isInteger(n) && (n as number) >= 0)) return null;
+  return [...(value as number[])];
+}
+
+function asVec3(value: unknown): V3 | null {
+  if (!Array.isArray(value) || value.length !== 3 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  return [value[0] as number, value[1] as number, value[2] as number];
+}
+
+/** A `{point:[x,y,z]}` region: the card's place is a sphere of no radius, which is that point. */
+function pointPlace(value: unknown): StudyPlace | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).length !== 1 || row.point === undefined) return null;
+  const at = asVec3(row.point);
+  return at ? { sphere: { centre: at, radiusMm: 0 } } : null;
+}
+
+function mapWall(wall: Record<string, unknown>, card: AutoRibsCard, omitted: string[]) {
+  if (wall.faces !== undefined) {
+    const faces = faceIndexes(wall.faces);
+    if (faces) card.picked = faces;
+    else omitted.push("wall.faces");
+  }
+  if (wall.face !== undefined) omitted.push("wall.face");
+  if (wall.folded === true) card.folded = true;
+  if (wall.grow === false) card.justThis = true;
+  if (typeof wall.growAngleDeg === "number" && wall.growAngleDeg !== 15) omitted.push("wall.growAngleDeg");
+  if (wall.addFaces !== undefined) {
+    const extra = faceIndexes(wall.addFaces);
+    if (extra) {
+      for (const face of extra) if (!card.picked.includes(face)) card.picked.push(face);
+    } else omitted.push("wall.addFaces");
+  }
+  if (wall.excludeFaces !== undefined) {
+    const excluded = faceIndexes(wall.excludeFaces);
+    if (excluded) card.excluded = excluded;
+    else omitted.push("wall.excludeFaces");
+  }
+  if (wall.thicknessMm !== undefined) omitted.push("wall.thicknessMm");
+  if (wall.features === false) omitted.push("wall.features");
+}
+
+function mapGoal(goal: unknown, card: AutoRibsCard, density: number, omitted: string[]) {
+  if (goal === undefined) return;
+  if (!goal || typeof goal !== "object" || Array.isArray(goal)) {
+    omitted.push("goal");
+    return;
+  }
+  const row = goal as Record<string, unknown>;
+  const keys = Object.keys(row).filter((key) => row[key] !== undefined && row[key] !== false);
+  if (keys.length === 0 || (keys.length === 1 && keys[0] === "balanced")) return;
+  if (keys.length !== 1) {
+    omitted.push("goal");
+    return;
+  }
+  const key = keys[0]!;
+  const amount = row[key];
+  if (typeof amount !== "number" || !Number.isFinite(amount)) {
+    omitted.push(`goal.${key}`);
+    return;
+  }
+  if (key === "stiffer") card.amount = { kind: "stiffer", factor: amount };
+  else if (key === "frequency") {
+    card.quantity = "frequency";
+    card.amount = { kind: "stiffer", factor: amount };
+  } else if (key === "maxDeflectionMm") card.amount = { kind: "deflection", mm: amount };
+  else if (key === "budgetG") card.amount = { kind: "budget", grams: amount };
+  else if (key === "budgetMm3") card.amount = { kind: "budget", grams: (amount / 1000) * density };
+  else omitted.push(`goal.${key}`);
+}
+
+function mapProcess(process: unknown, card: AutoRibsCard, omitted: string[]) {
+  if (process === undefined) return;
+  if (process === "filament" || process === "resin" || process === "moulded") card.ribs = { ...card.ribs, process };
+  else omitted.push("process");
+}
+
+const RIB_LEFT = ["minHeight", "minSpacing", "minLength", "draftDeg", "rootRadius", "flangeWidth", "flangeThickness", "flangeChamferDeg"] as const;
+
+function mapRib(rib: unknown, card: AutoRibsCard, omitted: string[]) {
+  if (rib === undefined) return;
+  if (!rib || typeof rib !== "object" || Array.isArray(rib)) {
+    omitted.push("rib");
+    return;
+  }
+  const row = rib as Record<string, unknown>;
+  const ribs = { ...card.ribs };
+  if (typeof row.width === "number" && Number.isFinite(row.width)) ribs.width = row.width;
+  if (typeof row.maxHeight === "number" && Number.isFinite(row.maxHeight)) ribs.height = row.maxHeight;
+  if (row.profile === "auto" || row.profile === "straight" || row.profile === "drafted" || row.profile === "tee") ribs.profile = row.profile;
+  else if (row.profile !== undefined) omitted.push("rib.profile");
+  card.ribs = ribs;
+  for (const key of RIB_LEFT) if (row[key] !== undefined) omitted.push(`rib.${key}`);
+}
+
+function mapIfMissed(value: unknown, card: AutoRibsCard, omitted: string[]) {
+  if (value === undefined) return;
+  if (value === "refuse" || value === "evenPressure") card.ifMissed = value;
+  else omitted.push("ifMissed");
+}
+
+function mapHoleRim(value: unknown, card: AutoRibsCard) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return;
+  card.holeRim = value > 0 ? { on: true, mm: value } : { on: false, mm: 0 };
+}
+
+/** One ribs_plan load the card can show, or null (and its name is recorded) when it cannot. */
+function mapLoad(value: unknown, name: string, omitted: string[]): StudyLoad | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    omitted.push(name);
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  if ((row.kind !== "force" && row.kind !== "pressure") || typeof row.magnitude !== "number" || !Number.isFinite(row.magnitude)) {
+    omitted.push(name);
+    return null;
+  }
+  const direction = asVec3(row.direction) ?? [0, 0, -1];
+  if (row.faces !== undefined && row.region !== undefined) {
+    omitted.push(name);
+    return null;
+  }
+  if (row.region !== undefined) {
+    const place = pointPlace(row.region);
+    const region = place ?? readRegion(row.region);
+    if (!region) {
+      omitted.push(name);
+      return null;
+    }
+    if ("faces" in region) return { kind: row.kind, faces: region.faces, magnitude: row.magnitude, direction };
+    return { kind: row.kind, faces: [], magnitude: row.magnitude, direction, place: region };
+  }
+  if (row.place !== undefined) {
+    const place = readPlace(row.place) ?? pointPlace(row.place);
+    if (!place) {
+      omitted.push(name);
+      return null;
+    }
+    return { kind: row.kind, faces: [], magnitude: row.magnitude, direction, place };
+  }
+  const faces = faceIndexes(row.faces);
+  if (!faces) {
+    omitted.push(name);
+    return null;
+  }
+  return { kind: row.kind, faces, magnitude: row.magnitude, direction };
+}
+
+function mapLoadList(value: unknown, prefix: string, omitted: string[]): StudyLoad[] {
+  if (!Array.isArray(value)) {
+    omitted.push(prefix);
+    return [];
+  }
+  const loads: StudyLoad[] = [];
+  value.forEach((item, index) => {
+    const load = mapLoad(item, `${prefix}[${index}]`, omitted);
+    if (load) loads.push(load);
+  });
+  return loads;
+}
+
+function mapLoadsAndCases(auto: Record<string, unknown>, card: AutoRibsCard, omitted: string[]) {
+  const hasCases = Array.isArray(auto.loadCases);
+  if (hasCases && Array.isArray(auto.loads) && auto.loads.length > 0) omitted.push("loads");
+  if (hasCases) {
+    const cases: PanelLoadCase[] = [];
+    (auto.loadCases as unknown[]).forEach((item, index) => {
+      if (index >= MAX_LOAD_CASES) {
+        omitted.push(`loadCases[${index}]`);
+        return;
+      }
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        omitted.push(`loadCases[${index}]`);
+        return;
+      }
+      const row = item as Record<string, unknown>;
+      const loads = mapLoadList(row.loads, `loadCases[${index}].loads`, omitted);
+      if (loads.length === 0) return;
+      const name = typeof row.name === "string" && row.name.trim() ? row.name.trim() : `Case ${cases.length + 1}`;
+      const weight = typeof row.weight === "number" && row.weight > 0 ? row.weight : 1;
+      cases.push({ name, weight, loads });
+    });
+    if (cases.length >= 2) {
+      card.cases = cases;
+      card.loads = [];
+      return;
+    }
+    if (cases.length === 1) {
+      card.loads = cases[0]!.loads;
+      const raw = (auto.loadCases as unknown[])[0];
+      const row = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+      const rawName = typeof row.name === "string" ? row.name.trim() : "";
+      if (rawName && rawName !== "Case 1") omitted.push("loadCases[0].name");
+      if (typeof row.weight === "number" && row.weight !== 1) omitted.push("loadCases[0].weight");
+    }
+    return;
+  }
+  if (auto.loads !== undefined) card.loads = mapLoadList(auto.loads, "loads", omitted);
+}
+
+function mapHolds(value: unknown, omitted: string[]): StudyHold[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    omitted.push("holds");
+    return [];
+  }
+  const holds: StudyHold[] = [];
+  value.forEach((item, index) => {
+    const hold = oneHold(item);
+    if (hold) holds.push(hold);
+    else omitted.push(`holds[${index}]`);
+  });
+  return holds;
+}
+
+/** A faces hold or the bed. A plane, or a hold on a place, is not one of the card's hold buttons. */
+function oneHold(value: unknown): StudyHold | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (row.kind === "bed") return { kind: "bed", faces: [] };
+  if (row.kind === "faces") {
+    const faces = faceIndexes(row.faces);
+    return faces ? { kind: "faces", faces } : null;
+  }
+  if (row.kind === "region") {
+    const region = readRegion(row.region);
+    if (region && "faces" in region) return { kind: "faces", faces: region.faces };
+  }
+  return null;
+}
+
+function mapZones(value: unknown, omitted: string[]): ZoneRow[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    omitted.push("zones");
+    return [];
+  }
+  const zones: ZoneRow[] = [];
+  value.forEach((item, index) => {
+    const zone = oneZone(item, zones.length + 1);
+    if (zone) zones.push(zone);
+    else omitted.push(`zones[${index}]`);
+  });
+  return zones;
+}
+
+function oneZone(value: unknown, id: number): ZoneRow | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const region = row.region;
+  if (!region || typeof region !== "object" || Array.isArray(region)) return null;
+  const keys = Object.keys(region as object);
+  if (keys.length !== 1) return null;
+  const kind = keys[0]!;
+  const body = (region as Record<string, unknown>)[kind];
+  const shape = zoneShape(kind, body);
+  if (!shape) return null;
+  const mode = row.mode === "maxHeight" ? "maxHeight" : "noRibs";
+  const maxHeightMm = typeof row.maxHeightMm === "number" && row.maxHeightMm >= 0 ? row.maxHeightMm : 2;
+  const marginMm = typeof row.marginMm === "number" && row.marginMm > 0 ? row.marginMm : 0;
+  return { id, mode, maxHeightMm, marginMm, shape };
+}
+
+function zoneShape(kind: string, body: unknown): ZoneShape | null {
+  if (kind === "faces") {
+    const faces = faceIndexes(body);
+    return faces && faces.length > 0 ? { kind: "faces", faces } : null;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const row = body as Record<string, unknown>;
+  if (kind === "box") {
+    if (row.turn !== undefined) {
+      const turn = asVec3(row.turn);
+      if (!turn || turn.some((n) => n !== 0)) return null;
+    }
+    const centre = asVec3(row.centre);
+    const size = asVec3(row.size);
+    if (centre && size && size.every((n) => n > 0)) return { kind: "box", centre, size };
+    const min = asVec3(row.min);
+    const max = asVec3(row.max);
+    if (!min || !max || min.some((n, i) => n > max[i]!)) return null;
+    return { kind: "box", centre: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2], size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]] };
+  }
+  if (kind === "sphere") {
+    const centre = asVec3(row.centre);
+    if (!centre || typeof row.radius !== "number" || !(row.radius > 0)) return null;
+    return { kind: "sphere", centre, radius: row.radius };
+  }
+  if (kind === "cylinder") {
+    const origin = asVec3(row.origin);
+    const axis = asVec3(row.axis);
+    if (!origin || !axis || typeof row.radius !== "number" || !(row.radius > 0) || typeof row.length !== "number" || !(row.length > 0)) return null;
+    return { kind: "cylinder", origin, axis, radius: row.radius, length: row.length };
+  }
+  if (kind === "near") {
+    if (typeof row.mm !== "number" || !(row.mm >= 0)) return null;
+    const extra = Object.keys(row).filter((key) => key !== "mm");
+    if (extra.length === 1 && extra[0] === "holes" && row.holes === true) return { kind: "nearHoles", mm: row.mm };
+    if (extra.length === 1 && extra[0] === "faces") {
+      const faces = faceIndexes(row.faces);
+      if (faces && faces.length > 0) return { kind: "nearFaces", mm: row.mm, faces };
+    }
+    return null;
+  }
+  if (kind === "band") {
+    if (row.to !== undefined) return null;
+    const origin = asVec3(row.origin);
+    const normal = asVec3(row.normal);
+    const from = row.from === undefined ? 0 : row.from;
+    if (!origin || !normal || typeof from !== "number") return null;
+    return { kind: "band", origin, normal, from };
+  }
+  if (kind === "obstacle") {
+    const keys = Object.keys(row);
+    if (typeof row.object !== "string" || !row.object || typeof row.clearanceMm !== "number") return null;
+    if (keys.some((key) => key !== "object" && key !== "clearanceMm")) return null;
+    return { kind: "obstacle", object: row.object, name: row.object, clearanceMm: row.clearanceMm };
+  }
   return null;
 }
 

@@ -206,6 +206,99 @@ eq("ribs_plan's request gives its wall", cardFromRibNet({ kind: "ribNet", auto: 
 eq("ribs_plan's folded wall reopens folded", [cardFromRibNet({ kind: "ribNet", auto: { wall: { faces: [3, 4], folded: true } } })?.folded, cardFromRibNet({ kind: "ribNet", auto: { wall: { faces: [3, 4] } } })?.folded], [true, false]);
 eq("a typed network has no request", cardFromRibNet({ kind: "ribNet" }), null);
 eq("a stored card that is not one", cardFromStored({ zones: [] }), null);
+// A ribs_plan request is stored as source.auto. The panel's own card still comes back whole; a wall-only request stays a fresh card.
+const freshPanel = newAutoRibsCard();
+const panelMade = {
+  picked: [6],
+  excluded: freshPanel.excluded,
+  justThis: false,
+  folded: false,
+  amount: { kind: "stiffer" as const, factor: 1.3 },
+  quantity: "frequency" as const,
+  holds: freshPanel.holds,
+  loads: freshPanel.loads,
+  cases: [
+    { name: "spread", weight: 1, loads: [{ kind: "pressure" as const, faces: [6], magnitude: 0.01, direction: [0, 0, -1] as [number, number, number] }] },
+    { name: "point", weight: 4, loads: [{ kind: "force" as const, faces: [6], magnitude: 10, direction: [0, 0, -1] as [number, number, number] }] },
+  ],
+  zones: freshPanel.zones,
+  holeRim: freshPanel.holeRim,
+  ribs: { ...freshPanel.ribs, process: "resin" as const },
+  ifMissed: freshPanel.ifMissed,
+};
+eq("a panel-made step reopens exactly as stored", cardFromRibNet({ kind: "ribNet", auto: { panel: JSON.parse(JSON.stringify(panelMade)) } }), panelMade);
+const ribsPlan = (auto: Record<string, unknown>, density?: number) => cardFromRibNet({ kind: "ribNet", auto }, density);
+eq("a wall-only ribs_plan request is a fresh card on those faces", ribsPlan({ wall: { faces: [3, 4] } }), { ...newAutoRibsCard(), picked: [3, 4] });
+eq("a stiffer goal reopens as that factor", ribsPlan({ wall: { faces: [6] }, goal: { stiffer: 2.5 } })?.amount, { kind: "stiffer", factor: 2.5 });
+const frequency = ribsPlan({ wall: { faces: [6] }, goal: { frequency: 1.3 } });
+eq("a frequency goal reopens as Higher frequency", frequency?.quantity, "frequency");
+eq("a frequency goal reopens at that factor", frequency?.amount, { kind: "stiffer", factor: 1.3 });
+eq("the reopened frequency goal plans as that frequency", frequency ? goalOf(frequency.amount, 1.24, null, frequency.quantity) : null, { kind: "frequency", factor: 1.3 });
+eq("a deflection goal reopens in millimetres", ribsPlan({ wall: { faces: [6] }, goal: { maxDeflectionMm: 0.4 } })?.amount, { kind: "deflection", mm: 0.4 });
+eq("a budget in grams reopens as grams", ribsPlan({ wall: { faces: [6] }, goal: { budgetG: 8 } })?.amount, { kind: "budget", grams: 8 });
+eq("a budget in mm³ reopens as grams at the filament density", ribsPlan({ wall: { faces: [6] }, goal: { budgetMm3: 4000 } }, 1.24)?.amount, { kind: "budget", grams: (4000 / 1000) * 1.24 });
+eq("a balanced goal stays the slider's middle", ribsPlan({ wall: { faces: [6] }, goal: { balanced: true } })?.amount, { kind: "slider", stop: 0 });
+eq("resin reopens as resin", ribsPlan({ wall: { faces: [6] }, process: "resin" })?.ribs.process, "resin");
+eq("moulded reopens as moulded", ribsPlan({ wall: { faces: [6] }, process: "moulded" })?.ribs.process, "moulded");
+eq("grow false reopens as just this face", ribsPlan({ wall: { faces: [6], grow: false } })?.justThis, true);
+eq("excluded faces reopen", ribsPlan({ wall: { faces: [6], excludeFaces: [2, 3] } })?.excluded, [2, 3]);
+eq("added faces join the picked wall", ribsPlan({ wall: { faces: [6], addFaces: [8] } })?.picked, [6, 8]);
+eq("even pressure reopens", ribsPlan({ wall: { faces: [6] }, ifMissed: "evenPressure" })?.ifMissed, "evenPressure");
+eq("a hole rim reopens in millimetres", ribsPlan({ wall: { faces: [6] }, holeRimMm: 4 })?.holeRim, { on: true, mm: 4 });
+eq("a hole rim of 0 is off", ribsPlan({ wall: { faces: [6] }, holeRimMm: 0 })?.holeRim, { on: false, mm: 0 });
+eq("rib width reopens", ribsPlan({ wall: { faces: [6] }, rib: { width: 1.6 } })?.ribs.width, 1.6);
+eq("greatest height reopens", ribsPlan({ wall: { faces: [6] }, rib: { maxHeight: 8 } })?.ribs.height, 8);
+eq("a straight profile reopens", ribsPlan({ wall: { faces: [6] }, rib: { profile: "straight" } })?.ribs.profile, "straight");
+const faceLoad = { kind: "force" as const, faces: [6, 8], magnitude: 12, direction: [0, 0, -1] as [number, number, number] };
+eq("a face load reopens on those faces", ribsPlan({ wall: { faces: [6] }, loads: [{ kind: "force", faces: [6, 8], magnitude: 12, direction: [0, 0, -1] }] })?.loads, [faceLoad]);
+const sphereLoad = { kind: "force" as const, faces: [] as number[], magnitude: 20, direction: [0, 0, -1] as [number, number, number], place: { sphere: { centre: [1, 2, 3] as [number, number, number], radiusMm: 4 } } };
+eq("a sphere place reopens on that sphere", ribsPlan({ wall: { faces: [6] }, loads: [{ kind: "force", region: { sphere: { centre: [1, 2, 3], radiusMm: 4 } }, magnitude: 20, direction: [0, 0, -1] }] })?.loads, [sphereLoad]);
+const boxLoad = { kind: "pressure" as const, faces: [] as number[], magnitude: 0.02, direction: [0, 1, 0] as [number, number, number], place: { box: { min: [0, 0, 0] as [number, number, number], max: [2, 3, 4] as [number, number, number] } } };
+eq("a box place reopens as that box", ribsPlan({ wall: { faces: [6] }, loads: [{ kind: "pressure", region: { box: { min: [0, 0, 0], max: [2, 3, 4] } }, magnitude: 0.02, direction: [0, 1, 0] }] })?.loads, [boxLoad]);
+const pointLoad = { kind: "force" as const, faces: [] as number[], magnitude: 7, direction: [0, 0, -1] as [number, number, number], place: { sphere: { centre: [4, 5, 6] as [number, number, number], radiusMm: 0 } } };
+eq("a point place reopens as a point", ribsPlan({ wall: { faces: [6] }, loads: [{ kind: "force", region: { point: [4, 5, 6] }, magnitude: 7, direction: [0, 0, -1] }] })?.loads, [pointLoad]);
+const spread = { kind: "pressure" as const, faces: [6], magnitude: 0.01, direction: [0, 0, -1] as [number, number, number] };
+const pointCase = { kind: "force" as const, faces: [6], magnitude: 10, direction: [1, 0, 0] as [number, number, number] };
+const twoCases = ribsPlan({
+  wall: { faces: [6] },
+  loadCases: [
+    { name: "spread", weight: 1, loads: [{ kind: "pressure", faces: [6], magnitude: 0.01, direction: [0, 0, -1] }] },
+    { name: "point", weight: 4, loads: [{ kind: "force", faces: [6], magnitude: 10, direction: [1, 0, 0] }] },
+  ],
+});
+eq("two load cases reopen with their names, weights and loads", twoCases?.cases, [
+  { name: "spread", weight: 1, loads: [spread] },
+  { name: "point", weight: 4, loads: [pointCase] },
+]);
+eq("two load cases leave the single load empty", twoCases?.loads, []);
+eq("a faces hold reopens", ribsPlan({ wall: { faces: [6] }, holds: [{ kind: "faces", faces: [2] }] })?.holds, [{ kind: "faces", faces: [2] }]);
+eq("a bed hold reopens", ribsPlan({ wall: { faces: [6] }, holds: [{ kind: "bed" }] })?.holds, [{ kind: "bed", faces: [] }]);
+eq("a box zone reopens", ribsPlan({ wall: { faces: [6] }, zones: [{ region: { box: { centre: [0, 0, 0], size: [10, 8, 4] } } }] })?.zones, [{ id: 1, mode: "noRibs", maxHeightMm: 2, marginMm: 0, shape: { kind: "box", centre: [0, 0, 0], size: [10, 8, 4] } }]);
+eq("a sphere zone reopens", ribsPlan({ wall: { faces: [6] }, zones: [{ region: { sphere: { centre: [1, 2, 3], radius: 5 } }, mode: "maxHeight", maxHeightMm: 2, marginMm: 1 }] })?.zones, [{ id: 1, mode: "maxHeight", maxHeightMm: 2, marginMm: 1, shape: { kind: "sphere", centre: [1, 2, 3], radius: 5 } }]);
+const oneCase = ribsPlan({ wall: { faces: [6] }, loadCases: [{ name: "sideways", weight: 2, loads: [{ kind: "force", faces: [6], magnitude: 10, direction: [0, 0, -1] }] }] });
+eq("one load case reopens as the one load", oneCase?.loads, [{ kind: "force", faces: [6], magnitude: 10, direction: [0, 0, -1] }]);
+eq("one load case has no case list", oneCase?.cases, undefined);
+check("one load case's name and weight are named as left out", (oneCase?.leftOut ?? "").includes("loadCases[0].name") && (oneCase?.leftOut ?? "").includes("loadCases[0].weight"), oneCase?.leftOut ?? "");
+const left = ribsPlan({
+  wall: { faces: [6], face: { nearPoint: [0, 0, 2], normal: [0, 0, 1] }, thicknessMm: 2 },
+  loads: [
+    { kind: "force", faces: [6], magnitude: 10, direction: [0, 0, -1] },
+    { kind: "force", faces: { normal: [0, 0, 1], nearPoint: [1, 2, 3] }, magnitude: 5, direction: [0, 0, -1] },
+  ],
+  holds: [{ kind: "plane", normal: [0, 0, 1], origin: [0, 0, 0] }],
+  rib: { width: 1.6, minSpacing: 4 },
+  baselines: false,
+  buildAxis: [0, 0, 1],
+});
+eq("a selector load is not on the reopened card", left?.loads, [{ kind: "force", faces: [6], magnitude: 10, direction: [0, 0, -1] }]);
+eq("a plane hold is not on the reopened card", left?.holds, []);
+eq("the width still reopens beside what was left out", left?.ribs.width, 1.6);
+const leftLine = left?.leftOut ?? "";
+check(
+  "the left-out sentence names each item ribs_plan names, in one line",
+  !leftLine.includes("\n") && leftLine === "Left out, because the Auto ribs card cannot show them: wall.face, wall.thicknessMm, loads[1], holds[0], rib.minSpacing, buildAxis, baselines. Run plans without them.",
+  leftLine,
+);
 
 // --- The request the panel's cases build. One load stays `loads` alone. A blank name is Case N, as ribs_plan names one.
 const force = { kind: "force" as const, faces: [6], magnitude: 10, direction: [0, 0, -1] as [number, number, number] };

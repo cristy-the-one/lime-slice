@@ -24,7 +24,7 @@ import { plateToWall, ventBodyOf, ventLoopsOf } from "../modeling/vents.ts";
 import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSpan, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
 import { mouldingLines, mouldingReport, nearestWallMm } from "../modeling/moulding.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
-import type { StudyHold, StudyLoad } from "../sim/study.ts";
+import type { StudyHold, StudyLoad, StudyPlace } from "../sim/study.ts";
 import { planOptions, stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
 import {
   AUTO_RIBS_LABEL,
@@ -224,6 +224,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
   });
   setHtml(body, html`
     <p class="model-note is-bad ar-refusal" id="autoRibsRefusal" role="alert" hidden></p>
+    <p class="model-note is-warn" id="autoRibsLeftOut" role="status" hidden></p>
     <fieldset class="stress-group stress-step ar-step" id="autoRibsWallStep" data-step="wall">
       <legend><span class="stress-mark" data-step-mark>1</span>Wall</legend>
       <p class="model-note ar-wall-line" id="autoRibsWallLine" role="status"></p>
@@ -319,6 +320,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
           <button class="btn stress-pick" id="autoRibsLoadPick" type="button" aria-pressed="false">Pick faces</button>
           <ul class="stress-chips" id="autoRibsLoadChips" aria-label="Loaded faces"></ul>
         </div>
+        <p class="model-note" id="autoRibsLoadPlace" hidden></p>
         <div class="stress-axis" role="group" aria-labelledby="autoRibsDirLabel">
           <span class="stress-axis-label" id="autoRibsDirLabel">Direction (X, Y, Z)</span>
           <input id="autoRibsDirX" type="number" step="0.1" value="0" aria-label="Direction X">
@@ -397,7 +399,7 @@ export function openAutoRibsCard() {
 export function openAutoRibsEdit(stored: AutoRibsCard | null, head: string) {
   if (!host) return;
   edit = { head };
-  begin(stored ?? newAutoRibsCard(), stored ? undefined : "This step was not made by the panel: pick its wall again to re-plan it.");
+  begin(stored ?? newAutoRibsCard(), stored?.leftOut ?? (stored ? undefined : "This step was not made by the panel: pick its wall again to re-plan it."));
 }
 
 export function autoRibsCardOpen(): boolean {
@@ -674,8 +676,20 @@ function bodyRules(wall: RibWall): RibPlanBody["rules"] {
   return { width: chosen.width, maxHeight: chosen.maxHeight, minHeight: chosen.minHeight, minSpacing: chosen.minSpacing, minLength: chosen.minLength, profile: wireProfileOf(card.ribs.profile, card.ribs.process, flange, {}, chosen.mouldedRoot) as RibPlanBody["rules"]["profile"] };
 }
 
+/** The left-out line is in the card. Run waits for it, so a plan never starts on a request the user has not been shown. */
+function leftOutShown(): boolean {
+  if (!card.leftOut) return true;
+  const node = $<HTMLElement>("#autoRibsLeftOut");
+  return !!node && !node.hidden && node.textContent === card.leftOut;
+}
+
 async function startRun() {
   if (!host) return;
+  if (!leftOutShown()) {
+    paint();
+    host.readout(card.leftOut ?? "");
+    return;
+  }
   const state = host.state();
   if (state !== "ok") {
     host.readout(state === "surfaces" ? OPEN_SHELL : NO_SOLID);
@@ -823,7 +837,9 @@ async function applyPlan() {
   }
   const built: BuiltRib[] = keptFace.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: (rib.sections[0]?.profile ?? "straight"), sections: rib.sections, ...(rib.ends ? { ends: rib.ends } : {}) }));
   const plan = run.plan!;
-  const auto = { panel: card, plan: { ribs: kept.length, stiffnessFactor: plan.stiffnessFactor, ...(plan.frequencyHz ? { frequencyHz: plan.frequencyHz, frequencyFactor: plan.frequencyFactor } : {}), ribVolumeMm3: plan.ribVolumeMm3, stoppedEarly: plan.stoppedEarly, edited: run.removed.length > 0 } };
+  // The warning belongs to the ribs_plan request that was reopened. The step this Apply stores is the panel's card.
+  const { leftOut: _leftOut, ...panel } = card;
+  const auto = { panel, plan: { ribs: kept.length, stiffnessFactor: plan.stiffnessFactor, ...(plan.frequencyHz ? { frequencyHz: plan.frequencyHz, frequencyFactor: plan.frequencyFactor } : {}), ribVolumeMm3: plan.ribVolumeMm3, stoppedEarly: plan.stoppedEarly, edited: run.removed.length > 0 } };
   const op = ribNetOf(built, AUTO_RIBS_LABEL, auto);
   if ("reason" in op) {
     host.readout(String(op.reason));
@@ -926,6 +942,11 @@ function paint() {
   if (refusal) {
     refusal.hidden = state === "ok";
     refusal.textContent = state === "surfaces" ? OPEN_SHELL : state === "none" ? NO_SOLID : "";
+  }
+  const leftOut = $<HTMLElement>("#autoRibsLeftOut");
+  if (leftOut) {
+    leftOut.hidden = !card.leftOut || !!applied;
+    leftOut.textContent = card.leftOut ?? "";
   }
   for (const id of ["#autoRibsWallStep", "#autoRibsPlanStep", "#autoRibsHowMuch", "#autoRibsHoldLoad", "#autoRibsKeepClear", "#autoRibsSizes"]) {
     const node = $<HTMLElement>(id);
@@ -1329,7 +1350,7 @@ function paintHoldLoad() {
   const cases = $<HTMLElement>("#autoRibsCases");
   if (cases) {
     cases.hidden = !multi;
-    const key = multi ? JSON.stringify({ pick: picking, rows: card.cases!.map((item) => ({ kind: item.loads[0]?.kind ?? "force", faces: item.loads[0]?.faces ?? [] })) }) : "";
+    const key = multi ? JSON.stringify({ pick: picking, rows: card.cases!.map((item) => item.loads.map((load) => ({ kind: load.kind, faces: load.faces, place: load.place ?? null }))) }) : "";
     if (key !== paintedCases) {
       paintedCases = key;
       cases.replaceChildren(...(multi ? card.cases!.map((item, i) => caseField(item, i)) : []));
@@ -1346,6 +1367,12 @@ function paintHoldLoad() {
     if (unit) unit.textContent = pressure ? "MPa" : "N";
     press($("#autoRibsLoadPick"), picking.kind === "load");
     chips("#autoRibsLoadChips", load?.faces ?? [], "load");
+    const place = $<HTMLElement>("#autoRibsLoadPlace");
+    if (place) {
+      const text = load?.place ? placeLine(load.place) : "";
+      place.hidden = !text;
+      place.textContent = text;
+    }
   }
   const stress = host.stress();
   const use = $<HTMLButtonElement>("#autoRibsUseStress");
@@ -1819,8 +1846,29 @@ function caseField(row: PanelLoadCase, index: number): HTMLElement {
   remove.dataset.caseRemove = String(index);
   remove.textContent = "Remove";
   remove.setAttribute("aria-label", `Remove case ${index + 1}`);
-  box.append(legend, head, modes, magLabel, pickRow, axis, remove);
+  const notes: string[] = [];
+  if (load.place) notes.push(placeLine(load.place));
+  row.loads.slice(1).forEach((extra, at) => {
+    const where = extra.place ? placeLine(extra.place) : extra.faces.length ? `faces ${extra.faces.map((face) => face + 1).join(", ")}` : "no faces";
+    notes.push(`Load ${at + 2}: ${where}`);
+  });
+  const note = notes.length ? document.createElement("p") : null;
+  if (note) {
+    note.className = "model-note";
+    note.textContent = notes.join(". ");
+  }
+  box.append(legend, head, modes, magLabel, pickRow, axis, ...(note ? [note] : []), remove);
   return box;
+}
+
+/** A place load, in the words the card uses: a point is a sphere of no radius. */
+function placeLine(place: StudyPlace): string {
+  if ("sphere" in place) {
+    const at = place.sphere.centre.map((n) => fmt(n)).join(", ");
+    if (place.sphere.radiusMm === 0) return `Point at ${at}`;
+    return `Sphere at ${at}, radius ${fmt(place.sphere.radiusMm)} mm`;
+  }
+  return `Box from ${place.box.min.map((n) => fmt(n)).join(", ")} to ${place.box.max.map((n) => fmt(n)).join(", ")}`;
 }
 
 function readLoad(faces: number[]): StudyLoad {
@@ -1829,7 +1877,10 @@ function readLoad(faces: number[]): StudyLoad {
     return Number.isFinite(v) ? v : d;
   };
   const pressure = $("#autoRibsLoadPressure")?.getAttribute("aria-pressed") === "true";
-  return { kind: pressure ? "pressure" : "force", faces, magnitude: num("#autoRibsForce", 10), direction: [num("#autoRibsDirX", 0), num("#autoRibsDirY", 0), num("#autoRibsDirZ", -1)] };
+  const prior = card.loads[0];
+  const load: StudyLoad = { kind: pressure ? "pressure" : "force", faces, magnitude: num("#autoRibsForce", 10), direction: [num("#autoRibsDirX", 0), num("#autoRibsDirY", 0), num("#autoRibsDirZ", -1)] };
+  if (prior?.place && faces.length === 0) load.place = prior.place;
+  return load;
 }
 
 function setPick(next: Pick) {
