@@ -14,7 +14,7 @@
  *
  * Shared module: no DOM, no engine.
  */
-import type { RibWallRequest } from "./modeling/rib-wall.ts";
+import type { RibWall, RibWallRequest } from "./modeling/rib-wall.ts";
 import type { Section } from "./modeling/auto-ribs.ts";
 import { defaultDraftedSection } from "./modeling/moulding.ts";
 import { meshOpening, notchRibs, ventPockets, type VentPocket } from "./modeling/vents.ts";
@@ -120,7 +120,7 @@ export interface RibPlanResult {
     unvented?: { at: V3; message: string }[];
     note?: string;
   };
-  /** The engine's notes, when it sent any. A frequency plan that was asked to vent says venting was skipped. */
+  /** The engine's notes, when it sent any: a drafted rib built straight because its top closed, or a frequency plan that was asked to vent. */
   notes?: string[];
 }
 
@@ -153,7 +153,7 @@ export type PlanGoal = { kind: "balanced" } | { kind: "stiffer"; factor: number 
 export type WireProfile =
   | { kind: "auto"; process: RibProcess; flange: "chamfered" | "square" | null }
   | { kind: "straight" }
-  | { kind: "drafted" }
+  | { kind: "drafted"; draftDeg?: number; rootRadius?: number }
   | { kind: "tee"; flange: "chamfered" | "square" };
 
 /** `RibPlanBody`: ribWall's request and what the planner needs besides. */
@@ -162,7 +162,8 @@ export interface RibPlanBody {
   material?: { e: number; nu: number };
   rules: { width: number; maxHeight: number; minHeight?: number; minSpacing: number; minLength: number; profile?: WireProfile };
   goal?: PlanGoal;
-  options?: { baselines?: boolean };
+  /** creases: plan across sharp edges; sent only for a wall read with folded, so any other wall plans as v6.12 did. */
+  options?: { baselines?: boolean; creases?: boolean };
   holeRimMarginMm?: number;
   /** One weight per load case, in order. Absent for one load, which is a plain sum, as before. */
   caseWeights?: number[];
@@ -172,6 +173,14 @@ export interface RibPlanBody {
   buildAxis?: V3;
   /** Wall borders in the wall frame. The panel and ribs_plan send the same list. */
   borders?: { points: readonly (readonly [number, number, number])[]; kind: "rises" | "open" | "hole" }[];
+}
+
+/**
+ * The plan body's options, for the panel and ribs_plan alike. creases goes only with a wall read with folded (its
+ * report lists faces.folded), so every other wall, sharp edges included, plans exactly as v6.12 did.
+ */
+export function planOptions(wall: Pick<RibWall, "report">, baselines: boolean): NonNullable<RibPlanBody["options"]> {
+  return { baselines, ...(wall.report.faces.folded !== undefined ? { creases: true } : {}) };
 }
 
 export type PlanReply = { ok: true; plan: RibPlanResult } | { ok: false; reason: string };
@@ -296,6 +305,7 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       grid: grid ? { reached: grid.reached === true, pitchMm: num(grid.pitchMm), volumeMm3: typeof grid.volumeMm3 === "number" ? grid.volumeMm3 : null, gridVolumeMm3: num(grid.gridVolumeMm3) } : null,
       notBetterThanBaseline: row.notBetterThanBaseline === true,
       stoppedEarly: row.stoppedEarly === true,
+      ...(Array.isArray(row.notes) && (row.notes as unknown[]).some((note) => typeof note === "string") ? { notes: (row.notes as unknown[]).filter((note): note is string => typeof note === "string") } : {}),
       looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" : "noRibZone" })),
       ...ventsOf(row.vents),
       ...(Array.isArray(row.notes) ? { notes: (row.notes as unknown[]).filter((note): note is string => typeof note === "string") } : {}),
@@ -667,9 +677,12 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
       const wire = body.rules.profile;
       const asked = wire?.kind;
       const profile: RibProfileName = asked === "drafted" || asked === "tee" ? asked : "straight";
-      // Moulded auto, and an asked drafted rib, use the planner's drafted default (1° and the root from the greatest height).
-      const drafted = wire?.kind === "drafted" || (wire?.kind === "auto" && wire.process === "moulded");
-      const draftedRoot = drafted ? defaultDraftedSection(width, tall).rootRadius : 0;
+      // A drafted profile that carries a root keeps it (the moulded default sends its clamped root). A typed
+      // moulded width is auto and keeps half the top, as does resin and an asked drafted rib with no root.
+      const mouldedAuto = wire?.kind === "auto" && wire.process === "moulded";
+      const drafted = wire?.kind === "drafted" || mouldedAuto;
+      const plainRoot = drafted ? defaultDraftedSection(width, tall).rootRadius ?? 0 : 0;
+      const draftedRoot = wire?.kind === "drafted" && typeof wire.rootRadius === "number" ? wire.rootRadius : plainRoot;
       let fraction = 0;
       let factor = 1;
       const bareDeflection = 0.8;

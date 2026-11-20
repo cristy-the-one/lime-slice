@@ -13,12 +13,77 @@
  *
  * Shared module: no Node builtins, no DOM, no MCP session. Same input, same output.
  */
-import { RibSurface, ribNetPlan, ribShape, type RibProfileKind } from "./rib-net.ts";
+import { RIB_NET_DEFAULTS, RibSurface, ribNetPlan, ribShape, type RibProfileKind } from "./rib-net.ts";
 import { ribPathsFromPlan, type RibWall, type RibWallSolid } from "./rib-wall.ts";
 
 type V3 = [number, number, number];
 
 export type RibProcess = "filament" | "resin" | "moulded";
+
+/** Draft of the moulded default, degrees a side. The same angle `RibProfile::default_drafted` uses. */
+export const MOULD_DRAFT_DEG = 1;
+/** Base of the moulded default, where the flanks meet the wall, over the wall. The fillet is not part of it. */
+export const MOULD_BASE_RATIO = 0.6;
+/** The moulded default root is at least this many wall thicknesses. Half the top is kept when it is larger. */
+export const MOULD_ROOT_FLOOR = 0.25;
+/** Thinnest moulded or resin default, mm. The same floor `ribRules` already used. */
+const MIN_DEFAULT_WIDTH_MM = 0.4;
+
+/**
+ * The planner's reply rounds a section width to 6 decimals (`r6`). Rounding the exact
+ * width up puts the base over 0.6, so the width stops on the 6-decimal millimetre at or under it.
+ */
+function wireWidthMm(mm: number): number {
+  if (!Number.isFinite(mm)) return mm;
+  return Math.floor(mm * 1e6) / 1e6;
+}
+
+/**
+ * Half-height width of the moulded default, so the base at `height` is
+ * {@link MOULD_BASE_RATIO} × `wall`. `wall` is the thinnest wall under the plan, so the base is at
+ * most that share of every thicker wall. Draft stays {@link MOULD_DRAFT_DEG}. One place: the panel
+ * and `ribs_plan` both call `ribRules`, which calls this. The planner's copy is `moulded_default_width`.
+ */
+export function mouldedDefaultWidth(wall: number, height: number): number {
+  const tan = Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
+  return wireWidthMm(Math.max(MIN_DEFAULT_WIDTH_MM, MOULD_BASE_RATIO * wall - height * tan));
+}
+
+/**
+ * Root radius of the moulded default, mm. Half the top width, or {@link MOULD_ROOT_FLOOR} × `wall`
+ * when half the top is smaller. `wall` is the thickest wall under the plan. A typed width does not
+ * use this: its root stays half the top.
+ */
+export function mouldedDefaultRoot(width: number, height: number, wall: number): number {
+  const tan = Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
+  const halfTop = 0.5 * Math.max(0, width - height * tan);
+  return Math.max(halfTop, MOULD_ROOT_FLOOR * wall);
+}
+
+/**
+ * The moulded default's root. `thin` sizes nothing here (the width already used it). `thick` is the
+ * clamp. When the thickest wall is more than twice the thinnest, 0.25 × the thickest is past 0.5 ×
+ * the thinnest, so the two cannot both hold: the root stays half the top and `limited` is set. The
+ * planner's copy is `moulded_plan_root`.
+ */
+export function mouldedPlanRoot(width: number, height: number, thin: number, thick: number): { root: number; limited: boolean } {
+  const tan = Math.tan((MOULD_DRAFT_DEG * Math.PI) / 180);
+  if (thick > 2 * thin) return { root: 0.5 * Math.max(0, width - height * tan), limited: true };
+  return { root: mouldedDefaultRoot(width, height, thick), limited: false };
+}
+
+/** Thinnest and thickest positive thickness, mm. Empty when none is positive. */
+export function wallSpan(thickness: ArrayLike<number>): { thin: number; thick: number } | null {
+  let thin = Infinity;
+  let thick = 0;
+  for (let i = 0; i < thickness.length; i += 1) {
+    const t = thickness[i]!;
+    if (!(t > 0)) continue;
+    if (t < thin) thin = t;
+    if (t > thick) thick = t;
+  }
+  return Number.isFinite(thin) ? { thin, thick } : null;
+}
 
 /** One bead of a nozzle, as the stress smear lays it: 1.125 × the nozzle. */
 export function beadWidth(nozzleMm: number): number {
@@ -28,8 +93,12 @@ export function beadWidth(nozzleMm: number): number {
 export interface RibRuleInput {
   process: RibProcess;
   nozzleMm: number;
-  /** The wall's median thickness, mm. */
+  /** The wall's median thickness, mm. The greatest height is three times this. */
   thicknessMm: number;
+  /** Thinnest wall under the plan, mm. The moulded default width is sized from it. Absent, the median. */
+  thinnestMm?: number;
+  /** Thickest wall under the plan, mm. The moulded default root is clamped to it. Absent, the median. */
+  thickestMm?: number;
   /** The wall's area and its longest border's length, for its narrow width. */
   areaMm2: number;
   outerLoopMm: number;
@@ -46,6 +115,13 @@ export interface RibRulesChosen {
   narrowMm: number;
   /** Each value and where it came from, in a sentence. */
   defaults: string[];
+  /**
+   * Set only for a moulded default width: the root to send. A typed width leaves it unset, so the
+   * root stays half the top.
+   */
+  mouldedRoot?: number;
+  /** Set when the thickest wall is more than twice the thinnest: the base rule holds and the root clamp does not. */
+  mouldedNote?: string;
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -67,7 +143,14 @@ export function narrowWidth(areaMm2: number, outerLoopMm: number): number {
 export function ribRules(input: RibRuleInput): RibRulesChosen {
   const defaults: string[] = [];
   const t = input.thicknessMm;
+  const thin = input.thinnestMm ?? t;
+  const thick = input.thickestMm ?? t;
+  // The moulded width is sized at the greatest height, so that height is known first. A typed height is that height.
+  let maxHeight = input.given.maxHeight;
+  if (maxHeight === undefined) maxHeight = Math.max(1, 3 * t);
   let width: number;
+  let mouldedRoot: number | undefined;
+  let mouldedNote: string | undefined;
   if (input.process === "filament") {
     const bead = beadWidth(input.nozzleMm);
     if (input.given.width !== undefined) {
@@ -79,14 +162,20 @@ export function ribRules(input: RibRuleInput): RibRulesChosen {
       defaults.push(`width ${r2(width)} mm: 3 beads of ${r2(bead)} mm (1.125 × the ${input.nozzleMm} mm nozzle)`);
     }
   } else if (input.given.width !== undefined) width = input.given.width;
-  else {
-    const share = input.process === "moulded" ? 0.6 : 0.8;
-    width = Math.max(0.4, share * t);
-    defaults.push(`width ${r2(width)} mm: ${share} × the wall's ${r2(t)} mm (${input.process})`);
+  else if (input.process === "moulded") {
+    width = mouldedDefaultWidth(thin, maxHeight);
+    const planned = mouldedPlanRoot(width, maxHeight, thin, thick);
+    mouldedRoot = planned.root;
+    defaults.push(`width ${r2(width)} mm at half height, sized so the base is 0.6 × the thinnest wall (${r2(thin)} mm) at the greatest height`);
+    if (planned.limited) {
+      mouldedNote = "the thickest wall is more than twice the thinnest, so the base stays 0.6 × the thinnest and the root stays half the top: 0.25 × the thickest would pass 0.5 × the thinnest";
+      defaults.push("root radius half the top width: the thickest wall is more than twice the thinnest, so 0.25 × the thickest cannot hold");
+    } else defaults.push("root radius half the top width, or 0.25 × the thickest wall when half the top is smaller");
+  } else {
+    width = Math.max(MIN_DEFAULT_WIDTH_MM, 0.8 * t);
+    defaults.push(`width ${r2(width)} mm: 0.8 × the wall's ${r2(t)} mm (resin)`);
   }
-  let maxHeight = input.given.maxHeight;
-  if (maxHeight === undefined) {
-    maxHeight = Math.max(1, 3 * t);
+  if (input.given.maxHeight === undefined) {
     defaults.push(`greatest height ${r2(maxHeight)} mm: 3 × the wall's median ${r2(t)} mm, less where something faces the wall or a zone caps it`);
   }
   let minHeight = input.given.minHeight;
@@ -105,7 +194,7 @@ export function ribRules(input: RibRuleInput): RibRulesChosen {
     minLength = clamp(narrow / 8, 5, 40);
     defaults.push(`least length ${r2(minLength)} mm: an eighth of the narrow width, from 5 to 40`);
   }
-  return { width, maxHeight, minHeight, minSpacing, minLength, narrowMm: narrow, defaults };
+  return { width, maxHeight, minHeight, minSpacing, minLength, narrowMm: narrow, defaults, ...(mouldedRoot !== undefined ? { mouldedRoot } : {}), ...(mouldedNote ? { mouldedNote } : {}) };
 }
 
 const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -204,12 +293,11 @@ export function chooseSection(asked: "auto" | RibProfileKind, process: RibProces
 
 type P2 = [number, number];
 
-/** The area of a rib's section over the wall (v ≥ 0), mm²: rib volume per mm. */
-export function sectionArea(profile: RibProfileKind, width: number, height: number, fields: ProfileFields = {}): number {
-  if (profile === "straight" && !(fields.rootRadius && fields.rootRadius > 0)) return width * height;
+/** A rib's shape with ribNet's own defaults for the fields left out (rib-net.ts profileOf), sunk ribNet's 0.5 mm. */
+function shapeOf(profile: RibProfileKind, width: number, height: number, fields: ProfileFields): ReturnType<typeof ribShape> {
   const draftDeg = profile === "drafted" ? fields.draftDeg ?? 1 : 0;
   const top = width - height * Math.tan((draftDeg * Math.PI) / 180);
-  const shape = ribShape({
+  return ribShape({
     kind: profile,
     width,
     draftDeg,
@@ -217,7 +305,24 @@ export function sectionArea(profile: RibProfileKind, width: number, height: numb
     flangeWidth: profile === "tee" ? fields.flangeWidth ?? 3 * width : 0,
     flangeThickness: profile === "tee" ? fields.flangeThickness ?? width : 0,
     flangeChamferDeg: profile === "tee" ? fields.flangeChamferDeg ?? 45 : 0,
-  }, height, 0.5, 0.05);
+  }, height, RIB_NET_DEFAULTS.sinkMm, 0.05);
+}
+
+/**
+ * Half the footprint a stretch stands on, mm: the root's foot or a drafted base, as ribNet builds the stretch at this
+ * height (too low for its root, it is built straight: half its width). Half the width with no section.
+ */
+export function footHalf(section: Section | undefined, width: number, height: number): number {
+  if (!section) return width / 2;
+  if (!(height >= sectionLeast(section))) return section.width / 2;
+  const shape = shapeOf(section.profile, section.width, height, section);
+  return "reason" in shape ? section.width / 2 : Math.max(section.width / 2, shape.foot);
+}
+
+/** The area of a rib's section over the wall (v ≥ 0), mm²: rib volume per mm. */
+export function sectionArea(profile: RibProfileKind, width: number, height: number, fields: ProfileFields = {}): number {
+  if (profile === "straight" && !(fields.rootRadius && fields.rootRadius > 0)) return width * height;
+  const shape = shapeOf(profile, width, height, fields);
   if ("reason" in shape) return width * height;
   const poly = shape.section(height);
   const over: P2[] = [];
@@ -460,14 +565,35 @@ export function wallUnder(all: RibSurface, p: V3, n: V3, b: V3, half: number): n
  * wall under its foot runs out there, or its end runs into the thin rim and out past the part. Such an end starts a
  * rib width back from the edge, and is then drawn back 0.25 mm at a time, at most 4 mm, to where the wall under the
  * foot is WALL_UNDER_MM deep. An end against a wall (a box's side) is kept. Heights and sections keep their stretches.
+ *
+ * A root or a drafted base is wider than the rib, and ribNet refuses a rib whose footprint's edge stands over no wall
+ * (an end that meets an open rim at a slant). So the wall must lie under the whole footprint (`footHalf`) where the end
+ * is cut. Where no cut within the 4 mm finds that, the rib is built without its root (`rootless`: a sharp root, a
+ * drafted base only its draft wider than the rib) when that footprint finds the wall within 8 mm (an end meeting the
+ * rim at a shallow slant); else the ends are cut as for the rib's width alone, as before. A cut under the footprint
+ * keeps at least 1 mm of the rib. A rib with no root or base wider than itself is cut exactly as before.
  */
-export function trimThinEnds(points: V3[], heights: number[], sections: Section[], wallSurface: RibSurface, all: RibSurface, width: number): { points: V3[]; heights: number[]; sections: Section[]; trimmedMm: [number, number] } {
+export function trimThinEnds(points: V3[], heights: number[], sections: Section[], wallSurface: RibSurface, all: RibSurface, width: number): { points: V3[]; heights: number[]; sections: Section[]; trimmedMm: [number, number]; rootless?: true } {
+  const whole = trimEnds(points, heights, sections, wallSurface, all, width, true);
+  if (whole.fits) return whole.trimmed;
+  if (sections.some((s) => (s.rootRadius ?? (s.profile === "straight" ? 0 : 1)) > 0)) {
+    const sharp = sections.map((s): Section => ({ ...s, rootRadius: 0 }));
+    const bare = trimEnds(points, heights, sharp, wallSurface, all, width, true, 8);
+    if (bare.fits) return { ...bare.trimmed, rootless: true };
+  }
+  return trimEnds(points, heights, sections, wallSurface, all, width, false).trimmed;
+}
+
+/** trimThinEnds with one set of sections: the wall under the footprint (`footprint`) or under the rib's width alone. */
+function trimEnds(points: V3[], heights: number[], sections: Section[], wallSurface: RibSurface, all: RibSurface, width: number, footprint: boolean, most = 4): { trimmed: { points: V3[]; heights: number[]; sections: Section[]; trimmedMm: [number, number] }; fits: boolean } {
   const trimmedMm: [number, number] = [0, 0];
   let pts = points.map((p) => [...p] as V3);
   let hs = [...heights];
   let ss = [...sections];
+  let fits = true;
   for (const end of [0, 1] as const) {
     if (pts.length < 2) break;
+    let placed = false;
     const order = end === 0 ? pts : [...pts].reverse();
     let walked = 0;
     let k = 0;
@@ -487,7 +613,11 @@ export function trimThinEnds(points: V3[], heights: number[], sections: Section[
     const ahead = wallSurface.closest([e0[0] + out[0] * 1.5, e0[1] + out[1] * 1.5, e0[2] + out[2] * 1.5], 0.5);
     const free = run > 1e-9 && !ahead && !all.ray([e0[0] + n0[0] * lift - out[0], e0[1] + n0[1] * lift - out[1], e0[2] + n0[2] * lift - out[2]], out, 3);
     const start = free ? Math.min(4, Math.max(0.25, Math.ceil(width / 0.25) * 0.25)) : 0;
-    for (let s = start; s <= 4 + 1e-9; s += 0.25) {
+    // Under the footprint, a cut keeps at least 1 mm of the rib.
+    let length = 0;
+    for (let j = 1; j < order.length; j += 1) length += dist(order[j - 1]!, order[j]!);
+    const limit = footprint ? Math.min(most, length - 1) : 4;
+    for (let s = start; s <= limit + 1e-9; s += 0.25) {
       while (k + 1 < order.length - 1 && walked + dist(order[k]!, order[k + 1]!) < s) {
         walked += dist(order[k]!, order[k + 1]!);
         k += 1;
@@ -501,13 +631,18 @@ export function trimThinEnds(points: V3[], heights: number[], sections: Section[
       const n = wallSurface.closest(at, 5)?.normal ?? ([0, 0, 1] as V3);
       const t: V3 = [(b[0] - a[0]) / seg, (b[1] - a[1]) / seg, (b[2] - a[2]) / seg];
       const across: V3 = [n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]];
-      if (wallUnder(all, at, n, across, width / 2) >= WALL_UNDER_MM) {
+      // Under the whole footprint, or the rib's width alone.
+      const stretch = end === 0 ? k : pts.length - 2 - k;
+      const half = footprint ? Math.max(width / 2, footHalf(ss[stretch], width, hs[stretch] ?? 0)) : width / 2;
+      if (wallUnder(all, at, n, across, half) >= WALL_UNDER_MM) {
         found = s === 0 ? null : { at, k };
         if (s > 0) trimmedMm[end] = s;
+        placed = true;
         break;
       }
       if (f >= 1 && k + 1 >= order.length - 1) break;
     }
+    if (!placed) fits = false;
     if (!found) continue;
     // Keep the stretch the cut falls in, from the cut point on.
     const n = pts.length;
@@ -522,7 +657,7 @@ export function trimThinEnds(points: V3[], heights: number[], sections: Section[
       ss = ss.slice(0, j);
     }
   }
-  return { points: pts, heights: hs, sections: ss, trimmedMm };
+  return { trimmed: { points: pts, heights: hs, sections: ss, trimmedMm }, fits };
 }
 
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -649,8 +784,9 @@ export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | 
     const tee = fitted.sections.find((s) => s.profile === "tee");
     const cut = trimmed.trimmedMm.some((mm) => mm > 0);
     const r2 = (n: number) => Math.round(n * 100) / 100;
-    const why = fitted.notes.length || cut
-      ? [...fitted.notes, ...(cut ? [`an end stood on a free edge of the wall (nothing to run into, or too thin to sink into), so it was drawn back ${trimmed.trimmedMm.map(r2).join(" and ")} mm`] : [])].join("; ")
+    const rootless = trimmed.rootless === true;
+    const why = fitted.notes.length || cut || rootless
+      ? [...fitted.notes, ...(cut ? [`an end stood on a free edge of the wall (nothing to run into, or too thin to sink into), so it was drawn back ${trimmed.trimmedMm.map(r2).join(" and ")} mm`] : []), ...(rootless ? ["its flared root would have stood past a free edge of the wall at an end, so it is built with a sharp root"] : [])].join("; ")
       : tee ? `a tee with a ${(tee.flangeChamferDeg ?? 45) > 0 ? "45° chamfered" : "square"} flange where the rib's height is held under the greatest, straight elsewhere` : kinds[0] === "drafted" ? "drafted, as the process asks" : "straight";
     return {
       points,
@@ -682,10 +818,12 @@ export function builtVolumeOf(solid: RibWallSolid, ribs: readonly Pick<FaceRib, 
 }
 
 /** The planner's profile on the wire (`WireProfile`) for what was asked, the process and the flange that prints here. */
-export function wireProfileOf(asked: "auto" | RibProfileKind, process: RibProcess, flange: "chamfered" | "square" | null, extra: Record<string, number> = {}): Record<string, unknown> {
+export function wireProfileOf(asked: "auto" | RibProfileKind, process: RibProcess, flange: "chamfered" | "square" | null, extra: Record<string, number> = {}, mouldedRoot?: number): Record<string, unknown> {
   if (asked === "straight") return { kind: "straight" };
   if (asked === "drafted" || (asked === "auto" && process === "resin")) return { kind: "drafted", ...extra };
   if (asked === "tee") return { kind: "tee", flange: flange ?? "chamfered", ...extra };
+  // A moulded default sends its root. A typed width leaves it unset, and the planner keeps half the top.
+  if (asked === "auto" && process === "moulded" && mouldedRoot !== undefined) return { kind: "drafted", draftDeg: MOULD_DRAFT_DEG, rootRadius: mouldedRoot };
   return { kind: "auto", process, flange };
 }
 

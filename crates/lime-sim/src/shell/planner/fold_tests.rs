@@ -415,6 +415,8 @@ fn balanced(mesh: ShellMesh, holds: Holds, case: LoadCase) -> crate::shell::plan
     req.options = PlannerOptions {
         baselines: false,
         workers: 4,
+        // These are folded walls: the crease handling they test is opt-in.
+        creases: true,
         ..PlannerOptions::default()
     };
     req.rules = RibRules {

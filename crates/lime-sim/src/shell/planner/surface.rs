@@ -121,6 +121,12 @@ pub(crate) struct Surface {
     /// Embedded paths, as vertex chains, kept whole through later cuts.
     pub chains: Vec<Vec<u32>>,
     edge_chains: HashMap<(u32, u32), Vec<usize>>,
+    /// Unfold the direction field and the traces across creases (over
+    /// 20°) and let every triangle on an edge be a neighbour. Off, the
+    /// field and the traces take one neighbour per edge and project onto
+    /// the next face, as v6.12 did. [`Surface::new`] turns it on; the
+    /// planner sets it from [`super::PlannerOptions::creases`].
+    pub creases: bool,
 }
 
 impl Surface {
@@ -137,6 +143,7 @@ impl Surface {
             edge_tris: HashMap::new(),
             chains: Vec::new(),
             edge_chains: HashMap::new(),
+            creases: true,
         };
         for (t, tri) in mesh.triangles.iter().enumerate() {
             for k in 0..3 {

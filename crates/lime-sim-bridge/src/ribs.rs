@@ -27,7 +27,7 @@ use std::time::Instant;
 use lime_sim::shell::planner::{
     choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, LoadCombine, LooseEndReason, PlanControl, PlanEvent,
     PlanStage, PlannerOptions, Process, ProfileRules, RibChange, RibEndKind, RibPlan,
-    RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode,
+    RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode, DRAFT_LOST_NOTE,
 };
 use lime_sim::shell::{IsotropicShell, RibSection, RibSide, ShellHold, ShellLoad, ShellMesh};
 use serde::Deserialize;
@@ -224,6 +224,11 @@ pub struct WireOptions {
     pub workers: Option<usize>,
     #[serde(default)]
     pub baselines: Option<bool>,
+    /// Plan across creases (`PlannerOptions::creases`). The callers set it
+    /// only for a wall extracted with `folded`; absent or false plans as
+    /// v6.12 did.
+    #[serde(default)]
+    pub creases: Option<bool>,
 }
 
 /// The whole call: `ribWall`'s request and what the planner needs besides.
@@ -547,6 +552,7 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         shortlist: given.shortlist.unwrap_or(defaults.shortlist),
         workers: given.workers.unwrap_or(defaults.workers),
         baselines: given.baselines.unwrap_or(defaults.baselines),
+        creases: given.creases.unwrap_or(defaults.creases),
         ..defaults
     };
     let rim = body.hole_rim_margin_mm.unwrap_or(DEFAULT_HOLE_RIM_MM);
@@ -764,6 +770,17 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             })).collect::<Vec<_>>(),
             "note": vents.note,
         });
+    }
+    // Only when a drafted rib lost its draft. An empty list, and the
+    // frequency notes, stay off the JSON so an unchanged plan stays unchanged.
+    let lost: Vec<&str> = plan
+        .notes
+        .iter()
+        .filter(|note| note.as_str() == DRAFT_LOST_NOTE)
+        .map(|note| note.as_str())
+        .collect();
+    if !lost.is_empty() {
+        out["notes"] = json!(lost);
     }
     // Only a worst-case plan has one, and the tool asks for weighted plans.
     if plan.notes.iter().any(|note| note.starts_with("Venting was skipped")) {
@@ -1071,6 +1088,21 @@ mod tests {
         assert!(matches!(p(json!({ "kind": "auto", "process": "moulded" })), RibProfile::Drafted { .. }));
         assert!(matches!(p(json!({ "kind": "auto", "flange": "chamfered" })), RibProfile::TeeWhereLimited { .. }));
         assert_eq!(p(json!({ "kind": "auto", "flange": null })), RibProfile::Rectangular);
+    }
+
+    /// `options.creases` reaches the planner; absent it is off, so a
+    /// request that never names it plans as v6.12 did.
+    #[test]
+    fn creases_are_off_unless_the_request_asks() {
+        let body: RibPlanBody = serde_json::from_str(&flat_body(json!({}))).unwrap();
+        assert!(!request_of(&body).unwrap().options.creases);
+        let on: RibPlanBody = serde_json::from_str(&flat_body(json!({ "options": { "workers": 2, "creases": true } }))).unwrap();
+        assert!(request_of(&on).unwrap().options.creases);
+        let off: RibPlanBody = serde_json::from_str(&flat_body(json!({ "options": { "creases": false } }))).unwrap();
+        assert!(!request_of(&off).unwrap().options.creases);
+        let mut bad: Value = serde_json::from_str(&flat_body(json!({}))).unwrap();
+        bad["options"]["crease"] = json!(true);
+        assert!(plan_ribs_json(&bad.to_string()).contains("could not be read"));
     }
 
     #[test]

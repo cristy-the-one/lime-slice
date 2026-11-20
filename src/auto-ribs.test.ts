@@ -22,6 +22,9 @@ import {
   keptRibs,
   measuredLine,
   loadRequest,
+  caseNames,
+  duplicateCaseName,
+  freeCaseName,
   newAutoRibsCard,
   newZone,
   resultNumbers,
@@ -192,6 +195,7 @@ eq("a rib network row is known", ribNetSource({ kind: "group", source: { kind: "
 eq("another group is not", ribNetSource({ kind: "group", source: { kind: "pocket" } }), null);
 eq("the panel's request comes back whole", cardFromRibNet({ kind: "ribNet", auto: { panel: JSON.parse(JSON.stringify(stored)) } }), stored);
 eq("ribs_plan's request gives its wall", cardFromRibNet({ kind: "ribNet", auto: { wall: { faces: [3, 4] } } })?.picked, [3, 4]);
+eq("ribs_plan's folded wall reopens folded", [cardFromRibNet({ kind: "ribNet", auto: { wall: { faces: [3, 4], folded: true } } })?.folded, cardFromRibNet({ kind: "ribNet", auto: { wall: { faces: [3, 4] } } })?.folded], [true, false]);
 eq("a typed network has no request", cardFromRibNet({ kind: "ribNet" }), null);
 eq("a stored card that is not one", cardFromStored({ zones: [] }), null);
 
@@ -204,6 +208,12 @@ const two = loadRequest([], [{ name: "spread", weight: 1, loads: [pressure] }, {
 eq("two cases: loadCases and caseWeights, and no loads beside them", two, { loads: [], loadCases: [{ name: "spread", loads: [pressure] }, { name: "point", loads: [force] }], caseWeights: [1, 4] });
 eq("a weight that is not above zero is 1", loadRequest([], [{ name: "a", weight: 0, loads: [force] }, { name: "b", weight: -2, loads: [pressure] }]).caseWeights, [1, 1]);
 eq("a blank name is Case N", loadRequest([], [{ name: "  ", weight: 1, loads: [pressure] }, { name: "", weight: 2, loads: [force] }]).loadCases?.map((row) => row.name), ["Case 1", "Case 2"]);
+// Two cases never go out with one name: the verify study finds each case's loads by it.
+eq("a name two cases share is suffixed", caseNames([{ name: "lid" }, { name: "lid" }, { name: " lid " }]), ["lid", "lid (2)", "lid (3)"]);
+eq("a blank name that is another case's Case N is suffixed", caseNames([{ name: "Case 2" }, { name: "" }]), ["Case 2", "Case 2 (2)"]);
+eq("a free name skips the taken ones", freeCaseName("Case 3", ["Case 1", "Case 3", "Case 3 (2)"]), "Case 3 (3)");
+eq("the shared name is found as ribs_plan would send it", [duplicateCaseName([{ name: "a" }, { name: " a" }]), duplicateCaseName([{ name: "Case 2" }, { name: "" }]), duplicateCaseName([{ name: "a" }, { name: "b" }])], ["a", "Case 2", null]);
+eq("the request carries the distinct names", loadRequest([], [{ name: "lid", weight: 1, loads: [pressure] }, { name: "lid", weight: 2, loads: [force] }]).loadCases?.map((row) => row.name), ["lid", "lid (2)"]);
 const kept = [{ name: "spread", weight: 1, loads: [pressure] }, { name: "point", weight: 4, loads: [force] }];
 const back = cardFromStored({ ...newAutoRibsCard(), picked: [6], loads: [], cases: kept });
 eq("two cases come back with the card", back?.cases, kept);

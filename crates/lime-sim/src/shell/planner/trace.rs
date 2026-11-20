@@ -197,6 +197,15 @@ fn carry_heading(
     project(rotated, n_to).or_else(|| project(d, n_to))
 }
 
+/// The heading after stepping from `t` into `next`. Creases off, the plain
+/// projection onto the next face, as v6.12; on, [`carry_heading`].
+fn step_heading(s: &Surface, d: [f64; 3], t: u32, next: u32) -> Option<[f64; 3]> {
+    if !s.creases {
+        return project(d, s.normal(next));
+    }
+    carry_heading(d, s.normal(t), s.normal(next), shared_edge(s, t, next))
+}
+
 fn edge_unit(s: &Surface, t: u32, k: usize) -> Option<[f64; 3]> {
     let tri = s.tris[t as usize];
     normalize(sub(
@@ -281,6 +290,10 @@ fn next_triangle(
 ) -> Option<u32> {
     match corner {
         None => {
+            if !s.creases {
+                // Creases off: the one neighbour, as v6.12.
+                return s.neighbour(t, k);
+            }
             let others = s.neighbours(t, k);
             if others.len() <= 1 {
                 // The same triangle `neighbour` has always returned.
@@ -294,9 +307,11 @@ fn next_triangle(
             // holds the heading.
             let v = s.tris[t as usize][c];
             let n_from = s.normal(t);
-            let folded = s.vert_tris[v as usize]
-                .iter()
-                .any(|&o| o != t && dot(n_from, s.normal(o)) < super::surface::CREASE_COS);
+            // Creases off, every corner takes the flat sector test, as v6.12.
+            let folded = s.creases
+                && s.vert_tris[v as usize]
+                    .iter()
+                    .any(|&o| o != t && dot(n_from, s.normal(o)) < super::surface::CREASE_COS);
             if !folded {
                 let target = add(q, d);
                 let mut best: Option<(f64, u32)> = None;
@@ -433,8 +448,7 @@ impl Tracer<'_> {
             if self.blocked[next as usize] {
                 break TraceEnd::KeepOut;
             }
-            let Some(hn) = carry_heading(dir, s.normal(t), s.normal(next), shared_edge(s, t, next))
-            else {
+            let Some(hn) = step_heading(s, dir, t, next) else {
                 break TraceEnd::Turn;
             };
             h = hn;
@@ -537,7 +551,11 @@ impl Tracer<'_> {
         let mut start = None;
         let mut cands = vec![t];
         for k in 0..3 {
-            cands.extend(s.neighbours(t, k));
+            if s.creases {
+                cands.extend(s.neighbours(t, k));
+            } else if let Some(o) = s.neighbour(t, k) {
+                cands.push(o);
+            }
         }
         for c in cands {
             let (l, _) = s.barycentric(c, p);
@@ -575,8 +593,7 @@ impl Tracer<'_> {
                 keep_out = true;
                 break;
             }
-            let Some(hn) = carry_heading(h, s.normal(t), s.normal(next), shared_edge(s, t, next))
-            else {
+            let Some(hn) = step_heading(s, h, t, next) else {
                 break;
             };
             h = hn;

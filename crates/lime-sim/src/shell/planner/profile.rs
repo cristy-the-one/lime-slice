@@ -15,7 +15,9 @@
 //! flange only when the rib stands more than
 //! [`RibSection::least_height`] + 0.1 mm. A stretch the planner lowers
 //! under that (a height-capped zone, the clearance) is planned as a plain
-//! straight rib of the same width, and is to be built so.
+//! straight rib of the same width, and is to be built so. A drafted rib
+//! whose top closes to under 0.1 mm takes the same straight section, and
+//! the plan's notes say so ([`DRAFT_LOST_NOTE`]).
 //!
 //! [`choose_profile`] is the automatic choice by process and print pose.
 
@@ -97,6 +99,14 @@ pub const TEE_FLANGE_WIDTHS: f64 = 3.0;
 pub const TEE_CHAMFER_DEG: f64 = 45.0;
 /// A drafted rib's draft, degrees per side (as `ribNet`).
 pub const DRAFT_DEG: f64 = 1.0;
+/// Thinnest resin or moulded default, mm. The same floor the panel uses.
+pub const MIN_DEFAULT_WIDTH_MM: f64 = 0.4;
+/// A moulded default's base, where the flanks meet the wall, as a share of
+/// the wall. The fillet is not part of it.
+pub const MOULD_BASE_RATIO: f64 = 0.6;
+/// The moulded default root is at least this share of the wall. Half the
+/// top is kept when it is larger.
+pub const MOULD_ROOT_FLOOR: f64 = 0.25;
 /// A greatest height under this many wall thicknesses limits a straight
 /// rib (the usual rib rule, and where the measured panel stopped needing
 /// a flange: 6 mm on a 2 mm wall).
@@ -124,6 +134,17 @@ impl RibProfile {
         Self::Drafted {
             draft_deg: DRAFT_DEG,
             root_radius: 0.5 * top.max(0.0),
+        }
+    }
+
+    /// The moulded automatic rib: drafted at [`DRAFT_DEG`], the root from
+    /// [`moulded_default_root`] (half the top, or 0.25 × the wall when
+    /// half the top is smaller). A typed drafted profile stays
+    /// [`RibProfile::default_drafted`] and is not clamped.
+    pub fn moulded_default(width: f64, height: f64, wall: f64) -> Self {
+        Self::Drafted {
+            draft_deg: DRAFT_DEG,
+            root_radius: moulded_default_root(width, height, wall),
         }
     }
 
@@ -175,6 +196,23 @@ impl RibProfile {
         } else {
             RibSection::rectangular(width)
         }
+    }
+
+    /// True when a drafted stretch at one of `heights` is built straight
+    /// because the draft closes its top (under 0.1 mm). A stretch that is
+    /// only too low for its root is not this.
+    pub fn loses_draft(self, width: f64, heights: &[f64]) -> bool {
+        let Self::Drafted { draft_deg, .. } = self else {
+            return false;
+        };
+        let tan = draft_deg.to_radians().tan();
+        heights.iter().any(|&height| {
+            width - height * tan < 0.1
+                && matches!(
+                    self.section_at(width, height),
+                    RibSection::Rectangular { .. }
+                )
+        })
     }
 
     /// Whether the profile stands `height` tall at `width`, in full.
@@ -316,6 +354,55 @@ impl RibProfile {
     }
 }
 
+/// The reply rounds a section width to 6 decimals. Rounding the exact width
+/// up puts the base over 0.6, so this stops on the 6-decimal millimetre at
+/// or under it. The panel's `wireWidthMm` is the same step.
+fn wire_width_mm(mm: f64) -> f64 {
+    if !mm.is_finite() {
+        return mm;
+    }
+    (mm * 1e6).floor() / 1e6
+}
+
+/// Half-height width of the moulded default, so the base at `height` is
+/// [`MOULD_BASE_RATIO`] × `wall`. Draft stays [`DRAFT_DEG`]. The panel's
+/// copy is `mouldedDefaultWidth`; both are the one rule for that language.
+pub fn moulded_default_width(wall: f64, height: f64) -> f64 {
+    wire_width_mm(
+        (MOULD_BASE_RATIO * wall - height * DRAFT_DEG.to_radians().tan()).max(MIN_DEFAULT_WIDTH_MM),
+    )
+}
+
+/// Root radius of the moulded default, mm. Half the top width, or
+/// [`MOULD_ROOT_FLOOR`] × `wall` when half the top is smaller. The panel's
+/// copy is `mouldedDefaultRoot`.
+pub fn moulded_default_root(width: f64, height: f64, wall: f64) -> f64 {
+    let half_top = 0.5 * (width - height * DRAFT_DEG.to_radians().tan()).max(0.0);
+    half_top.max(MOULD_ROOT_FLOOR * wall)
+}
+
+/// Root of the moulded default, and whether the base rule and the root
+/// band cannot both hold. `thin` is the thinnest wall under the plan
+/// (the width was already sized from it) and `thick` is the thickest.
+/// The root is [`moulded_default_root`] of `thick`, so it is at least
+/// 0.25 × every local wall. When `thick` is more than twice `thin`,
+/// 0.25 × `thick` is past 0.5 × `thin`: the root stays half the top and
+/// the flag is true. The panel's copy is `mouldedPlanRoot`.
+pub fn moulded_plan_root(width: f64, height: f64, thin: f64, thick: f64) -> (f64, bool) {
+    if thick > 2.0 * thin {
+        let half = 0.5 * (width - height * DRAFT_DEG.to_radians().tan()).max(0.0);
+        (half, true)
+    } else {
+        (moulded_default_root(width, height, thick), false)
+    }
+}
+
+/// Said on the plan when a drafted rib is built straight because the
+/// draft closes its top. A stretch that is only too low for its root
+/// is the older fallback and is not this note.
+pub const DRAFT_LOST_NOTE: &str =
+    "The draft closes a rib to under 0.1 mm at its top, so that stretch is straight.";
+
 /// The profile for a process and a print pose, following what the rib
 /// tests measured (`tests/rib_profiles.rs`): at equal material a straight
 /// rib that may stand taller beats a tee, and a tee beats a straight rib
@@ -328,7 +415,11 @@ impl RibProfile {
 ///   greatest height, so a clearance or a zone cap under it is a limit;
 ///   and a greatest height under [`STRAIGHT_HEIGHT_WALLS`] walls is a limit
 ///   everywhere. A stretch too low for the tee stays straight.
-/// - Moulded: drafted ([`RibProfile::default_drafted`]).
+/// - Moulded: drafted at [`DRAFT_DEG`], the root half the top
+///   ([`RibProfile::default_drafted`]). A typed width keeps that root.
+///   The moulded default's clamp ([`moulded_plan_root`]) is applied by
+///   the caller, which sends the root, because this function cannot
+///   tell a typed width from the default.
 pub fn choose_profile(rules: &ProfileRules) -> RibProfile {
     if let Some(p) = rules.force {
         return p;
@@ -416,6 +507,95 @@ mod tests {
             ..bed
         };
         assert_eq!(choose_profile(&forced), RibProfile::Rectangular);
+    }
+
+    /// The same six rows the panel test locks (`mouldedDefaultWidth` /
+    /// `mouldedDefaultRoot`). Clamped only at 3 × wall. A typed 1.2 mm rib
+    /// at 6 mm on a 2 mm wall stays half the top: the clamp does not bind.
+    #[test]
+    fn moulded_default_matches_the_panel_table() {
+        let rows: [(f64, f64, f64, f64, bool); 6] = [
+            (2.0, 2.0, 1.165089, 0.5650894350717824, false),
+            (2.0, 4.0, 1.130179, 0.5301793701435649, false),
+            (2.0, 6.0, 1.095269, 0.5, true),
+            (3.0, 3.0, 1.747634, 0.8476344026076735, false),
+            (3.0, 6.0, 1.695269, 0.7952693052153472, false),
+            (3.0, 9.0, 1.642904, 0.75, true),
+        ];
+        for (wall, height, width, root, clamped) in rows {
+            let w = moulded_default_width(wall, height);
+            let r = moulded_default_root(w, height, wall);
+            assert!((w - width).abs() < 1e-12, "{wall} {height} width {w} {width}");
+            assert!((r - root).abs() < 1e-12, "{wall} {height} root {r} {root}");
+            let half_top = 0.5 * (w - height * DRAFT_DEG.to_radians().tan()).max(0.0);
+            assert_eq!(r > half_top + 1e-12, clamped, "{wall} {height}");
+            // choose_profile is the typed path: half the top, no clamp.
+            let chosen = choose_profile(&ProfileRules {
+                process: Process::Moulded,
+                flange: None,
+                width: w,
+                max_height: height,
+                wall,
+                force: None,
+            });
+            assert_eq!(chosen, RibProfile::default_drafted(w, height));
+        }
+        // 1.2 mm at 6 mm on a 2 mm wall is the one typed width where the
+        // clamp does not bind, so it equals the default either way.
+        let typed = choose_profile(&ProfileRules {
+            process: Process::Moulded,
+            flange: None,
+            width: 1.2,
+            max_height: 6.0,
+            wall: 2.0,
+            force: None,
+        });
+        assert_eq!(typed, RibProfile::default_drafted(1.2, 6.0));
+        // 0.6, 0.8 and 1.0 are where the clamp used to bind. A typed width stays half the top.
+        for width in [0.6_f64, 0.8, 1.0] {
+            let typed = choose_profile(&ProfileRules {
+                process: Process::Moulded,
+                flange: None,
+                width,
+                max_height: 6.0,
+                wall: 2.0,
+                force: None,
+            });
+            assert_eq!(typed, RibProfile::default_drafted(width, 6.0), "{width}");
+            assert_ne!(typed, RibProfile::moulded_default(width, 6.0, 2.0), "{width}");
+        }
+        let (root, limited) = moulded_plan_root(1.095269, 6.0, 2.0, 4.1);
+        let half = 0.5 * (1.095269 - 6.0 * DRAFT_DEG.to_radians().tan()).max(0.0);
+        assert!(limited);
+        assert!((root - half).abs() < 1e-12, "{root} {half}");
+        let (clamped, not_limited) = moulded_plan_root(1.095269, 6.0, 2.0, 2.1);
+        assert!(!not_limited);
+        assert!((clamped - 0.25 * 2.1).abs() < 1e-12, "{clamped}");
+    }
+
+    /// Above about 31.5 mm on a 2 mm wall the default top closes and the
+    /// stretch is straight. The geometry stays; the note is what is new.
+    #[test]
+    fn a_closed_top_is_straight() {
+        let mut closed = None;
+        for step in 3000..=4000 {
+            let height = f64::from(step) / 100.0;
+            let width = moulded_default_width(2.0, height);
+            let profile = RibProfile::moulded_default(width, height, 2.0);
+            if profile.loses_draft(width, &[height]) {
+                closed = Some((height, width));
+                break;
+            }
+        }
+        let (height, width) = closed.expect("a height that closes");
+        assert!((height - 31.51).abs() < 1e-9, "{height}");
+        assert!(matches!(
+            RibProfile::moulded_default(width, height, 2.0).section_at(width, height),
+            RibSection::Rectangular { .. }
+        ));
+        let below = 31.5;
+        let w = moulded_default_width(2.0, below);
+        assert!(!RibProfile::moulded_default(w, below, 2.0).loses_draft(w, &[below]));
     }
 
     #[test]

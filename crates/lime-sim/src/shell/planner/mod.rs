@@ -67,7 +67,10 @@ use super::{
     ShellModel, ShellOptions,
 };
 
-pub use profile::{choose_profile, FlangeShape, Process, ProfileRules, RibProfile};
+pub use profile::{
+    choose_profile, moulded_default_root, moulded_default_width, moulded_plan_root, FlangeShape,
+    Process, ProfileRules, RibProfile, DRAFT_LOST_NOTE,
+};
 pub use trace::Family;
 pub use vents::{vent_pockets, BorderKind, BorderRun, EndKind, RibRun, VentPocket, VentPockets, Venting, PART_CUPS, RESIN_VENT_MM};
 
@@ -236,6 +239,13 @@ pub struct PlannerOptions {
     /// Exponent of [`LoadCombine::Worst`]'s p-norm. A weighted or one-case
     /// plan does not read it.
     pub worst_p: f64,
+    /// Treat edges where the wall turns more than 20° as creases: the
+    /// direction field and the traces unfold across them, every triangle
+    /// on an edge (a T-junction) is a neighbour, and a rib at a crease
+    /// stands on its own face. Meant for a folded wall (a cover's side
+    /// walls taken as one shell). Off by default: a plan is then exactly
+    /// what v6.12 gave for the same mesh, sharp edges included.
+    pub creases: bool,
 }
 
 /// Exactly solved candidates per round: one batch for eight models. The
@@ -257,6 +267,17 @@ impl Default for PlannerOptions {
             baselines: true,
             close_loose_ends: true,
             worst_p: WORST_P,
+            creases: false,
+        }
+    }
+}
+
+impl PlannerOptions {
+    /// The shell options every planning model is built with.
+    pub(crate) fn shell(&self) -> ShellOptions {
+        ShellOptions {
+            creases: self.creases,
+            ..ShellOptions::default()
         }
     }
 }
@@ -684,7 +705,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         ..PlanStats::default()
     };
     let rules = &req.rules;
-    let s0 = surface::Surface::new(&req.mesh, rules.clearance.as_deref());
+    let mut s0 = surface::Surface::new(&req.mesh, rules.clearance.as_deref());
+    s0.creases = req.options.creases;
     let cases0 = if req.load_cases.is_empty() {
         vec![vec![ShellLoad::Pressure {
             triangles: (0..req.mesh.triangles.len() as u32).collect(),
@@ -701,7 +723,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         req.mesh.clone(),
         req.material,
         &holds0,
-        ShellOptions::default(),
+        req.options.shell(),
     )?;
     rep.stage(PlanStage::BareSolve, 0.0);
     // One thread, as every planning model: the answer then does not depend
@@ -901,7 +923,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 mesh1.clone(),
                 req.material,
                 &holds1,
-                ShellOptions::default(),
+                req.options.shell(),
             )
         })
         .collect::<Result<_, _>>()?;
@@ -1223,6 +1245,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     };
     stats.seconds.total = started.elapsed().as_secs_f64();
     rep.stage(PlanStage::Done, 1.0);
+    let notes = draft_lost_notes(&ribs);
     Ok(RibPlan {
         ribs,
         rib_volume_mm3: rib_volume,
@@ -1243,7 +1266,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         vents,
         frequency_hz: None,
         frequency_factor: None,
-        notes: Vec::new(),
+        notes,
     })
 }
 
@@ -1287,6 +1310,20 @@ fn remap_loose(points: &[([f64; 3], LooseEndReason)], ribs: &[GRib]) -> Vec<(usi
         }
     }
     out
+}
+
+/// The draft-lost sentence, when any drafted stretch was built straight
+/// because its top closed. Empty otherwise, so a plan that keeps its
+/// draft stays as it was.
+pub(crate) fn draft_lost_notes(ribs: &[PlannedRib]) -> Vec<String> {
+    if ribs
+        .iter()
+        .any(|rib| rib.profile.loses_draft(rib.width, &rib.heights))
+    {
+        vec![DRAFT_LOST_NOTE.to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// A chosen rib by its geometry: points on the mid-surface and the height
@@ -1383,7 +1420,7 @@ fn resize(
     let mesh = s.to_mesh();
     let models: Vec<ShellModel> = (0..workers)
         .into_par_iter()
-        .map(|_| ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default()))
+        .map(|_| ShellModel::new(mesh.clone(), req.material, &holds, req.options.shell()))
         .collect::<Result<_, _>>()?;
     let mut ev = select::Evaluator::new(
         models,
@@ -1497,7 +1534,7 @@ fn clean_solve(
     let holds = resolve_holds(&s, &req.holds);
     let cases = remap_cases(&s, cases0, req.mesh.triangles.len());
     let mesh = s.to_mesh();
-    let mut model = ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default())?;
+    let mut model = ShellModel::new(mesh.clone(), req.material, &holds, req.options.shell())?;
     model.set_threads(1);
     let bare = model.solve_cases(&cases)?;
     let bare_cs: Vec<f64> = bare.iter().map(|r| r.compliance).collect();

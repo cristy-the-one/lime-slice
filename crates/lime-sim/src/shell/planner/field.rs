@@ -201,9 +201,18 @@ impl Field {
         // Dual graph with the frame rotations. Every triangle on an edge
         // is a neighbour, so a T-junction's third face joins the smooth;
         // a two-triangle edge still contributes the one `neighbour` did.
+        // With creases off: one neighbour per edge and the plain
+        // projection, as v6.12 built it.
         let mut nbrs: Vec<Vec<(u32, C)>> = vec![Vec::new(); nt];
         for t in 0..nt as u32 {
             for k in 0..3 {
+                if !surface.creases {
+                    if let Some(o) = surface.neighbour(t, k) {
+                        let delta = frames[t as usize].offset_from(&frames[o as usize]);
+                        nbrs[t as usize].push((o, C::polar(1.0, 4.0 * delta)));
+                    }
+                    continue;
+                }
                 for o in surface.neighbours(t, k) {
                     let delta = carried_offset(surface, &frames, t, o, k);
                     nbrs[t as usize].push((o, C::polar(1.0, 4.0 * delta)));
@@ -238,7 +247,11 @@ impl Field {
         // the other faces across by unfolding about the edges, so the
         // value stored at the vertex is not the bisector's.
         let nv = surface.pos.len();
-        let sharp = crease_vertices(surface, &frames);
+        let sharp = if surface.creases {
+            crease_vertices(surface, &frames)
+        } else {
+            vec![false; nv]
+        };
         let mut fans: Vec<Option<HashMap<u32, (f64, f64)>>> = vec![None; nv];
         for v in 0..nv {
             if sharp[v] {

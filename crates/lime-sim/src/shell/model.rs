@@ -177,6 +177,13 @@ pub struct ShellOptions {
     /// is `α G t` per unit area on the gap between the drilling rotation and
     /// the in-plane rotation.
     pub drill_penalty: f64,
+    /// Stand a rib on its own face where the wall turns more than 20°
+    /// (a crease): the foot is that face's normal and the web axis the
+    /// miter of the rib's faces. Off, every rib end takes the
+    /// area-weighted vertex normal, as v6.12 did. On by default for a
+    /// model built directly; the rib planner sets it from
+    /// [`super::planner::PlannerOptions::creases`], which is off by default.
+    pub creases: bool,
 }
 
 /// The default drilling penalty. The tests sweep α from 1e-4 to 1: a flat
@@ -190,6 +197,7 @@ impl Default for ShellOptions {
         Self {
             membrane: MembraneKind::Allman,
             drill_penalty: DRILL_PENALTY,
+            creases: true,
         }
     }
 }
@@ -417,7 +425,13 @@ impl ShellModel {
                     .ok_or_else(|| SimError::new(format!("Vertex {i} is on no triangle.")))?,
             );
         }
-        let (on_crease, edge_faces) = crease_map(&mesh, &tris);
+        // Creases off: no vertex is a crease, so every rib end keeps the
+        // averaged vertex normal exactly as before the crease handling.
+        let (on_crease, edge_faces) = if options.creases {
+            crease_map(&mesh, &tris)
+        } else {
+            (vec![false; n], EdgeFaces::new())
+        };
         pairs.sort_unstable();
         pairs.dedup();
         let mut neighbours: Vec<Vec<u32>> = vec![Vec::new(); n];

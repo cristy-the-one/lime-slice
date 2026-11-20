@@ -484,7 +484,8 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     for (const raw of spec.faces) {
       const face = bakedFace(raw, ctx);
       if (typeof face !== "number") return face;
-      if (faces.includes(face)) return { reason: `Face ${faces.length} is listed twice.` };
+      // Named by the face's index, as picked, not by its place in the list.
+      if (faces.includes(face)) return { reason: `Face ${face} is listed twice.` };
       faces.push(face);
     }
     const rawPull = spec.pull === undefined ? undefined : readVec3(spec.pull, [NaN, NaN, NaN]);
