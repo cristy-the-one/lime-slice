@@ -1,0 +1,224 @@
+//! Resin vent notches on a clamped panel. The opening faces +Z. A build axis
+//! of +Z points that opening at the tank, so the closed cells cup. -Z points
+//! it at the platform, so none do.
+//!
+//! One long side of the border is open. The same panel with a rising border
+//! all round cannot be vented by ribs.
+
+use lime_sim::shell::planner::{plan_ribs, vent_pockets, BorderKind, BorderRun, EndKind, Goal, RibEndKind, RibPlanRequest, RibProfile, RibRun, PART_CUPS};
+use lime_sim::shell::{IsotropicShell, ShellMesh};
+use lime_sim::units::{norm, sub};
+
+fn base(axis: [f64; 3], vent: bool) -> RibPlanRequest {
+    let mut req = RibPlanRequest::new(
+        ShellMesh::rectangle([80.0, 60.0], [12, 8], 2.0),
+        IsotropicShell::new(2000.0, 0.35).expect("material"),
+    );
+    req.vent = vent;
+    req.build_axis = axis;
+    req.options.baselines = false;
+    req.rules.min_spacing = 12.0;
+    // 900 mm³ stops one rib in mid-wall. That end does not drain. The rising border stays shut.
+    req.goal = Goal::Budget { volume_mm3: 900.0 };
+    req
+}
+
+fn open_side(axis: [f64; 3], vent: bool) -> lime_sim::shell::planner::RibPlan {
+    let mut req = base(axis, vent);
+    // y = 0 is the open edge. The other three sides are side walls.
+    req.borders = vec![
+        (vec![[0.0, 0.0, 0.0], [80.0, 0.0, 0.0]], BorderKind::Open),
+        (vec![[80.0, 0.0, 0.0], [80.0, 60.0, 0.0]], BorderKind::Rises),
+        (vec![[80.0, 60.0, 0.0], [0.0, 60.0, 0.0]], BorderKind::Rises),
+        (vec![[0.0, 60.0, 0.0], [0.0, 0.0, 0.0]], BorderKind::Rises),
+    ];
+    plan_ribs(&req).expect("plan")
+}
+
+fn rising_all_round(axis: [f64; 3]) -> lime_sim::shell::planner::RibPlan {
+    let mut req = base(axis, true);
+    req.rising_border = true;
+    plan_ribs(&req).expect("plan")
+}
+
+#[test]
+fn resin_vents_the_pockets_and_a_rising_border_does_not() {
+    let down = open_side([0.0, 0.0, 1.0], true);
+    let vents = down.vents.expect("a resin plan reports vents");
+    let n = vents.pockets.len();
+    println!(
+        "open side: {} pockets, {} unvented, stiffness before {:.6} after {:.6}, reported {:.6}",
+        n,
+        vents.unvented.len(),
+        vents.factor_before,
+        vents.factor_after,
+        down.stiffness_factor
+    );
+    assert!(n > 0, "the ribs closed no cell ({} ribs, factor {:.4})", down.ribs.len(), vents.factor_before);
+    assert_eq!(vents.unvented.len(), 0, "a cell that can reach the open side was left: {:?}", vents.unvented);
+    assert!((vents.size_mm - 0.75).abs() < 1e-9);
+    assert!(vents.factor_before > 1.0);
+    assert!(vents.factor_after <= vents.factor_before + 1e-4, "a gap made the panel stiffer: {} -> {}", vents.factor_before, vents.factor_after);
+    assert!((down.stiffness_factor - vents.factor_after).abs() < 1e-6, "the reported factor is the notched solve");
+    for pocket in &vents.pockets {
+        assert!(pocket.rib < down.ribs.len(), "pocket.rib {} is not a returned rib", pocket.rib);
+    }
+    let gap_ends = down.ribs.iter().filter(|rib| rib.ends.contains(&RibEndKind::Gap)).count();
+    println!("gap ends in plan.ribs: {gap_ends}");
+    assert!(gap_ends >= 2, "a notch end is marked free, not gap: {:?}", down.ribs.iter().map(|rib| rib.ends).collect::<Vec<_>>());
+
+    let borders = [
+        BorderRun { points: &[[0.0, 0.0, 0.0], [80.0, 0.0, 0.0]], kind: BorderKind::Open },
+        BorderRun { points: &[[80.0, 0.0, 0.0], [80.0, 60.0, 0.0]], kind: BorderKind::Rises },
+        BorderRun { points: &[[80.0, 60.0, 0.0], [0.0, 60.0, 0.0]], kind: BorderKind::Rises },
+        BorderRun { points: &[[0.0, 60.0, 0.0], [0.0, 0.0, 0.0]], kind: BorderKind::Rises },
+    ];
+    let runs: Vec<RibRun<'_>> = down
+        .ribs
+        .iter()
+        .map(|rib| {
+            let gap = |end: usize| {
+                let p = if end == 0 { rib.points[0] } else { *rib.points.last().expect("points") };
+                vents.pockets.iter().any(|pocket| norm(sub(p, pocket.at)) < 1.0)
+            };
+            RibRun {
+                points: &rib.points,
+                ends: [if gap(0) { EndKind::Gap } else { EndKind::Closed }, if gap(1) { EndKind::Gap } else { EndKind::Closed }],
+                width_mm: rib.width,
+            }
+        })
+        .collect();
+    let again = vent_pockets(&runs, &borders, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
+    println!("re-run: closed {} pockets {} unvented {}", again.closed, again.pockets.len(), again.unvented.len());
+    assert!(again.pockets.is_empty() && again.unvented.is_empty(), "the notched ribs still cup: {again:?}");
+
+    let up = open_side([0.0, 0.0, -1.0], true);
+    let open = up.vents.expect("resin");
+    println!("facing the platform: {} pockets, factor {:.6}", open.pockets.len(), open.factor_before);
+    assert!(open.pockets.is_empty(), "facing the platform still cupped: {}", open.pockets.len());
+    assert!((open.factor_before - open.factor_after).abs() < 1e-6);
+
+    let plain = open_side([0.0, 0.0, 1.0], false);
+    println!("vent left false: stiffness {:.6}, vents key absent", plain.stiffness_factor);
+    assert!(plain.vents.is_none());
+    assert!((plain.stiffness_factor - vents.factor_before).abs() < 1e-3, "the unnotched resin layout matches the filament plan");
+
+    let walled = rising_all_round([0.0, 0.0, 1.0]);
+    let shut = walled.vents.expect("resin");
+    println!(
+        "rising all round: {} pockets, {} unvented, before {:.6} after {:.6}, ribs {}, loose ends {}",
+        shut.pockets.len(),
+        shut.unvented.len(),
+        shut.factor_before,
+        shut.factor_after,
+        walled.ribs.len(),
+        walled.loose_ends.len()
+    );
+    assert!(shut.pockets.is_empty(), "a side wall all round was notched");
+    assert!(!shut.unvented.is_empty(), "the part itself cups, and that is reported");
+    assert!(shut.unvented.iter().all(|item| item.message == PART_CUPS), "{:?}", shut.unvented);
+    assert!((shut.factor_before - shut.factor_after).abs() < 1e-6, "nothing was cut, so the factor is unchanged");
+}
+
+/// The OCCT side wall is about 34 by 87 mm, open along the long rim, with the product resin
+/// rules the job logged (width 2.4, spacing 9.6, minimum rib 5). This is that panel, flat.
+#[test]
+fn a_product_spacing_panel_with_an_open_rim_vents() {
+    let mut req = RibPlanRequest::new(
+        ShellMesh::rectangle([34.0, 87.0], [8, 18], 3.0),
+        IsotropicShell::new(2000.0, 0.35).expect("material"),
+    );
+    req.vent = true;
+    req.build_axis = [0.0, 0.0, 1.0];
+    req.options.baselines = false;
+    req.rules.width = 2.4;
+    req.rules.min_spacing = 9.6;
+    req.rules.min_length = 5.0;
+    req.goal = Goal::Budget { volume_mm3: 8000.0 };
+    req.borders = vec![
+        (vec![[0.0, 0.0, 0.0], [34.0, 0.0, 0.0]], BorderKind::Rises),
+        (vec![[34.0, 0.0, 0.0], [34.0, 87.0, 0.0]], BorderKind::Rises),
+        (vec![[34.0, 87.0, 0.0], [0.0, 87.0, 0.0]], BorderKind::Open),
+        (vec![[0.0, 87.0, 0.0], [0.0, 0.0, 0.0]], BorderKind::Rises),
+    ];
+    let plan = plan_ribs(&req).expect("plan");
+    let vents = plan.vents.expect("vents");
+    let pieces: Vec<String> = plan
+        .ribs
+        .iter()
+        .enumerate()
+        .map(|(i, rib)| {
+            let mut n = 0.0;
+            for w in rib.points.windows(2) {
+                n += norm(sub(w[1], w[0]));
+            }
+            format!("{i}:{n:.2}")
+        })
+        .collect();
+    println!(
+        "open panel: ribs {} pockets {} unvented {} pieces {}",
+        plan.ribs.len(),
+        vents.pockets.len(),
+        vents.unvented.len(),
+        pieces.join(" ")
+    );
+    for item in &vents.unvented {
+        println!("unvented {:?} {}", item.at, item.message);
+    }
+    assert!(!vents.pockets.is_empty(), "spacing 9.6 width 2.4 minLength 5; pieces {}", pieces.join(" "));
+}
+
+/// The tray floor: 114 × 64 mm, the inner floor of a 120 × 70 × 25 box with 3 mm walls and one
+/// short wall gone. Product resin rules (width 2.4, spacing 64/6, least length 8). Three rising
+/// edges and one open. Prints ribs, crossings and closed cells for stiffer ×2, ×3 and a budget.
+#[test]
+fn tray_floor_goals_report_closed_cells() {
+    let (w, d) = (114.0, 64.0);
+    let goals = [
+        ("stiffer x2", Goal::Stiffer(2.0)),
+        ("stiffer x3", Goal::Stiffer(3.0)),
+        ("budget 8000", Goal::Budget { volume_mm3: 8000.0 }),
+    ];
+    for (name, goal) in goals {
+        let mut req = RibPlanRequest::new(
+            ShellMesh::rectangle([w, d], [16, 8], 3.0),
+            IsotropicShell::new(2000.0, 0.35).expect("material"),
+        );
+        req.vent = true;
+        req.build_axis = [0.0, 0.0, 1.0];
+        req.options.baselines = false;
+        req.rules.width = 2.4;
+        req.rules.min_spacing = d / 6.0;
+        req.rules.min_length = (d / 8.0).clamp(5.0, 40.0);
+        req.rules.profile = RibProfile::Drafted { draft_deg: 1.0, root_radius: 1.2 };
+        req.goal = goal;
+        req.borders = vec![
+            (vec![[0.0, 0.0, 0.0], [0.0, d, 0.0]], BorderKind::Rises),
+            (vec![[0.0, d, 0.0], [w, d, 0.0]], BorderKind::Rises),
+            (vec![[w, d, 0.0], [w, 0.0, 0.0]], BorderKind::Open),
+            (vec![[w, 0.0, 0.0], [0.0, 0.0, 0.0]], BorderKind::Rises),
+        ];
+        let plan = plan_ribs(&req).expect(name);
+        let vents = plan.vents.expect("vents");
+        let mut crossings = 0;
+        for (i, a) in plan.ribs.iter().enumerate() {
+            for b in plan.ribs.iter().skip(i + 1) {
+                let hit = a.points.iter().any(|p| b.points.iter().any(|q| norm(sub(*p, *q)) < 0.5));
+                if hit {
+                    crossings += 1;
+                }
+            }
+        }
+        let closed = vents.pockets.len() + vents.unvented.len();
+        println!(
+            "tray {name}: ribs {} crossings {crossings} closed {closed} pockets {} unvented {} factor {:.3} goal_met {}",
+            plan.ribs.len(),
+            vents.pockets.len(),
+            vents.unvented.len(),
+            plan.stiffness_factor,
+            plan.goal_met
+        );
+        assert!(closed > 0 && !vents.pockets.is_empty(), "{name} closed no cell");
+        assert!(vents.unvented.iter().all(|item| !item.message.is_empty()));
+    }
+}

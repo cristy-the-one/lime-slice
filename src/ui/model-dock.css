@@ -739,7 +739,7 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-auto-ribs .ar-step { margin-bottom: var(--space-3); }
 .model-auto-ribs .ar-step > legend { display: flex; align-items: center; gap: 6px; font-size: var(--fs-2); color: var(--text); font-weight: 600; margin-bottom: 2px; }
 .model-auto-ribs .ar-wall-line { color: var(--text); font-variant-numeric: tabular-nums; }
-.model-auto-ribs .ar-wall-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.model-auto-ribs .ar-wall-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
 .model-auto-ribs .ar-small { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-1); }
 .model-auto-ribs .ar-warnings, .model-auto-ribs .ar-lines { margin: 0 0 var(--space-2); padding-left: 1.1em; color: var(--text-dim); font-size: var(--fs-1); line-height: 1.4; }
 .model-auto-ribs .ar-warnings { color: var(--warn); }
@@ -770,7 +770,11 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-auto-ribs .ar-more { border-top: 1px solid var(--line); padding-top: var(--space-1); }
 .model-auto-ribs .ar-more > summary { font-size: var(--fs-2); color: var(--text); padding: 4px 0; cursor: pointer; }
 .model-auto-ribs .ar-modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; margin: 0 0 var(--space-2); }
+.model-auto-ribs .ar-modes.is-frequency { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .model-auto-ribs .ar-modes .btn.mode { min-width: 0; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html:not(.layout-compact) .model-dock .model-auto-ribs .ar-measure,
+.model-auto-ribs .ar-measure { display: flex; flex-wrap: wrap; width: 100%; max-width: 100%; margin: 0 0 var(--space-2); }
+.model-auto-ribs .ar-measure .btn.mode { flex: 1 1 auto; white-space: nowrap; }
 .model-auto-ribs .ar-slider input[type="range"] { width: 100%; accent-color: var(--accent); }
 .model-auto-ribs .ar-slider-ends { display: flex; justify-content: space-between; color: var(--text-faint); font-size: var(--fs-1); }
 .model-auto-ribs .model-fields { margin: 0 0 var(--space-2); }
@@ -792,6 +796,9 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-auto-ribs .ar-zone .ar-wide { grid-column: 1 / span 2; }
 .model-auto-ribs .ar-inline { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-1); color: var(--text-dim); }
 .model-auto-ribs .ar-inline input { width: 56px; height: var(--control-h-sm); }
+.model-auto-ribs .ar-case-head { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); }
+.model-auto-ribs .ar-case-head input[data-case-field="name"] { flex: 1 1 auto; min-width: 0; height: var(--control-h-sm); }
+.model-auto-ribs #autoRibsAddCase { margin: 0 0 var(--space-2); }
 .model-auto-ribs .ar-inline-row { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); font-size: var(--fs-1); }
 .model-auto-ribs .ar-inline-row select { flex: 1 1 auto; height: var(--control-h-sm); }
 .model-auto-ribs .ar-stress { display: grid; gap: 4px; justify-items: start; margin: 0 0 var(--space-2); }

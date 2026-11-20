@@ -730,6 +730,23 @@ TopoDS_Shape build_move_faces(
     const std::vector<FaceOffset>& faces,
     double& volume,
     std::string& error);
+/// The picked faces tilted by `angle_deg`. Positive opens them toward `pull`: matter leaves that side of the
+/// neutral plane, so a box drafted about its bottom shrinks at the top. A `neutral` face, else `plane_origin`
+/// and `plane_normal`, else the plane through the lowest point of the picked faces along `pull`, normal `pull`.
+/// `names` are the faces' indices on the solid, one per face, for refusals; empty names them by their place.
+/// It refuses only when neither the volume nor the surface area changes.
+TopoDS_Shape build_draft(
+    const TopoDS_Shape& current,
+    double before,
+    const std::vector<TopoDS_Face>& faces,
+    const std::vector<int>& names,
+    double angle_deg,
+    const gp_Dir& pull,
+    const TopoDS_Face* neutral,
+    const gp_Pnt* plane_origin,
+    const gp_Dir* plane_normal,
+    double& volume,
+    std::string& error);
 /// `{origin, turn, loops}` for a flat face: D2 loops in the face's plane. Empty, and `error` set, otherwise.
 std::string face_loops_json(const TopoDS_Face& face, std::string& error);
 

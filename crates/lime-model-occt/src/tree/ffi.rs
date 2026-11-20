@@ -425,6 +425,16 @@ extern "C" {
         count: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    pub(super) fn lime_tree_draft(
+        from: *const RawShape,
+        faces: *const c_int,
+        count: c_int,
+        angle_deg: f64,
+        pull: *const f64,
+        neutral_face: c_int,
+        plane: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     pub(super) fn lime_tree_face_loops(
         shape: *const RawShape,
         face: c_int,

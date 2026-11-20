@@ -122,7 +122,7 @@ pub(crate) struct RibEnd {
 
 impl RibEnd {
     /// `[u_c; θ_c] = G [u; θ; ψ]`, 6 × 7 (see the module notes).
-    fn map(&self) -> [[f64; 7]; 6] {
+    pub(crate) fn map(&self) -> [[f64; 7]; 6] {
         let y = self.lateral;
         let mut p = [[0.0; 3]; 3];
         for i in 0..3 {

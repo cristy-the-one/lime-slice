@@ -8,14 +8,16 @@
  * commands, the `serve` routes): one poller per job, since each event is handed out once. `src/app/model/
  * auto-ribs-source.ts` picks the transport.
  *
- * `fakePlanSource` is a deterministic stand-in with the same shape, for the browser specs: it lays straight ribs across
+ * `fakePlanSource` is a deterministic stand-in with the same shape, for the browser specs: it lays ribs across
  * the wall along its two longest directions, centre first, honours "no ribs" and height-capped zones and the clearance
  * in the request, and goes through the same stages. Its numbers are made up.
  *
  * Shared module: no DOM, no engine.
  */
-import type { RibWallRequest } from "./modeling/rib-wall.ts";
+import type { RibWall, RibWallRequest } from "./modeling/rib-wall.ts";
 import type { Section } from "./modeling/auto-ribs.ts";
+import { defaultDraftedSection } from "./modeling/moulding.ts";
+import { meshOpening, notchRibs, ventPockets, type VentPocket } from "./modeling/vents.ts";
 
 export type V3 = [number, number, number];
 
@@ -60,6 +62,8 @@ export interface RibEvent {
   ribVolumeMm3: number;
   compliance: number;
   stiffnessFactor: number;
+  /** Ribbed over bare lowest frequency, only on a frequency plan's rib events. */
+  frequencyFactor?: number;
   fraction: number;
 }
 
@@ -93,6 +97,10 @@ export interface RibPlanResult {
   bare: PlanResponse;
   ribbed: PlanResponse;
   stiffnessFactor: number;
+  /** Lowest natural frequency before and after the ribs, Hz. Absent on a stiffness plan. */
+  frequencyHz?: { bare: number; ribbed: number };
+  /** Ribbed over bare lowest frequency. Absent on a stiffness plan. */
+  frequencyFactor?: number;
   goalMet: boolean;
   /** The wall thickened evenly to the plan's stiffness. Null when stopped early or not computed. */
   thickening: { addedThicknessMm: number; addedVolumeMm3: number } | null;
@@ -100,28 +108,85 @@ export interface RibPlanResult {
   grid: { reached: boolean; pitchMm: number; volumeMm3: number | null; gridVolumeMm3: number } | null;
   notBetterThanBaseline: boolean;
   stoppedEarly: boolean;
-  /** Rib ends left loose, each with why: a no-rib zone's border, or the budget. Every other end meets something. */
-  looseEnds?: { rib: number; end: number; reason: "noRibZone" | "budget" }[];
+  /** Rib ends left loose, each with why: a no-rib zone's border, the budget, or open. Every other end meets something. */
+  looseEnds?: { rib: number; end: number; reason: "noRibZone" | "budget" | "open" }[];
+  /** Per case, only when the plan was asked for two or more. One load leaves these off. */
+  caseFactors?: number[];
+  caseDeflectionMm?: { bare: number; ribbed: number }[];
+  /**
+   * Resin only. The pockets the ribs closed, and one full-height gap each. Filament and moulded leave it off.
+   * The stand-in's factors are its own; the engine's are the notched solve.
+   */
+  vents?: {
+    sizeMm: number;
+    factorBefore: number;
+    factorAfter: number;
+    notch: "gap";
+    pockets: { rib: number; at: V3; sizeMm: number }[];
+    unvented?: { at: V3; message: string }[];
+    note?: string;
+  };
+  /** Draft lost, a frequency plan's sentences, or a frequency plan that was asked to vent. Absent when there is nothing to say. */
+  notes?: string[];
+}
+
+/**
+ * The browser stand-in's per-case result, for the panel test only. `fakePlanSource` uses it so a run with two weights
+ * can show a factor per case without the engine. The heaviest case takes the combined factor; a lighter case takes a
+ * share of the gain in proportion to its weight. These are not the planner's `caseFactors`. One weight, or none, is
+ * not a case list.
+ */
+export function caseOutcomes(combined: number, bareMm: number, weights: readonly number[]): { factor: number; bareMm: number; ribbedMm: number }[] {
+  if (weights.length < 2) return [];
+  const top = Math.max(...weights.map((w) => (w > 0 ? w : 1)));
+  const round = (v: number) => Math.round(v * 1e6) / 1e6;
+  return weights.map((w) => {
+    const weight = w > 0 ? w : 1;
+    const factor = round(1 + (combined - 1) * (weight / top));
+    return { factor, bareMm, ribbedMm: factor > 0 ? round(bareMm / factor) : bareMm };
+  });
+}
+
+function perCaseOf(combined: number, bareMm: number, weights: readonly number[]): Pick<RibPlanResult, "caseFactors" | "caseDeflectionMm"> {
+  const rows = caseOutcomes(combined, bareMm, weights);
+  return rows.length >= 2 ? { caseFactors: rows.map((row) => row.factor), caseDeflectionMm: rows.map((row) => ({ bare: row.bareMm, ribbed: row.ribbedMm })) } : {};
 }
 
 /** `WireGoal`. */
-export type PlanGoal = { kind: "balanced" } | { kind: "stiffer"; factor: number } | { kind: "maxDeflection"; mm: number } | { kind: "budget"; volumeMm3: number };
+export type PlanGoal = { kind: "balanced" } | { kind: "stiffer"; factor: number } | { kind: "maxDeflection"; mm: number } | { kind: "budget"; volumeMm3: number } | { kind: "frequency"; factor: number };
 
 /** `WireProfile`. */
 export type WireProfile =
   | { kind: "auto"; process: RibProcess; flange: "chamfered" | "square" | null }
   | { kind: "straight" }
-  | { kind: "drafted" }
+  | { kind: "drafted"; draftDeg?: number; rootRadius?: number }
   | { kind: "tee"; flange: "chamfered" | "square" };
 
 /** `RibPlanBody`: ribWall's request and what the planner needs besides. */
 export interface RibPlanBody {
   request: Omit<RibWallRequest, "holds"> & { holds: RibWallRequest["holds"] | { kind: "allBoundary" } };
-  material?: { e: number; nu: number };
+  material?: { e: number; nu: number; densityGCm3?: number; name?: string };
   rules: { width: number; maxHeight: number; minHeight?: number; minSpacing: number; minLength: number; profile?: WireProfile };
   goal?: PlanGoal;
-  options?: { baselines?: boolean };
+  /** creases: plan across sharp edges; sent only for a wall read with folded, so any other wall plans as v6.12 did. */
+  options?: { baselines?: boolean; creases?: boolean };
   holeRimMarginMm?: number;
+  /** One weight per load case, in order. Absent for one load, which is a plain sum, as before. */
+  caseWeights?: number[];
+  /** Resin only. The engine cuts a vent through each pocket the ribs close. */
+  vent?: boolean;
+  /** Plate frame, from the platform toward the tank, turned into the wall frame. Resin only; omitted is plate +Z. */
+  buildAxis?: V3;
+  /** Wall borders in the wall frame. The panel and ribs_plan send the same list. */
+  borders?: { points: readonly (readonly [number, number, number])[]; kind: "rises" | "open" | "hole" }[];
+}
+
+/**
+ * The plan body's options, for the panel and ribs_plan alike. creases goes only with a wall read with folded (its
+ * report lists faces.folded), so every other wall, sharp edges included, plans exactly as v6.12 did.
+ */
+export function planOptions(wall: Pick<RibWall, "report">, baselines: boolean): NonNullable<RibPlanBody["options"]> {
+  return { baselines, ...(wall.report.faces.folded !== undefined ? { creases: true } : {}) };
 }
 
 export type PlanReply = { ok: true; plan: RibPlanResult } | { ok: false; reason: string };
@@ -205,6 +270,7 @@ export function readEvent(row: Row): PlanProgress | null {
     ribVolumeMm3: num(row.ribVolumeMm3),
     compliance: num(row.compliance),
     stiffnessFactor: num(row.stiffnessFactor, 1),
+    ...(typeof row.frequencyFactor === "number" ? { frequencyFactor: row.frequencyFactor } : {}),
     fraction: num(row.fraction),
   };
 }
@@ -241,14 +307,48 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       bare: response(row.bare),
       ribbed: response(row.ribbed),
       stiffnessFactor: num(row.stiffnessFactor, 1),
+      ...(row.frequencyHz && typeof row.frequencyHz === "object" ? { frequencyHz: { bare: num((row.frequencyHz as Row).bare), ribbed: num((row.frequencyHz as Row).ribbed) } } : {}),
+      ...(typeof row.frequencyFactor === "number" ? { frequencyFactor: row.frequencyFactor } : {}),
       goalMet: row.goalMet === true,
       thickening: thick ? { addedThicknessMm: num(thick.addedThicknessMm), addedVolumeMm3: num(thick.addedVolumeMm3) } : null,
       grid: grid ? { reached: grid.reached === true, pitchMm: num(grid.pitchMm), volumeMm3: typeof grid.volumeMm3 === "number" ? grid.volumeMm3 : null, gridVolumeMm3: num(grid.gridVolumeMm3) } : null,
       notBetterThanBaseline: row.notBetterThanBaseline === true,
       stoppedEarly: row.stoppedEarly === true,
-      looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" : "noRibZone" })),
+      ...(Array.isArray(row.notes) && (row.notes as unknown[]).some((note) => typeof note === "string" && note.length > 0) ? { notes: (row.notes as unknown[]).filter((note): note is string => typeof note === "string" && note.length > 0) } : {}),
+      looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" as const : l.reason === "open" ? "open" as const : "noRibZone" as const })),
+      ...ventsOf(row.vents),
+      ...perCase(row),
     },
   };
+}
+
+/** Two or more cases on the wire. One case (or none) adds nothing, so a one-load plan reads as before. */
+/** Present only when the engine sent it, so a filament plan does not grow a vents key. */
+function ventsOf(value: unknown): Pick<RibPlanResult, "vents"> {
+  const row = value && typeof value === "object" ? (value as Row) : null;
+  if (!row || !Array.isArray(row.pockets)) return {};
+  const pockets = (row.pockets as Row[]).map((pocket) => ({
+    rib: num(pocket.rib),
+    at: v3(pocket.at),
+    sizeMm: num(pocket.sizeMm, 0.75),
+  }));
+  return {
+    vents: {
+      sizeMm: num(row.sizeMm, 0.75),
+      factorBefore: num(row.factorBefore),
+      factorAfter: num(row.factorAfter),
+      notch: "gap",
+      pockets,
+      unvented: (Array.isArray(row.unvented) ? (row.unvented as Row[]) : []).map((item) => ({ at: v3(item.at), message: typeof item.message === "string" ? item.message : "" })),
+      ...(typeof row.note === "string" ? { note: row.note } : {}),
+    },
+  };
+}
+
+function perCase(row: Row): Pick<RibPlanResult, "caseFactors" | "caseDeflectionMm"> {
+  const factors = Array.isArray(row.caseFactors) ? (row.caseFactors as unknown[]).map((v) => num(v)) : [];
+  const deflection = Array.isArray(row.caseDeflectionMm) ? (row.caseDeflectionMm as unknown[]).map((v) => ({ bare: num((v as Row | null)?.bare), ribbed: num((v as Row | null)?.ribbed) })) : [];
+  return factors.length >= 2 && deflection.length === factors.length ? { caseFactors: factors, caseDeflectionMm: deflection } : {};
 }
 
 const parse = (text: string): Row => {
@@ -367,6 +467,8 @@ interface Candidate {
   heights: number[];
   lengthMm: number;
   score: number;
+  /** Which family the line belongs to, so a resin stand-in can keep a crossing. */
+  family: "u" | "v";
 }
 
 /**
@@ -470,7 +572,7 @@ function candidates(body: RibPlanBody): Candidate[] {
       for (let i = 1; i < points.length; i += 1) length += norm(sub(points[i]!, points[i - 1]!));
       if (length < body.rules.minLength) continue;
       const central = 1 - Math.min(1, Math.abs(fixed) / (half || 1));
-      out.push({ points, heights, lengthMm: r3(length), score: length * (0.25 + central) });
+      out.push({ points, heights, lengthMm: r3(length), score: length * (0.25 + central), family: along });
     }
   };
   for (let v = 0; v <= (v1 - v0) / 2; v += pitch) for (const w of v === 0 ? [0] : [v, -v]) if (w > v0 && w < v1) line(w, "u", u0, u1, (v1 - v0) / 2);
@@ -482,6 +584,88 @@ const volumeOf = (points: V3[], heights: number[], width: number) => heights.red
 
 /** How many ribs the stand-in adds at Balanced. */
 export const FAKE_BALANCED_RIBS = 4;
+
+/** Best of each family, alternating, so a resin stand-in closes a cell instead of laying parallel lines. */
+function crossed(pool: Candidate[]): Candidate[] {
+  const u = pool.filter((c) => c.family === "u");
+  const v = pool.filter((c) => c.family === "v");
+  const out: Candidate[] = [];
+  for (let i = 0; i < Math.max(u.length, v.length); i += 1) {
+    if (u[i]) out.push(u[i]!);
+    if (v[i]) out.push(v[i]!);
+  }
+  return out;
+}
+
+/** The stand-in reads the drawing. It does not re-solve, so the factors stay its own. */
+function standInVents(body: RibPlanBody, ribs: PlannedRib[], factor: number): NonNullable<RibPlanResult["vents"]> {
+  const opening = meshOpening(body.request.mesh.vertices, body.request.mesh.triangles);
+  const report = opening
+    ? ventPockets({
+        ribs: ribs.map((rib) => ({ points: rib.points, widthMm: rib.width })),
+        borders: body.borders,
+        opening,
+        buildAxis: body.buildAxis ?? [0, 0, 1],
+      })
+    : { cups: false, closed: 0, pockets: [] as VentPocket[], unvented: [], sizeMm: 0.75 };
+  return {
+    sizeMm: report.sizeMm,
+    factorBefore: factor,
+    factorAfter: factor,
+    notch: "gap",
+    pockets: report.pockets.map((pocket) => ({ rib: pocket.rib, at: [pocket.at[0], pocket.at[1], pocket.at[2]] as V3, sizeMm: pocket.sizeMm })),
+    unvented: report.unvented.map((item) => ({ at: [item.at[0], item.at[1], item.at[2]] as V3, message: item.message })),
+    note: report.note ?? "Stand-in: the pockets are the rib drawing. The stiffness of the notched ribs is the engine's.",
+  };
+}
+
+function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[]): { ribs: PlannedRib[]; pockets: VentPocket[]; refused: { at: V3; message: string }[] } {
+  const out: PlannedRib[] = [];
+  const kept: VentPocket[] = [];
+  const refused: { at: V3; message: string }[] = [];
+  ribs.forEach((rib, i) => {
+    const cuts = pockets.filter((pocket) => pocket.rib === i);
+    if (cuts.length === 0) {
+      out.push(rib);
+      return;
+    }
+    const cut = notchRibs([{ points: rib.points, widthMm: rib.width }], cuts.map((row) => ({ rib: 0, at: row.at, sizeMm: row.sizeMm })));
+    if (cut.refused.length > 0 || cut.ribs.length === 0) {
+      refused.push(...cut.refused.map((item) => ({ at: [item.at[0], item.at[1], item.at[2]] as V3, message: item.message })));
+      out.push(rib);
+      return;
+    }
+    const base = out.length;
+    for (const part of cut.ribs) {
+      const points = part.points.map((p) => [p[0], p[1], p[2]] as V3);
+      const heights = points.slice(1).map(() => rib.heights[0] ?? rib.height);
+      let length = 0;
+      for (let k = 1; k < points.length; k += 1) length += norm(sub(points[k]!, points[k - 1]!));
+      out.push({
+        ...rib,
+        points,
+        heights,
+        sections: heights.map(() => rib.sections[0] ?? { profile: "straight" as const, width: rib.width }),
+        lengthMm: r3(length),
+        volumeMm3: r3(volumeOf(points, heights, rib.width)),
+      });
+    }
+    for (const pocket of cut.pockets) {
+      kept.push({ rib: base + pocket.rib, at: [pocket.at[0], pocket.at[1], pocket.at[2]], sizeMm: pocket.sizeMm });
+    }
+  });
+  return { ribs: out, pockets: kept, refused };
+}
+
+/** The stand-in's copy of the engine's frequency notes. The loads sentence is only there when the request carried loads. */
+function frequencyNotes(body: RibPlanBody): string[] {
+  const cases = body.request.loadCases;
+  const loadsGiven = Array.isArray(cases) && cases.some((row) => row.length > 0);
+  return [
+    loadsGiven ? "Loads are ignored for the goal. Ribs follow the lowest mode shape." : "Ribs follow the lowest mode shape.",
+    "Loose ends are not extended or closed, and ribs stay at full height.",
+  ];
+}
 
 /** A deterministic stand-in for the engine's plan: same body, same events, same plan. */
 export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource {
@@ -508,8 +692,15 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           };
         });
       const live = new Map<number, { points: V3[]; heights: number[] }>();
-      const asked = body.rules.profile?.kind;
+      const wire = body.rules.profile;
+      const asked = wire?.kind;
       const profile: RibProfileName = asked === "drafted" || asked === "tee" ? asked : "straight";
+      // A drafted profile that carries a root keeps it (the moulded default sends its clamped root). A typed
+      // moulded width is auto and keeps half the top, as does resin and an asked drafted rib with no root.
+      const mouldedAuto = wire?.kind === "auto" && wire.process === "moulded";
+      const drafted = wire?.kind === "drafted" || mouldedAuto;
+      const plainRoot = drafted ? defaultDraftedSection(width, tall).rootRadius ?? 0 : 0;
+      const draftedRoot = wire?.kind === "drafted" && typeof wire.rootRadius === "number" ? wire.rootRadius : plainRoot;
       let fraction = 0;
       let factor = 1;
       const bareDeflection = 0.8;
@@ -525,35 +716,48 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
       const rib = (change: RibChange, id: number, at: number) => {
         fraction = Math.max(fraction, at);
         const now = live.get(id);
-        progress({ kind: "rib", change, id, points: now ? now.points.map((p) => [...p] as V3) : [], heights: now ? [...now.heights] : [], ...totals(), fraction });
+        const frequency = body.goal?.kind === "frequency";
+        progress({ kind: "rib", change, id, points: now ? now.points.map((p) => [...p] as V3) : [], heights: now ? [...now.heights] : [], ...totals(), ...(frequency ? { frequencyFactor: r3(factor) } : {}), fraction });
       };
       const result = (stopped: boolean, goalMet: boolean): RibPlanResult => {
-        const ribs: PlannedRib[] = [...live.values()].map((row) => {
+        let ribs: PlannedRib[] = [...live.values()].map((row) => {
           let length = 0;
           for (let i = 1; i < row.points.length; i += 1) length += norm(sub(row.points[i]!, row.points[i - 1]!));
-          return { points: row.points, heights: row.heights, width, height: Math.max(...row.heights), sections: row.heights.map(() => ({ profile, width })), lengthMm: r3(length), volumeMm3: r3(volumeOf(row.points, row.heights, width)), gain: 0.1 };
+          return { points: row.points, heights: row.heights, width, height: Math.max(...row.heights), sections: row.heights.map(() => (drafted ? { profile: "drafted" as const, width, draftDeg: 1, rootRadius: draftedRoot } : { profile, width })), lengthMm: r3(length), volumeMm3: r3(volumeOf(row.points, row.heights, width)), gain: 0.1 };
         });
+        const vents = body.vent ? standInVents(body, ribs, r3(factor)) : undefined;
+        if (vents && vents.pockets.length > 0) {
+          const cut = notchPlanned(ribs, vents.pockets);
+          ribs = cut.ribs;
+          vents.pockets = cut.pockets.map((pocket) => ({ rib: pocket.rib, at: [pocket.at[0], pocket.at[1], pocket.at[2]] as V3, sizeMm: pocket.sizeMm }));
+          vents.unvented = [...(vents.unvented ?? []), ...cut.refused];
+        }
         const volume = totals().ribVolumeMm3;
         const thin = set.beatsNeither ? 0.8 : 1.9;
         const gridShare = set.beatsNeither ? 0.9 : 1.35;
+        // 100 Hz is a label for the panel, not a solve. The real Hz come from the bridge test.
+        const frequency = body.goal?.kind === "frequency";
         return {
           ribs,
           ribVolumeMm3: volume,
           bare: { compliance: 1, maxDeflectionMm: bareDeflection },
           ribbed: { compliance: r3(1 / factor), maxDeflectionMm: r3(bareDeflection / factor) },
           stiffnessFactor: r3(factor),
+          ...(frequency ? { frequencyHz: { bare: 100, ribbed: r3(100 * factor) }, frequencyFactor: r3(factor), notes: frequencyNotes(body) } : {}),
           goalMet,
           thickening: stopped ? null : { addedThicknessMm: 0.4, addedVolumeMm3: r3(volume * thin) },
           grid: stopped ? null : { reached: true, pitchMm: Math.max(body.rules.minSpacing, 5), volumeMm3: r3(volume * gridShare), gridVolumeMm3: r3(volume * gridShare) },
           notBetterThanBaseline: !stopped && !!set.beatsNeither,
           stoppedEarly: stopped,
+          ...(vents ? { vents } : {}),
+          ...perCaseOf(r3(factor), bareDeflection, body.caseWeights ?? []),
         };
       };
       const run = async (): Promise<PlanReply> => {
         await Promise.resolve();
         if (set.refuse) return { ok: false, reason: set.refuse };
         if (body.request.mesh.triangles.length === 0) return { ok: false, reason: "The wall has no triangles to plan on." };
-        const pool = candidates(body).slice(0, 24);
+        const pool = (body.vent ? crossed(candidates(body)) : candidates(body)).slice(0, 24);
         const stopped = (met: boolean): PlanReply => ({ ok: true, plan: result(true, met) });
         stage("bare solve", 0);
         await wait();
@@ -565,13 +769,15 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         stage("cutting lines into the wall", 0.05);
         stage("choosing ribs", 0.08);
         const goal = body.goal ?? { kind: "balanced" };
+        // ×1 asks for the wall as it is. The stand-in returns that plan, with no rib, rather than "no rib fits".
+        if (goal.kind === "frequency" && !(goal.factor > 1)) return { ok: true, plan: result(false, true) };
         const count = goal.kind === "balanced" ? FAKE_BALANCED_RIBS : pool.length;
-        const target = goal.kind === "stiffer" ? goal.factor : goal.kind === "maxDeflection" ? bareDeflection / Math.max(goal.mm, 1e-6) : Infinity;
+        const target = goal.kind === "stiffer" || goal.kind === "frequency" ? goal.factor : goal.kind === "maxDeflection" ? bareDeflection / Math.max(goal.mm, 1e-6) : Infinity;
         const longest = Math.max(1, ...pool.map((c) => c.lengthMm));
         let id = 0;
         for (const cand of pool) {
           if (live.size >= count) break;
-          if ((goal.kind === "stiffer" || goal.kind === "maxDeflection") && factor >= target) break;
+          if ((goal.kind === "stiffer" || goal.kind === "maxDeflection" || goal.kind === "frequency") && factor >= target) break;
           const volume = volumeOf(cand.points, cand.heights, width);
           if (goal.kind === "budget" && totals().ribVolumeMm3 + volume > goal.volumeMm3) continue;
           factor += 0.9 * (cand.lengthMm / longest) * (Math.max(...cand.heights) / tall) * 0.75 ** live.size;
@@ -581,13 +787,13 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           await wait();
           if (cancelled) return stopped(false);
         }
-        const goalMet = goal.kind === "stiffer" || goal.kind === "maxDeflection" ? factor >= target : goal.kind === "budget" ? live.size > 0 : true;
+        const goalMet = goal.kind === "stiffer" || goal.kind === "maxDeflection" || goal.kind === "frequency" ? factor >= target : goal.kind === "budget" ? live.size > 0 : true;
         stage("joining ends", 0.65);
         if (live.has(1)) rib("changed", 1, 0.67);
         await wait();
         if (cancelled) return stopped(goalMet);
         stage("pruning", 0.68);
-        if (goal.kind === "balanced" && live.size >= 4) {
+        if (!body.vent && goal.kind === "balanced" && live.size >= 4) {
           const weakest = Math.max(...live.keys());
           live.delete(weakest);
           factor = Math.max(1, factor - 0.05);
@@ -598,7 +804,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         stage("sizing heights", 0.78);
         const last = Math.max(-1, ...live.keys());
         const row = live.get(last);
-        if (row && row.heights.every((h) => h === tall)) {
+        if (goal.kind !== "frequency" && row && row.heights.every((h) => h === tall)) {
           row.heights = row.heights.map((h) => r3(h * 0.75));
           rib("changed", last, 0.86);
         }

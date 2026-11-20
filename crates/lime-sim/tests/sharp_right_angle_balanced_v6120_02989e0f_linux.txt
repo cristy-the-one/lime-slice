@@ -1,0 +1,5 @@
+wall right_angle_balanced
+head ribs 0 factor 1.0 volume 0.0 bare 0.0035272706767513367 0.004145328495093755 ribbed 0.0035272706767513367 0.004145328495093755 goal_met true not_better false stopped false
+thick none
+grid none
+mesh 272 480 57a794b1d26b0152

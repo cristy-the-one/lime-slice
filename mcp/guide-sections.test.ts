@@ -43,7 +43,7 @@ for (const topic of ["ops", "recipes", "ingredients"]) {
 }
 
 const kinds = guideSections("ops")!.flatMap((row) => [row.section, ...row.also]);
-check("every op kind the ops guide writes about is a section by its name", ["boolean", "gear", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "transition", "split", "scale", "partition", "join", "pocket", "boss", "texture", "array", "ribs", "pattern", "text", "mirror"].every((kind) => kinds.includes(kind) && OP_KINDS.includes(kind)));
+check("every op kind the ops guide writes about is a section by its name", ["boolean", "gear", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "draft", "hole", "fillet", "chamfer", "transition", "split", "scale", "partition", "join", "pocket", "boss", "texture", "array", "ribs", "pattern", "text", "mirror"].every((kind) => kinds.includes(kind) && OP_KINDS.includes(kind)));
 const chamfer = await call("guide", { topic: "ops", section: "chamfer" });
 check("a kind that shares a section reads it", chamfer.ok === true && chamfer.section === "fillet" && String(chamfer.text).startsWith("fillet, chamfer:"));
 const two = await call("guide", { topic: "ops", section: "boolean, flow" });

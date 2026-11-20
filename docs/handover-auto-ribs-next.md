@@ -105,7 +105,7 @@ The biggest gap to "automatic on any part".
 
 1. **Moulding checks.** For the moulded preset: rib thickness against wall (60 % rule), height, draft, junction thickness as an inscribed circle. A report, not a simulation. An unbuilt note for this exists in `docs/plan-recipe-ingredients.md`.
 2. **Draft on existing faces.** A kernel step using Open CASCADE's draft-angle tool; today draft exists only on new extrudes.
-3. **Vent notches for resin.** Ribs can close pockets that trap resin; detect closed pockets facing the build plate and cut a notch through the ribs that close them. Formlabs gives 0.75 mm for a drain hole (linked in the plan).
+3. **Vent notches for resin.** Ribs can close pockets that trap resin. Formlabs, "Preventing suction cups in PreForm": air is trapped "between the part and the resin tank", so a pocket cups when the side its ribs stand on points along the build axis (from the platform toward the tank). Cut a 0.75 mm full-height gap through a rib that opens it to a cell that drains. A pocket walled in by the part itself is reported and not cut.
 
 ### F. Rib planners as plugins (M, study first)
 

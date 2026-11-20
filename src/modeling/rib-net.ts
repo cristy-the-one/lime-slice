@@ -4,7 +4,8 @@
  * over as many faces as it crosses, flat or curved. It is snapped to the surface, resampled until the rib follows it
  * within a chord tolerance, and built as a ruled loft through rectangular sections that stand along the surface's
  * normal, `width` wide and `height` tall, sunk `sinkMm` into the wall so it fuses. All runs are the tools of one fuse
- * (a Group with `combine: "fuse"`), so the network is one History row.
+ * (a Group with `combine: "fuse"`), so the network is one History row. A vent notch is two square ends: they are not
+ * run into each other, and nothing is cut out of the solid afterwards.
  *
  * Profiles (`profile`, on the network or a path): `"straight"` (a rectangle, the default), `"drafted"` (a trapezoid
  * with `draftDeg` a side, `width` its thickness at half its height) and `"tee"` (a web under a flange, its underside
@@ -17,8 +18,9 @@
  *   less room than a useful rib is left out, and both are reported;
  * - the wall under the rib must be thicker than the sink plus a skin, so no rib breaks through the outside;
  * - joints (a path that ends on another, or a sharp turn) overlap so the pieces fuse with no gap; an end that meets a
- *   wall runs into it; any other end tapers down to the surface over `taper` (default the height), so the rib starts
- *   from the wall and not in mid-air.
+ *   wall runs into it; a path end named open, or two ends that face each other across a short opening, stay square, so
+ *   a vent notch is not closed; any other end tapers down to the surface over `taper` (default the height), so the rib
+ *   starts from the wall and not in mid-air.
  * The plan also carries rays from beyond the wall's far side toward each stretch, with what they meet now, so the built
  * step can be checked against the outside (`ribNetVerify`). Nothing here calls the modeler; the same op expands the
  * same way every time.
@@ -594,9 +596,11 @@ interface Run {
   heights: number[];
   /** What each end is: a joint or a wall gets an extension along the run, a free end tapers. */
   ends: [End, End];
+  /** A plan end named gap: that end stays square, so a vent notch is not closed. */
+  open: [boolean, boolean];
 }
 
-type End = { kind: "free" } | { kind: "wall"; extend: number } | { kind: "joint"; extend: number };
+type End = { kind: "free" } | { kind: "square" } | { kind: "wall"; extend: number } | { kind: "joint"; extend: number };
 
 function readPoint(value: unknown): V3 | null {
   return Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === "number" && Number.isFinite(n)) ? [value[0], value[1], value[2]] : null;
@@ -850,7 +854,14 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
               }
             }
           }
-          if (kept.length >= 2) runs.push({ path: pi + 1, width: w, height: h, shape, samples: kept, heights, ends: [{ kind: "free" }, { kind: "free" }] });
+          if (kept.length >= 2) {
+            const pathOpen = Array.isArray(path.openEnds) ? path.openEnds : [];
+            const open: [boolean, boolean] = [
+              pathOpen[0] === true && len(sub(kept[0]!.p, samples[0]!.p)) < 1e-4,
+              pathOpen[1] === true && len(sub(kept[kept.length - 1]!.p, samples[samples.length - 1]!.p)) < 1e-4,
+            ];
+            runs.push({ path: pi + 1, width: w, height: h, shape, samples: kept, heights, ends: [{ kind: "free" }, { kind: "free" }], open });
+          }
           else if (kept.length === 1) {
             skipped.push({ path: pi + 1, lengthMm: 0, at: at2(kept[0]!.p), why: "a single point with room between two stretches without" });
           }
@@ -890,6 +901,12 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
       const s = side === 0 ? run.samples[0]! : run.samples[run.samples.length - 1]!;
       const inner = side === 0 ? run.samples[1]! : run.samples[run.samples.length - 2]!;
       const out = unit(sub(s.p, inner.p));
+      // A vent notch, named on the plan or read from the two ends. A joint would run each into the other and close it.
+      if (run.open[side] || facingNotch(runs, ri, side)) {
+        run.ends[side] = { kind: "square" };
+        ends.square += 1;
+        continue;
+      }
       const joint = jointAt(runs, ri, side, s.p, out);
       if (joint !== null) {
         run.ends[side] = { kind: "joint", extend: joint };
@@ -961,11 +978,11 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     const e0 = run.ends[0];
     const e1 = run.ends[1];
     // The end section itself moves out, so a straight run stays two sections.
-    if (e0.kind !== "free" && e0.extend > 1e-3) {
+    if ((e0.kind === "wall" || e0.kind === "joint") && e0.extend > 1e-3) {
       const dir = unit(sub(first.s.p, rows[1]!.s.p));
       rows = [{ s: { ...first.s, p: add(first.s.p, mul(dir, e0.extend)) }, h: first.h }, ...rows.slice(1)];
     }
-    if (e1.kind !== "free" && e1.extend > 1e-3) {
+    if ((e1.kind === "wall" || e1.kind === "joint") && e1.extend > 1e-3) {
       const dir = unit(sub(last.s.p, rows[rows.length - 2]!.s.p));
       rows = [...rows.slice(0, -1), { s: { ...last.s, p: add(last.s.p, mul(dir, e1.extend)) }, h: last.h }];
     }
@@ -1011,7 +1028,7 @@ interface MeasuredRun {
   pts: V3[];
   hs: number[];
   shape: RibShape;
-  ends: ["free" | "wall" | "joint", "free" | "wall" | "joint"];
+  ends: ["free" | "square" | "wall" | "joint", "free" | "square" | "wall" | "joint"];
 }
 
 /** A section's area over the surface at height h (its sunk part left out), by its half-widths at 32 levels. */
@@ -1191,6 +1208,46 @@ function sampleFrame(samples: readonly Sample[], k: number): { b: V3 } | null {
   if (!before && !after) return null;
   const b = before && after ? unit(add(before.b, after.b)) : (before ?? after)!.b;
   return { b };
+}
+
+/**
+ * Two ends face each other across a short opening (a vent notch, 0.75 mm). They are not a joint: running each into
+ * the other would close the opening, and a taper would bring them down to the wall. The ends stay square. The way a
+ * run leaves its end is the chord over the last 8 mm, so a short jag at the tip does not hide the notch.
+ */
+function endOut(samples: readonly Sample[], side: 0 | 1): V3 {
+  const last = side === 0 ? 0 : samples.length - 1;
+  const p = samples[last]!.p;
+  const step = side === 0 ? 1 : -1;
+  let i = last;
+  let walked = 0;
+  while (i + step >= 0 && i + step < samples.length && walked < 8) {
+    const next = i + step;
+    walked += len(sub(samples[next]!.p, samples[i]!.p));
+    i = next;
+  }
+  return unit(sub(p, samples[i]!.p));
+}
+
+function facingNotch(runs: readonly Run[], self: number, side: 0 | 1): boolean {
+  const mine = runs[self]!;
+  const p = (side === 0 ? mine.samples[0] : mine.samples[mine.samples.length - 1])!.p;
+  const out = endOut(mine.samples, side);
+  for (let ri = 0; ri < runs.length; ri += 1) {
+    if (ri === self) continue;
+    const other = runs[ri]!;
+    for (const otherSide of [0, 1] as const) {
+      const q = (otherSide === 0 ? other.samples[0] : other.samples[other.samples.length - 1])!.p;
+      const gap = sub(q, p);
+      const d = len(gap);
+      if (d < 0.2 || d > 2) continue;
+      const theirs = endOut(other.samples, otherSide);
+      if (dot(unit(gap), out) < 0.5) continue;
+      if (dot(theirs, out) > -0.5) continue;
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

@@ -374,6 +374,16 @@ registerContextAction({
 });
 
 registerContextAction({
+  id: "draft",
+  label: "Draft",
+  when: ["flat-face", "faces", "cylinder"],
+  order: 45,
+  tip: "Tilt these walls. A positive angle opens them toward +Z so the part releases",
+  command: "model-draft",
+  toolbar: "#modelToolDraft",
+});
+
+registerContextAction({
   id: "shell-faces",
   label: "Shell (open these)",
   when: ["faces"],

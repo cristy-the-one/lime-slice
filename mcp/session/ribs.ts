@@ -13,9 +13,13 @@
  * the solid's mesh is posed into it first, so points read and typed, zones and ribNet's paths agree.
  */
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
+import { GIVEN_AXIS, NO_RESIN_PRINTER, ventBodyOf, ventLoopsOf } from "../../src/modeling/vents.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
-import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wallSpan, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
+import { duplicateCaseName, engineMaterial, fallbackHzNote, frequencyIgnoredLoads, goalFromTool, ignoredLoadNote, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { planOptions } from "../../src/auto-ribs-plan.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -67,8 +71,78 @@ function ribCard(this: Session): { card: ReturnType<Session["simCard"]>; row: Ro
 const r = (n: number, k = 3) => (Number.isFinite(n) ? Math.round(n * 10 ** k) / 10 ** k + 0 : n);
 const rv = (p: readonly number[]): V3 => [r(p[0]!, 4), r(p[1]!, 4), r(p[2]!, 4)];
 
+/** The notch on the face the ribs were built on: the midpoint of the two gap ends, so a ray aimed at the pocket meets the opening. */
+function faceNotchAt(ribs: readonly Row[], pocket: Row): V3 | null {
+  const index = typeof pocket.rib === "number" ? pocket.rib : -1;
+  const rib = ribs[index];
+  const points = rib?.points as number[][] | undefined;
+  const ends = rib?.ends as string[] | undefined;
+  const at = Array.isArray(pocket.at) ? (pocket.at as number[]) : null;
+  if (!points || points.length < 2 || !ends || !at) return null;
+  const mine = [ends[0] === "gap" ? points[0] : null, ends[1] === "gap" ? points[points.length - 1] : null].filter((p): p is number[] => p !== null);
+  if (!mine.length) return null;
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, (a[2] ?? 0) - (b[2] ?? 0));
+  const end = mine.reduce((best, p) => (dist(p, at) < dist(best, at) ? p : best));
+  let other: number[] | null = null;
+  let best = 2;
+  for (const row of ribs) {
+    if (row === rib) continue;
+    const pts = row.points as number[][] | undefined;
+    const kind = row.ends as string[] | undefined;
+    if (!pts || pts.length < 2 || !kind) continue;
+    for (const p of [kind[0] === "gap" ? pts[0] : null, kind[1] === "gap" ? pts[pts.length - 1] : null]) {
+      if (!p) continue;
+      const d = dist(p, end);
+      if (d > 0.2 && d < best) {
+        best = d;
+        other = p;
+      }
+    }
+  }
+  if (!other) return rv(end);
+  return rv([(end[0]! + other[0]!) / 2, (end[1]! + other[1]!) / 2, (end[2]! + other[2]!) / 2]);
+}
+
 function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** A build direction: three finite numbers, not all zero. */
+function readBuildAxis(value: unknown): V3 | null {
+  if (!Array.isArray(value) || value.length !== 3) return null;
+  const axis = value.map((v) => (typeof v === "number" ? v : Number.NaN));
+  if (axis.some((v) => !Number.isFinite(v)) || Math.hypot(axis[0]!, axis[1]!, axis[2]!) < 1e-9) return null;
+  return [axis[0]!, axis[1]!, axis[2]!];
+}
+
+/**
+ * The loads ribs_plan puts on the wall and on the plan body. One load stays `loads`. A weight that is not a number
+ * above zero, two cases with one name, and more than 8 cases, are refused here, before `loadRequest`. Names still come from `loadRequest`,
+ * and a weight that was left out is 1 there. The panel calls `loadRequest` on its own and keeps the quiet fixes.
+ */
+export function ribsLoadRequest(readLoads: (value: unknown) => StudyLoad[] | { reason: string }, input: { loads?: unknown; loadCases?: unknown }): ReturnType<typeof loadRequest> | { reason: string; code: "bad-argument" | "bad-load" } {
+  const loads = readLoads(input.loads);
+  if ("reason" in loads) return { reason: loads.reason, code: "bad-load" };
+  const rawCases = input.loadCases;
+  if (rawCases !== undefined && !Array.isArray(rawCases)) return { reason: "loadCases is a list of load cases, each {name?, weight?, loads}.", code: "bad-argument" };
+  const caseList = Array.isArray(rawCases) ? (rawCases as Row[]) : [];
+  if (caseList.length && loads.length) return { reason: "Give loads or loadCases, not both. loads is one case; loadCases weighs several together.", code: "bad-argument" };
+  if (caseList.length > 8) return { reason: `loadCases takes up to 8 cases; this has ${caseList.length}.`, code: "bad-argument" };
+  const parsed: PanelLoadCase[] = [];
+  for (const [ci, item] of caseList.entries()) {
+    const row = (item ?? {}) as Row;
+    if (!Array.isArray(row.loads)) return { reason: `Load case ${ci + 1} needs loads, a list of loads as loads takes them.`, code: "bad-argument" };
+    const got = readLoads(row.loads);
+    if ("reason" in got) return { reason: `Load case ${ci + 1}: ${got.reason}`, code: "bad-load" };
+    if (got.length === 0) return { reason: `Load case ${ci + 1} has no load.`, code: "bad-argument" };
+    const weight = num(row.weight);
+    if (row.weight !== undefined && !(weight !== undefined && weight > 0)) return { reason: `Load case ${ci + 1}: weight is a number above zero.`, code: "bad-argument" };
+    parsed.push({ name: typeof row.name === "string" ? row.name : "", weight: weight ?? Number.NaN, loads: got });
+  }
+  // verify finds each case's loads by its name, so two cases with one name would take each other's.
+  const twice = duplicateCaseName(parsed);
+  if (twice !== null) return { reason: `Two load cases are named "${twice}" (a case with no name is "Case N" by its place): give each case its own name.`, code: "bad-argument" };
+  return loadRequest(loads, parsed.length ? parsed : undefined, true);
 }
 
 /** The solid's mesh in the frame its Model numbers are typed in, with the face of each triangle. */
@@ -187,17 +261,12 @@ function wallZones(this: Session, obj: PlateObject, zones: unknown): WallZoneInp
   return out;
 }
 
-/** The goal as the engine reads it, or a sentence. */
-function goalOf(goal: unknown, densityGCm3: number): Row | { reason: string } {
-  if (goal === undefined) return { kind: "balanced" };
-  const g = goal as Row;
-  const keys = Object.keys(g).filter((key) => g[key] !== undefined && g[key] !== false);
-  if (keys.length > 1) return { reason: `A goal is one of stiffer, maxDeflectionMm, budgetMm3, budgetG or balanced; this one has ${keys.join(", ")}.` };
-  if (num(g.stiffer) !== undefined) return { kind: "stiffer", factor: g.stiffer };
-  if (num(g.maxDeflectionMm) !== undefined) return { kind: "maxDeflection", mm: g.maxDeflectionMm };
-  if (num(g.budgetMm3) !== undefined) return { kind: "budget", volumeMm3: g.budgetMm3 };
-  if (num(g.budgetG) !== undefined) return { kind: "budget", volumeMm3: ((g.budgetG as number) / densityGCm3) * 1000 };
-  return { kind: "balanced" };
+/** A frequency plan in one sentence: Hz before and after, the ratio, and the stiffness factor for information. */
+function frequencySentence(ribs: number, hz: { bare: number; ribbed: number }, freqFactor: number, asked: number, stiff: number, stopped: boolean, goalMet: boolean): string {
+  if (ribs === 0) return stopped ? "Stopped before the first rib: no plan." : !(asked > 1) ? "×1 asks for no change." : "No rib pays on this wall under these rules.";
+  const reach = goalMet ? "" : ` Reached ${r(freqFactor, 3)}× of the ${r(asked, 3)}× asked.`;
+  const stop = stopped ? " Stopped early: the best plan so far." : "";
+  return `${ribs} rib${ribs === 1 ? "" : "s"}, lowest frequency ${r(hz.bare, 3)} Hz → ${r(hz.ribbed, 3)} Hz (${r(freqFactor, 3)}×).${reach}${stop} Stiffness ${r(stiff, 2)}×, for information.`;
 }
 
 /** A short plain summary of the plan. */
@@ -210,8 +279,9 @@ function planSentence(ribs: number, factor: number, adds: { mm3: number; grams: 
 function looseSentence(loose: readonly Row[]): string {
   if (loose.length === 0) return "";
   const zone = loose.filter((row) => row.reason === "noRibZone").length;
-  const budget = loose.length - zone;
-  const why = [zone ? `${zone} at a no-rib zone's border` : "", budget ? `${budget} where the budget leaves no material to carry ${budget === 1 ? "it" : "them"} on` : ""].filter(Boolean).join(" and ");
+  const open = loose.filter((row) => row.reason === "open").length;
+  const budget = loose.length - zone - open;
+  const why = [zone ? `${zone} at a no-rib zone's border` : "", budget ? `${budget} where the budget leaves no material to carry ${budget === 1 ? "it" : "them"} on` : "", open ? `${open} left where the trace stopped` : ""].filter(Boolean).join(" and ");
   return ` ${loose.length} rib end${loose.length === 1 ? " stays" : "s stay"} loose: ${why} (plan.looseEnds).`;
 }
 
@@ -234,10 +304,14 @@ export interface PlanRecord {
   stoppedEarly: boolean;
   holds?: unknown;
   loads?: unknown;
+  /** The load cases the verify study checks one at a time, with the loads that landed. Absent for the one-case `loads`. */
+  cases?: { name: string; loads: StudyLoad[] }[];
   wallFaces: number[];
   joinedFaces: number[];
   /** The solid the plan was made for; null only for a plan given without one, which is refused. */
   fingerprint: Fingerprint | null;
+  /** The engine goal, so apply and a static verify can say a frequency plan has no frequency to check. */
+  goal?: Row;
 }
 
 async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row> {
@@ -275,19 +349,29 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   if ("reason" in zones) return refuse("bad-zone", zones.reason);
   const holds = this.readFixtures(input.holds);
   if ("reason" in holds) return refuse("bad-fixture", holds.reason);
-  const loads = this.readLoads(input.loads);
-  if ("reason" in loads) return refuse("bad-load", loads.reason);
+  const sentLoads = ribsLoadRequest((value) => this.readLoads(value), input);
+  if ("code" in sentLoads) return refuse(sentLoads.code, sentLoads.reason);
+  const parsedCases = sentLoads.loadCases ? sentLoads.loadCases.map((c, i) => ({ name: c.name, weight: sentLoads.caseWeights![i]!, loads: c.loads })) : [];
   const filament = this.filament();
   const density = filament.densityGCm3 > 0 ? filament.densityGCm3 : 1.24;
-  const goal = goalOf(input.goal, density);
+  const goal = goalFromTool(input.goal, density);
   if ("reason" in goal) return refuse("bad-goal", String(goal.reason));
   const process: RibProcess = input.process === "resin" || input.process === "moulded" ? input.process : "filament";
+  const givenAxis = input.buildAxis === undefined ? null : readBuildAxis(input.buildAxis);
+  if (input.buildAxis !== undefined && process !== "resin") return refuse("bad-argument", "buildAxis is only read when process is resin. It is the build direction in the plate frame.");
+  if (process === "resin" && input.buildAxis !== undefined && !givenAxis) return refuse("bad-argument", "buildAxis is the build direction in the plate frame, from the platform toward the tank: three numbers, not all zero.");
+  let pull: V3 | null = null;
+  if (process === "moulded" && input.pull !== undefined) {
+    pull = readPull(input.pull);
+    if (!pull) return refuse("bad-argument", "pull is the mould's pull direction: three numbers, not all zero. It is only read when process is moulded.");
+  }
   const rib = (input.rib ?? {}) as Row;
   if (input.ifMissed !== undefined && input.ifMissed !== "refuse" && input.ifMissed !== "evenPressure") return refuse("bad-argument", `ifMissed is "refuse" (the default) or "evenPressure"; it is ${JSON.stringify(input.ifMissed)}.`);
   if (wallIn.thicknessMm !== undefined && !(num(wallIn.thicknessMm) !== undefined && (wallIn.thicknessMm as number) > 0)) return refuse("bad-wall", "wall.thicknessMm is the wall's thickness in mm, a number above zero.");
+  if (wallIn.folded !== undefined && wallIn.folded !== true && wallIn.folded !== false) return refuse("bad-wall", "wall.folded is true or false. Default false: a sharp edge stops the wall. true takes every thin face across a sharp edge.");
   const ribWallMs = Date.now();
   // Holds and loads that name places are typed in this frame, as the wall is; face holds name faces.
-  const wall = ribWall(typed.solid, {
+  const wallOptions = (even: boolean) => ({
     picked,
     ...(wallIn.grow === false ? { grow: false } : {}),
     ...(num(wallIn.growAngleDeg) !== undefined ? { growAngleDeg: num(wallIn.growAngleDeg)! } : {}),
@@ -295,22 +379,30 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     ...(Array.isArray(wallIn.excludeFaces) ? { excludeFaces: wallIn.excludeFaces as number[] } : {}),
     zones,
     holds,
-    loads,
+    ...(sentLoads.loadCases ? { loadCases: sentLoads.loadCases } : { loads: sentLoads.loads }),
     ...(num(rib.minHeight) !== undefined ? { minRibHeightMm: num(rib.minHeight)! } : {}),
-    ...(input.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
+    ...(even ? { ifMissed: "evenPressure" as const } : {}),
     ...(num(wallIn.thicknessMm) !== undefined ? { thicknessMm: num(wallIn.thicknessMm)! } : {}),
     ...(wallIn.features === false ? { features: false } : {}),
+    ...(wallIn.folded === true ? { folded: true } : {}),
   });
+  // A load that misses the wall does not refuse a frequency plan: it is ignored, and the note names it. A hold that
+  // misses is still refused.
+  let wall = ribWall(typed.solid, wallOptions(input.ifMissed === "evenPressure"));
+  if ("reason" in wall && goal.kind === "frequency" && wall.missed?.length && wall.missed.every((row) => row.kind === "load")) wall = ribWall(typed.solid, wallOptions(true));
   if ("reason" in wall) {
     // A hold or load the wall cannot carry: refused by name, never planned under even pressure in its place.
-    if (wall.missed?.length) return refuse("off-wall", `${wall.reason} wall.addFaces adds a face to the wall. Or pass ifMissed:"evenPressure" to plan without ${wall.missed.length === 1 ? "it" : "them"}, under even pressure when no load is left.`, { missed: wall.missed.map((row) => ({ kind: row.kind, index: row.index, why: row.why })) });
+    if (wall.missed?.length) return refuse("off-wall", `${wall.reason} wall.addFaces adds a face to the wall. Or pass ifMissed:"evenPressure" to plan without ${wall.missed.length === 1 ? "it" : "them"}, under even pressure when no load is left.`, { missed: wall.missed.map((row) => ({ kind: row.kind, index: row.index, why: row.why, ...(row.case ? { case: row.case } : {}) })) });
     return refuse("bad-wall", wall.reason);
   }
   const wallMs = Date.now() - ribWallMs;
   const notes: string[] = [];
-  // Asked to plan anyway: what was left out comes first, in the notes and in the sentence.
+  // Asked to plan anyway: what was left out comes first, in the notes and in the sentence. A frequency plan names a
+  // missed load as ignored instead of as planned under even pressure.
   const substituted = wall.report.substituted;
-  if (substituted) notes.push(substituted.sentence);
+  const ignoredLoad = goal.kind === "frequency" ? ignoredLoadNote(frequencyIgnoredLoads(wall.report)) : "";
+  if (ignoredLoad) notes.push(ignoredLoad);
+  else if (substituted) notes.push(substituted.sentence);
   if (wall.report.features.count) notes.push(wall.report.features.note);
   // A wall joined to nothing (a free panel) with no holds given: held all round its borders, and said so.
   const sent: Row = { ...wall.request };
@@ -319,14 +411,17 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     notes.push("Nothing joins this wall to the rest of the part and no holds were given, so it is planned held all round its borders. Give holds for a truer plan.");
   }
   const outer = wall.report.loops.reduce((most, loop) => Math.max(most, loop.lengthMm), 0);
+  const walls = wallSpan(wall.request.mesh.thickness);
   const rules = ribRules({
     process,
     nozzleMm: this.library.nozzleMm,
     thicknessMm: wall.report.thickness.medianMm,
+    ...(walls ? { thinnestMm: walls.thin, thickestMm: walls.thick } : {}),
     areaMm2: wall.report.areaMm2,
     outerLoopMm: outer,
     given: { width: num(rib.width), maxHeight: num(rib.maxHeight), minHeight: num(rib.minHeight), minSpacing: num(rib.minSpacing), minLength: num(rib.minLength) },
   });
+  if (rules.mouldedNote) notes.push(`${rules.mouldedNote.charAt(0).toUpperCase()}${rules.mouldedNote.slice(1)}.`);
   const material = ribCard.call(this);
   const card = material.card;
   if ("reason" in card) return refuse("no-card", card.reason);
@@ -342,14 +437,20 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const typedChamfer = num(rib.flangeChamferDeg);
   const flange = typedChamfer !== undefined ? (typedChamfer > 0 ? "chamfered" : "square") : flanges.flange;
   const extra = (keys: string[]) => Object.fromEntries(keys.filter((key) => num(rib[key]) !== undefined).map((key) => [key, num(rib[key])!]));
-  const profile: Row = wireProfileOf(asked, process, flange, extra(asked === "tee" ? ["flangeWidth", "flangeThickness", "flangeChamferDeg", "rootRadius"] : ["draftDeg", "rootRadius"]));
+  const profile: Row = wireProfileOf(asked, process, flange, extra(asked === "tee" ? ["flangeWidth", "flangeThickness", "flangeChamferDeg", "rootRadius"] : ["draftDeg", "rootRadius"]), rules.mouldedRoot);
+  const builtMaterial = engineMaterial({ e: card.EInPlaneMPa, nu: card.nu, densityGCm3: card.densityGCm3, name: card.polymer }, goal);
+  if ("reason" in builtMaterial) return refuse("bad-goal", builtMaterial.reason);
   const body = {
     request: sent,
-    material: { e: card.EInPlaneMPa, nu: card.nu },
+    material: builtMaterial.material,
     rules: { width: rules.width, maxHeight: rules.maxHeight, minHeight: rules.minHeight, minSpacing: rules.minSpacing, minLength: rules.minLength, profile },
     goal,
-    options: { baselines: input.baselines !== false },
+    options: planOptions(wall, input.baselines !== false),
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
+    ...(sentLoads.caseWeights ? { caseWeights: sentLoads.caseWeights } : {}),
+    // Only resin. The panel builds this with the same function, so the same wall asks for the same pockets.
+    // Filament and moulded get nothing, and their bodies stay as they were.
+    ...ventBodyOf(process, { orient: obj.orient, pose: typed.pose }, ventLoopsOf(wall), givenAxis),
   };
   if (!this.engine.ribPlanStart || !this.engine.ribPlanPoll || !this.engine.ribPlanCancel) return refuse("solver-unavailable", "This engine has no rib planner. Rebuild the in-process engine.");
   stage("planning: starting", 0.05);
@@ -386,11 +487,14 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   }
   const planSeconds = (Date.now() - planStarted) / 1000;
   if (result.ok !== true) return refuse("rib-plan-failed", typeof result.reason === "string" ? result.reason : "The rib planner did not finish.");
+  for (const note of (result.notes as unknown[] | undefined) ?? []) {
+    if (typeof note === "string" && !notes.includes(note)) notes.push(note);
+  }
   stage("taking the ribs onto the wall", 0.05 + span);
   const engineRibs = (result.ribs ?? []) as Row[];
   // Each rib off the mid-surface onto the face, its ends drawn back from a free edge, its tee stretches checked against
   // its own direction (src/modeling/auto-ribs.ts ribsOnFace, shared with the Auto ribs panel).
-  const onSkin = ribsOnFace(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[], heights: (row.heights as number[]) ?? [], sections: (row.sections as Section[] | undefined) ?? [], ...(num(row.width) !== undefined ? { width: num(row.width)! } : {}), ...(num(row.height) !== undefined ? { height: num(row.height)! } : {}) })), build, rules.width);
+  const onSkin = ribsOnFace(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[], heights: (row.heights as number[]) ?? [], sections: (row.sections as Section[] | undefined) ?? [], ...(num(row.width) !== undefined ? { width: num(row.width)! } : {}), ...(num(row.height) !== undefined ? { height: num(row.height)! } : {}), ...(Array.isArray(row.ends) && (row.ends as unknown[]).length === 2 ? { ends: row.ends as [string, string] } : {}) })), build, rules.width);
   const ribs: Row[] = engineRibs.map((row, i) => {
     const face = onSkin.ribs[i]!;
     return {
@@ -426,6 +530,17 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   delete request.verify;
   const stoppedEarly = result.stoppedEarly === true;
   const fingerprint = fingerprintOf(obj);
+  const deflection = (result.caseDeflectionMm as Row[] | undefined) ?? [];
+  const factors = (result.caseFactors as number[] | undefined) ?? [];
+  const caseRows = parsedCases.length
+    ? parsedCases.map((c, i) => ({
+        name: c.name,
+        weight: c.weight,
+        factor: num(factors[i]) !== undefined ? r(num(factors[i])!, 6) : null,
+        bare: { deflectionMm: num(deflection[i]?.bare) !== undefined ? r(num(deflection[i]!.bare)!, 4) : null },
+        ribbed: { deflectionMm: num(deflection[i]?.ribbed) !== undefined ? r(num(deflection[i]!.ribbed)!, 4) : null },
+      }))
+    : null;
   const plan: Row = {
     object: obj.id,
     node: node === null ? null : `n${node}`,
@@ -436,7 +551,9 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     bare: result.bare,
     ribbed: result.ribbed,
     stiffnessFactor: r(num(result.stiffnessFactor) ?? 1, 4),
+    ...(caseRows ? { cases: caseRows } : {}),
     goal,
+    ...(goal.kind === "frequency" ? { frequencyHz: { bare: r(num((result.frequencyHz as Row | undefined)?.bare) ?? 0, 6), ribbed: r(num((result.frequencyHz as Row | undefined)?.ribbed) ?? 0, 6) }, frequencyFactor: r(num(result.frequencyFactor) ?? 1, 6) } : {}),
     goalMet: result.goalMet === true,
     thickening: result.thickening ?? null,
     grid: result.grid ?? null,
@@ -446,19 +563,62 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     flange: { planned: flange, prints: { chamfered: flanges.chamfered, square: flanges.square } },
     profiles,
     snapMaxMm: onSkin.snapMaxMm,
-    // Rib ends left loose, each with why (a no-rib zone's border, or the budget); every other end meets a border, a
-    // hold or another rib.
+    // Rib ends left loose, each with why (a no-rib zone's border, or the budget). A gap end is a vent notch, not a free end.
     looseEnds: ((result.looseEnds as Row[] | undefined) ?? []).map((row) => ({ rib: row.rib, end: row.end, point: Array.isArray(row.point) ? rv(row.point as number[]) : null, reason: row.reason })),
     stats: result.stats,
   };
+  if (process === "resin") {
+    const vents = result.vents && typeof result.vents === "object" ? (result.vents as Row) : null;
+    // The plate's printer is a filament printer. The Form 4 is export-only, so it is never the plate's printer.
+    const planNotes = [givenAxis ? GIVEN_AXIS : NO_RESIN_PRINTER];
+    if (typeof vents?.note === "string") planNotes.push(vents.note);
+    const reasons = new Map<string, number>();
+    for (const item of (vents?.unvented as Row[] | undefined) ?? []) {
+      if (typeof item.message === "string") reasons.set(item.message, (reasons.get(item.message) ?? 0) + 1);
+    }
+    for (const [message, count] of reasons) planNotes.push(`${count} × ${message}`);
+    notes.push(...planNotes);
+    plan.notes = planNotes;
+    if (vents) {
+      const pockets = Array.isArray(vents.pockets) ? (vents.pockets as Row[]).map((pocket) => {
+        const at = faceNotchAt(ribs, pocket);
+        return at ? { ...pocket, at } : pocket;
+      }) : vents.pockets;
+      plan.vents = { ...vents, pockets };
+    }
+  }
+  if (process === "moulded") {
+    const mesh = wall.request.mesh;
+    // A folded wall with no pull is checked rib by rib along its own wall: the report says so, and so do the notes.
+    const folded = (wall.report.faces.folded?.length ?? 0) > 0;
+    const report = mouldingReport(onSkin.ribs.map((rib) => ({ points: rib.points, heights: rib.heights, sections: rib.sections, normals: rib.normals, wallMm: rib.points.map((p) => nearestWallMm(mesh.vertices, mesh.thickness, p)) })), pull, { folded });
+    mouldedOnly(process, plan, report);
+    if (report.notes?.length) notes.push(...report.notes.map((note) => `${note} Pass pull to check every rib against one direction.`));
+  }
   const joined = [...new Set(wall.report.faces.stops.map((row) => row.face))].filter((face) => !wallSet.has(face));
   // The verify study carries what the plan carried: holds and loads left out under ifMissed stay out of it too.
   const kept = (rows: unknown, gone: readonly number[] | undefined) => (Array.isArray(rows) && gone?.length ? rows.filter((_, i) => !gone.includes(i)) : rows);
-  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), wallFaces: wall.faces, joinedFaces: joined, fingerprint });
+  // Each case keeps the loads that landed; one whose loads all missed keeps none, and the verify study presses it evenly.
+  const verifyCases = parsedCases.length
+    ? parsedCases.map((c) => {
+        const gone = new Set(wall.report.notOnWall.filter((row) => row.dropped && row.kind === "load" && row.case === c.name).map((row) => row.index));
+        return { name: c.name, loads: c.loads.filter((_, i) => !gone.has(i)) };
+      })
+    : undefined;
+  if (Array.isArray(result.notes)) for (const note of result.notes as unknown[]) if (typeof note === "string" && note) notes.push(note);
+  if (goal.kind === "frequency") {
+    const cardNote = fallbackHzNote(material.row.forFilament === false ? { forFilament: false, polymer: String(material.row.polymer ?? ""), id: String(material.row.card ?? "") } : null);
+    if (cardNote) notes.push(cardNote);
+  }
+  const hzRow = result.frequencyHz as Row | undefined;
+  const sentenceCore = goal.kind === "frequency"
+    ? frequencySentence(ribs.length, { bare: num(hzRow?.bare) ?? 0, ribbed: num(hzRow?.ribbed) ?? 0 }, num(result.frequencyFactor) ?? 1, goal.factor, num(result.stiffnessFactor) ?? 1, stoppedEarly, result.goalMet === true)
+    : planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result));
+  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), ...(verifyCases ? { cases: verifyCases } : {}), wallFaces: wall.faces, joinedFaces: joined, fingerprint, goal });
   const reply: Row = {
     ok: true,
     object: obj.id,
-    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result))}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
+    sentence: `${substituted && !ignoredLoad ? `${substituted.sentence} ` : ""}${sentenceCore}${caseRows ? ` ${goal.kind === "frequency" ? "Per case, stiffness" : "Per case"}: ${caseRows.map((c) => `${c.name} ${c.factor}×`).join(", ")}.` : ""}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
     plan,
     adds,
     wall: wallReport(wall),
@@ -481,6 +641,14 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
 }
 
 
+/** A pull direction for the moulding draft check: three finite numbers, not the zero vector. */
+function readPull(value: unknown): V3 | null {
+  if (!Array.isArray(value) || value.length !== 3 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  const l = Math.hypot(value[0], value[1], value[2]);
+  if (!(l > 1e-9)) return null;
+  return [value[0] / l, value[1] / l, value[2] / l];
+}
+
 /** The wall report a reply carries: what was taken, where it stopped, thickness, borders, zones, and what missed. */
 function wallReport(wall: RibWall): Row {
   const rep = wall.report;
@@ -496,7 +664,9 @@ function wallReport(wall: RibWall): Row {
     holes: rep.holes,
     holds: rep.holds,
     loads: rep.loads,
+    ...(rep.cases ? { cases: rep.cases } : {}),
     zones: rep.zones,
+    ...(rep.patches ? { patches: rep.patches } : {}),
     notOnWall: rep.notOnWall,
     input: rep.input,
     quality: rep.quality,
@@ -524,14 +694,14 @@ async function ribsApply(this: Session, input: Row, meta?: CallMeta): Promise<Ro
     if (job.tool !== "ribs_plan" || !job.result || job.result.ok !== true) return refuse("rib-plan-lost", `${input.job} is not a finished rib plan.`);
     const plan = job.result.plan as Row;
     const stored = this.ribPlans.get(String(plan.object));
-    record = stored && stored.request && JSON.stringify(stored.ribs) === JSON.stringify(plan.ribs) ? stored : { object: String(plan.object), node: parseNodeId(plan.node), request: plan.request as Row, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, wallFaces: [], joinedFaces: [], fingerprint: readFingerprint(plan.fingerprint) };
+    record = stored && stored.request && JSON.stringify(stored.ribs) === JSON.stringify(plan.ribs) ? stored : { object: String(plan.object), node: parseNodeId(plan.node), request: plan.request as Row, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, wallFaces: [], joinedFaces: [], fingerprint: readFingerprint(plan.fingerprint), goal: plan.goal as Row | undefined };
   } else if (input.plan && typeof input.plan === "object") {
     const plan = input.plan as Row;
     const object = typeof input.object === "string" ? input.object : typeof plan.object === "string" ? plan.object : this.selected;
     const stored = this.ribPlans.get(object);
     const fingerprint = readFingerprint(plan.fingerprint);
     if (!fingerprint) return refuse("bad-rib-plan", "A plan given to ribs_apply carries the fingerprint of the solid it was made for (plan.fingerprint {volumeMm3, faces, edges}, as ribs_plan gives it), so a plan for another shape is never built. Pass the plan whole, or plan again.");
-    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint };
+    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, ...(stored?.cases ? { cases: stored.cases } : {}), wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint, goal: plan.goal as Row | undefined };
   } else return refuse("bad-argument", "ribs_apply takes job (a finished ribs_plan job) or plan ({ribs}).");
   const obj = this.find(typeof input.object === "string" ? input.object : record.object);
   if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
@@ -575,7 +745,8 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     const width = num(row.width);
     if (width === undefined) return refuse("bad-rib-plan", `Rib ${i + 1} needs a width.`);
     const sections = Array.isArray(row.sections) && (row.sections as unknown[]).length === points.length - 1 ? (row.sections as Section[]) : undefined;
-    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}) });
+    const ends = Array.isArray(row.ends) && (row.ends as unknown[]).length === 2 ? (row.ends as [string, string]) : undefined;
+    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}), ...(ends ? { ends } : {}) });
   }
   const op = ribNetOf(built, label, record.request);
   if ("reason" in op) return refuse("bad-rib-plan", String(op.reason));
@@ -584,7 +755,20 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
   const density = filament.densityGCm3 > 0 ? filament.densityGCm3 : 1.24;
   let studyBefore: Row | null = null;
   let study: ObjectStudy | null = null;
-  if (verify) {
+  let caseBefore: { name: string; study: ObjectStudy; result: Row }[] | null = null;
+  const verifyT0 = Date.now();
+  if (verify && record.cases?.length) {
+    // One sliced Stress study per load case, on the part as it is. Each case is its own solve.
+    caseBefore = [];
+    for (const [i, c] of record.cases.entries()) {
+      stage(`verify: ${c.name}, the part as it is`, 0.05 + (0.25 * i) / record.cases.length);
+      const made = this.ribsStudy(obj, record, c.loads);
+      if ("reason" in made) return refuse("bad-study", `${c.name}: ${made.reason}`);
+      const res = await this.solveSliced(obj, made, false);
+      if (res.ok !== true) return { ...res, applied: false, note: `The Stress study for ${c.name} before the ribs did not run, so nothing was applied.` };
+      caseBefore.push({ name: c.name, study: made, result: res });
+    }
+  } else if (verify) {
     stage("verify: slicing and solving the part as it is", 0.05);
     const made = this.ribsStudy(obj, record);
     if ("reason" in made) return refuse("bad-study", made.reason);
@@ -614,7 +798,31 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     check: { before: checkNumbers(checkBefore), after: checkNumbers(checkAfter), printer: this.printer().name },
     undo: "model_undo takes the whole network back as one step.",
   };
-  if (verify && study && studyBefore) {
+  const frequencyPlan = record.goal?.kind === "frequency";
+  if (frequencyPlan) reply.note = "The ribs are built. A static Stress check has no frequency to check.";
+  if (caseBefore) {
+    const reported: Row[] = [];
+    for (const [i, c] of caseBefore.entries()) {
+      stage(`verify: ${c.name}, the ribbed part`, 0.65 + (0.3 * i) / caseBefore.length);
+      const mapped = this.ribsStudyAfter(c.study, before, { positions: after.positions, faceOf: after.triangles });
+      const studyAfter = await this.solveSliced(obj, mapped, false);
+      const b = studyNumbers(c.result);
+      const a = studyNumbers(studyAfter);
+      const diff = (key: string) => (typeof a[key] === "number" && typeof b[key] === "number" ? r((a[key] as number) - (b[key] as number), 4) : null);
+      reported.push({
+        name: c.name,
+        before: b,
+        after: a,
+        change: { maxDisplacementMm: diff("maxDisplacementMm"), minSafetyFactor: diff("minSafetyFactor") },
+        stiffer: typeof a.maxDisplacementMm === "number" && typeof b.maxDisplacementMm === "number" && (a.maxDisplacementMm as number) > 0 ? r((b.maxDisplacementMm as number) / (a.maxDisplacementMm as number), 3) : null,
+      });
+    }
+    reply.verify = {
+      cases: reported,
+      seconds: r((Date.now() - verifyT0) / 1000, 1),
+      note: `The sliced Stress study of the whole part for each load case, before and after (faces found again on the ribbed part by where they lie). One case is two slices and two solves; each further case adds two more. Material cards are placeholders: the numbers are relative.${frequencyPlan ? " This check is static: it has no frequency to check." : ""}`,
+    };
+  } else if (verify && study && studyBefore) {
     stage("verify: slicing and solving the ribbed part", 0.65);
     const mapped = this.ribsStudyAfter(study, before, { positions: after.positions, faceOf: after.triangles });
     const studyAfter = await this.solveSliced(obj, mapped, false);
@@ -627,7 +835,7 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
       change: { maxDisplacementMm: diff("maxDisplacementMm"), minSafetyFactor: diff("minSafetyFactor"), slicerSeconds: diff("slicerSeconds"), slicerGrams: diff("slicerGrams") },
       stiffer: typeof a.maxDisplacementMm === "number" && typeof b.maxDisplacementMm === "number" && (a.maxDisplacementMm as number) > 0 ? r((b.maxDisplacementMm as number) / (a.maxDisplacementMm as number), 3) : null,
       setup: { holds: mapped.holds.map((h) => ({ kind: h.kind, faces: h.faces })), loads: mapped.loads.map((l) => ({ kind: l.kind, faces: l.faces, magnitude: l.magnitude })), cellMm: VERIFY_CELL_MM, card: mapped.cardId },
-      note: "The sliced Stress study of the whole part, before and after, with the same holds and loads (faces found again on the ribbed part by where they lie). Material cards are placeholders: the numbers are relative.",
+      note: `The sliced Stress study of the whole part, before and after, with the same holds and loads (faces found again on the ribbed part by where they lie). Material cards are placeholders: the numbers are relative.${frequencyPlan ? " This check is static: it has no frequency to check." : ""}`,
     };
   }
   return reply;
@@ -637,10 +845,10 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
  * The verify study on the part as it is: the plan's holds and loads when they were given, else the faces the wall is
  * joined to held and an even pressure on the wall's faces.
  */
-function ribsStudy(this: Session, _obj: PlateObject, record: PlanRecord): ObjectStudy | { reason: string } {
+function ribsStudy(this: Session, _obj: PlateObject, record: PlanRecord, loadsGiven?: unknown): ObjectStudy | { reason: string } {
   const holds = this.readFixtures(record.holds);
   if ("reason" in holds) return holds;
-  const loads = this.readLoads(record.loads);
+  const loads = this.readLoads(loadsGiven === undefined ? record.loads : loadsGiven);
   if ("reason" in loads) return loads;
   const card = ribCard.call(this).card;
   if ("reason" in card) return card;

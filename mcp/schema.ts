@@ -576,6 +576,51 @@ const faceOps = [
   },
 ];
 (op.oneOf as unknown[]).splice(5 + sketchOps.length, 0, ...faceOps);
+const draftOp = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "faces", "angleDeg"],
+  properties: {
+    kind: { const: "draft" },
+    faces: {
+      type: "array",
+      minItems: 1,
+      maxItems: 50,
+      description: "Walls to tilt. Indexes, or {normal, nearPoint}. At most 50.",
+      items: { description: "Index, or {normal, nearPoint}." },
+    },
+    angleDeg: {
+      type: "number",
+      minimum: -30,
+      maximum: 30,
+      description: "Degrees, not 0. Positive opens the faces toward pull so the part releases: matter leaves the pull side of the neutral plane, and a box's top shrinks.",
+    },
+    pull: {
+      type: "array",
+      minItems: 3,
+      maxItems: 3,
+      items: { type: "number", description: "Component." },
+      description: "Pull direction. Default +Z, [0, 0, 1].",
+    },
+    neutral: {
+      description: "The plane that stays put. A face (index or {normal, nearPoint}), or {origin, normal}. Absent: the plane through the lowest point of the picked faces along pull, with that pull as its normal.",
+      oneOf: [
+        { description: "A face: an index, or {normal, nearPoint}." },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["origin", "normal"],
+          properties: {
+            origin: { type: "array", minItems: 3, maxItems: 3, items: { type: "number", description: "Component." }, description: "A point on the plane." },
+            normal: { type: "array", minItems: 3, maxItems: 3, items: { type: "number", description: "Component." }, description: "The plane's normal." },
+          },
+        },
+      ],
+    },
+    label,
+  },
+};
+(op.oneOf as unknown[]).splice(5 + sketchOps.length + faceOps.length, 0, draftOp);
 const regionField = {
   type: "object",
   additionalProperties: false,
@@ -704,6 +749,7 @@ const ribNetOp = {
           width: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "This run's thickness, mm." },
           height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "This run's height off the surface, mm." },
           heights: { type: "array", maxItems: 1999, items: { type: "number", minimum: 0.1, maximum: 500 }, description: "One height per stretch between points, none above height: the rib changes height along one run (ramped over a short step, the lower height at the point where it changes)." },
+          openEnds: { type: "array", minItems: 2, maxItems: 2, items: { type: "boolean" }, description: "The path's start and end. true keeps that end square: a vent notch, not run into the facing rib and not tapered." },
           ...ribProfileFields,
         },
       },
@@ -869,6 +915,7 @@ export const OP_SUMMARY: Record<string, string> = {
   shell: "shell {thickness, openFaces}: hollow the solid.",
   faceExtrude: "faceExtrude {face, distance}: a prism on a face.",
   moveFaces: "moveFaces {faces:[{face, distance}]}: push or pull faces.",
+  draft: "draft {faces, angleDeg, pull, neutral}: tilt walls so the part releases. Positive opens them toward pull.",
   boolean: "boolean {op:cut|fuse|common, primitive, dx, dy, dz | radius, height, origin | centre, turn}.",
   root: "root {primitive, sizes}: a new base solid.",
   join: "join {toolObject, op}: another object's solid as the tool.",
@@ -2463,7 +2510,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "ribs_plan",
-    description: "Auto ribs (docs/plan-auto-ribs.md): plan ribs on one wall of a solid so it bends less for the least added material. Give the wall (wall.faces, or wall.face {normal, nearPoint} for the face a point is on; faces that continue it smoothly are taken with it, so a pick on a floor or a curved panel takes the whole smooth wall), and nothing else is needed: the wall is held where it meets the rest of the part and pressed evenly. The wall is meshed, solved as a thin shell, and ribs are grown along its bending directions, the one that pays most per gram first, until the goal (balanced by default: stop when the next rib buys under a quarter of what the first did). Always answers at once with a background job: slice_wait {job} reports stage, fraction and progress (each rib added, changed or removed with its polyline and heights, and the running totals: ribs, rib volume, stiffness factor) while it runs, and the plan when done; slice_cancel {job} stops it and the plan as it stood comes back marked stoppedEarly (a plan exists after the first rib). Plan-only jobs do not block other calls. The result: the ribs (model-space points on the wall's face, width, height and heights per stretch, profile, ends), what they add (mm³, grams at the filament's density, percent of the part), the predicted stiffness factor and deflection bare and ribbed (shell model, relative: rules.material names the card used, the library card for the selected filament where there is one, else the default; the cards are provisional), the same stiffness by thickening the wall and by an even grid, notBetterThanBaseline, looseEnds (a rib end that meets no border, hold or other rib, each with why: a no-rib zone's border or the budget), the wall report (faces taken and where growth stopped, features already standing on it, thickness, borders, holes, every zone with where it landed, holds or loads not on the wall), the rules used with every default named, and timings. The stiffness numbers come from a clean solve of exactly the ribs returned. A hold or load that misses the wall is refused unless ifMissed is evenPressure. ribs_apply {job} builds it as one History row. apply:true plans and applies in one job; verify:true (with apply) adds the sliced Stress study before and after. Defaults: rib width 3 bead widths of the nozzle (bead = 1.125 × nozzle) for filament, a typed width rounded to whole beads (at least 2); resin 0.8 × and moulded 0.6 × the wall's median thickness; greatest height 3 × the median thickness, capped by the room in front of the wall and by zones; spacing and least length from the wall's narrow width (spacing a sixth of it, least length an eighth, within set bounds); holes keep a 3 mm rim; profile auto (straight; a tee only where a stretch is held lower, its flange underside, 45° chamfer or square, the one that prints for this printer and the rib's direction). guide {topic:\"ribs\"} has the flow, every default and the zone kinds.",
+    description: "Auto ribs (docs/plan-auto-ribs.md): plan ribs on one wall of a solid so it bends less for the least added material. Give the wall (wall.faces, or wall.face {normal, nearPoint}; faces that continue it smoothly join it, so one pick takes a whole floor or curved panel) and nothing else is needed: the wall is held where it meets the rest of the part and pressed evenly. wall.folded:true (default false) also takes thin faces across sharp edges (a cover's side walls) as one shell; false leaves the wall exactly as before. loads is one case, as before; loadCases gives up to 8 named, weighted cases instead. The wall is meshed, solved as a thin shell, and ribs grow along its bending directions, best stiffness per gram first, until the goal (balanced by default: stop when the next rib buys under a quarter of what the first did). A frequency goal replies with frequencyHz and frequencyFactor; a free end's reason is open. It answers at once with a background job: slice_wait {job} reports stage, fraction and progress (each rib added, changed or removed with its polyline and heights; running ribs, rib volume, stiffness factor), then the plan; slice_cancel {job} returns the plan so far marked stoppedEarly (a plan exists after the first rib). Plan-only jobs do not block other calls. The result: the ribs (model-space points on the wall's face, width, height and heights per stretch, profile, ends), what they add (mm³, grams at the filament's density, percent of the part), the stiffness factor and deflection bare and ribbed (shell model, relative; rules.material names the card: the selected filament's library card where there is one, else the default; cards are provisional), plan.cases with load cases, the same stiffness by thickening the wall and by an even grid, notBetterThanBaseline, looseEnds (a rib end meeting no border, hold or rib, with why: a no-rib zone's border, the budget, or open), the wall report (faces taken and where growth stopped, features on it, thickness, borders, holes, where each zone landed, holds or loads not on the wall), the rules with every default named, and timings. The stiffness numbers are a clean solve of exactly the ribs returned. A hold that misses the wall is refused unless ifMissed is evenPressure. A load that misses is refused the same way, except on a frequency goal, where it is ignored and the note names it. ribs_apply {job} builds it as one History row; apply:true plans and applies in one job. Defaults: rib width 3 beads of the nozzle (bead = 1.125 × nozzle) for filament, a typed width rounded to whole beads (at least 2); resin 0.8 × the wall's median thickness; moulded: the width is at half height, sized so the base is 0.6 × the thinnest wall at the greatest height, its root radius half the top width or 0.25 × the thickest wall when that is larger (a typed width keeps half the top); greatest height 3 × the median thickness, capped by the room in front of the wall and by zones; spacing a sixth and least length an eighth of the wall's narrow width, within set bounds; holes keep a 3 mm rim; profile auto. With process moulded, plan.moulding lists each moulding rule (base thickness without the fillet, root radius, height, draft, junction circle, spacing) with its worst number and any flags; it changes nothing, and filament and resin replies leave it out. guide {topic:\"ribs\"} has the flow, every default and the zone kinds. Resin adds plan.vents: one 0.75 mm full-height gap per pocket whose ribs face the tank. A piece left beside a notch is held by the crossing rib or the side wall, so its minimum length is half that crossing rib's width plus 0.5 mm and never less than its own width. Filament and moulded omit vents and refuse buildAxis.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -2491,15 +2538,16 @@ export const TOOLS: ToolSpec[] = [
             growAngleDeg: { type: "number", minimum: 0, maximum: 60, description: "The kink across an edge growth crosses, degrees. Default 15." },
             addFaces: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "Faces to add to the wall." },
             excludeFaces: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "Faces growth must not take." },
-            thicknessMm: { type: "number", exclusiveMinimum: 0, maximum: 200, description: "The wall's thickness, given, mm: every point takes it and nothing is read. Default: read by rays straight in, where something stands on the far side (a rib under an outer face) filled in from the wall around it." },
-            features: { type: "boolean", description: "Find ribs, bosses and pads already standing on the wall (default true): the wall beyond them on the same plane or cylinder is taken too, the wall under them is modelled plain (their stiffness is not counted) and new ribs keep 3 mm clear of them (wall.features in the reply). false reads the wall as before: growth stops at them and their footprints are holes." },
+            thicknessMm: { type: "number", exclusiveMinimum: 0, maximum: 200, description: "The wall's thickness, mm, for every point; nothing is read. Default: read by rays straight in, filled in from the wall around where something stands on the far side (a rib under an outer face)." },
+            features: { type: "boolean", description: "Find ribs, bosses and pads already on the wall (default true): the wall beyond them on the same plane or cylinder is taken too, the wall under them is modelled plain (their stiffness not counted), new ribs keep 3 mm clear (wall.features in the reply). false: growth stops at them and their footprints are holes, as before." },
+            folded: { type: "boolean", description: "Also take every thin face joined across a sharp edge (a cover's side walls, an open box) as one shell. A thick region stays at its real thickness as a stiff patch; a crease sits on the miter. The far-side pass is skipped, so a thick reading stays a patch, not filled in from the thin wall around it. Standing ribs and bosses are still found unless features is false. Default false: a sharp edge stops the wall, as before. The report lists faces taken across folds, the patches, and where growth stopped and why." },
           },
         },
-        ifMissed: { enum: ["refuse", "evenPressure"], description: "A hold or load that cannot be put on the picked wall (none of it lands; a force or pressure with under 90 % of its area on the wall or behind it): refuse (default) answers with which one, why and what to do; evenPressure plans without it (under even pressure when no load is left) and says so first in notes and the sentence." },
+        ifMissed: { enum: ["refuse", "evenPressure"], description: "A hold or load that misses the picked wall (none of it lands; a force or pressure with under 90 % of its area on the wall or behind it): refuse (default) says which, why and what to do; evenPressure plans without it (even pressure when no load is left) and says so first in notes and the sentence." },
         zones: {
           type: "array",
           maxItems: 32,
-          description: "Places ribs keep clear of. Each {region, mode, maxHeightMm, marginMm}; region is one of {faces:[..]}, {box:{min, max}} or {box:{centre, size, turn}}, {sphere:{centre, radius}}, {cylinder:{origin, axis, radius, length}}, {disks:[{p, n, r}]}, {near:{mm, faces, edges, points, holes}}, {band:{origin, normal, from, to}}, {obstacle:{object, clearanceMm}} (another object's solid as it stands in model space).",
+          description: "Places ribs keep clear of. region is one of {faces:[..]}, {box:{min, max}} or {box:{centre, size, turn}}, {sphere:{centre, radius}}, {cylinder:{origin, axis, radius, length}}, {disks:[{p, n, r}]}, {near:{mm, faces, edges, points, holes}}, {band:{origin, normal, from, to}}, {obstacle:{object, clearanceMm}} (another object's solid as it stands in model space).",
           items: {
             type: "object",
             additionalProperties: false,
@@ -2513,13 +2561,29 @@ export const TOOLS: ToolSpec[] = [
           },
         },
         holds: { type: "array", maxItems: 8, description: "As sim_setup's fixtures ({kind:\"faces\", faces}, {kind:\"region\", region}, {kind:\"bed\"}). Default: the wall's joined borders, clamped.", items: { type: "object", description: "One hold, as sim_setup takes it." } },
-        loads: { type: "array", maxItems: 8, description: "As sim_setup's loads ({kind:\"force\"|\"pressure\", faces | region, magnitude, direction}). Default: an even pressure on the wall.", items: { type: "object", description: "One load, as sim_setup takes it." } },
+        loads: { type: "array", maxItems: 8, description: "One load case, as sim_setup's loads ({kind:\"force\"|\"pressure\", faces | region, magnitude, direction}). Default: an even pressure on the wall. Mutually exclusive with loadCases.", items: { type: "object", description: "One load, as sim_setup takes it." } },
+        loadCases: {
+          type: "array",
+          maxItems: 8,
+          description: "Up to 8 named load cases, weighed together; not with loads. A case whose loads all miss the wall is refused by its name (or planned under even pressure per ifMissed). plan.cases gives each case's stiffness factor and bare and ribbed deflection, beside plan.stiffnessFactor.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["loads"],
+            properties: {
+              name: { type: "string", description: "The case's name in the result. Default Case N." },
+              weight: { type: "number", exclusiveMinimum: 0, description: "How much this case counts in the combined stiffness. Default 1." },
+              loads: { type: "array", minItems: 1, maxItems: 8, description: "The case's loads, each as loads takes them.", items: { type: "object", description: "One load, as sim_setup takes it." } },
+            },
+          },
+        },
         goal: {
           type: "object",
           additionalProperties: false,
-          description: "One of: stiffer (times bare), maxDeflectionMm, budgetMm3, budgetG, balanced. Default balanced.",
+          description: "One of: stiffer (times bare), frequency, maxDeflectionMm, budgetMm3, budgetG, balanced. Default balanced.",
           properties: {
             stiffer: { type: "number", minimum: 1, maximum: 1000, description: "Reach this many times the bare wall's stiffness." },
+            frequency: { type: "number", minimum: 0, maximum: 1000, description: "Times the lowest natural frequency. The reply has frequencyHz and frequencyFactor; a free end's reason is open. Below 0 is rejected here; a frequency goal must be 1 or more. Refused beside another goal, or with no density." },
             maxDeflectionMm: { type: "number", exclusiveMinimum: 0, description: "Keep the wall's largest deflection under this, mm (shell model, placeholder material)." },
             budgetMm3: { type: "number", exclusiveMinimum: 0, description: "The stiffest plan within this much rib material, mm³." },
             budgetG: { type: "number", exclusiveMinimum: 0, description: "The same budget in grams at the filament's density." },
@@ -2536,7 +2600,7 @@ export const TOOLS: ToolSpec[] = [
             minHeight: { type: "number", minimum: 0.2, maximum: 200, description: "Lowest height the sizing pass goes to, mm. Default 1 (or maxHeight if lower)." },
             minSpacing: { type: "number", minimum: 1, maximum: 500, description: "Least distance between parallel ribs, mm." },
             minLength: { type: "number", minimum: 0, maximum: 1000, description: "Shortest rib, mm." },
-            profile: { enum: ["auto", "straight", "drafted", "tee"], description: "Section. auto: filament straight, with a tee only on stretches held under the greatest height (a zone cap, a facing part) where its flange prints in this pose; resin and moulded drafted. straight, drafted or tee: every stretch (one too low for a root or flange is straight)." },
+            profile: { enum: ["auto", "straight", "drafted", "tee"], description: "Section. auto: filament straight, a tee only on stretches held under the greatest height (a zone cap, a facing part) where its flange prints in this pose; resin and moulded drafted. straight, drafted or tee: every stretch (straight where too low for a root or flange)." },
             draftDeg: { type: "number", minimum: 0, maximum: 15, description: "drafted: each side's draft. Default 1." },
             rootRadius: { type: "number", minimum: 0, maximum: 50, description: "Flared root into the wall, mm (ribNet's default per profile)." },
             flangeWidth: { type: "number", minimum: 0.2, maximum: 200, description: "tee: flange width, mm. Default 3 × width." },
@@ -2545,16 +2609,18 @@ export const TOOLS: ToolSpec[] = [
           },
         },
         process: { enum: ["filament", "resin", "moulded"], description: "What the part is made by: sets the width default and the profile auto picks. Default filament." },
+        buildAxis: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Resin only; filament and moulded refuse it. Plate frame, from the platform toward the tank, turned into the wall frame. Default plate +Z; the notes say there is no resin printer." },
+        pull: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Pull direction for the moulding draft check, when process is moulded. Default: the wall normal on the side the ribs stand on." },
         holeRimMm: { type: "number", minimum: 0, maximum: 50, description: "Ribs keep this far from a hole's rim, mm. Default 3; 0 lets them run to it." },
         baselines: { type: "boolean", description: "Compute the thickening and even-grid comparisons. Default true." },
         apply: { type: "boolean", description: "Apply the plan (ribs_apply) in the same job when it is done. A stopped plan is not applied." },
-        verify: { type: "boolean", description: "With apply: the sliced Stress study before and after (slow; two slices and two solves)." },
+        verify: { type: "boolean", description: "With apply: the sliced Stress study before and after (slow; two slices and two solves). With load cases, once per case, before and after, and each case is reported." },
       },
     },
   },
   {
     name: "ribs_apply",
-    description: "Build a rib plan as one ribNet step: one History row \"Auto ribs\", undone as one. plan is the plan from a finished ribs_plan job (job), or {ribs:[{points, height | heights, width, profile, flangeChamferDeg}]} as that result lists them, edited or not (points model-space on the wall's face). A rib whose height changes along it (a capped zone, a facing part) is one path with heights per stretch (a straight section) or split where it changes into paths that meet as joints (a root or flange). The row's source keeps the ribs_plan request, so it can be planned again. A plan carries the fingerprint of the solid it was made for (volume, faces, edges); one without it, or for a part that changed since, is refused (plan again). The reply: ribNet's own report (runs, ends, shortened and skipped stretches), the measured added volume (mm³), grams at the filament's density, percent of the part, and model_check in the current pose before and after (overhang and thin-wall areas). verify:true also runs the sliced Stress study before and after with the plan's holds and loads (or the wall's joined faces held and an even 0.01 MPa on the wall): maximum displacement and least safety before and after, and the print time and filament of the two slices. It is slow, so it answers at once with a job (slice_wait). Material cards are placeholders: compare before with after, not with a real part.",
+    description: "Build a rib plan as one ribNet step: one History row \"Auto ribs\", undone as one. plan is the plan from a finished ribs_plan job (job), or {ribs:[{points, height | heights, width, profile, flangeChamferDeg}]} as that result lists them, edited or not (points model-space on the wall's face). A rib whose height changes along it (a capped zone, a facing part) is one path with heights per stretch (a straight section) or split where it changes into paths that meet as joints (a root or flange). The row's source keeps the ribs_plan request, so it can be planned again. A plan carries the fingerprint of the solid it was made for (volume, faces, edges); one without it, or for a part that changed since, is refused (plan again). The reply: ribNet's own report (runs, ends, shortened and skipped stretches), the measured added volume (mm³), grams at the filament's density, percent of the part, and model_check in the current pose before and after (overhang and thin-wall areas). verify:true also runs the sliced Stress study before and after with the plan's holds and loads (or the wall's joined faces held and an even 0.01 MPa on the wall): maximum displacement and least safety before and after, and the print time and filament of the two slices. With load cases it runs the study for each case, before and after, and reports each case (one case is two slices and two solves; each further case adds two more). It is slow, so it answers at once with a job (slice_wait). Material cards are placeholders: compare before with after, not with a real part. A frequency plan is built the same way. A static Stress check has no frequency to check, and the reply says so.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

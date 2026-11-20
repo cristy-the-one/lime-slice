@@ -11,7 +11,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project file reads and writes a tree's body without loading the readers here (./saved-tree-body.ts).
 import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
@@ -617,6 +617,22 @@ function readOpBody(value: unknown): SavedOp | undefined {
       }
       return { kind: "moveFaces", faces };
     }
+    case "draft": {
+      if (!Array.isArray(value.faces) || value.faces.length < 1 || value.faces.length > 50) return undefined;
+      if (!finite(value.angleDeg) || value.angleDeg === 0 || value.angleDeg < -30 || value.angleDeg > 30) return undefined;
+      const faces: (number | FaceRef)[] = [];
+      for (const raw of value.faces) {
+        const face = readFacePick(raw);
+        if (face === undefined) return undefined;
+        faces.push(face);
+      }
+      const pull = value.pull === undefined ? undefined : vec(value.pull);
+      if (value.pull !== undefined && !pull) return undefined;
+      if (pull && Math.hypot(pull[0], pull[1], pull[2]) < 1e-9) return undefined;
+      const neutral = value.neutral === undefined ? undefined : readNeutral(value.neutral);
+      if (value.neutral !== undefined && neutral === undefined) return undefined;
+      return { kind: "draft", faces, angleDeg: value.angleDeg, ...(pull ? { pull } : {}), ...(neutral !== undefined ? { neutral } : {}) };
+    }
     // --- Split to print. The fields a later milestone builds are kept as stored, so the file round-trips. ---
     case "partition": {
       if (!Array.isArray(value.cuts) || value.cuts.length === 0 || value.cuts.length >= MAX_PIECES_HARD_STOP) return undefined;
@@ -773,6 +789,19 @@ function readLoops(value: unknown): ProfileLoop[] | null | undefined {
 function pair(value: unknown): Vec2 | null {
   if (!Array.isArray(value) || value.length !== 2 || !value.every(finite)) return null;
   return [value[0], value[1]];
+}
+
+/** A draft's neutral face, or a plane. Undefined when the value is damaged. */
+function readNeutral(value: unknown): DraftNeutral | undefined {
+  if (isId(value)) return value;
+  if (!isRecord(value)) return undefined;
+  if (value.origin !== undefined || value.normal !== undefined) {
+    const origin = vec(value.origin);
+    const normal = vec(value.normal);
+    if (!origin || !normal || Math.hypot(normal[0], normal[1], normal[2]) < 1e-9) return undefined;
+    return { origin, normal };
+  }
+  return readFacePick(value);
 }
 
 /** K4. A face index, or the reference a stored step keeps. Undefined when the value is damaged. */

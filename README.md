@@ -14,13 +14,14 @@ The pictures are the web UI in the dark theme against a local engine with the Op
 
 ### Model a part
 
-Model edits a STEP solid, or starts one from a primitive, a gear, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
+Model edits a STEP solid, or starts one from a primitive, a gear, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
 
 ![Sketching a 40 × 24 mm rectangle on the bed, extruding it 16 mm, cutting a 10 mm hole up through it, then editing the first extrude down to 12 mm from History.](docs/screenshots/clip-model.gif)
 
 - **Text** in Inter, IBM Plex Mono and Serif, Allerta Stencil, two pen fonts and five Hershey fonts, or a font file of your own. Letters go on flat faces and wrap round cylinders, cones, spheres, tori and freeform faces at their true size, raised or engraved.
 - **Gears.** New solid makes an involute spur gear, a ring (internal) gear or a rack. The gear card says whether it meshes with the gear it reaches, or how far off it is.
 - **Split to print** cuts a part that is too large for the printer into pieces that fit, with straight or shaped cuts (lap, zig-zag, tongue, dovetail, or a sketched line) and dowels, plugs, keys or hardware holes to join them. The pieces become plate objects, each with its number on a cut face. It can also cut for the Formlabs Form 4 and export STEP, 3MF or STL.
+- **Draft** tilts walls that are already there, a STEP part's included, so a moulded or cast part releases: pick the walls, then Draft in the face menu, an angle and the pull direction. A positive angle opens them toward the pull.
 - **Print transition** adds a flat wedge in a concave corner, or a gusset under a lip, so each row stands on the row before.
 - **STEP in and out.** A STEP file with several solids can open as one object per solid. The STEP button writes the solid on screen as AP214.
 - **Measure, Check, Section view**, and a part you hide to reach the one behind it.
@@ -104,6 +105,14 @@ Model → Stress… estimates how a part takes a load, solved as it will be prin
 <img alt="A 100 × 10 × 10 mm PLA cantilever, held at one end and loaded with 20 N at the other, painted by von Mises stress; the legend's peak reads 11.5 MPa against 12.0 MPa from beam theory." src="docs/screenshots/stress-cantilever.png" width="720">
 
 The worked example and the trust levels are in [docs/modeler-guide.md](docs/modeler-guide.md#stress-estimate).
+
+**Auto ribs** (Features → Auto ribs, next to Stress) plans ribs on a wall so it bends less for the least added material: click the wall, Run, and Apply puts the ribs in History as one step. The plan says how much stiffer the wall gets and compares the ribs with a thicker wall and an even grid of the same stiffness.
+
+- **Load cases.** Add a load case gives up to eight named cases with a weight each; the ribs serve all of them, and the result gives each case's stiffness, with Check with Stress run once per case.
+- **Side walls.** Include side walls (folded) takes a cover's side walls into the same wall across its sharp edges, so ribs can run over a crease. It is off unless checked.
+- **Moulding checks.** With the moulded process, the result lists each moulding rule a rib breaks: base thickness, root radius, height, draft, the junction where ribs meet, and the gap between ribs. It is a report and changes nothing.
+
+The stiffness numbers are relative, since the material cards are placeholders. Over MCP the same planner is `ribs_plan` and `ribs_apply`.
 
 ### Drive it from an AI agent (MCP)
 

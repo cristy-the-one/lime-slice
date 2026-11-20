@@ -27,6 +27,9 @@ export const OPEN_SHELL = "This part is surfaces only, not a closed solid, so ri
 
 export type ProfileChoice = "auto" | "straight" | "drafted" | "tee";
 
+/** What the slider multiplies. Stiffness is the panel's default, so an untouched card plans as before. */
+export type Quantity = "stiffness" | "frequency";
+
 /** How much: the slider's five stops (−2 lightest … 0 balanced … 2 stiffest), or a target, or a budget. */
 export type Amount =
   | { kind: "slider"; stop: number }
@@ -52,15 +55,36 @@ export interface ZoneRow {
   marginMm: number;
 }
 
+/** One named load case. Two or more are weighed together; a single load stays in `loads` and has no case. */
+export interface PanelLoadCase {
+  name: string;
+  /** Above zero. The panel's default is 1. */
+  weight: number;
+  loads: StudyLoad[];
+}
+
+/** The most cases the panel and ribs_plan accept. */
+export const MAX_LOAD_CASES = 8;
+
 export interface AutoRibsCard {
   /** Faces clicked; each takes its smooth continuations unless `justThis`. */
   picked: number[];
   /** Taken faces clicked off again. */
   excluded: number[];
   justThis: boolean;
+  /** Also take thin faces across a sharp edge. Off unless the panel's box is checked. */
+  folded: boolean;
   amount: Amount;
+  /** Stiffness unless the user chose Higher frequency. */
+  quantity: Quantity;
   holds: StudyHold[];
+  /** Today's one load. Empty when `cases` holds two or more. */
   loads: StudyLoad[];
+  /**
+   * Two or more named cases. Absent for the one-load panel: removing back down to one case drops this and puts that
+   * case's loads back in `loads`, so the card is the single-load card again.
+   */
+  cases?: PanelLoadCase[];
   zones: ZoneRow[];
   holeRim: { on: boolean; mm: number };
   ribs: { width: number | null; height: number | null; profile: ProfileChoice; process: RibProcess };
@@ -69,7 +93,7 @@ export interface AutoRibsCard {
 }
 
 export function newAutoRibsCard(): AutoRibsCard {
-  return { picked: [], excluded: [], justThis: false, amount: { kind: "slider", stop: 0 }, holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" }, ifMissed: "refuse" };
+  return { picked: [], excluded: [], justThis: false, folded: false, amount: { kind: "slider", stop: 0 }, quantity: "stiffness", holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" }, ifMissed: "refuse" };
 }
 
 /** A card read back from a stored row (`auto.panel`), every field checked; null when it is not one. */
@@ -79,18 +103,81 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
   const fresh = newAutoRibsCard();
   const ints = (v: unknown) => (Array.isArray(v) ? v.filter((n): n is number => Number.isInteger(n)) : []);
   if (!Array.isArray(row.picked)) return null;
+  const cases = storedCases(row.cases);
   return {
     picked: ints(row.picked),
     excluded: ints(row.excluded),
     justThis: row.justThis === true,
+    folded: row.folded === true,
     amount: row.amount && typeof row.amount === "object" ? (row.amount as Amount) : fresh.amount,
+    quantity: row.quantity === "frequency" ? "frequency" : "stiffness",
     holds: Array.isArray(row.holds) ? row.holds : [],
     loads: Array.isArray(row.loads) ? row.loads : [],
+    ...(cases ? { cases } : {}),
     zones: Array.isArray(row.zones) ? row.zones : [],
     holeRim: row.holeRim && typeof row.holeRim === "object" ? row.holeRim : fresh.holeRim,
     ribs: row.ribs && typeof row.ribs === "object" ? { ...fresh.ribs, ...row.ribs } : fresh.ribs,
     ifMissed: row.ifMissed === "evenPressure" ? "evenPressure" : "refuse",
   };
+}
+
+/**
+ * What a plan sends for its loads. One load is `loads` alone. Two or more are `loadCases` plus `caseWeights` and no
+ * `loads`, since the wall takes one or the other. A blank name is "Case 1", "Case 2", …, and a name two cases share is
+ * made distinct (`caseNames`). A weight that is not above zero is 1. At most 8 cases. The panel keeps these quiet
+ * fixes. ribs_plan refuses a bad weight, a shared name and more than 8 before it calls this, and passes `keepOne` so one named case stays a case; the panel folds a single case back
+ * into the one load.
+ */
+export function loadRequest(loads: StudyLoad[], cases: PanelLoadCase[] | undefined, keepOne = false): { loads: StudyLoad[]; loadCases?: { name: string; loads: StudyLoad[] }[]; caseWeights?: number[] } {
+  if (!cases || cases.length < (keepOne ? 1 : 2)) return { loads };
+  const kept = cases.slice(0, MAX_LOAD_CASES);
+  return {
+    loads: [],
+    loadCases: caseNames(kept).map((name, i) => ({ name, loads: kept[i]!.loads })),
+    caseWeights: kept.map((row) => (Number.isFinite(row.weight) && row.weight > 0 ? row.weight : 1)),
+  };
+}
+
+/**
+ * The names a plan sends for its cases, one per case and no two alike: the verify study finds a case's loads by its
+ * name. Trimmed; a blank one is "Case N" by its place; a name already taken gets " (2)", " (3)", ….
+ */
+export function caseNames(cases: readonly { name: string }[]): string[] {
+  const out: string[] = [];
+  cases.forEach((row, i) => out.push(freeCaseName(row.name.trim() || `Case ${i + 1}`, out)));
+  return out;
+}
+
+/** `wanted`, or `wanted (2)`, `wanted (3)`, …: the first that none of `taken` is. */
+export function freeCaseName(wanted: string, taken: readonly string[]): string {
+  let name = wanted;
+  for (let k = 2; taken.includes(name); k += 1) name = `${wanted} (${k})`;
+  return name;
+}
+
+/** The first name two cases would be sent with (trimmed, a blank one "Case N"), or null when every name is its own. */
+export function duplicateCaseName(cases: readonly { name: string }[]): string | null {
+  const seen = new Set<string>();
+  for (const [i, row] of cases.entries()) {
+    const name = row.name.trim() || `Case ${i + 1}`;
+    if (seen.has(name)) return name;
+    seen.add(name);
+  }
+  return null;
+}
+
+/** Cases stored on a card: two or more, each with a name, a weight and its loads. One stored case is not a case list. */
+function storedCases(value: unknown): PanelLoadCase[] | undefined {
+  if (!Array.isArray(value) || value.length < 2) return undefined;
+  const out: PanelLoadCase[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return undefined;
+    const row = item as Partial<PanelLoadCase>;
+    const weight = typeof row.weight === "number" && row.weight > 0 ? row.weight : 1;
+    const name = typeof row.name === "string" && row.name.trim() ? row.name : `Case ${out.length + 1}`;
+    out.push({ name, weight, loads: Array.isArray(row.loads) ? row.loads : [] });
+  }
+  return out.length >= 2 ? out.slice(0, MAX_LOAD_CASES) : undefined;
 }
 
 /** A History step's rib network as typed, when the step is one: a group whose source is a `ribNet`. */
@@ -102,15 +189,18 @@ export function ribNetSource(op: { kind: string; source?: unknown }): Record<str
 
 /**
  * The card a rib network step reopens with: the panel's own request when the panel made it (`auto.panel`), the wall
- * faces when ribs_plan made it (`auto.wall.faces`), else null (a hand-typed network: pick its wall again).
+ * faces and `folded` when ribs_plan made it (`auto.wall`), else null (a hand-typed network: pick its wall again).
  */
 export function cardFromRibNet(source: Record<string, unknown>): AutoRibsCard | null {
   const auto = source.auto as Record<string, unknown> | undefined;
   if (!auto || typeof auto !== "object") return null;
   const panel = cardFromStored(auto.panel);
   if (panel) return panel;
-  const faces = (auto.wall as { faces?: unknown } | undefined)?.faces;
-  if (Array.isArray(faces) && faces.every((f) => Number.isInteger(f))) return { ...newAutoRibsCard(), picked: faces as number[] };
+  // ribs_plan's request: its wall's faces, and whether it took side walls across sharp edges. Its loads are typed in
+  // the tool's own form (places, selectors), which the panel cannot read back here, so they are picked again.
+  const wall = auto.wall as { faces?: unknown; folded?: unknown } | undefined;
+  const faces = wall?.faces;
+  if (Array.isArray(faces) && faces.every((f) => Number.isInteger(f))) return { ...newAutoRibsCard(), picked: faces as number[], ...(wall?.folded === true ? { folded: true } : {}) };
   return null;
 }
 
@@ -213,13 +303,27 @@ export function newZone(id: number, kind: ZoneShape["kind"], at: V3, extent: num
 
 const SLIDER_SHARE = [0.5, 0.75, 1, 1.35, 1.75] as const;
 export const SLIDER_LABELS = ["Lightest", "Lighter", "Balanced", "Stiffer", "Stiffest"] as const;
+/** Higher frequency slider stops, −2..2. Stop 0, in the middle, is ×1.5. ×1.15, ×1.3, ×1.5, ×1.75, ×2. */
+export const FREQUENCY_STOPS = [1.15, 1.3, 1.5, 1.75, 2] as const;
+
+/** The frequency multiple a slider stop asks for. */
+export function frequencyFactorAt(stop: number): number {
+  const i = Math.max(0, Math.min(FREQUENCY_STOPS.length - 1, Math.round(stop) + 2));
+  return FREQUENCY_STOPS[i]!;
+}
 
 /**
  * The goal the planner gets. The engine has one balanced goal and no lean, so a slider stop off the middle asks for a
  * share of the stiffness the last balanced plan gained (`balancedFactor`): lightest half its gain, stiffest 1.75×.
- * Without a balanced plan yet, it plans balanced.
+ * Without a balanced plan yet, it plans balanced. A frequency quantity uses the same stops as multiples of the lowest
+ * natural frequency, and the default quantity is stiffness.
  */
-export function goalOf(amount: Amount, densityGCm3: number, balancedFactor: number | null): PlanGoal {
+export function goalOf(amount: Amount, densityGCm3: number, balancedFactor: number | null, quantity: Quantity = "stiffness"): PlanGoal {
+  if (quantity === "frequency") {
+    if (amount.kind === "stiffer") return { kind: "frequency", factor: amount.factor };
+    if (amount.kind === "slider") return { kind: "frequency", factor: frequencyFactorAt(amount.stop) };
+    return { kind: "frequency", factor: frequencyFactorAt(0) };
+  }
   if (amount.kind === "stiffer") return { kind: "stiffer", factor: amount.factor };
   if (amount.kind === "deflection") return { kind: "maxDeflection", mm: amount.mm };
   if (amount.kind === "budget") return { kind: "budget", volumeMm3: (amount.grams / (densityGCm3 > 0 ? densityGCm3 : 1.24)) * 1000 };
@@ -228,9 +332,49 @@ export function goalOf(amount: Amount, densityGCm3: number, balancedFactor: numb
   return { kind: "stiffer", factor: Math.round((1 + (balancedFactor - 1) * SLIDER_SHARE[stop + 2]!) * 100) / 100 };
 }
 
+/**
+ * The goal ribs_plan's flat keys become. One key. `frequency` beside any other key is refused in one sentence that
+ * names both; any other mix keeps the stiffness sentence. `factor` below 1 is refused.
+ */
+export function goalFromTool(goal: unknown, densityGCm3: number): PlanGoal | { reason: string } {
+  if (goal === undefined) return { kind: "balanced" };
+  const g = goal as Record<string, unknown>;
+  const keys = Object.keys(g).filter((key) => g[key] !== undefined && g[key] !== false);
+  if (keys.includes("frequency")) {
+    if (keys.length > 1) {
+      const others = keys.filter((key) => key !== "frequency");
+      if (others.length === 1) return { reason: `A plan has one goal: frequency and ${others[0]} cannot both be set.` };
+      const list = others.length === 2 ? `${others[0]} and ${others[1]}` : `${others.slice(0, -1).join(", ")} and ${others[others.length - 1]}`;
+      return { reason: `A plan has one goal: frequency, ${list} cannot all be set.` };
+    }
+    const factor = g.frequency;
+    if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 1) return { reason: "A frequency goal must be 1 or more." };
+    return { kind: "frequency", factor };
+  }
+  if (keys.length > 1) return { reason: `A goal is one of stiffer, maxDeflectionMm, budgetMm3, budgetG or balanced; this one has ${keys.join(", ")}.` };
+  if (typeof g.stiffer === "number" && Number.isFinite(g.stiffer)) return { kind: "stiffer", factor: g.stiffer };
+  if (typeof g.maxDeflectionMm === "number" && Number.isFinite(g.maxDeflectionMm)) return { kind: "maxDeflection", mm: g.maxDeflectionMm };
+  if (typeof g.budgetMm3 === "number" && Number.isFinite(g.budgetMm3)) return { kind: "budget", volumeMm3: g.budgetMm3 };
+  if (typeof g.budgetG === "number" && Number.isFinite(g.budgetG)) return { kind: "budget", volumeMm3: (g.budgetG / densityGCm3) * 1000 };
+  return { kind: "balanced" };
+}
+
+/**
+ * The material both the tool and the panel send. A stiffness goal sends `e` and `nu` only, so a card that also has a
+ * density does not change that reply. A frequency goal adds the density (g/cm³) and the card's name, and a card with
+ * no density is refused by that name.
+ */
+export function engineMaterial(card: { e: number; nu: number; densityGCm3?: number; name?: string }, goal: PlanGoal): { material: { e: number; nu: number; densityGCm3?: number; name?: string } } | { reason: string } {
+  if (goal.kind !== "frequency") return { material: { e: card.e, nu: card.nu } };
+  const name = card.name && card.name.trim() ? card.name.trim() : "The material";
+  if (!(typeof card.densityGCm3 === "number" && Number.isFinite(card.densityGCm3) && card.densityGCm3 > 0)) return { reason: `${name} has no density.` };
+  return { material: { e: card.e, nu: card.nu, densityGCm3: card.densityGCm3, name } };
+}
+
 /** The line under the slider. */
-export function sliderNote(amount: Amount, balancedFactor: number | null): string {
+export function sliderNote(amount: Amount, balancedFactor: number | null, quantity: Quantity = "stiffness"): string {
   if (amount.kind !== "slider") return "";
+  if (quantity === "frequency") return `Higher frequency: ${fmt(frequencyFactorAt(amount.stop), 2)}× the lowest natural frequency.`;
   const stop = Math.max(-2, Math.min(2, Math.round(amount.stop)));
   if (stop === 0) return "Balanced: ribs are added while each still pays its way.";
   if (balancedFactor == null || !(balancedFactor > 1)) return `${SLIDER_LABELS[stop + 2]} needs a balanced plan to measure from: this run plans balanced.`;
@@ -252,7 +396,7 @@ export interface RunState {
   fraction: number;
   /** Ribs as they stand, in the order they were first added. */
   ribs: LiveRib[];
-  totals: { ribs: number; ribVolumeMm3: number; stiffnessFactor: number } | null;
+  totals: { ribs: number; ribVolumeMm3: number; stiffnessFactor: number; frequencyFactor?: number } | null;
   plan: RibPlanResult | null;
   error: string | null;
   /** Plan ribs (by index) the user took out before applying. */
@@ -271,7 +415,7 @@ export function startedRun(): RunState {
 export function runEvent(run: RunState, event: PlanProgress): RunState {
   const fraction = Math.max(run.fraction, Math.min(1, event.fraction));
   if (event.kind === "stage") return { ...run, stage: event.stage, fraction };
-  const totals = { ribs: event.ribs, ribVolumeMm3: event.ribVolumeMm3, stiffnessFactor: event.stiffnessFactor };
+  const totals = { ribs: event.ribs, ribVolumeMm3: event.ribVolumeMm3, stiffnessFactor: event.stiffnessFactor, ...(event.frequencyFactor != null ? { frequencyFactor: event.frequencyFactor } : {}) };
   if (event.change === "removed") return { ...run, fraction, totals, ribs: run.ribs.filter((rib) => rib.id !== event.id) };
   const rib: LiveRib = { id: event.id, points: event.points, heights: event.heights };
   const at = run.ribs.findIndex((row) => row.id === event.id);
@@ -282,7 +426,7 @@ export function runEvent(run: RunState, event: PlanProgress): RunState {
 /** The job answered: its plan (stopped early or not), or its refusal. */
 export function runDone(run: RunState, reply: { ok: true; plan: RibPlanResult } | { ok: false; reason: string }): RunState {
   if (!reply.ok) return { ...run, phase: "failed", error: reply.reason, fraction: run.fraction };
-  return { ...run, phase: "done", plan: reply.plan, fraction: 1, stage: reply.plan.stoppedEarly ? run.stage : "done", removed: [], totals: { ribs: reply.plan.ribs.length, ribVolumeMm3: reply.plan.ribVolumeMm3, stiffnessFactor: reply.plan.stiffnessFactor } };
+  return { ...run, phase: "done", plan: reply.plan, fraction: 1, stage: reply.plan.stoppedEarly ? run.stage : "done", removed: [], totals: { ribs: reply.plan.ribs.length, ribVolumeMm3: reply.plan.ribVolumeMm3, stiffnessFactor: reply.plan.stiffnessFactor, ...(reply.plan.frequencyFactor != null ? { frequencyFactor: reply.plan.frequencyFactor } : {}) } };
 }
 
 /** A plan rib taken out of the plan, or put back. */
@@ -327,7 +471,14 @@ export function costText(volumeMm3: number, densityGCm3: number, partMm3: number
 /** The running line under the progress bar. */
 export function totalsLine(totals: RunState["totals"], densityGCm3: number, partMm3: number): string {
   if (!totals || totals.ribs === 0) return "No rib yet.";
-  return `${totals.ribs} rib${totals.ribs === 1 ? "" : "s"} · ${costText(totals.ribVolumeMm3, densityGCm3, partMm3)} · ${gainText(totals.stiffnessFactor)}`;
+  const gain = totals.frequencyFactor != null ? `${fmt(totals.frequencyFactor, 2)}× frequency` : gainText(totals.stiffnessFactor);
+  return `${totals.ribs} rib${totals.ribs === 1 ? "" : "s"} · ${costText(totals.ribVolumeMm3, densityGCm3, partMm3)} · ${gain}`;
+}
+
+/** One line per case, beside the combined factor. One case, or a plan that did not report cases, is no lines. `stiffness` names the factor when it follows a frequency result. */
+export function caseResultLines(names: readonly string[], factors: readonly number[] | undefined, deflection: readonly { bare: number; ribbed: number }[] | undefined, stiffness = false): string[] {
+  if (!factors || !deflection || names.length < 2 || factors.length !== names.length || deflection.length !== names.length) return [];
+  return names.map((name, i) => `${name}: ${stiffness ? `stiffness ${fmt(factors[i]!, 2)}×` : gainText(factors[i]!)}, deflection ${fmt(deflection[i]!.bare, 3)} mm → ${fmt(deflection[i]!.ribbed, 3)} mm`);
 }
 
 /** What the result shows: gain, cost, and whether a removed rib makes them estimates. */
@@ -338,13 +489,16 @@ export function resultNumbers(run: RunState, densityGCm3: number, partMm3: numbe
   const edited = run.removed.length > 0;
   // As built when known (ribNet's own plan of the kept ribs: tapers, skipped stretches and crossings), else the planner's.
   const volume = builtMm3 ?? (edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3);
-  return { gain: edited ? `${gainText(plan.stiffnessFactor)} before the edit` : gainText(plan.stiffnessFactor), cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
+  const gain = plan.frequencyHz ? `${fmt(plan.frequencyHz.bare, 1)} Hz → ${fmt(plan.frequencyHz.ribbed, 1)} Hz` : gainText(plan.stiffnessFactor);
+  return { gain: edited ? `${gain} before the edit` : gain, cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
 }
 
-/** The line that says the totals are an edit: material re-added, stiffness not solved again. */
+/** The line that says the totals are an edit: material re-added, the solved number not solved again. */
 export function editedNote(run: RunState): string {
   const n = run.removed.length;
-  return n === 0 ? "" : `Edited: ${n} rib${n === 1 ? "" : "s"} taken out. The material is recounted; the stiffness is the plan's before the edit and is not solved again (stale). Run again to re-plan without them.`;
+  if (n === 0) return "";
+  const solved = run.plan?.frequencyHz ? "the frequency is the plan's before the edit and is not solved again" : "the stiffness is the plan's before the edit and is not solved again";
+  return `Edited: ${n} rib${n === 1 ? "" : "s"} taken out. The material is recounted; ${solved} (stale). Run again to re-plan without them.`;
 }
 
 /** The comparison lines: the same stiffness by a thicker wall and by an even grid, then the verdict. */
@@ -364,14 +518,16 @@ export function looseLine(plan: RibPlanResult): string {
   const loose = plan.looseEnds ?? [];
   if (loose.length === 0) return "";
   const zone = loose.filter((row) => row.reason === "noRibZone").length;
-  const budget = loose.length - zone;
-  const why = [zone ? `${zone} at a keep-clear zone` : "", budget ? `${budget} where the budget runs out` : ""].filter(Boolean).join(" and ");
+  const open = loose.filter((row) => row.reason === "open").length;
+  const budget = loose.length - zone - open;
+  const why = [zone ? `${zone} at a keep-clear zone` : "", budget ? `${budget} where the budget runs out` : "", open ? `${open} left where the trace stopped` : ""].filter(Boolean).join(" and ");
   return `${loose.length} rib end${loose.length === 1 ? " stops" : "s stop"} short of a wall or another rib: ${why}.`;
 }
 
 /** The goal's line when it was not met, else "". */
 export function goalLine(goal: PlanGoal, plan: RibPlanResult, densityGCm3: number): string {
   if (plan.goalMet || plan.stoppedEarly) return "";
+  if (goal.kind === "frequency") return `Reached ${fmt(plan.frequencyFactor ?? 1, 2)}× of the ${fmt(goal.factor, 2)}× asked: no further rib pays enough.`;
   if (goal.kind === "stiffer") return `Reached ${fmt(plan.stiffnessFactor, 1)}× of the ${fmt(goal.factor, 1)}× asked: no further rib pays enough.`;
   if (goal.kind === "maxDeflection") return `Reached ${fmt(plan.ribbed.maxDeflectionMm, 2)} mm of the ${fmt(goal.mm, 2)} mm asked: no further rib pays enough.`;
   if (goal.kind === "budget") return `No rib fits within ${fmt(grams(goal.volumeMm3, densityGCm3), 1)} g.`;
@@ -387,7 +543,8 @@ export function wallLine(report: RibWallReport | null, faces: number): string {
   const t = report.thickness;
   const thick = t.minMm === t.maxMm || Math.abs(t.maxMm - t.minMm) < 0.05 ? `${fmt(t.medianMm, 1)} mm` : `${fmt(t.medianMm, 1)} mm (${fmt(t.minMm, 1)}–${fmt(t.maxMm, 1)})`;
   const n = report.faces.taken.length;
-  return `${n} face${n === 1 ? "" : "s"} · ${fmt(report.areaMm2, 0)} mm² · wall ${thick}`;
+  const side = report.faces.folded?.length ? ", including side walls" : "";
+  return `${n} face${n === 1 ? "" : "s"}${side} · ${fmt(report.areaMm2, 0)} mm² · wall ${thick}`;
 }
 
 /**
@@ -441,6 +598,38 @@ export function checkLines(printer: string, before: CheckNumbers, after: CheckNu
   say(fresh(after.thin, before.thin), "a new thin wall");
   if (problems.size === 0) lines.push(after.overhangMm2 <= before.overhangMm2 + 1 && after.thinMm2 <= before.thinMm2 + 1 ? "No rib makes anything new to print around." : "The change is not on a rib.");
   return { lines, problems: [...problems].sort((a, b) => a - b) };
+}
+
+/** The stiffness factor beside a frequency result, for information. Empty on a stiffness plan. */
+export function frequencyAside(plan: RibPlanResult): string {
+  if (plan.frequencyHz == null && plan.frequencyFactor == null) return "";
+  return `${fmt(plan.stiffnessFactor, 2)}× as stiff, for information.`;
+}
+
+/** A load that misses the wall, named, when a frequency plan ignores it instead of refusing. */
+/**
+ * Loads a frequency plan ignores. One load lists them on `substituted.loads`. Load cases leave that list empty and
+ * record the miss on `notOnWall`, so the even-pressure sentence is not the one to show.
+ */
+export function frequencyIgnoredLoads(report: { substituted?: { holds: number[]; loads: number[] } | undefined; notOnWall: readonly { kind: string; index: number; case?: string; dropped: boolean }[] }): { kind: string; index: number; case?: string }[] {
+  const sub = report.substituted;
+  if (!sub || sub.holds.length > 0) return [];
+  if (sub.loads.length > 0) return sub.loads.map((index) => ({ kind: "load", index }));
+  return report.notOnWall.filter((row) => row.kind === "load" && row.dropped).map((row) => ({ kind: "load", index: row.index, ...(row.case ? { case: row.case } : {}) }));
+}
+
+export function ignoredLoadNote(missed: readonly { kind: string; index: number; case?: string }[]): string {
+  const loads = missed.filter((row) => row.kind === "load");
+  if (loads.length === 0) return "";
+  const names = loads.map((row) => (row.case ? `Load ${row.index + 1} of ${row.case}` : `Load ${row.index + 1}`));
+  const who = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `${who} ${names.length === 1 ? "misses" : "miss"} the wall and ${names.length === 1 ? "is" : "are"} ignored: a frequency plan does not use the loads.`;
+}
+
+/** Beside the Hz when the shell used the default card because the filament has none of its own. */
+export function fallbackHzNote(card: { forFilament: boolean; polymer: string; id: string } | null | undefined): string {
+  if (!card || card.forFilament) return "";
+  return `These Hz are the default ${card.polymer} card's (${card.id}): no card in the library is for this filament.`;
 }
 
 /** What Apply measured: "+9.6 g (+6.2 %), measured on the solid." */

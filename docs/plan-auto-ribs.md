@@ -200,7 +200,7 @@ The default follows the process and the print pose. For example, there is no T-r
 ### 7.6 Printability
 
 - **Filament, flat bed and 45° belt**: after planning, `model_check` runs in the current pose. Rib ends are tapered so they start from the wall, not in the air. A rib whose top would be an unsupported ceiling in this pose is reported, with the choice to drop it or keep it.
-- **Resin**: closed pockets between ribs facing the build plate are reported (cupping). Vent notches are listed for later.
+- **Resin**: a pocket cups when the side its ribs stand on points along the build axis, toward the resin tank. A 0.75 mm full-height gap opens it to a cell that drains. A pocket the part itself closes is reported and not cut.
 - **Moulded** is a size preset only (thickness ratio, draft); no sink or flow check.
 
 ## 8. Steps, each its own PR
@@ -262,6 +262,15 @@ Later: the stress in rib webs and at free ends reported from the shell model, an
 - Draft on existing faces, vent notches for resin. (Root fillets are not needed: the flared root is part of the rib profile, 7.5.)
 - A plugin hook so rib planners can be written as plugins.
 - Topology optimisation of any kind.
+
+### As built after 6.11.0 (`feature/ribs-next`)
+
+Three of the items above are built on the feature branch; the rest are not (see `docs/handover-ribs-next-coordination.md`).
+
+- **Load cases.** Up to 8 named, weighted cases (`ribs_plan` `loadCases`, the panel's Add a load case). The planner minimises Σ wᵢ·Cᵢ/Cᵢ⁰, each case's compliance over its own bare compliance; one case plans exactly as 6.11.0 did. The result gives each case's factor and its bare and ribbed deflection, and Check with Stress (`verify`) runs once per case. A worst-case mode (p-norm) exists in the crate and is not exposed: it lost to the weighted sum. Load-aligned ribs are still not optimal for mixed loads.
+- **Folded walls.** The whole part as one wall is not built; option 1 of `docs/plan-folded-shell.md` is: `wall.folded` (the panel's "Include side walls (folded)", off by default) takes thin faces across sharp edges into one folded shell, ribs cross the creases, and thick regions stay stiff patches. Making it the default is still the owner's decision.
+- **Moulding checks.** With process moulded, a report of six rules (base 0.6 × the wall without the fillet, root radius 0.25–0.5 × the wall, height 3 × the wall, draft 0.5°, junction circle 1.2 × the wall, 2 walls of steel between ribs), with flags per rib and an undercut flag along a given pull (`src/modeling/moulding.ts`, `plan.moulding`, the panel's Moulding list). It changes nothing. Without a pull, a folded wall says that its side ribs were not checked against one pull. The moulded default rib (0.6 × the wall at half height) still flags rule 1 by 3–9 %; sizing it at its base is decided and not yet built.
+- **Draft on existing faces** is built as its own Model step, `draft` (`docs/step-modeler.md`). Vent notches for resin are not on the branch yet.
 
 ## 11. Decisions taken
 

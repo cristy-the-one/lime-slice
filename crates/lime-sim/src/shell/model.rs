@@ -1,6 +1,7 @@
 //! The shell model: mesh, holds and ribs in; displacements, energies and
 //! principal directions out.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use faer::sparse::linalg::cholesky::SymbolicCholesky;
@@ -176,6 +177,13 @@ pub struct ShellOptions {
     /// is `α G t` per unit area on the gap between the drilling rotation and
     /// the in-plane rotation.
     pub drill_penalty: f64,
+    /// Stand a rib on its own face where the wall turns more than 20°
+    /// (a crease): the foot is that face's normal and the web axis the
+    /// miter of the rib's faces. Off, every rib end takes the
+    /// area-weighted vertex normal, as v6.12 did. On by default for a
+    /// model built directly; the rib planner sets it from
+    /// [`super::planner::PlannerOptions::creases`], which is off by default.
+    pub creases: bool,
 }
 
 /// The default drilling penalty. The tests sweep α from 1e-4 to 1: a flat
@@ -189,6 +197,7 @@ impl Default for ShellOptions {
         Self {
             membrane: MembraneKind::Allman,
             drill_penalty: DRILL_PENALTY,
+            creases: true,
         }
     }
 }
@@ -251,6 +260,12 @@ const BENDING: [usize; 3] = [2, 3, 4];
 /// How many elements are built in parallel before they are scattered.
 const CHUNK: usize = 4096;
 
+/// Cosine of 20°, the same crease the planner unfolds across. Flatter
+/// than this, a rib keeps the area-weighted vertex normal, so a flat wall
+/// is unchanged. A fold uses the rib's own face, or the miter of the
+/// faces the rib itself stands on.
+const CREASE_COS: f64 = 0.939_692_620_785_908_4;
+
 /// The ribs' web rotations ψ. Ids run from 0 over all ribs; in the model's
 /// dof id space ψ `k` is `6 n + k` after the vertices' `6 n`.
 #[derive(Clone, Debug, Default)]
@@ -275,8 +290,11 @@ struct RibLayout {
 /// and the ribs' web rotations after them, so the shell's columns of the
 /// matrix never move: its values are reused as they are, and a rib change
 /// appends columns, re-runs the ordering (AMD) and the numeric
-/// factorisation. The timing test gives both costs. A rank-k update of the
-/// factor for a rib of k edges would be cheaper and is left for later.
+/// factorisation. The timing test gives both costs. A rank-k update of
+/// that factor (Sherman–Morrison–Woodbury on the rib's own dofs) was
+/// measured and lost: the condensed block is full rank, and one solve
+/// per rib dof costs more than refactoring except for ribs shorter than
+/// any candidate (see the note in `select`, and handover §3).
 ///
 /// **Web rotations.** Each rib has one extra dof per vertex it runs
 /// through, ψ (see [`super::beam`]). It is held when the vertex's three
@@ -289,6 +307,10 @@ pub struct ShellModel {
     tris: Vec<Tri>,
     element_thickness: Vec<f64>,
     normals: Vec<[f64; 3]>,
+    /// True on a vertex of an edge whose faces turn more than 20°.
+    on_crease: Vec<bool>,
+    /// Triangles on each undirected edge, in triangle-index order.
+    edge_faces: HashMap<(u32, u32), Vec<u32>>,
     neighbours: Vec<Vec<u32>>,
     dof: Vec<usize>,
     prescribed: Vec<f64>,
@@ -309,6 +331,40 @@ pub struct ShellModel {
     timings: Timings,
     /// Threads for the factor and the solve; 0 is the crate default.
     threads: usize,
+}
+
+/// Triangles on one undirected edge, in triangle-index order.
+type EdgeFaces = HashMap<(u32, u32), Vec<u32>>;
+
+/// Crease vertices, and the triangles on each undirected edge. A vertex
+/// is a crease when two triangles on one of its edges turn more than 20°.
+fn crease_map(mesh: &ShellMesh, tris: &[Tri]) -> (Vec<bool>, EdgeFaces) {
+    let mut edge_faces: EdgeFaces = HashMap::new();
+    for (e, t) in mesh.triangles.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            let key = if a < b { (a, b) } else { (b, a) };
+            edge_faces.entry(key).or_default().push(e as u32);
+        }
+    }
+    let mut on_crease = vec![false; mesh.vertices.len()];
+    for (&(a, b), faces) in &edge_faces {
+        let mut sharp = false;
+        for i in 0..faces.len() {
+            for j in (i + 1)..faces.len() {
+                let ni = tris[faces[i] as usize].frame.normal;
+                let nj = tris[faces[j] as usize].frame.normal;
+                if dot(ni, nj) < CREASE_COS {
+                    sharp = true;
+                }
+            }
+        }
+        if sharp {
+            on_crease[a as usize] = true;
+            on_crease[b as usize] = true;
+        }
+    }
+    (on_crease, edge_faces)
 }
 
 impl ShellModel {
@@ -369,6 +425,13 @@ impl ShellModel {
                     .ok_or_else(|| SimError::new(format!("Vertex {i} is on no triangle.")))?,
             );
         }
+        // Creases off: no vertex is a crease, so every rib end keeps the
+        // averaged vertex normal exactly as before the crease handling.
+        let (on_crease, edge_faces) = if options.creases {
+            crease_map(&mesh, &tris)
+        } else {
+            (vec![false; n], EdgeFaces::new())
+        };
         pairs.sort_unstable();
         pairs.dedup();
         let mut neighbours: Vec<Vec<u32>> = vec![Vec::new(); n];
@@ -426,6 +489,8 @@ impl ShellModel {
             tris,
             element_thickness,
             normals: normal_unit,
+            on_crease,
+            edge_faces,
             neighbours,
             dof,
             prescribed,
@@ -598,6 +663,9 @@ impl ShellModel {
     fn layout_of(&self, ribs: &[Rib], first_free: usize) -> RibLayout {
         let mut layout = RibLayout::default();
         let mut tangent: Vec<[f64; 3]> = Vec::new();
+        // Face normals of the rib edges at each crease vertex. A vertex
+        // that is not a crease never reads this and keeps `self.normals`.
+        let mut face_sum: Vec<[f64; 3]> = Vec::new();
         let mut free = first_free;
         for rib in ribs {
             let mut at: Vec<(u32, usize)> = Vec::new();
@@ -617,6 +685,7 @@ impl ShellModel {
                             at.push((v, id));
                             layout.vertex.push(v);
                             tangent.push([0.0; 3]);
+                            face_sum.push([0.0; 3]);
                             id
                         }
                     };
@@ -631,12 +700,25 @@ impl ShellModel {
                     tangent[id] = add(t, d);
                     ids[slot] = id;
                 }
+                if self.on_crease[a as usize] || self.on_crease[b as usize] {
+                    let nf = self.rib_face_normal(a, b);
+                    if self.on_crease[a as usize] {
+                        face_sum[ids[0]] = add(face_sum[ids[0]], nf);
+                    }
+                    if self.on_crease[b as usize] {
+                        face_sum[ids[1]] = add(face_sum[ids[1]], nf);
+                    }
+                }
                 edges.push((ids[0], ids[1]));
             }
             layout.edges.push(edges);
         }
         for (k, &v) in layout.vertex.iter().enumerate() {
-            let n = self.normals[v as usize];
+            let n = if self.on_crease[v as usize] {
+                normalize(face_sum[k]).unwrap_or(self.normals[v as usize])
+            } else {
+                self.normals[v as usize]
+            };
             let lateral = normalize(cross(n, tangent[k]))
                 .or_else(|| normalize(cross(n, [1.0, 0.0, 0.0])))
                 .or_else(|| normalize(cross(n, [0.0, 1.0, 0.0])))
@@ -986,6 +1068,32 @@ impl ShellModel {
         Ok(energy)
     }
 
+    /// The normal of the face the directed edge `a` → `b` belongs to.
+    /// The triangle of lowest index that lists the edge in that order
+    /// wins; if none does, the lowest that lists it reversed. Both ends
+    /// of a rib element call this once, so they stand on the same face.
+    fn rib_face_normal(&self, a: u32, b: u32) -> [f64; 3] {
+        let key = if a < b { (a, b) } else { (b, a) };
+        let Some(faces) = self.edge_faces.get(&key) else {
+            return self.normals[a as usize];
+        };
+        let mut forward = None;
+        let mut reverse = None;
+        for &e in faces {
+            let t = self.mesh.triangles[e as usize];
+            let goes = (0..3).any(|k| t[k] == a && t[(k + 1) % 3] == b);
+            if goes && forward.is_none() {
+                forward = Some(e);
+            } else if !goes && reverse.is_none() {
+                reverse = Some(e);
+            }
+        }
+        match forward.or(reverse) {
+            Some(e) => self.tris[e as usize].frame.normal,
+            None => self.normals[a as usize],
+        }
+    }
+
     /// Rib `rib`'s edge `e` under `layout`, where it is rib `r`.
     fn rib_element_in(
         &self,
@@ -1008,8 +1116,24 @@ impl ShellModel {
             .section
             .properties(rib.height)
             .expect("a checked rib section");
+        // Both ends of one element stand on the same face: the triangle
+        // that contains the edge in the stored a → b order. A vertex in
+        // the middle of one face is not a crease and keeps its averaged
+        // normal, so a flat wall is unchanged. At a crease the foot is
+        // that face's normal; the web axis (set in `layout_of`) is the
+        // miter of the rib's own faces.
+        let on_edge = self.on_crease[a] || self.on_crease[b];
+        let face = if on_edge {
+            self.rib_face_normal(a as u32, b as u32)
+        } else {
+            [0.0; 3]
+        };
         let end = |v: usize, psi: usize| {
-            let n = self.normals[v];
+            let n = if self.on_crease[v] {
+                face
+            } else {
+                self.normals[v]
+            };
             RibEnd {
                 foot: scale(n, sign * 0.5 * self.mesh.thickness[v]),
                 up_web: scale(n, sign * props.centroid),
@@ -1023,15 +1147,19 @@ impl ShellModel {
             g: shear,
             props,
         };
+        let na = if self.on_crease[a] {
+            face
+        } else {
+            self.normals[a]
+        };
+        let nb = if self.on_crease[b] {
+            face
+        } else {
+            self.normals[b]
+        };
         // A mesh edge lies in the surface, so the mean normal is never along it.
-        let k = beam::rib_stiffness(
-            xa,
-            xb,
-            add(self.normals[a], self.normals[b]),
-            [end(a, pa), end(b, pb)],
-            &section,
-        )
-        .expect("a mesh edge is never along the surface normal");
+        let k = beam::rib_stiffness(xa, xb, add(na, nb), [end(a, pa), end(b, pb)], &section)
+            .expect("a mesh edge is never along the surface normal");
         (g, k)
     }
 
@@ -1204,7 +1332,332 @@ impl ShellModel {
             bending_moment: Principal::of(moment, &frame),
         }
     }
+
+    /// The free-dof mass matrix, upper triangle, same pattern as the
+    /// stiffness. Consistent translational mass of the wall (linear
+    /// triangle, ρ t) on ux, uy, uz, and the same for each rib end through
+    /// the offset map that builds its stiffness. No mass on a rotation,
+    /// the drilling dof, or the web's own ψ.
+    pub(crate) fn mass_upper(&self, density: f64, rib_mass: bool) -> Vec<f64> {
+        let mut values = vec![0.0; self.pattern.nnz()];
+        for (e, tri) in self.tris.iter().enumerate() {
+            let t = self.mesh.triangles[e];
+            let mass = density * self.element_thickness[e] * tri.area;
+            let corners = [t[0] as usize, t[1] as usize, t[2] as usize];
+            for a in 0..3 {
+                for b in a..3 {
+                    let m = mass * if a == b { 1.0 / 6.0 } else { 1.0 / 12.0 };
+                    for dof in 0..3 {
+                        self.add_mass(&mut values, 6 * corners[a] + dof, 6 * corners[b] + dof, m);
+                    }
+                }
+            }
+        }
+        if rib_mass {
+            for r in 0..self.ribs.len() {
+                for e in 0..self.ribs[r].edges.len() {
+                    self.add_rib_mass(&mut values, r, e, density);
+                }
+            }
+        }
+        values
+    }
+
+    fn add_mass(&self, values: &mut [f64], id_a: usize, id_b: usize, m: f64) {
+        if m == 0.0 {
+            return;
+        }
+        let fa = self.free_in(&self.layout, id_a);
+        let fb = self.free_in(&self.layout, id_b);
+        if fa == HELD || fb == HELD {
+            return;
+        }
+        let (r, c) = if fa <= fb { (fa, fb) } else { (fb, fa) };
+        let p = self
+            .pattern
+            .position(r, c)
+            .expect("a mass pair is a stiffness pair");
+        values[p] += m;
+    }
+
+    /// Half the rib element's mass at each end, on the three translations
+    /// of the section centroid, carried to the vertex dofs by the same map
+    /// as the stiffness. No ρ I L on ψ.
+    fn add_rib_mass(&self, values: &mut [f64], r: usize, e: usize, density: f64) {
+        let layout = &self.layout;
+        let rib = &self.ribs[r];
+        let (pa, pb) = layout.edges[r][e];
+        let ids = rib_ids(layout, pa, pb, 6 * self.mesh.vertices.len());
+        let (a, b) = (layout.vertex[pa] as usize, layout.vertex[pb] as usize);
+        let (xa, xb) = (self.mesh.vertices[a], self.mesh.vertices[b]);
+        let len = norm(sub(xb, xa));
+        let props = rib
+            .section
+            .properties(rib.height)
+            .expect("a checked rib section");
+        let sign = match rib.side {
+            RibSide::Positive => 1.0,
+            RibSide::Negative => -1.0,
+            RibSide::Centered => 0.0,
+        };
+        let on_edge = self.on_crease[a] || self.on_crease[b];
+        let face = if on_edge {
+            self.rib_face_normal(a as u32, b as u32)
+        } else {
+            [0.0; 3]
+        };
+        let end = |v: usize, psi: usize| {
+            let n = if self.on_crease[v] {
+                face
+            } else {
+                self.normals[v]
+            };
+            RibEnd {
+                foot: scale(n, sign * 0.5 * self.mesh.thickness[v]),
+                up_web: scale(n, sign * props.centroid),
+                lateral: layout.lateral[psi],
+            }
+            .map()
+        };
+        let maps = [end(a, pa), end(b, pb)];
+        let m = density * props.area * len / 2.0;
+        let blocks = [
+            [ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[12]],
+            [ids[6], ids[7], ids[8], ids[9], ids[10], ids[11], ids[13]],
+        ];
+        for (map, block) in maps.iter().zip(blocks) {
+            for c1 in 0..7 {
+                for c2 in c1..7 {
+                    let mut s = 0.0;
+                    for i in 0..3 {
+                        s += map[i][c1] * map[i][c2];
+                    }
+                    self.add_mass(values, block[c1], block[c2], m * s);
+                }
+            }
+        }
+    }
+
+    /// `uᵀ M v` on free dofs. `mass` is [`ShellModel::mass_upper`].
+    pub(crate) fn mass_inner(&self, mass: &[f64], u: &[f64], v: &[f64]) -> f64 {
+        super::modes::sym_dot(&self.pattern, mass, u, v)
+    }
+
+    /// The lowest `count` modes. Rayleigh ω² = vᵀ K v / vᵀ M v. Rib mass is
+    /// in M when `rib_mass` is set, which is how a plan reports Hz.
+    pub fn lowest_modes(
+        &mut self,
+        density: f64,
+        count: usize,
+    ) -> Result<super::modes::ModeSet, SimError> {
+        self.lowest_modes_with(density, count, true)
+    }
+
+    /// As [`ShellModel::lowest_modes`]. `rib_mass` false leaves the ribs'
+    /// mass out, so a caller can see how much of the frequency is the
+    /// ribs' weight. A plan reports the frequency with the mass included.
+    pub fn lowest_modes_with(
+        &mut self,
+        density: f64,
+        count: usize,
+        rib_mass: bool,
+    ) -> Result<super::modes::ModeSet, SimError> {
+        if !(density.is_finite() && density > 0.0) {
+            return Err(SimError::new("The density must be above zero."));
+        }
+        if count == 0 || self.pattern.n == 0 {
+            return Ok(super::modes::ModeSet {
+                modes: Vec::new(),
+                seconds: 0.0,
+            });
+        }
+        let mass = self.mass_upper(density, rib_mass);
+        let stiffness = self.values();
+        self.ensure_factor()?;
+        let factor = self.factor.as_ref().expect("just factored");
+        super::modes::lowest(
+            &self.pattern,
+            &stiffness,
+            &mass,
+            &self.symbolic,
+            factor,
+            count,
+        )
+    }
+
+    /// A free-dof vector as a shell result, so a mode can feed the same
+    /// direction field a static solution does. Held dofs stay at rest:
+    /// a mode is the motion about the holds, not the holds themselves.
+    pub(crate) fn result_of_free(&self, free: &[f64]) -> Result<ShellResult, SimError> {
+        if free.len() != self.pattern.n {
+            return Err(SimError::new("The vector is not one of this shell."));
+        }
+        let n = self.mesh.vertices.len();
+        let mut u = vec![0.0; self.prescribed.len()];
+        for (id, &d) in self.dof.iter().enumerate() {
+            if d != HELD {
+                u[id] = free[d];
+            }
+        }
+        u.resize(6 * n + self.layout.vertex.len(), 0.0);
+        for (k, &d) in self.layout.free.iter().enumerate() {
+            if d != HELD {
+                u[6 * n + k] = free[d];
+            }
+        }
+        let f = vec![0.0; u.len()];
+        let pivot = self.factor.as_ref().map_or(1.0, |f| f.pivot_ratio);
+        Ok(self.recover(&u, &f, pivot))
+    }
+
+    /// Lower generalised eigenvalue of φᵢᵀ ΔK φⱼ against φᵢᵀ M φⱼ, with
+    /// each vector's web rotations relaxed. Δ(ω²) of the worst vector in
+    /// the span, so a node line of one returned vector cannot hide the
+    /// other. M is this model's mass, without `rib`.
+    pub fn cluster_shift(
+        &self,
+        rib: &Rib,
+        vectors: &[Vec<f64>],
+        density: f64,
+    ) -> Result<f64, SimError> {
+        let mass = self.mass_upper(density, true);
+        let gram = self.mass_gram(vectors, &mass);
+        self.cluster_shift_mass(std::slice::from_ref(rib), vectors, &gram)
+    }
+
+    /// φᵢᵀ M φⱼ for a cluster, row-major. It does not depend on a candidate
+    /// rib, so a round of [`ShellModel::cluster_shift_mass`] computes it once.
+    pub(crate) fn mass_gram(&self, vectors: &[Vec<f64>], mass: &[f64]) -> Vec<f64> {
+        let n = vectors.len();
+        let mut b = vec![0.0; n * n];
+        for i in 0..n {
+            for j in i..n {
+                let m = self.mass_inner(mass, &vectors[i], &vectors[j]);
+                b[i * n + j] = m;
+                b[j * n + i] = m;
+            }
+        }
+        b
+    }
+
+    /// The same score for several ribs at once: one projected matrix, the
+    /// sum of their stiffnesses, not the sum of their scores. `mass_gram`
+    /// is [`ShellModel::mass_gram`] for these vectors.
+    pub(crate) fn cluster_shift_mass(
+        &self,
+        ribs: &[Rib],
+        vectors: &[Vec<f64>],
+        mass_gram: &[f64],
+    ) -> Result<f64, SimError> {
+        let n = vectors.len();
+        if n == 0 {
+            return Err(SimError::new("A cluster score needs a mode."));
+        }
+        if mass_gram.len() != n * n {
+            return Err(SimError::new("The mass Gram does not match the cluster."));
+        }
+        for rib in ribs {
+            self.check_rib(rib)?;
+        }
+        let mut states = Vec::with_capacity(n);
+        for v in vectors {
+            let mut one = Vec::new();
+            for rib in ribs {
+                one.extend(self.rib_state(rib, v)?);
+            }
+            states.push(one);
+        }
+        let mut a = vec![0.0; n * n];
+        let mut b = vec![0.0; n * n];
+        for i in 0..n {
+            for j in i..n {
+                let mut s = 0.0;
+                for (e, (_, k, xi)) in states[i].iter().enumerate() {
+                    s += bilinear(k, xi, &states[j][e].2);
+                }
+                a[i * n + j] = s;
+                a[j * n + i] = s;
+                b[i * n + j] = mass_gram[i * n + j];
+                b[j * n + i] = mass_gram[j * n + i];
+            }
+        }
+        Ok(super::modes::lower_generalized(&a, &b, n))
+    }
+
+    /// One probed rib's element states: stiffness and the 14 amplitudes
+    /// with ψ relaxed against `vector` (a free-dof vector of this model).
+    fn rib_state(&self, rib: &Rib, vector: &[f64]) -> Result<Vec<RibState>, SimError> {
+        if vector.len() != self.pattern.n {
+            return Err(SimError::new("The vector is not one of this shell."));
+        }
+        let n = self.mesh.vertices.len();
+        let layout = self.layout_of(std::slice::from_ref(rib), 0);
+        let m = layout.vertex.len();
+        let base = 6 * n;
+        let value = |id: usize| -> f64 {
+            if id < base {
+                let d = self.dof[id];
+                if d == HELD {
+                    0.0
+                } else {
+                    vector[d]
+                }
+            } else {
+                0.0
+            }
+        };
+        let elements: Vec<([usize; 14], K14)> = (0..rib.edges.len())
+            .map(|e| self.rib_element_in(&layout, rib, 0, e))
+            .collect();
+        let free = &layout.free;
+        let nf = free.iter().filter(|&&f| f != HELD).count();
+        let mut kpp = vec![0.0; nf * nf];
+        let mut rhs = vec![0.0; nf];
+        for (g, k) in &elements {
+            for i in 12..14 {
+                let fi = free[g[i] - base];
+                if fi == HELD {
+                    continue;
+                }
+                for j in 0..14 {
+                    if j < 12 {
+                        rhs[fi] -= k[i][j] * value(g[j]);
+                    } else {
+                        let fj = free[g[j] - base];
+                        if fj == HELD {
+                            rhs[fi] -= k[i][j] * layout.value[g[j] - base];
+                        } else {
+                            kpp[fi * nf + fj] += k[i][j];
+                        }
+                    }
+                }
+            }
+        }
+        let psi_free = solve_small_spd(&mut kpp, &mut rhs, nf)
+            .ok_or_else(|| SimError::new("A probed rib's web has no stiffness."))?;
+        let mut psi = layout.value.clone();
+        for k in 0..m {
+            if free[k] != HELD {
+                psi[k] = psi_free[free[k]];
+            }
+        }
+        let mut out = Vec::with_capacity(elements.len());
+        for (g, k) in elements {
+            let x = std::array::from_fn(|q| {
+                if q < 12 {
+                    value(g[q])
+                } else {
+                    psi[g[q] - base]
+                }
+            });
+            out.push((g, k, x));
+        }
+        Ok(out)
+    }
 }
+
+/// One rib element's stiffness and the 14 amplitudes with ψ relaxed.
+type RibState = ([usize; 14], K14, [f64; 14]);
 
 /// The 14 dof ids of a rib element between web rotations `pa` and `pb`:
 /// both vertices' six, then the two ψ (`base` = 6 × vertex count).
@@ -1283,6 +1736,17 @@ fn solve_small_spd(k: &mut [f64], b: &mut [f64], n: usize) -> Option<Vec<f64>> {
     Some(x)
 }
 
+/// `uᵀ K v`.
+fn bilinear<const N: usize>(k: &[[f64; N]; N], u: &[f64; N], v: &[f64; N]) -> f64 {
+    let mut s = 0.0;
+    for i in 0..N {
+        for j in 0..N {
+            s += u[i] * k[i][j] * v[j];
+        }
+    }
+    s
+}
+
 /// `½ uᵀ K u`.
 fn quadratic<const N: usize>(k: &[[f64; N]; N], u: &[f64; N]) -> f64 {
     let mut s = 0.0;
@@ -1291,4 +1755,71 @@ fn quadratic<const N: usize>(k: &[[f64; N]; N], u: &[f64; N]) -> f64 {
         s += u[i] * row;
     }
     0.5 * s
+}
+
+#[cfg(test)]
+mod mode_shape {
+    use super::{ShellHold, ShellMesh, ShellModel, ShellOptions};
+
+    /// A nonzero prescribed hold must not appear in the mode shape. Held
+    /// dofs stay at rest.
+    #[test]
+    fn a_mode_shape_starts_from_rest() {
+        let (a, b) = (100.0, 50.0);
+        let mesh = ShellMesh::rectangle([a, b], [8, 4], 1.0);
+        let mat = crate::shell::IsotropicShell::new(2000.0, 0.3)
+            .unwrap()
+            .with_density(1.0e-9)
+            .unwrap();
+        let corner = 0usize;
+        let prescribed_uz = 1.25;
+        let prescribed_rz = 0.4;
+        let mut holds = Vec::new();
+        for (i, p) in mesh.vertices.iter().enumerate() {
+            let on_edge = p[0] == 0.0 || p[1] == 0.0 || p[0] == a || p[1] == b;
+            if !on_edge {
+                continue;
+            }
+            if i == corner {
+                holds.push(ShellHold {
+                    node: i as u32,
+                    dofs: [
+                        Some(0.0),
+                        Some(0.0),
+                        Some(prescribed_uz),
+                        Some(0.0),
+                        Some(0.0),
+                        Some(prescribed_rz),
+                    ],
+                });
+            } else {
+                holds.push(ShellHold::clamped(i as u32));
+            }
+        }
+        let mut model = ShellModel::new(mesh, mat, &holds, ShellOptions::default()).unwrap();
+        model.set_threads(1);
+        let modes = model.lowest_modes(1.0e-9, 1).unwrap();
+        let shape = model.result_of_free(&modes.modes[0].vector).unwrap();
+        let d = shape.displacement[corner];
+        let r = shape.rotation[corner];
+        assert_eq!(
+            d,
+            [0.0, 0.0, 0.0],
+            "held displacement {d:?} kept the prescribed uz {prescribed_uz}"
+        );
+        assert_eq!(
+            r,
+            [0.0, 0.0, 0.0],
+            "held rotation {r:?} kept the prescribed θz {prescribed_rz}"
+        );
+        let peak = shape
+            .displacement
+            .iter()
+            .map(|u| u[2].abs())
+            .fold(0.0, f64::max);
+        println!(
+            "prescribed hold uz {prescribed_uz} θz {prescribed_rz}; mode at that node displacement {d:?} rotation {r:?}; peak |uz| {peak}"
+        );
+        assert!(peak > 1e-8, "the mode shape did not move, peak |uz| {peak}");
+    }
 }

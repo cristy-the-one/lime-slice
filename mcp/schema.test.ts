@@ -36,7 +36,7 @@ check("a scale percent of 9 is rejected", validateTool("object_place", { object:
 check("a fractional edge index is rejected", validateTool("model_probe", { object: "obj_1", op: { kind: "fillet", edges: [1.5], size: 1 } }) !== null);
 check("a hole does not take a fillet size", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", size: 2 } }) !== null);
 check("a counterbore is a hole field", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", diameterMm: 4, through: true, counterboreDiameterMm: 8, counterboreDepth: 3 } }) === null);
-check("an unknown edit names the kinds", validateTool("model_probe", { op: { kind: "twist" } }) === "op.kind must be one of hole, fillet, chamfer, split, scale, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, unify, boolean, root, join, pocket, boss, texture, pattern, mirror, text, array, ribs, ribNet, partition, transition, gear.");
+check("an unknown edit names the kinds", validateTool("model_probe", { op: { kind: "twist" } }) === "op.kind must be one of hole, fillet, chamfer, split, scale, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, draft, unify, boolean, root, join, pocket, boss, texture, pattern, mirror, text, array, ribs, ribNet, partition, transition, gear.");
 const square = [[0, 0], [10, 0], [10, 10], [0, 10]];
 const longProfile = Array.from({ length: 1001 }, (_, i) => [i, i % 2]);
 check("extrude profiles accept up to 1000 points", validateTool("model_apply", { op: { kind: "extrude", profile: longProfile.slice(0, 1000), depth: 1 } }) === null && validateTool("model_apply", { op: { kind: "extrude", profile: longProfile, depth: 1 } }) !== null);
@@ -56,6 +56,7 @@ check(
   validateTool("model_apply", { op: { kind: "chamfer", edges: [0] } }) === "input.op.size is required. A chamfer op takes edges (required, list or object), size (required, number), size2 (number), angleDeg (number), flip (true or false), label (text). guide {kind:\"chamfer\"} has its full schema.",
 );
 check("a refused field outside an op is unchanged", validateTool("model_apply", { op: { kind: "scale", factor: 2 }, probe: 1 }) === "input.probe must be true or false.");
+check("a ribNet path may name an open end", validateTool("model_apply", { op: { kind: "ribNet", width: 2.4, height: 6, paths: [{ points: [[0, 0, 0], [1, 0, 0]], openEnds: [false, true] }] } }) === null);
 check("settings and selectors are tools", ["settings_schema", "settings_set", "faces_find", "edges_find"].every((name) => names.has(name)));
 
 function missingDescriptions(node: unknown, missing: string[]): void {

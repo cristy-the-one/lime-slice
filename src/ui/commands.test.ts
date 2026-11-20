@@ -270,6 +270,7 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   "#modelToolPattern": ["model"],
   "#modelToolMirror": ["model"],
   "#modelToolShell": ["model"],
+  "#modelToolDraft": ["model"],
   "#modelToolScale": ["model"],
   "#modelToolPlace": ["model"],
   "#modelToolWorkplane": ["model"],

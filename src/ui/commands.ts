@@ -104,6 +104,8 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-mirror", label: "Mirror", group: "Model", when: "model", target: "#modelToolMirror", keywords: "reflect flip plane" },
   // --- A2 shell ---
   { id: "model-shell", label: "Shell", group: "Model", when: "model", target: "#modelToolShell", keywords: "hollow wall thickness open face" },
+  // --- Draft on picked faces. No key, as Shell: the free letters belong to no scheme a draft fits.
+  { id: "model-draft", label: "Draft", group: "Model", when: "model", target: "#modelToolDraft", keywords: "taper tilt wall angle mould mold release pull" },
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },
   { id: "model-place", label: "Place in model space", group: "Model", keys: ["Shift+P"], when: "model", target: "#modelToolPlace", keywords: "move turn position assembly align" },
   { id: "model-workplane", label: "Workplane", group: "Model", keys: ["Shift+U"], when: "model", target: "#modelToolWorkplane", keywords: "uvw local frame datum face bed origin sketch plane" },

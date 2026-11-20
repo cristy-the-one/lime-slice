@@ -1,0 +1,230 @@
+wall right_angle_stiffer2
+head ribs 3 factor 2.4099979293127025 volume 854.8135798488224 bare 0.0035331372399809496 0.004169086888375923 ribbed 0.0014660333094097516 0.0011974994567052972 goal_met true not_better false stopped false
+thick 0.7053145482924067 2750.7267383404032 0.0014660108979551057 4
+grid true 60.0 [1, 1] 891.3600000000001 0.0014104279464348364 Some(891.3600000000001) 2
+mesh 341 614 d24a395de2c62354
+rib 0 h 6.0 w 1.2 len 40.0965585658755 vol 288.6952216743036 gain 0.41604885254036383 share 0.189471246363552 ends Boundary Rib Major Positive
+profile Rectangular
+pt 30.66836841352929 40.0 0.0 v 272
+pt 30.701193614525238 38.62944383249146 0.0 v 273
+pt 30.733844754959648 37.26615524504035 0.0 v 274
+pt 30.764169524856587 36.0 0.0 v 275
+pt 30.83199663098753 33.168003369012474 0.0 v 276
+pt 30.859970636183885 32.0 0.0 v 277
+pt 30.93014850701541 29.06985149298459 0.0 v 278
+pt 30.955771747511182 28.0 0.0 v 279
+pt 31.028300383043288 24.971699616956712 0.0 v 280
+pt 31.05157285883848 24.0 0.0 v 281
+pt 31.017395716269093 20.982604283730907 0.0 v 282
+pt 31.006266050208627 20.0 0.0 v 283
+pt 30.984149312832066 18.047380687768584 0.0 v 284
+pt 30.972596336866573 17.027403663133427 0.0 v 285
+pt 30.960959241578774 16.0 0.0 v 286
+pt 31.133060080502933 15.337462606623218 0.0 v 287
+pt 30.92779695746405 13.07220304253595 0.0 v 288
+pt 30.91565243294892 12.0 0.0 v 289
+pt 31.100221909368834 8.899778090631166 0.0 v 290
+pt 31.153789549343262 8.0 0.0 v 291
+pt 31.35343381396233 4.646566186037671 0.0 v 292
+pt 31.391926665737603 4.0 0.0 v 293
+pt 31.7483308929521 1.6555181282743021 0.0 v 294
+pt 32.0 0.0 0.0 v 168
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+rib 1 h 6.0 w 1.2 len 60.2795359937051 vol 434.01265915467684 gain 0.14506072892809743 share 0.16078955362885036 ends Boundary Boundary Major Positive
+profile Rectangular
+pt 0.0 17.255441723033172 0.0 v 295
+pt 2.6218556504741355 17.378144349525865 0.0 v 296
+pt 3.5045729009780295 17.41894652267805 0.0 v 297
+pt 4.0 17.441846836756014 0.0 v 298
+pt 6.445130950995033 17.554869049004967 0.0 v 299
+pt 8.0 17.626740348824082 0.0 v 300
+pt 10.26840625151593 17.73159374848407 0.0 v 301
+pt 12.0 17.81163386089215 0.0 v 302
+pt 14.091681552036828 17.908318447963172 0.0 v 303
+pt 16.0 17.99652737296022 0.0 v 304
+pt 17.914956852557726 18.085043147442274 0.0 v 305
+pt 20.0 18.181420885028288 0.0 v 306
+pt 21.84104549763263 18.15895450236737 0.0 v 307
+pt 24.0 18.132608658084827 0.0 v 308
+pt 25.890460741601867 18.109539258398133 0.0 v 309
+pt 27.22605021940997 18.093240984224614 0.0 v 310
+pt 28.0 18.083796431141366 0.0 v 311
+pt 29.9398759855711 18.0601240144289 0.0 v 312
+pt 30.984149312832066 18.047380687768584 0.0 v 284
+pt 31.492904442044956 18.041172320062138 0.0 v 313
+pt 32.0 18.034984204197908 0.0 v 314
+pt 33.98929122954033 18.01070877045967 0.0 v 315
+pt 36.0 17.903651735340734 0.0 v 316
+pt 38.21424211342618 17.785757886573816 0.0 v 317
+pt 40.0 17.69067800848031 0.0 v 318
+pt 42.439192997312034 17.560807002687962 0.0 v 319
+pt 44.0 17.33915687483255 0.0 v 320
+pt 47.10125173597364 16.898748264026363 0.0 v 321
+pt 48.0 16.771117066006234 0.0 v 322
+pt 52.0 16.0 0.0 v 109
+pt 53.43002130501744 16.0 0.0 v 323
+pt 56.0 16.0 0.0 v 110
+pt 58.28451787263004 16.0 0.0 v 324
+pt 58.47048365096663 16.0 0.0 v 325
+pt 60.0 15.394044232521368 0.0 v 326
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+ht 6.0
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+rib 2 h 4.0 w 1.2 len 29.625467957354385 vol 142.20224619530106 gain 0.02488666722954448 share 0.020826933109167497 ends Rib Boundary Major Positive
+profile Rectangular
+pt 32.0 0.0 0.0 v 168
+pt 36.0 0.0 0.0 v 169
+pt 36.61340296702377 0.0 0.0 v 327
+pt 36.63392046568271 0.0 0.6603338184194949 v 328
+pt 36.74286714917064 0.0 4.166666666666667 v 329
+pt 36.76771504941937 0.0 4.966369843145179 v 330
+pt 36.87233133131751 0.0 8.333333333333334 v 331
+pt 36.90150963315603 0.0 9.272405867870866 v 332
+pt 37.00179551346438 0.0 12.5 v 333
+pt 37.03530421689268 0.0 13.578441892596546 v 334
+pt 37.13125969561125 0.0 16.666666666666668 v 335
+pt 37.16909880062934 0.0 17.884477917322233 v 336
+pt 37.26072387775812 0.0 20.833333333333332 v 337
+pt 37.302893384365994 0.0 22.190513942047907 v 338
+pt 37.345578256961915 0.0 23.564281055600475 v 339
+pt 37.390188059904986 0.0 25.0 v 340
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+ht 4.0
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }
+sec Rectangular { width: 1.2, root_radius: 0.0 }

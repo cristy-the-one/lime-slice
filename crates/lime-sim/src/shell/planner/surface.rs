@@ -41,6 +41,71 @@ fn key(a: u32, b: u32) -> (u32, u32) {
     }
 }
 
+/// Cosine of 20°. A dihedral flatter than this keeps the old in-plane
+/// projection, so a flat wall and a gently faceted curve are unchanged.
+/// A fold is steeper, and a heading or a frame is unfolded about the
+/// shared edge instead of being dropped onto the averaged normal.
+pub(crate) const CREASE_COS: f64 = 0.939_692_620_785_908_4;
+
+/// The rotation about unit `edge` that carries unit normal `n_from` onto
+/// unit normal `n_to`. Flipping `edge` flips the sine and the cross
+/// product together, so the rotation is the same.
+pub(crate) fn unfold_matrix(edge: [f64; 3], n_from: [f64; 3], n_to: [f64; 3]) -> [[f64; 3]; 3] {
+    let c = dot(n_from, n_to).clamp(-1.0, 1.0);
+    let s = dot(cross(n_from, n_to), edge);
+    let mut r = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            // (edge × v)_i, the cross-product matrix of `edge`.
+            let k_ij = match (i, j) {
+                (0, 1) => -edge[2],
+                (0, 2) => edge[1],
+                (1, 0) => edge[2],
+                (1, 2) => -edge[0],
+                (2, 0) => -edge[1],
+                (2, 1) => edge[0],
+                _ => 0.0,
+            };
+            let delta = if i == j { c } else { 0.0 };
+            r[i][j] = delta + k_ij * s + edge[i] * edge[j] * (1.0 - c);
+        }
+    }
+    r
+}
+
+pub(crate) fn apply(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [dot(m[0], v), dot(m[1], v), dot(m[2], v)]
+}
+
+pub(crate) fn transpose(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    [
+        [m[0][0], m[1][0], m[2][0]],
+        [m[0][1], m[1][1], m[2][1]],
+        [m[0][2], m[1][2], m[2][2]],
+    ]
+}
+
+pub(crate) fn mat_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut r = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    r
+}
+
+/// Rotate `v` about unit `edge` into the plane of `n_to`. The component
+/// along the edge is kept: that is the unfold of a heading across a crease.
+pub(crate) fn unfold_about(
+    v: [f64; 3],
+    edge: [f64; 3],
+    n_from: [f64; 3],
+    n_to: [f64; 3],
+) -> [f64; 3] {
+    apply(unfold_matrix(edge, n_from, n_to), v)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Surface {
     pub pos: Vec<[f64; 3]>,
@@ -56,6 +121,12 @@ pub(crate) struct Surface {
     /// Embedded paths, as vertex chains, kept whole through later cuts.
     pub chains: Vec<Vec<u32>>,
     edge_chains: HashMap<(u32, u32), Vec<usize>>,
+    /// Unfold the direction field and the traces across creases (over
+    /// 20°) and let every triangle on an edge be a neighbour. Off, the
+    /// field and the traces take one neighbour per edge and project onto
+    /// the next face, as v6.12 did. [`Surface::new`] turns it on; the
+    /// planner sets it from [`super::PlannerOptions::creases`].
+    pub creases: bool,
 }
 
 impl Surface {
@@ -72,6 +143,7 @@ impl Surface {
             edge_tris: HashMap::new(),
             chains: Vec::new(),
             edge_chains: HashMap::new(),
+            creases: true,
         };
         for (t, tri) in mesh.triangles.iter().enumerate() {
             for k in 0..3 {
@@ -119,13 +191,26 @@ impl Surface {
     }
 
     /// The triangle across local edge `k` (corner `k` to corner `k + 1`) of
-    /// `t`, if any.
+    /// `t`, if any. On an edge with three or more triangles this is the
+    /// first of [`Self::neighbours`]; the trace decides among them itself.
     pub fn neighbour(&self, t: u32, k: usize) -> Option<u32> {
         let tri = self.tris[t as usize];
         self.edge_triangles(tri[k], tri[(k + 1) % 3])
             .iter()
             .copied()
             .find(|&o| o != t)
+    }
+
+    /// Every other triangle on local edge `k`, in the order they were
+    /// stored. The first is what [`Self::neighbour`] returns, so a
+    /// two-triangle edge is that one triangle and nothing else.
+    pub fn neighbours(&self, t: u32, k: usize) -> Vec<u32> {
+        let tri = self.tris[t as usize];
+        self.edge_triangles(tri[k], tri[(k + 1) % 3])
+            .iter()
+            .copied()
+            .filter(|&o| o != t)
+            .collect()
     }
 
     /// Vertices on an edge with one triangle.

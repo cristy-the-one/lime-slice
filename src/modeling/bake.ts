@@ -15,12 +15,12 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
-import { extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, revolveOp, shellOp, stepEdges, type ProfileShape } from "../model-request.ts";
+import { draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, revolveOp, shellOp, stepEdges, type ProfileShape } from "../model-request.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
 import type { BeltSettings } from "../belt.ts";
-import type { EdgePick, LoftSection, ModelOp, ProfileLoop, ProfileSegment, Vec2 } from "../model-tree.ts";
+import type { DraftNeutral, EdgePick, LoftSection, ModelOp, ProfileLoop, ProfileSegment, Vec2 } from "../model-tree.ts";
 import { drillDown, isGlobalFrame, planePoint, planePrimitive, type Workplane } from "../workplane.ts";
 
 /** A baked op: as stored, as typed with its defaults filled, and any notes. */
@@ -474,6 +474,47 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     const made = moveFacesOp(rows);
     return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
   }
+  if (kind === "draft") {
+    if (!Array.isArray(spec.faces) || spec.faces.length < 1 || spec.faces.length > 50) return { reason: "Pick a face to draft." };
+    const angle = spec.angleDeg;
+    if (typeof angle !== "number" || !Number.isFinite(angle) || angle === 0 || angle < -30 || angle > 30) {
+      return { reason: "The draft angle must be between -30 and 30 degrees, and not 0." };
+    }
+    const faces: number[] = [];
+    for (const raw of spec.faces) {
+      const face = bakedFace(raw, ctx);
+      if (typeof face !== "number") return face;
+      // Named by the face's index, as picked, not by its place in the list.
+      if (faces.includes(face)) return { reason: `Face ${face} is listed twice.` };
+      faces.push(face);
+    }
+    const rawPull = spec.pull === undefined ? undefined : readVec3(spec.pull, [NaN, NaN, NaN]);
+    if (rawPull && rawPull.some((value) => !Number.isFinite(value))) return { reason: "The pull direction must be a direction." };
+    const pullLength = rawPull ? Math.hypot(rawPull[0], rawPull[1], rawPull[2]) : 0;
+    if (rawPull && pullLength < 1e-9) return { reason: "The pull direction must be a direction." };
+    const pull = rawPull ? [rawPull[0] / pullLength, rawPull[1] / pullLength, rawPull[2] / pullLength] as [number, number, number] : undefined;
+    const defaultPull = pull === undefined || (Math.abs(pull[0]) < 1e-9 && Math.abs(pull[1]) < 1e-9 && pull[2] > 0.999);
+    let neutral: DraftNeutral | undefined;
+    if (spec.neutral !== undefined && spec.neutral !== null) {
+      const raw = spec.neutral;
+      if (raw && typeof raw === "object" && "origin" in raw && "normal" in raw) {
+        const plane = raw as { origin?: unknown; normal?: unknown };
+        const origin = readVec3(plane.origin, [NaN, NaN, NaN]);
+        const normal = readVec3(plane.normal, [NaN, NaN, NaN]);
+        if (origin.some((value) => !Number.isFinite(value)) || normal.some((value) => !Number.isFinite(value)) || Math.hypot(...normal) < 1e-9) {
+          return { reason: "The neutral plane needs an origin and a normal." };
+        }
+        neutral = { origin, normal };
+      } else {
+        const face = bakedFace(raw, ctx);
+        if (typeof face !== "number") return face;
+        if (faces.includes(face)) return { reason: "The neutral face is one of the faces being drafted." };
+        neutral = face;
+      }
+    }
+    const made = draftOp(faces, angle, { ...(defaultPull || !pull ? {} : { pull }), ...(neutral !== undefined ? { neutral } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
   // --- A gear (src/model-gear.ts): a boolean whose tool is the gear primitive, placed as a cylinder is. Fuse by default.
   if (kind === "gear") {
     const gearOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
@@ -501,7 +542,7 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     const op: ModelOp = { kind: "root", ...solid };
     return { op, typed: { kind: "root", ...solid } };
   }
-  return { reason: "That edit is not one of hole, fillet, chamfer, transition, split, partition, scale, boolean, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, join, or root." };
+  return { reason: "That edit is not one of hole, fillet, chamfer, transition, split, partition, scale, boolean, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, draft, join, or root." };
 }
 
 
