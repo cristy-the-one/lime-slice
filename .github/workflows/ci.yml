@@ -321,10 +321,6 @@ jobs:
           node --experimental-strip-types mcp/pattern-combine.test.ts
           # The rib network (ribNet) on flat, sloped, cylinder and freeform shells, and the ribs leak on a sloped floor.
           node --experimental-strip-types mcp/rib-net-occt.test.ts
-          # Auto ribs end to end: ribWall on kernel meshes, ribs_plan as a job, ribs_apply, zones, an obstacle, cancel, verify, a curved wall, the flange table.
-          # Two load cases (section 5b): per-case factors against a fresh solve, and the stored request re-plans the same ribs.
-          # Two-case verify (section 5c): ribs_apply {verify:true} on a 64 × 40 × 14 box, each case before and after.
-          node --experimental-strip-types mcp/auto-ribs-occt.test.ts
           # The step guard on a ribbed shell: cuts at a wall are probed and applied, an edge-only touch is refused by both.
           node --experimental-strip-types mcp/step-guard-occt.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
@@ -448,6 +444,10 @@ jobs:
           node --experimental-strip-types mcp/draft-occt.test.ts
           # Moulding report on a small synthetic shelled box. Kept here so the shared Open CASCADE job stays within its 25 minutes.
           node --experimental-strip-types mcp/moulding-occt.test.ts
+          # Auto ribs, including the frequency goal, on this job rather than the shared Open CASCADE job.
+          # ribWall, ribs_plan, ribs_apply, zones, an obstacle, cancel, verify, a curved wall, the flange table,
+          # two load cases, and a frequency plan (Hz, the refusals, a missed load, apply with and without verify).
+          node --experimental-strip-types mcp/auto-ribs-occt.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:

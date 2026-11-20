@@ -312,7 +312,9 @@ export function goalFromTool(goal: unknown, densityGCm3: number): PlanGoal | { r
   if (keys.includes("frequency")) {
     if (keys.length > 1) {
       const others = keys.filter((key) => key !== "frequency");
-      return { reason: `A plan has one goal: frequency and ${others.join(" and ")} cannot both be set.` };
+      if (others.length === 1) return { reason: `A plan has one goal: frequency and ${others[0]} cannot both be set.` };
+      const list = others.length === 2 ? `${others[0]} and ${others[1]}` : `${others.slice(0, -1).join(", ")} and ${others[others.length - 1]}`;
+      return { reason: `A plan has one goal: frequency, ${list} cannot all be set.` };
     }
     const factor = g.frequency;
     if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 1) return { reason: "A frequency goal must be 1 or more." };
@@ -442,10 +444,10 @@ export function totalsLine(totals: RunState["totals"], densityGCm3: number, part
   return `${totals.ribs} rib${totals.ribs === 1 ? "" : "s"} · ${costText(totals.ribVolumeMm3, densityGCm3, partMm3)} · ${gain}`;
 }
 
-/** One line per case, beside the combined factor. One case, or a plan that did not report cases, is no lines. */
-export function caseResultLines(names: readonly string[], factors: readonly number[] | undefined, deflection: readonly { bare: number; ribbed: number }[] | undefined): string[] {
+/** One line per case, beside the combined factor. One case, or a plan that did not report cases, is no lines. `stiffness` names the factor when it follows a frequency result. */
+export function caseResultLines(names: readonly string[], factors: readonly number[] | undefined, deflection: readonly { bare: number; ribbed: number }[] | undefined, stiffness = false): string[] {
   if (!factors || !deflection || names.length < 2 || factors.length !== names.length || deflection.length !== names.length) return [];
-  return names.map((name, i) => `${name}: ${gainText(factors[i]!)}, deflection ${fmt(deflection[i]!.bare, 3)} mm → ${fmt(deflection[i]!.ribbed, 3)} mm`);
+  return names.map((name, i) => `${name}: ${stiffness ? `stiffness ${fmt(factors[i]!, 2)}×` : gainText(factors[i]!)}, deflection ${fmt(deflection[i]!.bare, 3)} mm → ${fmt(deflection[i]!.ribbed, 3)} mm`);
 }
 
 /** What the result shows: gain, cost, and whether a removed rib makes them estimates. */
@@ -460,10 +462,12 @@ export function resultNumbers(run: RunState, densityGCm3: number, partMm3: numbe
   return { gain: edited ? `${gain} before the edit` : gain, cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
 }
 
-/** The line that says the totals are an edit: material re-added, stiffness not solved again. */
+/** The line that says the totals are an edit: material re-added, the solved number not solved again. */
 export function editedNote(run: RunState): string {
   const n = run.removed.length;
-  return n === 0 ? "" : `Edited: ${n} rib${n === 1 ? "" : "s"} taken out. The material is recounted; the stiffness is the plan's before the edit and is not solved again (stale). Run again to re-plan without them.`;
+  if (n === 0) return "";
+  const solved = run.plan?.frequencyHz ? "the frequency is the plan's before the edit and is not solved again" : "the stiffness is the plan's before the edit and is not solved again";
+  return `Edited: ${n} rib${n === 1 ? "" : "s"} taken out. The material is recounted; ${solved} (stale). Run again to re-plan without them.`;
 }
 
 /** The comparison lines: the same stiffness by a thicker wall and by an even grid, then the verdict. */
@@ -569,6 +573,21 @@ export function checkLines(printer: string, before: CheckNumbers, after: CheckNu
 export function frequencyAside(plan: RibPlanResult): string {
   if (plan.frequencyHz == null && plan.frequencyFactor == null) return "";
   return `${fmt(plan.stiffnessFactor, 2)}× as stiff, for information.`;
+}
+
+/** A load that misses the wall, named, when a frequency plan ignores it instead of refusing. */
+export function ignoredLoadNote(missed: readonly { kind: string; index: number; case?: string }[]): string {
+  const loads = missed.filter((row) => row.kind === "load");
+  if (loads.length === 0) return "";
+  const names = loads.map((row) => (row.case ? `Load ${row.index + 1} of ${row.case}` : `Load ${row.index + 1}`));
+  const who = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `${who} ${names.length === 1 ? "misses" : "miss"} the wall and ${names.length === 1 ? "is" : "are"} ignored: a frequency plan does not use the loads.`;
+}
+
+/** Beside the Hz when the shell used the default card because the filament has none of its own. */
+export function fallbackHzNote(card: { forFilament: boolean; polymer: string; id: string } | null | undefined): string {
+  if (!card || card.forFilament) return "";
+  return `These Hz are the default ${card.polymer} card's (${card.id}): no card in the library is for this filament.`;
 }
 
 /** What Apply measured: "+9.6 g (+6.2 %), measured on the solid." */

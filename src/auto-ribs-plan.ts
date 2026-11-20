@@ -112,6 +112,8 @@ export interface RibPlanResult {
   /** Per case, only when the plan was asked for two or more. One load leaves these off. */
   caseFactors?: number[];
   caseDeflectionMm?: { bare: number; ribbed: number }[];
+  /** Sentences the planner attaches. A stiffness plan leaves this off. */
+  notes?: string[];
 }
 
 /**
@@ -284,6 +286,7 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       notBetterThanBaseline: row.notBetterThanBaseline === true,
       stoppedEarly: row.stoppedEarly === true,
       looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" as const : l.reason === "open" ? "open" as const : "noRibZone" as const })),
+      ...(Array.isArray(row.notes) ? { notes: (row.notes as unknown[]).filter((note): note is string => typeof note === "string" && note.length > 0) } : {}),
       ...perCase(row),
     },
   };
@@ -528,6 +531,16 @@ const volumeOf = (points: V3[], heights: number[], width: number) => heights.red
 /** How many ribs the stand-in adds at Balanced. */
 export const FAKE_BALANCED_RIBS = 4;
 
+/** The stand-in's copy of the engine's frequency notes. The loads sentence is only there when the request carried loads. */
+function frequencyNotes(body: RibPlanBody): string[] {
+  const cases = body.request.loadCases;
+  const loadsGiven = Array.isArray(cases) && cases.some((row) => row.length > 0);
+  return [
+    loadsGiven ? "Loads are ignored for the goal. Ribs follow the lowest mode shape." : "Ribs follow the lowest mode shape.",
+    "Loose ends are not extended or closed, and ribs stay at full height.",
+  ];
+}
+
 /** A deterministic stand-in for the engine's plan: same body, same events, same plan. */
 export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource {
   return {
@@ -594,7 +607,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           bare: { compliance: 1, maxDeflectionMm: bareDeflection },
           ribbed: { compliance: r3(1 / factor), maxDeflectionMm: r3(bareDeflection / factor) },
           stiffnessFactor: r3(factor),
-          ...(frequency ? { frequencyHz: { bare: 100, ribbed: r3(100 * factor) }, frequencyFactor: r3(factor) } : {}),
+          ...(frequency ? { frequencyHz: { bare: 100, ribbed: r3(100 * factor) }, frequencyFactor: r3(factor), notes: frequencyNotes(body) } : {}),
           goalMet,
           thickening: stopped ? null : { addedThicknessMm: 0.4, addedVolumeMm3: r3(volume * thin) },
           grid: stopped ? null : { reached: true, pitchMm: Math.max(body.rules.minSpacing, 5), volumeMm3: r3(volume * gridShare), gridVolumeMm3: r3(volume * gridShare) },
@@ -619,6 +632,8 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         stage("cutting lines into the wall", 0.05);
         stage("choosing ribs", 0.08);
         const goal = body.goal ?? { kind: "balanced" };
+        // ×1 asks for the wall as it is. The stand-in returns that plan, with no rib, rather than "no rib fits".
+        if (goal.kind === "frequency" && !(goal.factor > 1)) return { ok: true, plan: result(false, true) };
         const count = goal.kind === "balanced" ? FAKE_BALANCED_RIBS : pool.length;
         const target = goal.kind === "stiffer" || goal.kind === "frequency" ? goal.factor : goal.kind === "maxDeflection" ? bareDeflection / Math.max(goal.mm, 1e-6) : Infinity;
         const longest = Math.max(1, ...pool.map((c) => c.lengthMm));

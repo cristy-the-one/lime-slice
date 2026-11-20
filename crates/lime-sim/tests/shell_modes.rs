@@ -496,7 +496,15 @@ fn a_frequency_plan_reports_ribs_and_lists_free_ends() {
     .unwrap();
     let ev = events.lock().unwrap();
     let rib_at = ev.iter().position(|e| matches!(e, PlanEvent::Rib(_)));
-    let done_at = ev.iter().position(|e| matches!(e, PlanEvent::Stage { stage: PlanStage::Done, .. }));
+    let done_at = ev.iter().position(|e| {
+        matches!(
+            e,
+            PlanEvent::Stage {
+                stage: PlanStage::Done,
+                ..
+            }
+        )
+    });
     println!(
         "progress: {} events, first rib {:?}, done {:?}, ribs {}, loose {}",
         ev.len(),
@@ -506,23 +514,42 @@ fn a_frequency_plan_reports_ribs_and_lists_free_ends() {
         plan.loose_ends.len()
     );
     assert!(rib_at.is_some(), "no rib event");
-    assert!(done_at.is_some() && rib_at.unwrap() < done_at.unwrap(), "a rib event must come before Done");
     assert!(
-        ev[..rib_at.unwrap()].iter().any(|e| matches!(e, PlanEvent::Stage { stage: PlanStage::Select, .. })),
+        done_at.is_some() && rib_at.unwrap() < done_at.unwrap(),
+        "a rib event must come before Done"
+    );
+    assert!(
+        ev[..rib_at.unwrap()].iter().any(|e| matches!(
+            e,
+            PlanEvent::Stage {
+                stage: PlanStage::Select,
+                ..
+            }
+        )),
         "Select must be reported before the first rib"
     );
     let mut free: Vec<(usize, usize)> = plan
         .ribs
         .iter()
         .enumerate()
-        .flat_map(|(k, rib)| (0..2).filter(move |&e| rib.ends[e] == RibEndKind::Free).map(move |e| (k, e)))
+        .flat_map(|(k, rib)| {
+            (0..2)
+                .filter(move |&e| rib.ends[e] == RibEndKind::Free)
+                .map(move |e| (k, e))
+        })
         .collect();
     let mut listed: Vec<(usize, usize)> = plan.loose_ends.iter().map(|l| (l.rib, l.end)).collect();
     free.sort();
     listed.sort();
     assert_eq!(free, listed, "every free end is listed, and only those");
-    assert!(plan.loose_ends.iter().all(|l| l.reason == LooseEndReason::Open));
-    assert!(!plan.loose_ends.is_empty(), "the center keep-clear zone should leave a free end");
+    assert!(plan
+        .loose_ends
+        .iter()
+        .all(|l| l.reason == LooseEndReason::Open));
+    assert!(
+        !plan.loose_ends.is_empty(),
+        "the center keep-clear zone should leave a free end"
+    );
     println!("free ends listed as open: {}", plan.loose_ends.len());
 }
 
@@ -620,6 +647,107 @@ fn stiffness_stamp(plan: &RibPlan) -> String {
         "ribs": ribs,
     });
     serde_json::to_string_pretty(&v).unwrap() + "\n"
+}
+
+/// Cancel on the first accepted rib of the clamped 120 × 70 panel. The
+/// plan comes back with that rib, stopped, and finite numbers, and does
+/// not keep selecting.
+#[test]
+fn a_cancel_after_the_first_rib_returns_that_rib() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    let mesh = ShellMesh::rectangle([120.0, 70.0], [24, 14], 2.0);
+    let cancel = AtomicBool::new(false);
+    let ribs_seen = Mutex::new(0u32);
+    let cancel_at = Mutex::new(None::<Instant>);
+    let sink = |e: &PlanEvent| {
+        if matches!(e, PlanEvent::Rib(_)) {
+            *ribs_seen.lock().unwrap() += 1;
+            let mut at = cancel_at.lock().unwrap();
+            if at.is_none() {
+                cancel.store(true, Ordering::Relaxed);
+                *at = Some(Instant::now());
+            }
+        }
+    };
+    let node = mesh.nearest_vertex([15.0, 35.0, 0.0]);
+    let mut req = RibPlanRequest::new(mesh, dense(2000.0, 0.3));
+    req.goal = Goal::Frequency { factor: 1.3 };
+    req.load_cases = vec![vec![ShellLoad::Force {
+        node,
+        force: [0.0, 0.0, -10.0],
+    }]];
+    req.options.baselines = false;
+    let plan = plan_ribs_with(
+        &req,
+        PlanControl {
+            progress: Some(&sink),
+            cancel: Some(&cancel),
+        },
+    )
+    .unwrap();
+    let back = cancel_at
+        .lock()
+        .unwrap()
+        .expect("a rib")
+        .elapsed()
+        .as_secs_f64();
+    let hz = plan.frequency_hz.expect("hz");
+    println!(
+        "cancel to return on the 120×70 panel: {back:.3} s, ribs {}, events {}, bare {:.3} Hz, ribbed {:.3} Hz, ×{:.6} frequency, ×{:.6} stiffness, stopped {}",
+        plan.ribs.len(),
+        *ribs_seen.lock().unwrap(),
+        hz.bare,
+        hz.ribbed,
+        plan.frequency_factor.unwrap(),
+        plan.stiffness_factor,
+        plan.stopped_early
+    );
+    assert!(plan.stopped_early);
+    assert!(!plan.ribs.is_empty());
+    assert_eq!(
+        *ribs_seen.lock().unwrap(),
+        1,
+        "selection continued after the cancel"
+    );
+    assert!(hz.bare.is_finite() && hz.ribbed.is_finite() && hz.bare > 0.0 && hz.ribbed > 0.0);
+    assert!(plan.frequency_factor.unwrap().is_finite());
+    assert!(plan.stiffness_factor.is_finite());
+    assert!(plan.case_factors.iter().all(|f| f.is_finite()));
+}
+
+/// The highest frequency ratio selection reaches when the ask is far above
+/// it. Printed so the slider stops can be chosen; the value is not locked.
+#[test]
+fn the_highest_frequency_ratio_on_three_panels() {
+    let panels = [
+        ("120×70×2 [24,14]", [120.0, 70.0], [24usize, 14]),
+        ("80×40×2 [8,4]", [80.0, 40.0], [8, 4]),
+        ("160×80×2 [24,12]", [160.0, 80.0], [24, 12]),
+    ];
+    for (name, size, div) in panels {
+        let mesh = ShellMesh::rectangle(size, div, 2.0);
+        let mut req = RibPlanRequest::new(mesh, dense(2000.0, 0.3));
+        req.goal = Goal::Frequency { factor: 20.0 };
+        req.options.baselines = false;
+        let t = Instant::now();
+        let plan = plan_ribs(&req).unwrap();
+        let ratio = plan.frequency_factor.unwrap();
+        println!(
+            "highest ratio on {name}: ×{ratio:.6} in {:.2} s, ribs {}, goal_met {}, notes {:?}",
+            t.elapsed().as_secs_f64(),
+            plan.ribs.len(),
+            plan.goal_met,
+            plan.notes
+        );
+        assert!(ratio.is_finite() && ratio >= 1.0, "{name}");
+        assert!(
+            plan.notes.iter().all(|n| !n.contains("ignored")),
+            "{name} had no loads: {:?}",
+            plan.notes
+        );
+    }
 }
 
 fn centre_rib(a: f64, n: usize) -> Rib {

@@ -20,7 +20,9 @@ import {
   goalOf,
   goalFromTool,
   engineMaterial,
+  fallbackHzNote,
   frequencyAside,
+  ignoredLoadNote,
   frequencyFactorAt,
   idleRun,
   keptRibs,
@@ -237,11 +239,18 @@ if ("reason" in toolGoal) throw new Error(toolGoal.reason);
 eq("the tool and the panel send the same material", engineMaterial(petg, panelGoal), engineMaterial(petg, toolGoal));
 eq("a stiffness request drops the density", engineMaterial(petg, { kind: "balanced" }), { material: { e: 1800, nu: 0.35 } });
 eq("a frequency goal with a budget names both", goalFromTool({ frequency: 1.3, budgetMm3: 4000 }, 1.24), { reason: "A plan has one goal: frequency and budgetMm3 cannot both be set." });
+eq("three goals are not 'both'", goalFromTool({ frequency: 1, stiffer: 2, budgetG: 1 }, 1.24), { reason: "A plan has one goal: frequency, stiffer and budgetG cannot all be set." });
 eq("a factor below 1 is refused", goalFromTool({ frequency: 0.5 }, 1.24), { reason: "A frequency goal must be 1 or more." });
 eq("a material with no density is refused by name", engineMaterial({ e: 1800, nu: 0.35, name: "PETG" }, toolGoal), { reason: "PETG has no density." });
 const freqPlan = { ...plan, goalMet: true, frequencyHz: { bare: 100, ribbed: 130 }, frequencyFactor: 1.3, stiffnessFactor: 1.8 };
 eq("hertz before and after", resultNumbers({ ...runDone(startedRun(), { ok: true, plan: freqPlan }), removed: [] }, 1.24, 200000)?.gain, "100 Hz → 130 Hz");
 eq("the stiffness factor is information", frequencyAside(freqPlan), "1.8× as stiff, for information.");
+eq("a case factor after the Hz is stiffness", caseResultLines(["spread", "point"], [1.35, 2.4], [{ bare: 0.8, ribbed: 0.593 }, { bare: 0.8, ribbed: 0.333 }], true), ["spread: stiffness 1.35×, deflection 0.8 mm → 0.593 mm", "point: stiffness 2.4×, deflection 0.8 mm → 0.333 mm"]);
+eq("×1 asks for no change is the panel's fallback sentence's twin", ignoredLoadNote([{ kind: "load", index: 0 }]), "Load 1 misses the wall and is ignored: a frequency plan does not use the loads.");
+eq("the default card's Hz are named", fallbackHzNote({ forFilament: false, polymer: "PETG", id: "inhouse-petg" }), "These Hz are the default PETG card's (inhouse-petg): no card in the library is for this filament.");
+eq("the filament's own card adds no Hz note", fallbackHzNote({ forFilament: true, polymer: "PETG", id: "inhouse-petg" }), "");
+eq("an edit of a frequency plan does not say stiffness", editedNote({ ...runDone(startedRun(), { ok: true, plan: freqPlan }), removed: [0] }).includes("the frequency is the plan's before the edit"), true);
+eq("an edit of a stiffness plan still says stiffness", editedNote({ ...runDone(startedRun(), { ok: true, plan }), removed: [0] }).includes("the stiffness is the plan's before the edit"), true);
 eq("a stiffness plan has no frequency aside", frequencyAside(plan), "");
 eq("an unreached frequency says the ratio", goalLine({ kind: "frequency", factor: 2 }, { ...freqPlan, goalMet: false, frequencyFactor: 1.42 }, 1.24), "Reached 1.42× of the 2× asked: no further rib pays enough.");
 eq("stiffness is still the default", newAutoRibsCard().quantity, "stiffness");

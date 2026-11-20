@@ -647,7 +647,13 @@ impl Reporter<'_> {
     /// A rib a frequency plan accepted. There is no compliance yet: the
     /// stiffness solve runs once, after selection. `ratio` is the lowest
     /// frequency over the bare wall's.
-    pub fn frequency_rib(&self, rib: &select::DRib, pos: &[[f64; 3]], design: &[select::DRib], ratio: f64) {
+    pub fn frequency_rib(
+        &self,
+        rib: &select::DRib,
+        pos: &[[f64; 3]],
+        design: &[select::DRib],
+        ratio: f64,
+    ) {
         let Some(p) = self.ctl.progress else { return };
         let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         p(&PlanEvent::Rib(RibEvent {

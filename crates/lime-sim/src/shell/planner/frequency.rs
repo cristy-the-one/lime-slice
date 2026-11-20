@@ -292,15 +292,21 @@ fn finish(
             ribbed: hz[1],
         }),
         frequency_factor: Some(achieved),
-        notes: frequency_notes(unreached),
+        notes: frequency_notes(unreached, !req.load_cases.is_empty()),
     })
 }
 
 /// What a frequency plan does, and does not do. `unreached` is the clean
-/// ratio when selection stopped short of the ask.
-fn frequency_notes(unreached: Option<f64>) -> Vec<String> {
+/// ratio when selection stopped short of the ask. The loads sentence is
+/// only there when the request carried loads: an empty request is planned
+/// under the default pressure, which was not given.
+fn frequency_notes(unreached: Option<f64>, loads_given: bool) -> Vec<String> {
     let mut notes = vec![
-        "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string(),
+        if loads_given {
+            "Loads are ignored for the goal. Ribs follow the lowest mode shape.".to_string()
+        } else {
+            "Ribs follow the lowest mode shape.".to_string()
+        },
         "Loose ends are not extended or closed, and ribs stay at full height.".to_string(),
     ];
     if let Some(ratio) = unreached {
@@ -350,7 +356,7 @@ fn empty(
             ribbed: hz,
         }),
         frequency_factor: Some(1.0),
-        notes: frequency_notes(None),
+        notes: frequency_notes(None, !req.load_cases.is_empty()),
     }
 }
 
@@ -503,6 +509,15 @@ fn grow(
         let base_volume = network_volume(pos, &design);
         let mut pool: Vec<(f64, usize, f64)> = Vec::new();
         for (i, c) in cands.iter().enumerate() {
+            // A cancel here keeps the ribs already accepted and does not
+            // finish this round or start another.
+            if rep.cancelled() {
+                return Ok(Grown {
+                    design,
+                    reached: false,
+                    stopped: true,
+                });
+            }
             if used[i] {
                 continue;
             }
@@ -535,6 +550,13 @@ fn grow(
         pool.truncate(keep);
         let mut best: Option<(f64, usize, DRib, f64)> = None;
         for &(_, i, dv) in &pool {
+            if rep.cancelled() {
+                return Ok(Grown {
+                    design,
+                    reached: false,
+                    stopped: true,
+                });
+            }
             let d = candidate_rib(&cands[i], i, width, max_height, profile);
             let mut trial = design.clone();
             trial.push(d.clone());

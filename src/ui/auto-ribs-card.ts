@@ -43,7 +43,9 @@ import {
   caseResultLines,
   goalLine,
   engineMaterial,
+  fallbackHzNote,
   frequencyAside,
+  ignoredLoadNote,
   frequencyFactorAt,
   FREQUENCY_STOPS,
   loadRequest,
@@ -127,7 +129,7 @@ export interface AutoRibsHost {
   /** Face picking on (the card takes clicks) or off. */
   pickFaces(): void;
   /** The shell model's material card for the selected filament (shared with ribs_plan), with the sentence naming it. */
-  material(): { e: number; nu: number; densityGCm3?: number; name?: string; note: string } | null;
+  material(): { e: number; nu: number; densityGCm3?: number; name?: string; note: string; forFilament?: boolean; card?: string; polymer?: string } | null;
   /** Whether the Stress check can run here: the desktop's study solve. */
   stressAvailable(): boolean;
   /** The sliced Stress study before and after the ribs, opt-in after Apply. */
@@ -150,6 +152,10 @@ interface WallRead {
 
 /** The material card the last plan was solved with, in a sentence. */
 let materialNote = "";
+/** A missed load a frequency plan ignored, named. Empty when none was given or none missed. */
+let ignoredLoads = "";
+/** Beside the Hz when the shell used the default card. Empty on a stiffness plan and on the filament's own card. */
+let hzCard = "";
 /** The joined faces and the wall the last plan stood on: what the Stress check holds and presses by default. */
 let lastSetup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[]; cases?: { name: string; loads: StudyLoad[] }[] } | null = null;
 /** The opt-in Stress check after Apply: not run, running (its line), done (its lines) or refused. */
@@ -233,6 +239,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     <section class="ar-result" id="autoRibsResult" aria-label="The plan" hidden>
       <div class="ar-headline"><strong id="autoRibsGain"></strong><span id="autoRibsCost"></span><span class="ar-badge" id="autoRibsStopped" hidden>stopped early</span><span class="ar-badge" id="autoRibsEdited" hidden>edited</span></div>
       <p class="model-note" id="autoRibsFrequency" hidden></p>
+      <ul class="ar-lines" id="autoRibsNotes" aria-label="Notes" hidden></ul>
       <ul class="ar-lines" id="autoRibsCaseLines" aria-label="Each load case" hidden></ul>
       <p class="model-note" id="autoRibsStoppedLine" hidden>${STOPPED_LINE}</p>
       <p class="model-note is-warn" id="autoRibsGoal" hidden></p>
@@ -659,13 +666,24 @@ async function startRun() {
     await readWall();
   }
   const solid = host.solid();
+  const goal = currentGoal();
+  // A load that misses the wall is ignored on a frequency plan. A hold that misses is still refused.
+  ignoredLoads = "";
+  if (!read?.wall && read?.missed.length && goal.kind === "frequency" && read.missed.every((row) => row.kind === "load")) {
+    const options = wallOptions();
+    ignoredLoads = ignoredLoadNote(read.missed);
+    if (options) {
+      const again = await host.readWall({ ...options, ifMissed: "evenPressure" });
+      if (!("reason" in again)) read = { ...read, wall: again, error: null };
+    }
+  }
   if (!read?.wall || !solid) {
+    ignoredLoads = "";
     if (read?.error) host.readout(read.error);
     paint();
     return;
   }
   const wall = read.wall;
-  const goal = currentGoal();
   if (goal.kind === "frequency" && !(goal.factor >= 1)) {
     host.readout("A frequency goal must be 1 or more.");
     return;
@@ -673,6 +691,7 @@ async function startRun() {
   const sent: RibPlanBody["request"] = wall.request.holds.holds.length === 0 ? { ...wall.request, holds: { kind: "allBoundary" } } : wall.request;
   const material = host.material();
   materialNote = material?.note ?? "";
+  hzCard = goal.kind === "frequency" ? fallbackHzNote(material?.forFilament === false && material.polymer && material.card ? { forFilament: false, polymer: material.polymer, id: material.card } : null) : "";
   let sentMaterial: RibPlanBody["material"] | undefined;
   if (goal.kind === "frequency" || material) {
     const built = engineMaterial(material ?? { e: 0, nu: 0, name: "The material" }, goal);
@@ -717,7 +736,8 @@ async function startRun() {
     const built = ribsOnFace({ positions: solid.positions, faceOf: solid.faceOf }, wall, reply.plan.ribs, host.build(), body.rules.width);
     faceRibs = built.ribs;
     if (goal.kind === "balanced" && !reply.plan.stoppedEarly) balancedFactor = reply.plan.stiffnessFactor;
-    host.readout(reply.plan.ribs.length === 0 ? (reply.plan.stoppedEarly ? "Stopped before the first rib: nothing to apply." : "No rib pays on this wall under these rules.") : reply.plan.stoppedEarly ? "Stopped early. The plan so far can be applied." : "Check the plan, then Apply.");
+    const asksNothing = goal.kind === "frequency" && !(goal.factor > 1);
+    host.readout(reply.plan.ribs.length === 0 ? (reply.plan.stoppedEarly ? "Stopped before the first rib: nothing to apply." : asksNothing ? "×1 asks for no change." : "No rib pays on this wall under these rules.") : reply.plan.stoppedEarly ? "Stopped early. The plan so far can be applied." : "Check the plan, then Apply.");
   } else host.readout(reply.reason);
   paint();
 }
@@ -765,7 +785,7 @@ async function applyPlan() {
   }
   const built: BuiltRib[] = keptFace.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: (rib.sections[0]?.profile ?? "straight"), sections: rib.sections }));
   const plan = run.plan!;
-  const auto = { panel: card, plan: { ribs: kept.length, stiffnessFactor: plan.stiffnessFactor, ribVolumeMm3: plan.ribVolumeMm3, stoppedEarly: plan.stoppedEarly, edited: run.removed.length > 0 } };
+  const auto = { panel: card, plan: { ribs: kept.length, stiffnessFactor: plan.stiffnessFactor, ...(plan.frequencyHz ? { frequencyHz: plan.frequencyHz, frequencyFactor: plan.frequencyFactor } : {}), ribVolumeMm3: plan.ribVolumeMm3, stoppedEarly: plan.stoppedEarly, edited: run.removed.length > 0 } };
   const op = ribNetOf(built, AUTO_RIBS_LABEL, auto);
   if ("reason" in op) {
     host.readout(String(op.reason));
@@ -984,10 +1004,20 @@ function paintResult() {
     node.hidden = !show || text === "";
   };
   set("#autoRibsGain", plan.ribs.length ? numbers?.gain ?? "" : "No ribs");
-  set("#autoRibsFrequency", frequencyAside(plan));
+  set("#autoRibsFrequency", [frequencyAside(plan), hzCard].filter(Boolean).join(" "));
+  const noteList = $<HTMLElement>("#autoRibsNotes");
+  if (noteList) {
+    const lines = [...(plan.notes ?? []), ...(ignoredLoads ? [ignoredLoads] : [])];
+    noteList.hidden = lines.length === 0;
+    noteList.replaceChildren(...lines.map((text) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      return li;
+    }));
+  }
   const caseLines = $<HTMLElement>("#autoRibsCaseLines");
   if (caseLines) {
-    const lines = caseResultLines(ranWith?.caseNames ?? [], plan.caseFactors, plan.caseDeflectionMm);
+    const lines = caseResultLines(ranWith?.caseNames ?? [], plan.caseFactors, plan.caseDeflectionMm, plan.frequencyHz != null);
     caseLines.hidden = lines.length === 0;
     caseLines.replaceChildren(...lines.map((text) => {
       const li = document.createElement("li");
@@ -1158,6 +1188,7 @@ async function runStressCheck() {
 function paintHowMuch() {
   const a = card.amount;
   const frequency = card.quantity === "frequency";
+  root()?.querySelector("#autoRibsHowMuch .ar-modes")?.classList.toggle("is-frequency", frequency);
   for (const button of root()?.querySelectorAll<HTMLElement>("[data-measure]") ?? []) press(button, button.dataset.measure === card.quantity);
   for (const button of root()?.querySelectorAll<HTMLElement>("[data-amount]") ?? []) {
     const kind = button.dataset.amount;
@@ -1735,7 +1766,7 @@ function onClick(ev: Event) {
   }
   if (target.dataset.removeRib) {
     run = toggleRemoved(run, Number(target.dataset.removeRib));
-    host.readout(run.removed.length ? "Edited: the material is recounted; the stiffness is not solved again." : "Check the plan, then Apply.");
+    host.readout(run.removed.length ? (run.plan?.frequencyHz ? "Edited: the material is recounted; the frequency is not solved again." : "Edited: the material is recounted; the stiffness is not solved again.") : "Check the plan, then Apply.");
     return paint();
   }
   if (target.dataset.measure === "stiffness" || target.dataset.measure === "frequency") {

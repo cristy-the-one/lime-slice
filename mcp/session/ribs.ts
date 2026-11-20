@@ -17,7 +17,7 @@ import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
-import { engineMaterial, goalFromTool, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { engineMaterial, fallbackHzNote, goalFromTool, ignoredLoadNote, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -218,7 +218,7 @@ function wallZones(this: Session, obj: PlateObject, zones: unknown): WallZoneInp
 
 /** A frequency plan in one sentence: Hz before and after, the ratio, and the stiffness factor for information. */
 function frequencySentence(ribs: number, hz: { bare: number; ribbed: number }, freqFactor: number, asked: number, stiff: number, stopped: boolean, goalMet: boolean): string {
-  if (ribs === 0) return stopped ? "Stopped before the first rib: no plan." : "No rib pays on this wall under these rules.";
+  if (ribs === 0) return stopped ? "Stopped before the first rib: no plan." : !(asked > 1) ? "×1 asks for no change." : "No rib pays on this wall under these rules.";
   const reach = goalMet ? "" : ` Reached ${r(freqFactor, 3)}× of the ${r(asked, 3)}× asked.`;
   const stop = stopped ? " Stopped early: the best plan so far." : "";
   return `${ribs} rib${ribs === 1 ? "" : "s"}, lowest frequency ${r(hz.bare, 3)} Hz → ${r(hz.ribbed, 3)} Hz (${r(freqFactor, 3)}×).${reach}${stop} Stiffness ${r(stiff, 2)}×, for information.`;
@@ -323,7 +323,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   if (wallIn.folded !== undefined && wallIn.folded !== true && wallIn.folded !== false) return refuse("bad-wall", "wall.folded is true or false. Default false: a sharp edge stops the wall. true takes every thin face across a sharp edge.");
   const ribWallMs = Date.now();
   // Holds and loads that name places are typed in this frame, as the wall is; face holds name faces.
-  const wall = ribWall(typed.solid, {
+  const wallOptions = (even: boolean) => ({
     picked,
     ...(wallIn.grow === false ? { grow: false } : {}),
     ...(num(wallIn.growAngleDeg) !== undefined ? { growAngleDeg: num(wallIn.growAngleDeg)! } : {}),
@@ -333,11 +333,15 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     holds,
     ...(sentLoads.loadCases ? { loadCases: sentLoads.loadCases } : { loads: sentLoads.loads }),
     ...(num(rib.minHeight) !== undefined ? { minRibHeightMm: num(rib.minHeight)! } : {}),
-    ...(input.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
+    ...(even ? { ifMissed: "evenPressure" as const } : {}),
     ...(num(wallIn.thicknessMm) !== undefined ? { thicknessMm: num(wallIn.thicknessMm)! } : {}),
     ...(wallIn.features === false ? { features: false } : {}),
     ...(wallIn.folded === true ? { folded: true } : {}),
   });
+  // A load that misses the wall does not refuse a frequency plan: it is ignored, and the note names it. A hold that
+  // misses is still refused.
+  let wall = ribWall(typed.solid, wallOptions(input.ifMissed === "evenPressure"));
+  if ("reason" in wall && goal.kind === "frequency" && wall.missed?.length && wall.missed.every((row) => row.kind === "load")) wall = ribWall(typed.solid, wallOptions(true));
   if ("reason" in wall) {
     // A hold or load the wall cannot carry: refused by name, never planned under even pressure in its place.
     if (wall.missed?.length) return refuse("off-wall", `${wall.reason} wall.addFaces adds a face to the wall. Or pass ifMissed:"evenPressure" to plan without ${wall.missed.length === 1 ? "it" : "them"}, under even pressure when no load is left.`, { missed: wall.missed.map((row) => ({ kind: row.kind, index: row.index, why: row.why, ...(row.case ? { case: row.case } : {}) })) });
@@ -345,9 +349,12 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   }
   const wallMs = Date.now() - ribWallMs;
   const notes: string[] = [];
-  // Asked to plan anyway: what was left out comes first, in the notes and in the sentence.
+  // Asked to plan anyway: what was left out comes first, in the notes and in the sentence. A frequency plan names a
+  // missed load as ignored instead of as planned under even pressure.
   const substituted = wall.report.substituted;
-  if (substituted) notes.push(substituted.sentence);
+  const ignoredLoad = goal.kind === "frequency" && substituted && substituted.holds.length === 0 && substituted.loads.length ? ignoredLoadNote(substituted.loads.map((index) => ({ kind: "load", index }))) : "";
+  if (ignoredLoad) notes.push(ignoredLoad);
+  else if (substituted) notes.push(substituted.sentence);
   if (wall.report.features.count) notes.push(wall.report.features.note);
   // A wall joined to nothing (a free panel) with no holds given: held all round its borders, and said so.
   const sent: Row = { ...wall.request };
@@ -519,6 +526,10 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
       })
     : undefined;
   if (Array.isArray(result.notes)) for (const note of result.notes as unknown[]) if (typeof note === "string" && note) notes.push(note);
+  if (goal.kind === "frequency") {
+    const cardNote = fallbackHzNote(material.row.forFilament === false ? { forFilament: false, polymer: String(material.row.polymer ?? ""), id: String(material.row.card ?? "") } : null);
+    if (cardNote) notes.push(cardNote);
+  }
   const hzRow = result.frequencyHz as Row | undefined;
   const sentenceCore = goal.kind === "frequency"
     ? frequencySentence(ribs.length, { bare: num(hzRow?.bare) ?? 0, ribbed: num(hzRow?.ribbed) ?? 0 }, num(result.frequencyFactor) ?? 1, goal.factor, num(result.stiffnessFactor) ?? 1, stoppedEarly, result.goalMet === true)
@@ -527,7 +538,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const reply: Row = {
     ok: true,
     object: obj.id,
-    sentence: `${substituted ? `${substituted.sentence} ` : ""}${sentenceCore}${caseRows ? ` Per case: ${caseRows.map((c) => `${c.name} ${c.factor}×`).join(", ")}.` : ""}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
+    sentence: `${substituted && !ignoredLoad ? `${substituted.sentence} ` : ""}${sentenceCore}${caseRows ? ` ${goal.kind === "frequency" ? "Per case, stiffness" : "Per case"}: ${caseRows.map((c) => `${c.name} ${c.factor}×`).join(", ")}.` : ""}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
     plan,
     adds,
     wall: wallReport(wall),
@@ -610,7 +621,7 @@ async function ribsApply(this: Session, input: Row, meta?: CallMeta): Promise<Ro
     const stored = this.ribPlans.get(object);
     const fingerprint = readFingerprint(plan.fingerprint);
     if (!fingerprint) return refuse("bad-rib-plan", "A plan given to ribs_apply carries the fingerprint of the solid it was made for (plan.fingerprint {volumeMm3, faces, edges}, as ribs_plan gives it), so a plan for another shape is never built. Pass the plan whole, or plan again.");
-    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, ...(stored?.cases ? { cases: stored.cases } : {}), wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint, goal: (plan.goal as Row | undefined) ?? stored?.goal };
+    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, ...(stored?.cases ? { cases: stored.cases } : {}), wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint, goal: plan.goal as Row | undefined };
   } else return refuse("bad-argument", "ribs_apply takes job (a finished ribs_plan job) or plan ({ribs}).");
   const obj = this.find(typeof input.object === "string" ? input.object : record.object);
   if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);

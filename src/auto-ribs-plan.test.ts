@@ -111,6 +111,10 @@ eq("two cases come back with their factors and deflections", twoCases.ok ? [twoC
 const oneCase = readPlan({ ok: true, ribs: [], stiffnessFactor: 2, caseFactors: [2], caseDeflectionMm: [{ bare: 0.8, ribbed: 0.4 }] });
 check("a single case factor is left off", oneCase.ok && oneCase.plan.caseFactors === undefined, oneCase);
 eq("a refusal in the result is the sentence", readPlan({ ok: false, reason: "The wall has no triangles to plan on." }), { ok: false, reason: "The wall has no triangles to plan on." });
+const withNotes = readPlan({ ok: true, ribs: [], stiffnessFactor: 1.2, frequencyHz: { bare: 100, ribbed: 130 }, frequencyFactor: 1.3, notes: ["Loads are ignored for the goal. Ribs follow the lowest mode shape.", ""] });
+eq("the plan's notes come back", withNotes.ok ? withNotes.plan.notes : null, ["Loads are ignored for the goal. Ribs follow the lowest mode shape."]);
+const noNotes = readPlan({ ok: true, ribs: [], stiffnessFactor: 2 });
+check("a stiffness plan has no notes", noNotes.ok && noNotes.plan.notes === undefined, noNotes);
 eq("an event of another kind is skipped", readEvent({ kind: "later" }), null);
 
 // A cancel goes once, and the plan so far comes back.
