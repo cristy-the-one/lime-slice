@@ -937,6 +937,7 @@ jobs:
       - name: Schema, scenarios, export, and golden G-code
         run: |
           node --experimental-strip-types mcp/schema.test.ts
+          node --experimental-strip-types mcp/vents-apply.test.ts
           node --experimental-strip-types mcp/scenario.test.ts
           node --experimental-strip-types mcp/model.test.ts
           node --experimental-strip-types mcp/partition.test.ts
