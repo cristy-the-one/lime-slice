@@ -146,14 +146,15 @@ if (pockets.length > 0) {
   );
 } else {
   const messages = ((vents?.unvented ?? []) as Reply[]).map((item) => String(item.message));
+  const named = messages.length === 0 || messages.every((message) => message === TOO_SHORT || message === PART_CUPS);
+  console.log(`vents-occt: side ribs ${ribs.length}, unvented ${messages.length}. Spacing ${rules?.minSpacing} mm is shorter than 2×${rules?.minLength}+0.75, and the open top joins any rib that stops short, so no cell is sealed.`);
   check(
-    "product defaults leave no stretch long enough for a notch",
-    messages.length > 0 && messages.every((message) => message === TOO_SHORT || message === PART_CUPS),
-    JSON.stringify(messages.slice(0, 4)),
+    "product defaults place no notch on this wall",
+    named && typeof vents?.factorBefore === "number" && Math.abs(vents.factorBefore - vents.factorAfter) < 1e-6,
+    JSON.stringify({ ribs: ribs.length, messages: messages.slice(0, 4), before: vents?.factorBefore, after: vents?.factorAfter }),
   );
-  console.log("vents-occt: product defaults placed no notch. spacing is shorter than two minimum ribs plus 0.75 mm, so the cells stay unvented.");
 }
-const built = pockets.length > 0 ? await call("ribs_apply", { job: sideJob }) : { ok: false, skipped: true };
+const built = await call("ribs_apply", { job: sideJob });
 if (pockets.length > 0) {
   const reason = String(built.reason ?? built.message ?? "");
   if (built.ok === true) {
@@ -169,6 +170,15 @@ if (pockets.length > 0) {
     console.log(`vents-occt: drafted root ran off the rim on the inner +X wall (64×40×90 box, 3 mm, near [29,0,40]). ${reason}`);
   } else {
     check("the notched ribNet builds", false, JSON.stringify(built).slice(0, 400));
+  }
+} else {
+  const reason = String(built.reason ?? built.message ?? "");
+  if (built.ok === true) {
+    console.log(`vents-occt: the unnotched drafted ribs build, paths ${built.paths}`);
+  } else if (reason.includes("root") || reason.includes("runs off")) {
+    console.log(`vents-occt: drafted root ran off the rim. Wall: inner +X of a 64×40×90 box, shell 3 mm, near [29, 0, 40]. ${reason}`);
+  } else {
+    check("the drafted ribs build, or the root runs off the rim", false, JSON.stringify(built).slice(0, 400));
   }
 }
 
