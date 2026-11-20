@@ -168,8 +168,8 @@ export function ribRules(input: RibRuleInput): RibRulesChosen {
     mouldedRoot = planned.root;
     defaults.push(`width ${r2(width)} mm at half height, sized so the base is 0.6 × the thinnest wall (${r2(thin)} mm) at the greatest height`);
     if (planned.limited) {
-      mouldedNote = "the thickest wall is more than twice the thinnest, so the base stays 0.6 × the thinnest and the root stays half the top: 0.25 × the thickest would pass 0.5 × the thinnest";
-      defaults.push("root radius half the top width: the thickest wall is more than twice the thinnest, so 0.25 × the thickest cannot hold");
+      mouldedNote = "the thickest wall is more than twice the thinnest, so no root radius suits both: 0.25 × the thickest is larger than 0.5 × the thinnest. The root is half the rib's top width, and the radius check flags it";
+      defaults.push("root radius half the top width (see the note on uneven walls)");
     } else defaults.push("root radius half the top width, or 0.25 × the thickest wall when half the top is smaller");
   } else {
     width = Math.max(MIN_DEFAULT_WIDTH_MM, 0.8 * t);
