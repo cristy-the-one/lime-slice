@@ -71,6 +71,38 @@ function ribCard(this: Session): { card: ReturnType<Session["simCard"]>; row: Ro
 const r = (n: number, k = 3) => (Number.isFinite(n) ? Math.round(n * 10 ** k) / 10 ** k + 0 : n);
 const rv = (p: readonly number[]): V3 => [r(p[0]!, 4), r(p[1]!, 4), r(p[2]!, 4)];
 
+/** The notch on the face the ribs were built on: the midpoint of the two gap ends, so a ray aimed at the pocket meets the opening. */
+function faceNotchAt(ribs: readonly Row[], pocket: Row): V3 | null {
+  const index = typeof pocket.rib === "number" ? pocket.rib : -1;
+  const rib = ribs[index];
+  const points = rib?.points as number[][] | undefined;
+  const ends = rib?.ends as string[] | undefined;
+  const at = Array.isArray(pocket.at) ? (pocket.at as number[]) : null;
+  if (!points || points.length < 2 || !ends || !at) return null;
+  const mine = [ends[0] === "gap" ? points[0] : null, ends[1] === "gap" ? points[points.length - 1] : null].filter((p): p is number[] => p !== null);
+  if (!mine.length) return null;
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, (a[2] ?? 0) - (b[2] ?? 0));
+  const end = mine.reduce((best, p) => (dist(p, at) < dist(best, at) ? p : best));
+  let other: number[] | null = null;
+  let best = 2;
+  for (const row of ribs) {
+    if (row === rib) continue;
+    const pts = row.points as number[][] | undefined;
+    const kind = row.ends as string[] | undefined;
+    if (!pts || pts.length < 2 || !kind) continue;
+    for (const p of [kind[0] === "gap" ? pts[0] : null, kind[1] === "gap" ? pts[pts.length - 1] : null]) {
+      if (!p) continue;
+      const d = dist(p, end);
+      if (d > 0.2 && d < best) {
+        best = d;
+        other = p;
+      }
+    }
+  }
+  if (!other) return rv(end);
+  return rv([(end[0]! + other[0]!) / 2, (end[1]! + other[1]!) / 2, (end[2]! + other[2]!) / 2]);
+}
+
 function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -547,7 +579,13 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     for (const [message, count] of reasons) planNotes.push(`${count} × ${message}`);
     notes.push(...planNotes);
     plan.notes = planNotes;
-    if (vents) plan.vents = vents;
+    if (vents) {
+      const pockets = Array.isArray(vents.pockets) ? (vents.pockets as Row[]).map((pocket) => {
+        const at = faceNotchAt(ribs, pocket);
+        return at ? { ...pocket, at } : pocket;
+      }) : vents.pockets;
+      plan.vents = { ...vents, pockets };
+    }
   }
   if (process === "moulded") {
     const mesh = wall.request.mesh;

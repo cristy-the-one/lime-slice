@@ -149,6 +149,35 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
     const opening = inner.length >= 2 ? inner[inner.length - 1]! - inner[0]! : -1;
     check("the named ends stay square and 2.4 mm apart", named.ends.square === 2 && named.ends.joint === 0 && Math.abs(opening - 2.4) < 0.05, JSON.stringify({ ends: named.ends, opening, inner }));
   }
+  // The notch is on the rib that crosses it. The pieces beside it stay short; the crossing rib is split and a cut takes the opening.
+  const crossed = plan({
+    width: 2.4,
+    height: 6,
+    paths: [
+      { points: [[-40, 0, 2], [-0.375, 0, 2]], openEnds: [false, true] },
+      { points: [[0.375, 0, 2], [40, 0, 2]], openEnds: [true, false] },
+      { points: [[0, -30, 2], [0, 30, 2]] },
+    ],
+  });
+  check("a rib through a named notch plans", ok(crossed), "reason" in crossed ? crossed.reason : "");
+  if (ok(crossed)) {
+    const spans = crossed.steps.flatMap((step, i) => (crossed.stepPath[i] === 3 ? [step] : []));
+    const through = spans.some((step) => {
+      if (step.kind === "loft") {
+        const ys = step.sections.map((row) => row.origin[1]);
+        return Math.min(...ys) < -0.4 && Math.max(...ys) > 0.4;
+      }
+      if (step.kind !== "boolean") return true;
+      const box = boxOfMesh(toolMesh(step));
+      return box.min[1] < -0.4 && box.max[1] > 0.4;
+    });
+    const cut = crossed.cuts[0];
+    check(
+      "the crossing rib is split and the opening is a 0.75 mm cut",
+      !through && crossed.cuts.length === 1 && !!cut && Math.abs(cut.size[2] - 0.75) < 0.05 && cut.op === "cut" && crossed.ends.joint === 0 && crossed.ends.square >= 4,
+      JSON.stringify({ through, ends: crossed.ends, cuts: crossed.cuts.length, size: cut?.size, runs: spans.length }),
+    );
+  }
 }
 
 // --- What a network adds (volumeMm3), against the closed form of what it builds.

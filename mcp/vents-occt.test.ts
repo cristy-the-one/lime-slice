@@ -179,6 +179,7 @@ if (chosen && pockets.length > 0) {
   } else if (built.ok !== true) {
     check("the notched ribs build", false, JSON.stringify(built).slice(0, 400));
   } else {
+    console.log(`vents-occt: ribNet ${JSON.stringify(built.ribNet ?? {}).slice(0, 500)}`);
     for (const pocket of pockets) {
       const at = pocket.at as number[];
       const rib = ribs[pocket.rib as number]!;
@@ -199,6 +200,20 @@ if (chosen && pockets.length > 0) {
           direction: [0, 0, -1],
         });
       }
+      const gapEnds = ribs.flatMap((row) => {
+        const pts = (row.points ?? []) as number[][];
+        const kind = (row.ends ?? []) as string[];
+        if (pts.length < 2) return [];
+        return [kind[0] === "gap" ? pts[0]! : null, kind[1] === "gap" ? pts[pts.length - 1]! : null].filter((p): p is number[] => p !== null);
+      });
+      const nearGap = gapEnds
+        .map((p) => ({ p, d: Math.hypot(p[0]! - at[0]!, p[1]! - at[1]!, p[2]! - at[2]!) }))
+        .sort((a, b) => a.d - b.d)
+        .slice(0, 2)
+        .map((row) => row.p);
+      const fmt = (p: number[]) => `[${p.map((n) => n.toFixed(2)).join(", ")}]`;
+      const rayAt = (s: number) => fmt([at[0]! + tangent[0]! * s, at[1]! + tangent[1]! * s, at[2]! + tangent[2]! * s + 15]);
+      console.log(`vents-occt: notch ends ${nearGap.map(fmt).join(" ")} pocket ${fmt(at)} rays ${rayAt(-2)} ${rayAt(0)} ${rayAt(2)} direction [0, 0, -1]`);
       const reply = await call("surface_at", { object, rays });
       const hits = ((reply.hits ?? []) as Reply[]).map((hit) => (hit.hit === false || typeof hit.distanceMm !== "number" ? null : hit.distanceMm));
       const finite = hits.filter((d): d is number => d !== null);

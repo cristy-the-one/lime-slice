@@ -4,7 +4,8 @@
  * over as many faces as it crosses, flat or curved. It is snapped to the surface, resampled until the rib follows it
  * within a chord tolerance, and built as a ruled loft through rectangular sections that stand along the surface's
  * normal, `width` wide and `height` tall, sunk `sinkMm` into the wall so it fuses. All runs are the tools of one fuse
- * (a Group with `combine: "fuse"`), so the network is one History row.
+ * (a Group with `combine: "fuse"`), so the network is one History row. A vent notch is a box cut after that fuse, so
+ * the group applies the fuses and then the cuts and a rib that crosses the opening is removed.
  *
  * Profiles (`profile`, on the network or a path): `"straight"` (a rectangle, the default), `"drafted"` (a trapezoid
  * with `draftDeg` a side, `width` its thickness at half its height) and `"tee"` (a web under a flange, its underside
@@ -17,14 +18,14 @@
  *   less room than a useful rib is left out, and both are reported;
  * - the wall under the rib must be thicker than the sink plus a skin, so no rib breaks through the outside;
  * - joints (a path that ends on another, or a sharp turn) overlap so the pieces fuse with no gap; an end that meets a
- *   wall runs into it; a path end named open, or two ends that face each other across a short opening, stay square, so
- *   a vent notch is not closed; any other end tapers down to the surface over `taper` (default the height), so the rib
- *   starts from the wall and not in mid-air.
+ *   wall runs into it; a path end named open, or two ends that face each other across a short opening, stay square, and
+ *   a cut takes the opening out of the solid, so a vent notch is not closed; any other end tapers down to the surface
+ *   over `taper` (default the height), so the rib starts from the wall and not in mid-air.
  * The plan also carries rays from beyond the wall's far side toward each stretch, with what they meet now, so the built
  * step can be checked against the outside (`ribNetVerify`). Nothing here calls the modeler; the same op expands the
  * same way every time.
  */
-import { orientEuler } from "../mesh-place.ts";
+import { orientEuler, type Mat3 } from "../mesh-place.ts";
 import type { LoftSection } from "../model-tree.ts";
 import { framePose, planePrimitive } from "../workplane.ts";
 import { MAX_SECTIONS } from "./sweep.ts";
@@ -90,6 +91,18 @@ export interface RibLoft {
   sections: LoftSection[];
 }
 
+/** A box cut through a vent notch, after the ribs are fused, so material in the opening is removed. */
+export interface RibCut {
+  kind: "boolean";
+  op: "cut";
+  primitive: "box";
+  origin: V3;
+  size: V3;
+  radius: 0;
+  height: 0;
+  turn: V3;
+}
+
 export interface RibNetPlan {
   steps: (RibLoft | RibBox | RibExtrude)[];
   /** For each step, the path it came from (from 1). */
@@ -112,6 +125,11 @@ export interface RibNetPlan {
    * or another rib, less what two crossing runs share and the half of a rib a run ending on it runs into.
    */
   volumeMm3: number;
+  /**
+   * One box per vent notch, in model space. It spans the opening and stands clear of the floor, wider than a rib
+   * that crosses the opening, so the build cuts that rib instead of leaving it to seal the notch.
+   */
+  cuts: RibCut[];
 }
 
 /** Defaults a typed network leaves out. */
@@ -892,6 +910,8 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     const first = skipped[0];
     return { reason: `No stretch of these paths has room for a rib${first ? `: near (${first.at.join(", ")}) there is ${first.why}` : ""}. Lower the height or the clearance, or move the paths. Nothing was built.` };
   }
+  // A named gap is an opening. A rib that crosses it is cut there; the new ends stay open so they are not run back in.
+  const notches = carveNotches(runs);
   // --- Ends: a joint with another run (or a sharp turn of its own), a wall the rib runs into, or a free end that tapers.
   const ends = { wall: 0, joint: 0, tapered: 0, square: 0 };
   for (let ri = 0; ri < runs.length; ri += 1) {
@@ -979,11 +999,13 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     // The end section itself moves out, so a straight run stays two sections.
     if ((e0.kind === "wall" || e0.kind === "joint") && e0.extend > 1e-3) {
       const dir = unit(sub(first.s.p, rows[1]!.s.p));
-      rows = [{ s: { ...first.s, p: add(first.s.p, mul(dir, e0.extend)) }, h: first.h }, ...rows.slice(1)];
+      const allow = extendClear(first.s.p, dir, e0.extend, notches);
+      if (allow > 1e-3) rows = [{ s: { ...first.s, p: add(first.s.p, mul(dir, allow)) }, h: first.h }, ...rows.slice(1)];
     }
     if ((e1.kind === "wall" || e1.kind === "joint") && e1.extend > 1e-3) {
       const dir = unit(sub(last.s.p, rows[rows.length - 2]!.s.p));
-      rows = [...rows.slice(0, -1), { s: { ...last.s, p: add(last.s.p, mul(dir, e1.extend)) }, h: last.h }];
+      const allow = extendClear(last.s.p, dir, e1.extend, notches);
+      if (allow > 1e-3) rows = [...rows.slice(0, -1), { s: { ...last.s, p: add(last.s.p, mul(dir, allow)) }, h: last.h }];
     }
     const sections = sectionsOf(rows, run.shape);
     if ("reason" in sections) return { reason: `Path ${run.path}: ${sections.reason}` };
@@ -1019,6 +1041,10 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     sides: dedupeSides(sides),
     bounds: surface.bounds,
     volumeMm3: networkVolume(measured),
+    cuts: notches.flatMap((notch) => {
+      const cut = notchCut(notch);
+      return cut ? [cut] : [];
+    }),
   };
 }
 
@@ -1207,6 +1233,207 @@ function sampleFrame(samples: readonly Sample[], k: number): { b: V3 } | null {
   if (!before && !after) return null;
   const b = before && after ? unit(add(before.b, after.b)) : (before ?? after)!.b;
   return { b };
+}
+
+/** One vent opening: the two gap ends, and how wide a rib standing on it is. */
+interface NotchSeg {
+  a: V3;
+  b: V3;
+  /** Half the notched rib's footprint. A crossing rib loses this much of its run on either side of the opening. */
+  foot: number;
+  normal: V3;
+  height: number;
+  runs: [number, number];
+}
+
+/**
+ * Open ends that face each other are a notch. A run that passes through the opening is split and the span is removed;
+ * the new ends are open, so a joint does not grow them back across the notch. The two runs that form the notch are
+ * left as they are: their ends already stop at the opening.
+ */
+function carveNotches(runs: Run[]): NotchSeg[] {
+  const tips: { run: number; side: 0 | 1 }[] = [];
+  for (let ri = 0; ri < runs.length; ri += 1) for (const side of [0, 1] as const) tips.push({ run: ri, side });
+  const notches: NotchSeg[] = [];
+  const used = new Set<string>();
+  for (const tip of tips) {
+    const mine = tipOf(runs[tip.run]!, tip.side);
+    let best: { run: number; side: 0 | 1; d: number } | null = null;
+    for (let ri = 0; ri < runs.length; ri += 1) {
+      if (ri === tip.run) continue;
+      for (const side of [0, 1] as const) {
+        const other = tipOf(runs[ri]!, side);
+        const gap = sub(other.p, mine.p);
+        const d = len(gap);
+        if (d < 0.2 || d > 2) continue;
+        // Two named gap ends are the opening even when a jag turns the chord. Any other pair has to face across it.
+        const bothOpen = runs[tip.run]!.open[tip.side] && runs[ri]!.open[side];
+        if (!bothOpen) {
+          if (dot(unit(gap), mine.out) < 0.5) continue;
+          if (dot(other.out, mine.out) > -0.5) continue;
+        }
+        if (!best || d < best.d) best = { run: ri, side, d };
+      }
+    }
+    if (!best) continue;
+    const id = tip.run < best.run ? `${tip.run}:${tip.side}|${best.run}:${best.side}` : `${best.run}:${best.side}|${tip.run}:${tip.side}`;
+    if (used.has(id)) continue;
+    used.add(id);
+    const other = tipOf(runs[best.run]!, best.side);
+    notches.push({
+      a: mine.p,
+      b: other.p,
+      foot: Math.max(runs[tip.run]!.shape.foot, runs[best.run]!.shape.foot),
+      normal: unit(add(mine.n, other.n)),
+      height: Math.max(runs[tip.run]!.height, runs[best.run]!.height),
+      runs: [tip.run, best.run],
+    });
+  }
+  const born: Run[] = [];
+  const drop = new Set<number>();
+  for (const notch of notches) {
+    for (let ri = 0; ri < runs.length; ri += 1) {
+      if (drop.has(ri) || ri === notch.runs[0] || ri === notch.runs[1]) continue;
+      const hit = crossingSpan(runs[ri]!, notch);
+      if (!hit) continue;
+      const left = sliceRun(runs[ri]!, 0, hit.lo, runs[ri]!.open[0], true);
+      const total = arc(runs[ri]!.samples, 0, runs[ri]!.samples.length - 1);
+      const right = sliceRun(runs[ri]!, hit.hi, total, true, runs[ri]!.open[1]);
+      if (!left || !right) continue;
+      drop.add(ri);
+      born.push(left, right);
+    }
+  }
+  if (drop.size) {
+    const kept = runs.filter((_, i) => !drop.has(i));
+    runs.splice(0, runs.length, ...kept, ...born);
+  }
+  return notches;
+}
+
+function tipOf(run: Run, side: 0 | 1): { p: V3; out: V3; n: V3 } {
+  const s = side === 0 ? run.samples[0]! : run.samples[run.samples.length - 1]!;
+  return { p: s.p, out: endOut(run.samples, side), n: s.n };
+}
+
+/** Where a run's body crosses the opening: the arc span to remove, or null when it stays clear of it. */
+function crossingSpan(run: Run, notch: NotchSeg): { lo: number; hi: number } | null {
+  const ab = sub(notch.b, notch.a);
+  const l2 = dot(ab, ab);
+  if (l2 < 1e-8) return null;
+  let best = Infinity;
+  let arcAt = 0;
+  let along = 0;
+  let walked = 0;
+  const samples = run.samples;
+  for (let k = 1; k < samples.length; k += 1) {
+    const span = len(sub(samples[k]!.p, samples[k - 1]!.p));
+    const steps = Math.max(1, Math.ceil(span / 0.2));
+    for (let s = 0; s <= steps; s += 1) {
+      const f = s / steps;
+      const p = lerp(samples[k - 1]!.p, samples[k]!.p, f);
+      const t = Math.max(0, Math.min(1, dot(sub(p, notch.a), ab) / l2));
+      const d = len(sub(p, lerp(notch.a, notch.b, t)));
+      if (d < best) {
+        best = d;
+        arcAt = walked + span * f;
+        along = t;
+      }
+    }
+    walked += span;
+  }
+  // The notch's own ends sit on the tips. A crossing is in the opening, close enough that its body fills it.
+  if (along < 0.08 || along > 0.92 || best > run.shape.foot + 0.3) return null;
+  const slot = notch.foot + 0.05;
+  const total = arc(samples, 0, samples.length - 1);
+  const lo = arcAt - slot;
+  const hi = arcAt + slot;
+  if (hi - lo < 0.2 || lo < 0.5 || hi > total - 0.5) return null;
+  return { lo, hi };
+}
+
+/** The run from arc `from` to arc `to`, with the named ends left open. Null when that piece is under 0.4 mm. */
+function sliceRun(run: Run, from: number, to: number, open0: boolean, open1: boolean): Run | null {
+  const total = arc(run.samples, 0, run.samples.length - 1);
+  const a = Math.max(0, from);
+  const b = Math.min(total, to);
+  if (b - a < 0.4) return null;
+  const start = pointAlong(run, a);
+  const end = pointAlong(run, b);
+  if (!start || !end) return null;
+  const samples: Sample[] = [start.s];
+  const heights: number[] = [start.h];
+  let walked = 0;
+  for (let k = 1; k < run.samples.length; k += 1) {
+    const span = len(sub(run.samples[k]!.p, run.samples[k - 1]!.p));
+    const at = walked + span;
+    if (walked > a + 1e-4 && at < b - 1e-4 && len(sub(run.samples[k]!.p, samples[samples.length - 1]!.p)) > 1e-4) {
+      samples.push(run.samples[k]!);
+      heights.push(run.heights[k]!);
+    }
+    walked = at;
+  }
+  if (len(sub(end.s.p, samples[samples.length - 1]!.p)) > 1e-4) {
+    samples.push(end.s);
+    heights.push(end.h);
+  }
+  if (samples.length < 2) return null;
+  return { ...run, samples, heights, ends: [{ kind: "free" }, { kind: "free" }], open: [open0, open1] };
+}
+
+function pointAlong(run: Run, at: number): { s: Sample; h: number } | null {
+  let walked = 0;
+  for (let k = 1; k < run.samples.length; k += 1) {
+    const span = len(sub(run.samples[k]!.p, run.samples[k - 1]!.p));
+    if (walked + span >= at - 1e-6 || k === run.samples.length - 1) {
+      const f = span > 1e-9 ? Math.max(0, Math.min(1, (at - walked) / span)) : 0;
+      return {
+        s: { p: lerp(run.samples[k - 1]!.p, run.samples[k]!.p, f), n: unit(lerp(run.samples[k - 1]!.n, run.samples[k]!.n, f)), face: run.samples[k - 1]!.face },
+        h: run.heights[k - 1]! + (run.heights[k]! - run.heights[k - 1]!) * f,
+      };
+    }
+    walked += span;
+  }
+  return null;
+}
+
+/** How far an end may run before its centre line enters a notch. The notch's own square ends never ask. */
+function extendClear(p: V3, dir: V3, extend: number, notches: readonly NotchSeg[]): number {
+  let allow = extend;
+  for (const notch of notches) {
+    const ab = sub(notch.b, notch.a);
+    const l2 = dot(ab, ab);
+    if (l2 < 1e-8) continue;
+    for (let t = 0.05; t <= extend + 1e-9; t += 0.05) {
+      const q = add(p, mul(dir, Math.min(t, extend)));
+      const u = Math.max(0, Math.min(1, dot(sub(q, notch.a), ab) / l2));
+      if (u < 0.05 || u > 0.95) continue;
+      if (len(sub(q, lerp(notch.a, notch.b, u))) < 0.2) {
+        allow = Math.min(allow, Math.max(0, t - 0.05));
+        break;
+      }
+    }
+  }
+  return allow;
+}
+
+/** The notch as a cut: the opening along the rib, clear of the floor, wide enough to sever a rib that crosses it. */
+function notchCut(notch: NotchSeg): RibCut | null {
+  const along = sub(notch.b, notch.a);
+  const gap = len(along);
+  if (gap < 0.2 || gap > 2) return null;
+  const z = unit(along);
+  const y = unit(notch.normal);
+  const xRaw = cross(y, z);
+  if (len(xRaw) < 1e-6) return null;
+  const x = unit(xRaw);
+  const up = unit(cross(z, x));
+  const turn = orientEuler([x[0], up[0], z[0], x[1], up[1], z[1], x[2], up[2], z[2]] as Mat3);
+  // Across the opening, not along it: a parallel rib a spacing away (about 10 mm) stays clear of 4 mm.
+  const half = 4;
+  const plane = { source: "face" as const, origin: [...notch.a] as V3, turn: [r6(turn.rx), r6(turn.ry), r6(turn.rz)] as V3 };
+  const spec = planePrimitive({ primitive: "box", origin: [-half, 0.05, 0], size: [2 * half, notch.height + 1, r6(gap)], radius: 0, height: 0, turn: [0, 0, 0] }, plane);
+  return { kind: "boolean", op: "cut", primitive: "box", origin: spec.origin.map(r6) as V3, size: spec.size.map(r6) as V3, radius: 0, height: 0, turn: spec.turn.map(r6) as V3 };
 }
 
 /**
@@ -1448,6 +1675,7 @@ export function ribNetReport(plan: RibNetPlan, addedMm3: number | null, missed: 
   if (plan.shortened.length) note += ` ${plan.shortened.length} stretch${plan.shortened.length === 1 ? " was" : "es were"} kept lower where a face stands in front of the wall (shortened).`;
   if (plan.skipped.length) note += ` ${plan.skipped.length} stretch${plan.skipped.length === 1 ? " was" : "es were"} left out for want of room (skipped).`;
   if (missed.length) note += ` ${missed.length} run${missed.length === 1 ? "" : "s"} did not meet the part and ${missed.length === 1 ? "was" : "were"} left out: run${missed.length === 1 ? "" : "s"} ${missed.map((i) => i + 1).join(", ")}.`;
+  if (plan.cuts.length) note += ` ${plan.cuts.length} vent notch${plan.cuts.length === 1 ? "" : "es"} cut out of the solid.`;
   return {
     paths: plan.paths,
     runs: built,
@@ -1457,6 +1685,7 @@ export function ribNetReport(plan: RibNetPlan, addedMm3: number | null, missed: 
     ...(plan.shortened.length ? { shortened: plan.shortened.slice(0, 50) } : {}),
     ...(plan.skipped.length ? { skipped: plan.skipped.slice(0, 50) } : {}),
     ...(missed.length ? { missedRuns: missed.map((i) => ({ run: i + 1, path: plan.stepPath[i] })) } : {}),
+    ...(plan.cuts.length ? { notches: plan.cuts.length } : {}),
     note,
   };
 }
