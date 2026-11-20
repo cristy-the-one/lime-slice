@@ -130,7 +130,7 @@ try {
   const top = await flatFace(bare.object, [0, 0, 1]);
   const floor = await call("model_apply", { object: bare.object, probe: true, op: { kind: "draft", faces: [{ normal: [0, 0, 1], nearPoint: [0, 0, 20] }], angleDeg: 3 } });
   check(
-    "a floor is refused by its index and the box is unchanged",
+    `a floor is refused by its index (${top.index}) and the box is unchanged`,
     floor.ok === false && String(floor.reason).includes(`Face ${top.index} is a floor`) && close(volumeOf(bare.object) ?? NaN, 40 * 30 * 20),
     `top is face ${top.index}: ${JSON.stringify(floor).slice(0, 300)}`,
   );
@@ -144,11 +144,13 @@ try {
     mixed.ok === false && String(mixed.reason).includes(`Face ${top.index} is a floor`) && close(volumeOf(bare.object) ?? NaN, 40 * 30 * 20),
     `top is face ${top.index}: ${JSON.stringify(mixed).slice(0, 300)}`,
   );
-  const twice = await call("model_apply", { object: bare.object, probe: true, op: { kind: "draft", faces: [walls[0], walls[0]], angleDeg: 3 } });
-  const east = await call("faces_find", { object: bare.object, normal: [1, 0, 0], limit: 1 });
+  // The +X wall second and third in the list: the refusal names its index, not its place (2). The reply may add
+  // which face the selector picked after the sentence.
+  const east = (await call("faces_find", { object: bare.object, normal: [1, 0, 0], limit: 1 })).faces?.[0]?.index as number | undefined;
+  const twice = await call("model_apply", { object: bare.object, probe: true, op: { kind: "draft", faces: [walls[2], walls[0], walls[0]], angleDeg: 3 } });
   check(
-    "a face listed twice is named by its index",
-    twice.ok === false && String(twice.reason) === `Face ${east.faces?.[0]?.index} is listed twice.`,
+    `a face listed twice is named by its index (${east}), not its place (2)`,
+    twice.ok === false && east !== 2 && String(twice.reason).startsWith(`Face ${east} is listed twice.`),
     JSON.stringify(twice).slice(0, 300),
   );
 
