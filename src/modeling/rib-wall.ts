@@ -481,9 +481,9 @@ function triDistSq(px: number, py: number, pz: number, pos: Float64Array, off: n
   const den = 1 / (va + vb + vc);
   const v = vb * den;
   const w = vc * den;
-  const dx = ax + abx * v + acx * w - px;
-  const dy = ay + aby * v + acy * w - py;
-  const dz = az + abz * v + acz * w - pz;
+  const dx = (ax + (abx * v + acx * w)) - px;
+  const dy = (ay + (aby * v + acy * w)) - py;
+  const dz = (az + (abz * v + acz * w)) - pz;
   return dx * dx + dy * dy + dz * dz;
 }
 
@@ -739,8 +739,8 @@ class TriSet {
       const nx = nrm[o]! * w0 + nrm[o + 3]! * w1 + nrm[o + 6]! * w2;
       const ny = nrm[o + 1]! * w0 + nrm[o + 4]! * w1 + nrm[o + 7]! * w2;
       const nz = nrm[o + 2]! * w0 + nrm[o + 5]! * w1 + nrm[o + 8]! * w2;
-      const l = Math.hypot(nx, ny, nz) || 1;
-      n = [nx / l, ny / l, nz / l];
+      const inv = 1 / (Math.hypot(nx, ny, nz) || 1);
+      n = [nx * inv, ny * inv, nz * inv];
     } else n = unit(cross(sub(this.corner(hit.i, 1), this.corner(hit.i, 0)), sub(this.corner(hit.i, 2), this.corner(hit.i, 0))));
     return { q, w, t: hit.i, d: Math.sqrt(hit.dSq), n };
   }
@@ -1886,8 +1886,8 @@ class Remesher {
       this.H.push(target);
       if (this.K[v]! >= 0) {
         const nx = initN[v * 3]!, ny = initN[v * 3 + 1]!, nz = initN[v * 3 + 2]!;
-        const l = Math.hypot(nx, ny, nz) || 1;
-        this.N.push(nx / l, ny / l, nz / l);
+        const inv = 1 / (Math.hypot(nx, ny, nz) || 1);
+        this.N.push(nx * inv, ny * inv, nz * inv);
       } else this.N.push(0, 0, 0);
     }
   }
@@ -2112,10 +2112,10 @@ class Remesher {
         nz += hit.n[2];
       }
     }
-    const l = Math.hypot(nx, ny, nz) || 1;
-    this.N[v * 3] = nx / l;
-    this.N[v * 3 + 1] = ny / l;
-    this.N[v * 3 + 2] = nz / l;
+    const inv = 1 / (Math.hypot(nx, ny, nz) || 1);
+    this.N[v * 3] = nx * inv;
+    this.N[v * 3 + 1] = ny * inv;
+    this.N[v * 3 + 2] = nz * inv;
   }
 
   /** Where p lands: on its curve for a feature vertex, else on its label's surface. */
@@ -2605,7 +2605,7 @@ class Remesher {
         const dx = qx * invW - px, dy = qy * invW - py, dz = qz * invW - pz;
         const nx = N[v3]!, ny = N[v3 + 1]!, nz = N[v3 + 2]!;
         const nd = nx * dx + ny * dy + nz * dz;
-        cand = [px + dx - nx * nd, py + dy - ny * nd, pz + dz - nz * nd];
+        cand = [px + (dx - nx * nd), py + (dy - ny * nd), pz + (dz - nz * nd)];
       } else {
         const nb = this.curveNeighbours(v);
         if (nb.length !== 2) continue;

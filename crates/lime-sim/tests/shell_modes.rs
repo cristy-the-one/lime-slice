@@ -620,6 +620,65 @@ fn a_stiffness_plan_json_is_unchanged() {
     assert_eq!(stamp, include_str!("one_case_stamp_v6110.json"));
 }
 
+fn r6(x: f64) -> f64 {
+    let y = (x * 1.0e6).round() / 1.0e6;
+    if y == 0.0 { 0.0 } else { y }
+}
+
+fn frequency_stamp(plan: &RibPlan) -> String {
+    let ribs: Vec<_> = plan
+        .ribs
+        .iter()
+        .map(|r| {
+            let points: Vec<[f64; 3]> = r.points.iter().map(|p| [r6(p[0]), r6(p[1]), r6(p[2])]).collect();
+            let heights: Vec<f64> = r.heights.iter().map(|&h| r6(h)).collect();
+            serde_json::json!({
+                "height": r6(r.height),
+                "heights": heights,
+                "width": r6(r.width),
+                "length_mm": r6(r.length_mm),
+                "points": points,
+                "family": format!("{:?}", r.family),
+                "ends": format!("{:?}", r.ends),
+                "volume_mm3": r6(r.volume_mm3),
+            })
+        })
+        .collect();
+    let hz = plan.frequency_hz.expect("frequency_hz");
+    let v = serde_json::json!({
+        "frequency_hz": { "bare": r6(hz.bare), "ribbed": r6(hz.ribbed) },
+        "frequency_factor": r6(plan.frequency_factor.expect("frequency_factor")),
+        "stiffness_factor": r6(plan.stiffness_factor),
+        "rib_volume_mm3": r6(plan.rib_volume_mm3),
+        "bare_compliance": r6(plan.bare.compliance),
+        "ribbed_compliance": r6(plan.ribbed.compliance),
+        "goal_met": plan.goal_met,
+        "notes": plan.notes,
+        "ribs": ribs,
+    });
+    serde_json::to_string_pretty(&v).unwrap() + "\n"
+}
+
+/// Pins the 120 × 70 × 2 ×1.3 frequency plan (ribs, frequencyHz, notes) to 1e-6
+/// so Windows and Linux match identically while catching any rib or mode drift.
+#[test]
+fn a_frequency_plan_json_is_pinned() {
+    let mesh = ShellMesh::rectangle([120.0, 70.0], [24, 14], 2.0);
+    let mat = dense(2000.0, 0.3);
+    let node = nearest(&mesh, [15.0, 35.0, 0.0]);
+    let mut req = RibPlanRequest::new(mesh, mat);
+    req.goal = Goal::Frequency { factor: 1.3 };
+    req.load_cases = vec![vec![ShellLoad::Force {
+        node,
+        force: [0.0, 0.0, -10.0],
+    }]];
+    req.options.baselines = false;
+    let plan = plan_ribs(&req).unwrap();
+    let stamp = frequency_stamp(&plan);
+    let expected = include_str!("frequency_plan_stamp.json").replace("\r\n", "\n");
+    assert_eq!(stamp, expected);
+}
+
 fn stiffness_stamp(plan: &RibPlan) -> String {
     let ribs: Vec<_> = plan
         .ribs

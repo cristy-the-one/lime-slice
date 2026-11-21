@@ -811,3 +811,63 @@ fn an_open_box_buckles_on_the_side_walls() {
     assert!(!plan.ribs.is_empty(), "no ribs were planned on the box");
     let _ = (l, w);
 }
+
+fn r6(x: f64) -> f64 {
+    let y = (x * 1.0e6).round() / 1.0e6;
+    if y == 0.0 { 0.0 } else { y }
+}
+
+/// Pins the 100 × 100 × 1 ×2 buckling plan (ribs, bucklingFactor, notes) to 1e-6
+/// so Windows and Linux match identically while catching any rib or mode drift.
+#[test]
+fn a_buckling_plan_json_is_pinned() {
+    let (a, n) = (100.0, 8);
+    let mesh = ShellMesh::rectangle([a, a], [n, n], 1.0);
+    let (holds, loads) = compression(&mesh, a, a, ncr(4.0, a, 1.0), Edge::Simple);
+    let mut req = RibPlanRequest::new(mesh, material(E, NU));
+    req.holds = Holds::Given(holds);
+    req.load_cases = vec![loads];
+    req.goal = Goal::Buckling {
+        factor: 2.0,
+        on: None,
+    };
+    req.options.baselines = false;
+    req.options.shortlist = 4;
+    let plan = plan_ribs(&req).unwrap();
+    let ribs: Vec<_> = plan
+        .ribs
+        .iter()
+        .map(|r| {
+            let points: Vec<[f64; 3]> = r.points.iter().map(|p| [r6(p[0]), r6(p[1]), r6(p[2])]).collect();
+            let heights: Vec<f64> = r.heights.iter().map(|&h| r6(h)).collect();
+            serde_json::json!({
+                "height": r6(r.height),
+                "heights": heights,
+                "width": r6(r.width),
+                "length_mm": r6(r.length_mm),
+                "points": points,
+                "family": format!("{:?}", r.family),
+                "ends": format!("{:?}", r.ends),
+                "volume_mm3": r6(r.volume_mm3),
+            })
+        })
+        .collect();
+    let factor = plan.buckling_factor.expect("buckling_factor");
+    let v = serde_json::json!({
+        "buckling_factor": {
+            "bare": r6(factor.bare),
+            "ribbed": r6(factor.ribbed),
+            "case_index": factor.case_index,
+        },
+        "stiffness_factor": r6(plan.stiffness_factor),
+        "rib_volume_mm3": r6(plan.rib_volume_mm3),
+        "bare_compliance": r6(plan.bare.compliance),
+        "ribbed_compliance": r6(plan.ribbed.compliance),
+        "goal_met": plan.goal_met,
+        "notes": plan.notes,
+        "ribs": ribs,
+    });
+    let stamp = serde_json::to_string_pretty(&v).unwrap() + "\n";
+    let expected = include_str!("buckling_plan_stamp.json").replace("\r\n", "\n");
+    assert_eq!(stamp, expected);
+}
