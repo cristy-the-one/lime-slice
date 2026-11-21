@@ -616,7 +616,8 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
         return { name: c.name, loads: c.loads.filter((_, i) => !gone.has(i)) };
       })
     : undefined;
-  if (Array.isArray(result.notes)) for (const note of result.notes as unknown[]) if (typeof note === "string" && note) notes.push(note);
+  // The engine's notes were added right after the plan came back; without the check this pass listed each one twice.
+  if (Array.isArray(result.notes)) for (const note of result.notes as unknown[]) if (typeof note === "string" && note && !notes.includes(note)) notes.push(note);
   const bucklingCase = goal.kind === "buckling" && goal.on != null ? parsedCases[goal.on]?.name ?? null : null;
   if (bucklingCase) {
     const named = againstCase(bucklingCase);

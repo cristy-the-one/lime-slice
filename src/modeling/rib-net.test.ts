@@ -231,14 +231,20 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
   check("a right-angle bend is one mitred run", ok(bend) && bend.runs === 1, JSON.stringify(ok(bend) ? bend.ends : bend));
 }
 
-// --- Up a wall: the path turns from the floor up the side wall, the rib turns with it.
+// --- Up a wall: the path turns from the floor up the side wall, the rib turns with it. The fold splits it into two
+// runs, one on each face, that meet there: one loft bent round the fold twists when the path crosses it at a slant,
+// and Open CASCADE's fuse then dropped the part (7.0.0, an open box with Include side walls).
 {
   const made = plan({ width: 1.5, height: 4, paths: [{ points: [[30, 0, 2], [58, 0, 2], [58, 0, 20]] }] });
-  check("a path from the floor up a wall is one run", ok(made) && made.runs === 1, JSON.stringify(ok(made) ? made.ends : made));
+  check("a path from the floor up a wall is two runs that meet at the fold", ok(made) && made.runs === 2 && made.ends.tapered === 2 && made.ends.wall + made.ends.joint === 2, JSON.stringify(ok(made) ? { runs: made.runs, ends: made.ends } : made));
   if (ok(made)) {
-    const last = lofted(made.steps[0]!).at(-1)!;
-    check("its top section stands out of the wall, toward -X", last.origin[0] > 57.9 && last.origin[2] > 19, JSON.stringify(last));
+    const up = made.steps.find((step) => step.kind !== "boolean" && lofted(step).some((row) => row.origin[2] > 19));
+    const last = up ? lofted(up).at(-1)! : null;
+    check("its top section stands out of the wall, toward -X", !!last && last.origin[0] > 57.9 && last.origin[2] > 19, JSON.stringify(last));
   }
+  // The same path crossing the fold 3.5° off square, as the planner traced it in the app: still two runs.
+  const slant = plan({ width: 1.5, height: 4, paths: [{ points: [[30, -1.7, 2], [58, 0, 2], [58, 0, 20]] }] });
+  check("a path that crosses the fold at a slant is two runs too", ok(slant) && slant.runs === 2 && slant.skipped.length === 0, JSON.stringify(ok(slant) ? { runs: slant.runs, ends: slant.ends, skipped: slant.skipped } : slant));
 }
 
 // --- The room in front of the wall: under a lid 22 mm over the floor a 25 mm rib is kept to 21.5 mm.
