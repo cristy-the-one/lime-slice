@@ -1,6 +1,6 @@
 # Plan: export a pose for other programs
 
-Status: plan, for review. Nothing here is built yet.
+Status: plan, for review. Nothing here is built yet. The owner's three decisions are in section 9.
 
 The owner's request on 2026-11-21: "an option to export the exact configuration from the Pose as a STEP and other formats that are used by external programs".
 
@@ -41,7 +41,7 @@ From the Pose view, export exactly what it shows, one assembly at a time, in the
 |---|---|---|---|
 | **STEP AP242, assembly** (default) | FreeCAD, Fusion, SolidWorks, Onshape, Inventor, Creo, KiCad | Exact B-rep. An assembly product named after the assembly; one product per distinct part; one instance per member, with its placement and its name. Part colours. The joint tree as nested sub-assemblies (a member under its parent). | XCAF, with the bundled `TKDESTEP`: `XCAFDoc_ShapeTool` adds each part once and each member as a located instance. |
 | **STEP, flat** (as in 7.0) | the same | Exact B-rep, one named solid per member, no products. | Today's `exportSolid(…, "step", …)` path, kept as an option. |
-| **glTF 2.0 binary (.glb)** | Blender, three.js, Unity, Unreal, Windows 3D Viewer, web viewers | One node per member, nested as the joint tree, each with its local transform; one mesh per part; a material per part colour; names. Optionally the animation as a glTF animation of node rotations (section 9). | Written in TypeScript from the meshes the app already holds (no `TKRWMesh`). |
+| **glTF 2.0 binary (.glb)** | Blender, three.js, Unity, Unreal, Windows 3D Viewer, web viewers | One node per member, nested as the joint tree, each with its local transform; one mesh per part; a material per part colour; names. A kept animation as a glTF animation: its sampled frames (D1) as node rotations and translations, one channel per moving member (decision 1). | Written in TypeScript from the meshes the app already holds (no `TKRWMesh`). |
 | **3MF, assembly** | PrusaSlicer, Bambu Studio, Cura, 3D Builder | One object per part with its mesh; one build item per member with its transform; names; colours (materials extension). At the pose, not the print layout. | The existing 3MF writer, given the pose transforms where `export_3mf` gives the print layout. |
 | **STL** | almost everything | Triangles only, no names or colours. One file with every member at its pose, or a ZIP of one STL per member. | From the same meshes, transformed. |
 | **OBJ + MTL** | Blender, MeshLab, older tools | One group per member, a material per colour. Vertices at the pose. | From the same meshes. |
@@ -56,7 +56,7 @@ From the Pose view, export exactly what it shows, one assembly at a time, in the
   - the configuration (D1): Now, or the frame the player is stopped on;
   - the format (section 4), and its options: STEP tree or flat; STL one file or one per member; mesh detail;
   - the file name, `<assembly>-pose.<ext>`, or `<assembly>-frame-37.<ext>` for a frame.
-- It saves the way every export does (`src/app/save-bytes.ts`). The object list's STEP button stays as it is, the flat STEP of the kept pose.
+- It saves the way every export does (`src/app/save-bytes.ts`). The object list's STEP button writes the same assembly tree, of the kept pose (decision 2); the flat file is an option in the Pose dialog only.
 
 ## 6. MCP
 
@@ -66,7 +66,7 @@ From the Pose view, export exactly what it shows, one assembly at a time, in the
 - `step: "tree" | "flat"`, `stl: "one" | "each"`;
 - `path`: in the workspace; by default `<assembly>-pose.<ext>`.
 
-It answers with the path, the format, the bytes, the members and the parts, in one sentence and a short object, never one line per triangle or per frame. `model_export_step {assembly: true}` stays as it is. The size tables and options are in `guide`, not the first-contact schema.
+It answers with the path, the format, the bytes, the members and the parts, in one sentence and a short object, never one line per triangle or per frame. `model_export_step {assembly: true}` writes the tree too (decision 2), with `flat: true` for the 7.0 file. The size tables and options are in `guide`, not the first-contact schema.
 
 ## 7. Tests
 
@@ -83,12 +83,12 @@ It answers with the path, the format, the bytes, the members and the parts, in o
 
 Each one is a PR to `main`.
 
-1. **E1. STEP as an assembly, the Pose Export dialog, `pose_export` with `step` and `pose`.** The configuration (D1), including a frame.
-2. **E2. glTF binary.** Nodes, meshes, colours, the joint tree.
+1. **E1. STEP as an assembly, the Pose Export dialog, `pose_export` with `step` and `pose`.** The configuration (D1), including a frame. The object list's STEP button and `model_export_step {assembly: true}` switch to the tree (decision 2).
+2. **E2. glTF binary.** Nodes, meshes, colours, the joint tree, and a kept animation as a glTF animation (decision 1).
 3. **E3. 3MF, STL and OBJ** at the pose.
 
-## 9. For the owner to decide
+## 9. Decided 2026-11-21
 
-- **glTF animation.** E2 can also write a kept animation as a glTF animation (its sampled frames as node rotations), so Blender or a web viewer plays it. It adds a day to E2. In E2, or later?
-- **Default STEP.** The tree is what a CAD program expects; the flat file is what 7.0 writes. The plan makes the tree the default in the Pose dialog and keeps the object list's button flat. Or should both be the tree?
-- **URDF** (ROS) needs masses, inertias and joint limits per link. The rig has the limits and the material cards give a density, but the inertias would be computed from rough cards. Later, as its own plan?
+1. **glTF animation in E2.** E2 also writes a kept animation as a glTF animation: the frames the player samples (`docs/plan-pose-animation.md` D4), as node rotations and translations, one channel per member that moves, linear between samples. A test plays it back in the GLB parse and checks frame `k`'s node matrices against the player's frame `k`.
+2. **STEP is the tree everywhere.** The Pose dialog, the object list's STEP button and `model_export_step {assembly: true}` all write the assembly tree. The 7.0 flat file stays as an option: "Flat (one solid per part)" in the Pose dialog and `flat: true` over MCP.
+3. **URDF later, in its own plan.** It needs masses and inertias per link, and the material cards are provisional; it waits for a robot to drive.
