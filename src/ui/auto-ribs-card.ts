@@ -1102,12 +1102,13 @@ function paintResult() {
     node.textContent = text;
     node.hidden = !show || text === "";
   };
-  const bucklingLine = plan.bucklingFactor ? numbers?.gain || bucklingHeadline(plan, ranWith?.goal.kind === "buckling" ? ranWith.goal.factor : undefined) : "";
+  const headline = plan.bucklingFactor ? bucklingHeadline(plan, ranWith?.goal.kind === "buckling" ? ranWith.goal.factor : undefined) : "";
+  const bucklingLine = plan.bucklingFactor ? numbers?.gain || headline : "";
   set("#autoRibsGain", plan.ribs.length ? numbers?.gain ?? "" : bucklingLine || "No ribs");
   set("#autoRibsFrequency", [frequencyAside(plan), hzCard].filter(Boolean).join(" "));
   const noteList = $<HTMLElement>("#autoRibsNotes");
   if (noteList) {
-    const lines = [...(plan.notes ?? []).filter((note) => note !== bucklingLine), ...(ignoredLoads ? [ignoredLoads] : [])];
+    const lines = [...(plan.notes ?? []).filter((note) => note !== bucklingLine && note !== headline), ...(ignoredLoads ? [ignoredLoads] : [])];
     if (ranWith?.goal.kind === "buckling" && ranWith.goal.on != null && ranWith.caseNames) {
       const named = againstCase(ranWith.caseNames[ranWith.goal.on] ?? "");
       if (named !== "Against case: " && !lines.includes(named)) lines.push(named);

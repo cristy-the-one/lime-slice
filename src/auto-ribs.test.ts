@@ -388,6 +388,9 @@ eq("a buckling goal reopens against its case", bucklingCard?.against, "edge");
 eq("a stored buckling choice comes back", cardFromStored({ ...newAutoRibsCard(), picked: [6], quantity: "buckling", against: "edge" })?.against, "edge");
 const bucklePlan = { ...plan, goalMet: true, ribs: plan.ribs, bucklingFactor: { bare: 0.9, ribbed: 3.1 }, notes: ["This is the ideal buckling load. A curved wall, or one that isn't perfectly flat, can buckle well below it.", "Buckles at 3.1× the load (was 0.9×)."] };
 eq("the gain is the buckling sentence", resultNumbers({ ...runDone(startedRun(), { ok: true, plan: bucklePlan }), removed: [] }, 1.24, 200000)?.gain, "Buckles at 3.1× the load (was 0.9×).");
+const editedBucklingGain = resultNumbers({ ...runDone(startedRun(), { ok: true, plan: bucklePlan }), removed: [0] }, 1.24, 200000)?.gain;
+eq("an edited buckling run's gain names the edit", editedBucklingGain, "Before the edit: Buckles at 3.1× the load (was 0.9×).");
+console.log("an edited buckling run's gain names the edit:", editedBucklingGain);
 eq("an edit of a buckling plan does not say stiffness", editedNote({ ...runDone(startedRun(), { ok: true, plan: bucklePlan }), removed: [0] }).includes("the buckling load is the plan's before the edit"), true);
 eq("a reached note is not repeated as the goal line", goalLine({ kind: "buckling", factor: 3 }, { ...bucklePlan, goalMet: false, notes: [...(bucklePlan.notes ?? []), "Reached 1.7× of the 3× asked: no further rib pays enough."] }, 1.24), "");
 

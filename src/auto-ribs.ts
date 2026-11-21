@@ -874,7 +874,9 @@ export function resultNumbers(run: RunState, densityGCm3: number, partMm3: numbe
   // As built when known (ribNet's own plan of the kept ribs: tapers, skipped stretches and crossings), else the planner's.
   const volume = builtMm3 ?? (edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3);
   const gain = plan.bucklingFactor ? bucklingHeadline(plan) : plan.frequencyHz ? `${fmt(plan.frequencyHz.bare, 1)} Hz → ${fmt(plan.frequencyHz.ribbed, 1)} Hz` : gainText(plan.stiffnessFactor);
-  return { gain: edited && !plan.bucklingFactor ? `${gain} before the edit` : gain, cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
+  // The buckling sentence already ends with a full stop, so the edit mark goes in front of it.
+  const shown = !edited ? gain : plan.bucklingFactor ? `Before the edit: ${gain}` : `${gain} before the edit`;
+  return { gain: shown, cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
 }
 
 /** The line that says the totals are an edit: material re-added, the solved number not solved again. */
