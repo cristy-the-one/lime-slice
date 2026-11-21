@@ -1,5 +1,9 @@
 # Directory Update Log
 
+## 2026-11-21
+
+* **Update**: [Simulation](stress/simulation.md) describes the Resist buckling goal, and [Tool catalog](mcp/tools.md) describes `goal.buckling`, `goal.on` and `plan.bucklingFactor`. The sources are on this branch; pin them to the merge commit once it reaches main.
+
 ## 2026-11-20
 
 * **Update**: [Simulation](stress/simulation.md) describes the Higher frequency goal and resin vents, and [Tool catalog](mcp/tools.md) describes `goal.frequency`, `plan.frequencyHz`, `plan.frequencyFactor`, `plan.vents` and ribNet `openEnds`. The new sources are pinned to `03b1c1d6`.

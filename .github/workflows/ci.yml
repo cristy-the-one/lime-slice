@@ -532,6 +532,9 @@ jobs:
           # A frequency goal through ribs_plan: Hz, the refusals, a missed load, apply with and without verify.
           # On this job, not the shared one and not the folded-shell one.
           node --experimental-strip-types mcp/frequency-occt.test.ts
+          # A buckling goal through ribs_plan: the factor before and after, the refusals, a named case, apply with and without verify.
+          # On this job, not the shared one: a buckling plan eigen-solves many times, as a frequency plan does.
+          node --experimental-strip-types mcp/buckling-occt.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:
