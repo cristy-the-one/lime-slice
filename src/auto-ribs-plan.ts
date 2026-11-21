@@ -64,6 +64,8 @@ export interface RibEvent {
   stiffnessFactor: number;
   /** Ribbed over bare lowest frequency, only on a frequency plan's rib events. */
   frequencyFactor?: number;
+  /** Lowest positive buckling load factor after this rib. Only on a buckling plan's rib events. */
+  bucklingFactor?: number;
   fraction: number;
 }
 
@@ -101,6 +103,8 @@ export interface RibPlanResult {
   frequencyHz?: { bare: number; ribbed: number };
   /** Ribbed over bare lowest frequency. Absent on a stiffness plan. */
   frequencyFactor?: number;
+  /** Load factor before and after the ribs. Absent unless the goal is buckling. 1 buckles exactly at the load. */
+  bucklingFactor?: { bare: number; ribbed: number };
   goalMet: boolean;
   /** The wall thickened evenly to the plan's stiffness. Null when stopped early or not computed. */
   thickening: { addedThicknessMm: number; addedVolumeMm3: number } | null;
@@ -126,7 +130,7 @@ export interface RibPlanResult {
     unvented?: { at: V3; message: string }[];
     note?: string;
   };
-  /** Draft lost, a frequency plan's sentences, or a frequency plan that was asked to vent. Absent when there is nothing to say. */
+  /** Draft lost, a frequency plan's sentences, a buckling plan's sentences, or a plan that was asked to vent. Absent when there is nothing to say. */
   notes?: string[];
 }
 
@@ -152,8 +156,72 @@ function perCaseOf(combined: number, bareMm: number, weights: readonly number[])
   return rows.length >= 2 ? { caseFactors: rows.map((row) => row.factor), caseDeflectionMm: rows.map((row) => ({ bare: row.bareMm, ribbed: row.ribbedMm })) } : {};
 }
 
-/** `WireGoal`. */
-export type PlanGoal = { kind: "balanced" } | { kind: "stiffer"; factor: number } | { kind: "maxDeflection"; mm: number } | { kind: "budget"; volumeMm3: number } | { kind: "frequency"; factor: number };
+/** `WireGoal`. `on` is the load-case index, and only a buckling goal with two or more cases carries it. */
+export type PlanGoal = { kind: "balanced" } | { kind: "stiffer"; factor: number } | { kind: "maxDeflection"; mm: number } | { kind: "budget"; volumeMm3: number } | { kind: "frequency"; factor: number } | { kind: "buckling"; factor: number; on?: number };
+
+/** Resist buckling slider stops, −2..2. Stop 0, in the middle, is ×3. ×1.5, ×2, ×3, ×4, ×5. */
+export const BUCKLING_STOPS = [1.5, 2, 3, 4, 5] as const;
+
+/** The load multiple a buckling slider stop asks for. */
+export function bucklingFactorAt(stop: number): number {
+  const i = Math.max(0, Math.min(BUCKLING_STOPS.length - 1, Math.round(stop) + 2));
+  return BUCKLING_STOPS[i]!;
+}
+
+/** One decimal, or a whole number when the tenth is 0. The solver's `times` prints a buckling factor the same way. */
+export function loadTimes(x: number): string {
+  const tenth = Math.round(x * 10) / 10;
+  if (Math.abs(tenth - Math.round(tenth)) < 1e-9) return String(Math.round(tenth));
+  return tenth.toFixed(1);
+}
+
+/** Carried on every buckling result. */
+export const IDEAL_BUCKLING = "This is the ideal buckling load. A curved wall, or one that isn't perfectly flat, can buckle well below it.";
+
+/** A load with no compression along the wall. */
+export const NO_BUCKLING_COMPRESSION = "This load bends the wall but doesn't press along it, so it can't buckle it. Buckling needs a load along the wall, such as a push on its edge.";
+
+export function bucklesAt(now: number, was: number): string {
+  return `Buckles at ${loadTimes(now)}× the load (was ${loadTimes(was)}×).`;
+}
+
+export function alreadyEnough(holds: number, asked: number): string {
+  return `The wall already holds ${loadTimes(holds)}× this load before it buckles, above the ${loadTimes(asked)}× asked. No ribs needed.`;
+}
+
+export function reachedShort(reached: number, asked: number): string {
+  return `Reached ${loadTimes(reached)}× of the ${loadTimes(asked)}× asked: no further rib pays enough.`;
+}
+
+export function againstCase(name: string): string {
+  return `Against case: ${name}`;
+}
+
+/**
+ * The buckling notes the engine writes, in its order. `stopped` with no rib is the plan so far and keeps only the
+ * warning. The case name is not here: only the panel and the tool know it, and they add "Against case".
+ */
+export function bucklingNotes(bare: number, ribbed: number, asked: number, ribs: number, stopped: boolean, goalMet: boolean): string[] {
+  const notes = [IDEAL_BUCKLING];
+  if (stopped && ribs === 0) return notes;
+  if (ribs === 0 && bare + 1e-9 >= asked) notes.push(alreadyEnough(bare, asked));
+  else if (ribs === 0) notes.push(reachedShort(ribbed, asked));
+  else {
+    notes.push(bucklesAt(ribbed, bare));
+    if (!goalMet) notes.push(reachedShort(ribbed, asked));
+  }
+  return notes;
+}
+
+/** The result sentence the card shows as the gain: the engine's own line when it sent one. */
+export function bucklingHeadline(plan: { ribs: readonly unknown[]; notes?: string[]; bucklingFactor?: { bare: number; ribbed: number } }, asked?: number): string {
+  const hit = plan.notes?.find((note) => note.startsWith("Buckles at") || note.startsWith("The wall already holds"));
+  if (hit) return hit;
+  const factor = plan.bucklingFactor;
+  if (!factor) return "";
+  if (plan.ribs.length === 0 && asked != null && factor.bare + 1e-9 >= asked) return alreadyEnough(factor.bare, asked);
+  return bucklesAt(factor.ribbed, factor.bare);
+}
 
 /** `WireProfile`. */
 export type WireProfile =
@@ -271,6 +339,7 @@ export function readEvent(row: Row): PlanProgress | null {
     compliance: num(row.compliance),
     stiffnessFactor: num(row.stiffnessFactor, 1),
     ...(typeof row.frequencyFactor === "number" ? { frequencyFactor: row.frequencyFactor } : {}),
+    ...(typeof row.bucklingFactor === "number" ? { bucklingFactor: row.bucklingFactor } : {}),
     fraction: num(row.fraction),
   };
 }
@@ -309,6 +378,7 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       stiffnessFactor: num(row.stiffnessFactor, 1),
       ...(row.frequencyHz && typeof row.frequencyHz === "object" ? { frequencyHz: { bare: num((row.frequencyHz as Row).bare), ribbed: num((row.frequencyHz as Row).ribbed) } } : {}),
       ...(typeof row.frequencyFactor === "number" ? { frequencyFactor: row.frequencyFactor } : {}),
+      ...(row.bucklingFactor && typeof row.bucklingFactor === "object" ? { bucklingFactor: { bare: num((row.bucklingFactor as Row).bare), ribbed: num((row.bucklingFactor as Row).ribbed) } } : {}),
       goalMet: row.goalMet === true,
       thickening: thick ? { addedThicknessMm: num(thick.addedThicknessMm), addedVolumeMm3: num(thick.addedVolumeMm3) } : null,
       grid: grid ? { reached: grid.reached === true, pitchMm: num(grid.pitchMm), volumeMm3: typeof grid.volumeMm3 === "number" ? grid.volumeMm3 : null, gridVolumeMm3: num(grid.gridVolumeMm3) } : null,
@@ -657,6 +727,38 @@ function notchPlanned(ribs: PlannedRib[], pockets: readonly VentPocket[]): { rib
   return { ribs: out, pockets: kept, refused };
 }
 
+/** The first triangle's unit normal. A wall with no triangle is treated as a floor. */
+function meshNormal(mesh: RibPlanBody["request"]["mesh"]): V3 {
+  const tri = mesh.triangles[0];
+  if (!tri) return [0, 0, 1];
+  const p = (i: number): V3 => mesh.vertices[i] ?? [0, 0, 0];
+  const a = p(tri[0]!), b = p(tri[1]!), c = p(tri[2]!);
+  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+  const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+  const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const len = Math.hypot(nx, ny, nz) || 1;
+  return [nx / len, ny / len, nz / len];
+}
+
+/**
+ * The stand-in's stand-in for the engine's refusal. The real solver recovers membrane forces; here a pressure, or a
+ * force along the wall's normal, is no compression, and an in-plane force is. No loads is the planner's even pressure.
+ */
+function pressesAlongWall(body: RibPlanBody): boolean {
+  const cases = body.request.loadCases;
+  if (cases.length === 0) return false;
+  const index = body.goal?.kind === "buckling" && body.goal.on != null ? body.goal.on : 0;
+  const loads = cases[index] ?? [];
+  const normal = meshNormal(body.request.mesh);
+  return loads.some((load) => {
+    if (load.kind === "pressure") return false;
+    const force = load.force;
+    const along = force[0] * normal[0] + force[1] * normal[1] + force[2] * normal[2];
+    const mag2 = force[0] ** 2 + force[1] ** 2 + force[2] ** 2;
+    return mag2 - along * along > 1e-8 * Math.max(1, mag2);
+  });
+}
+
 /** The stand-in's copy of the engine's frequency notes. The loads sentence is only there when the request carried loads. */
 function frequencyNotes(body: RibPlanBody): string[] {
   const cases = body.request.loadCases;
@@ -703,6 +805,8 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
       const draftedRoot = wire?.kind === "drafted" && typeof wire.rootRadius === "number" ? wire.rootRadius : plainRoot;
       let fraction = 0;
       let factor = 1;
+      // 0.9× is a label for the panel, not a solve. The real load factor comes from the bridge test.
+      let lambda = 0.9;
       const bareDeflection = 0.8;
       const totals = () => {
         let volume = 0;
@@ -717,7 +821,8 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         fraction = Math.max(fraction, at);
         const now = live.get(id);
         const frequency = body.goal?.kind === "frequency";
-        progress({ kind: "rib", change, id, points: now ? now.points.map((p) => [...p] as V3) : [], heights: now ? [...now.heights] : [], ...totals(), ...(frequency ? { frequencyFactor: r3(factor) } : {}), fraction });
+        const buckling = body.goal?.kind === "buckling";
+        progress({ kind: "rib", change, id, points: now ? now.points.map((p) => [...p] as V3) : [], heights: now ? [...now.heights] : [], ...totals(), ...(frequency ? { frequencyFactor: r3(factor) } : {}), ...(buckling ? { bucklingFactor: r3(lambda) } : {}), fraction });
       };
       const result = (stopped: boolean, goalMet: boolean): RibPlanResult => {
         let ribs: PlannedRib[] = [...live.values()].map((row) => {
@@ -737,6 +842,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         const gridShare = set.beatsNeither ? 0.9 : 1.35;
         // 100 Hz is a label for the panel, not a solve. The real Hz come from the bridge test.
         const frequency = body.goal?.kind === "frequency";
+        const buckling = body.goal?.kind === "buckling" ? body.goal : null;
         return {
           ribs,
           ribVolumeMm3: volume,
@@ -744,6 +850,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
           ribbed: { compliance: r3(1 / factor), maxDeflectionMm: r3(bareDeflection / factor) },
           stiffnessFactor: r3(factor),
           ...(frequency ? { frequencyHz: { bare: 100, ribbed: r3(100 * factor) }, frequencyFactor: r3(factor), notes: frequencyNotes(body) } : {}),
+          ...(buckling ? { bucklingFactor: { bare: 0.9, ribbed: r3(lambda) }, notes: bucklingNotes(0.9, r3(lambda), buckling.factor, ribs.length, stopped, goalMet) } : {}),
           goalMet,
           thickening: stopped ? null : { addedThicknessMm: 0.4, addedVolumeMm3: r3(volume * thin) },
           grid: stopped ? null : { reached: true, pitchMm: Math.max(body.rules.minSpacing, 5), volumeMm3: r3(volume * gridShare), gridVolumeMm3: r3(volume * gridShare) },
@@ -757,6 +864,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         await Promise.resolve();
         if (set.refuse) return { ok: false, reason: set.refuse };
         if (body.request.mesh.triangles.length === 0) return { ok: false, reason: "The wall has no triangles to plan on." };
+        if (body.goal?.kind === "buckling" && !pressesAlongWall(body)) return { ok: false, reason: NO_BUCKLING_COMPRESSION };
         const pool = (body.vent ? crossed(candidates(body)) : candidates(body)).slice(0, 24);
         const stopped = (met: boolean): PlanReply => ({ ok: true, plan: result(true, met) });
         stage("bare solve", 0);
@@ -771,23 +879,27 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         const goal = body.goal ?? { kind: "balanced" };
         // ×1 asks for the wall as it is. The stand-in returns that plan, with no rib, rather than "no rib fits".
         if (goal.kind === "frequency" && !(goal.factor > 1)) return { ok: true, plan: result(false, true) };
+        // The labelled bare wall already holds 0.9×. An ask at or under that plans nothing.
+        if (goal.kind === "buckling" && !(goal.factor > 0.9)) return { ok: true, plan: result(false, true) };
         const count = goal.kind === "balanced" ? FAKE_BALANCED_RIBS : pool.length;
-        const target = goal.kind === "stiffer" || goal.kind === "frequency" ? goal.factor : goal.kind === "maxDeflection" ? bareDeflection / Math.max(goal.mm, 1e-6) : Infinity;
+        const target = goal.kind === "stiffer" || goal.kind === "frequency" ? goal.factor : goal.kind === "maxDeflection" ? bareDeflection / Math.max(goal.mm, 1e-6) : goal.kind === "buckling" ? goal.factor : Infinity;
         const longest = Math.max(1, ...pool.map((c) => c.lengthMm));
         let id = 0;
         for (const cand of pool) {
           if (live.size >= count) break;
-          if ((goal.kind === "stiffer" || goal.kind === "maxDeflection" || goal.kind === "frequency") && factor >= target) break;
+          if (goal.kind === "buckling" ? lambda + 1e-9 >= target : (goal.kind === "stiffer" || goal.kind === "maxDeflection" || goal.kind === "frequency") && factor >= target) break;
           const volume = volumeOf(cand.points, cand.heights, width);
           if (goal.kind === "budget" && totals().ribVolumeMm3 + volume > goal.volumeMm3) continue;
-          factor += 0.9 * (cand.lengthMm / longest) * (Math.max(...cand.heights) / tall) * 0.75 ** live.size;
+          const bump = 0.9 * (cand.lengthMm / longest) * (Math.max(...cand.heights) / tall) * 0.75 ** live.size;
+          factor += bump;
+          if (goal.kind === "buckling") lambda = r3(lambda + bump);
           live.set(id, { points: cand.points, heights: cand.heights });
           rib("added", id, 0.08 + (0.57 * live.size) / Math.max(1, Math.min(count, pool.length)));
           id += 1;
           await wait();
           if (cancelled) return stopped(false);
         }
-        const goalMet = goal.kind === "stiffer" || goal.kind === "maxDeflection" || goal.kind === "frequency" ? factor >= target : goal.kind === "budget" ? live.size > 0 : true;
+        const goalMet = goal.kind === "buckling" ? lambda + 1e-9 >= target : goal.kind === "stiffer" || goal.kind === "maxDeflection" || goal.kind === "frequency" ? factor >= target : goal.kind === "budget" ? live.size > 0 : true;
         stage("joining ends", 0.65);
         if (live.has(1)) rib("changed", 1, 0.67);
         await wait();
@@ -804,7 +916,7 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         stage("sizing heights", 0.78);
         const last = Math.max(-1, ...live.keys());
         const row = live.get(last);
-        if (goal.kind !== "frequency" && row && row.heights.every((h) => h === tall)) {
+        if (goal.kind !== "frequency" && goal.kind !== "buckling" && row && row.heights.every((h) => h === tall)) {
           row.heights = row.heights.map((h) => r3(h * 0.75));
           rib("changed", last, 0.86);
         }
