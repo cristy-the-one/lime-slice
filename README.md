@@ -30,7 +30,7 @@ Model edits a STEP solid, or starts one from a primitive, a gear, a part, or a s
 - **STEP in and out.** A STEP file with several solids can open as one object per solid. The STEP button writes the solid on screen as AP214.
 - **Measure, Check, Section view**, and a part you hide to reach the one behind it.
 
-<img alt="Raised Inter Bold letters wrapped round a 44 mm cylinder, with History showing the cylinder and the text step. A banner says supports are off and 14 overhangs would print in the air." src="docs/screenshots/model-text.png" width="720">
+<img alt="Raised Inter Bold letters wrapped round a 44 mm cylinder, with History showing the cylinder and the text step." src="docs/screenshots/model-text.png" width="720">
 
 <img alt="Split to print on a 320 mm bar: the card says the Lime 220 bed fits 210 mm and proposes one cut; the two pieces are coloured on either side of the plane." src="docs/screenshots/model-split.png" width="720">
 
@@ -49,7 +49,7 @@ Parts can be attached into an assembly and given joints: fixed, hinge, slide, ba
 
 <img alt="A Graham escapement run in time: the pendulum swings, the anchor rocks and the escape wheel steps a tooth each beat. Drawn by the MCP server's motion_run." src="docs/screenshots/clip-escapement.gif" width="300">
 
-The escapement above was built and run over MCP with `motion_run`: from a 3.5° push the swing is still falling, last 3.127° each side, and the free period is 0.739 s. Assemblies also export as STEP, and an interference check lists parts that cross.
+The escapement above was built and run over MCP with `motion_run`: from a 3.5° push it settles at a swing of 3.1° each side with a period of 0.78 s. Assemblies also export as STEP, and an interference check lists parts that cross.
 
 ### Plugins and recipes
 
@@ -117,7 +117,7 @@ The worked example and the trust levels are in [docs/modeler-guide.md](docs/mode
 - **Side walls.** Include side walls (folded) takes a cover's side walls into the same wall across its sharp edges, so ribs can run over a crease. It is off unless checked.
 - **Moulding checks.** With the moulded process, the result lists each moulding rule a rib breaks: base thickness, root radius, height, draft, the junction where ribs meet, and the gap between ribs. It is a report and changes nothing.
 
-<img alt="Auto ribs, Resist buckling, on the inner floor of a 64 × 40 × 14 mm box shelled to a 2 mm wall with the top open. The floor is 2,160 mm². The card says Buckles at 4.2× the load (was 2.5×), and that this is the ideal buckling load." src="docs/screenshots/ribs-buckling.png" width="720">
+<img alt="Auto ribs, Resist buckling, on the inner floor of a 160 × 100 × 20 mm box shelled to a 1 mm wall with the top open. The floor is 15,484 mm². A 750 N force along the floor goes through the 100 mm × 1 mm section, 7.5 MPa. The card says Buckles at 3.1× the load (was 1.3×), that this is the ideal buckling load, that 2 rib ends stop short of a wall, and that the comparisons were not computed." src="docs/screenshots/ribs-buckling.png" width="720">
 
 The stiffness numbers are relative, since the material cards are placeholders. Over MCP the same planner is `ribs_plan` and `ribs_apply`.
 

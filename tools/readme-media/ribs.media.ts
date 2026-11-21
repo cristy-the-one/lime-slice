@@ -2,15 +2,21 @@ import { expect, test, type Page } from "@playwright/test";
 import { openApp, still } from "./media";
 
 /**
- * Auto ribs with Resist buckling (docs/readme-media.md): a 64 × 40 × 14 mm box, shelled to a 2 mm wall with the top
- * open, planned on the inner floor. The force along the floor is raised until the card says "Buckles at", so the
- * numbers in the picture are the engine's. The part is built here. Nothing is loaded from outside the repository.
+ * Auto ribs with Resist buckling (docs/readme-media.md): a 160 × 100 × 20 mm box, shelled to a 1 mm wall with the
+ * top open, planned on the inner floor. The force runs along the 160 mm side, through the 100 mm × 1 mm section.
+ * A 30 N probe finds the critical load, and the picture uses the force that leaves the bare floor at about 1.3×,
+ * so the default 3× adds the ribs. The part is built here. Nothing is loaded from outside the repository.
  */
-const BOX = { modelDx: "64", modelDy: "40", modelDz: "14" };
-const TOP_MM2 = 64 * 40;
-const FLOOR_MM2 = (64 - 4) * (40 - 4);
+const BOX = { modelDx: "160", modelDy: "100", modelDz: "20" };
+const THICK = 1;
+const WIDTH = 100;
+const DIR = { x: "1", y: "0", z: "0" };
+const SECTION = WIDTH * THICK;
+const TOP_MM2 = 160 * 100;
+const FLOOR_MM2 = (160 - 2 * THICK) * (100 - 2 * THICK);
+const STRESS_CAP = 20;
 
-test("resist buckling on a shelled box", async ({ page }) => {
+test("resist buckling on a wide thin panel", async ({ page }) => {
   test.setTimeout(900_000);
   await page.addInitScript(() => localStorage.setItem("lime-slice-auto-slice", "0"));
   await openApp(page);
@@ -27,75 +33,120 @@ test("resist buckling on a shelled box", async ({ page }) => {
   await expect(page.locator("#modelShell")).toBeVisible();
   await page.mouse.click(top.x, top.y);
   await expect(page.locator("#modelReadout")).toContainText(`${TOP_MM2} mm²`);
-  await fill(page, "modelShell", "2");
+  await fill(page, "modelShell", String(THICK));
   await page.locator("#modelApply").click();
-  await expect.poll(async () => volume(page), { timeout: 120_000 }).toBeLessThan(15_000);
+  await expect.poll(async () => volume(page), { timeout: 120_000 }).toBeLessThan(160_000);
+  await expect(page.locator("#modelReadout")).toContainText("Shell");
 
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuAutoRibs").click();
   await expect(page.locator("#modelPanelTitle")).toHaveText("Auto ribs");
-  await lookDown(page);
+  await look(page, "t");
   await page.locator("#autoRibsJustThis").check();
   const floor = await innerFloor(page);
-  await expect(page.locator("#autoRibsWallLine")).toContainText("wall 2 mm");
+  await expect(page.locator("#autoRibsWallLine")).toContainText(`wall ${THICK} mm`);
 
   await page.locator("#autoRibsHowMuch > summary").click();
   await page.getByRole("button", { name: "Resist buckling" }).click();
   await expect(page.locator("#autoRibsSliderMid")).toHaveText("3×");
   await page.locator("#autoRibsHoldLoad > summary").click();
   await page.locator("#autoRibsLoadForce").click();
-  await fill(page, "autoRibsDirX", "1");
-  await fill(page, "autoRibsDirY", "0");
-  await fill(page, "autoRibsDirZ", "0");
-  await fill(page, "autoRibsForce", "200");
+  await fill(page, "autoRibsDirX", DIR.x);
+  await fill(page, "autoRibsDirY", DIR.y);
+  await fill(page, "autoRibsDirZ", DIR.z);
+  await fill(page, "autoRibsForce", "30");
   await page.locator("#autoRibsLoadPick").click();
   await page.mouse.click(floor.x, floor.y);
+  await page.locator("#autoRibsLoadPick").click();
 
-  let force = 200;
-  let gain = "";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const field = page.locator("#autoRibsForce");
-    await field.scrollIntoViewIfNeeded();
-    await field.fill(String(force));
-    await field.press("Tab");
-    await expect(field).toHaveValue(String(force));
-    const previous = (await page.locator("#autoRibsGain").innerText()).trim();
-    await page.locator("#modelApply").click();
-    let outcome = "";
-    await expect.poll(async () => {
-      const error = page.locator("#autoRibsError");
-      if (await error.isVisible()) outcome = `error:${(await error.innerText()).trim()}`;
-      else if (await page.locator("#autoRibsGain").isVisible()) {
-        const text = (await page.locator("#autoRibsGain").innerText()).trim();
-        outcome = text && text !== previous ? `gain:${text}` : "";
-      } else outcome = "";
-      return outcome;
-    }, { timeout: 240_000 }).not.toBe("");
-    if (outcome.startsWith("error:")) throw new Error(`auto ribs: ${outcome.slice(6)}`);
-    gain = outcome.slice(5);
-    const held = /The wall already holds ([\d.]+)×/.exec(gain);
-    if (!held) break;
-    const factor = Number(held[1]);
-    const next = Math.max(force + 1, Math.ceil((force * factor) / 2.5));
-    console.log(`force ${force} N already holds ${factor}×; trying ${next} N`);
-    force = next;
-  }
-  await expect(page.locator("#autoRibsGain")).toHaveText(/^Buckles at \d+(\.\d)?× the load \(was \d+(\.\d)?×\)\.$/);
-  await expect(page.locator("#autoRibsNotes")).toContainText("This is the ideal buckling load. A curved wall, or one that isn't perfectly flat, can buckle well below it.");
-  await expect(page.locator(".toast-error")).toHaveCount(0);
-
-  await page.locator("#autoRibsNotes").scrollIntoViewIfNeeded();
+  const probe = await planAt(page, 30);
+  if (!probe.ok) throw new Error(`the 30 N probe was refused: ${probe.text}`);
+  const held = /The wall already holds ([\d.]+)×/.exec(probe.text);
+  if (!held) throw new Error(`the 30 N probe did not report a factor: ${probe.text}`);
+  const pcr = 30 * Number(held[1]);
+  const force = Math.round(pcr / 1.3);
+  console.log(`ribs-buckling probe 30 N holds ${held[1]}×, critical load about ${Math.round(pcr)} N; trying ${force} N (${stress(force)} MPa)`);
+  if (stress(force) > STRESS_CAP) throw new Error(`${force} N is ${stress(force)} MPa, over ${STRESS_CAP} MPa`);
+  const planned = await planAt(page, force);
+  if (!planned.ok) throw new Error(`the plan refused ${force} N: ${planned.text}`);
+  const buckled = /Buckles at ([\d.]+)× the load \(was ([\d.]+)×\)/.exec(planned.text);
+  if (!buckled) throw new Error(`the plan did not add ribs: ${planned.text}`);
+  const bare = Number(buckled[2]);
+  const ribbed = Number(buckled[1]);
+  const ribs = await page.locator("#autoRibsList [data-rib]").count();
+  const goal = page.locator("#autoRibsGoal");
+  const goalText = (await goal.isVisible()) ? (await goal.innerText()).replace(/\s+/g, " ").trim() : "";
+  const compare = (await page.locator("#autoRibsCompare").innerText()).replace(/\s+/g, " ").trim();
+  const notes = (await page.locator("#autoRibsNotes").innerText()).replace(/\s+/g, " ").trim();
+  const loose = /stop short/.test(goalText);
+  const compared = /thicker/.test(compare) && !/not computed/.test(compare) && !/Stopped before/.test(compare);
+  const lines = (await page.locator("#autoRibsList [data-rib]").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
+  console.log(`ribs-buckling box ${BOX.modelDx} × ${BOX.modelDy} × ${BOX.modelDz} mm, shell ${THICK} mm`);
+  console.log(`ribs-buckling force ${force} N`);
+  console.log(`ribs-buckling section ${WIDTH} mm × ${THICK} mm`);
+  console.log(`ribs-buckling membrane stress ${stress(force)} MPa`);
+  console.log(`ribs-buckling bare ${bare}×, ribbed ${ribbed}×`);
+  console.log(`ribs-buckling ribs ${ribs}`);
+  console.log(`ribs-buckling rib lines: ${lines.join(" | ") || "(none)"}`);
+  console.log(`ribs-buckling comparisons computed: ${compared}`);
+  console.log(`ribs-buckling compare: ${compare}`);
+  console.log(`ribs-buckling loose-end warning: ${loose}`);
+  console.log(`ribs-buckling goal: ${goalText || "(none)"}`);
+  console.log(`ribs-buckling notes: ${notes}`);
+  await page.locator("#autoRibsHoldLoad").evaluate((el) => {
+    (el as HTMLDetailsElement).open = false;
+  });
+  await page.locator("#autoRibsHowMuch").evaluate((el) => {
+    (el as HTMLDetailsElement).open = false;
+  });
+  await look(page, "i");
+  const view = (await page.locator("#model").boundingBox())!;
+  await page.mouse.move(view.x + view.width * 0.62, view.y + view.height * 0.55);
+  await page.mouse.wheel(0, -1400);
+  await page.waitForTimeout(400);
   await page.locator("#autoRibsGain").scrollIntoViewIfNeeded();
+  // The alt quotes this plan. A finished buckling plan leaves the stiffness baselines empty, so the card says
+  // they were not computed, and it does not run the extension pass, so the short rib is listed as stopping short.
+  if (force !== 750 || bare !== 1.3 || ribbed !== 3.1 || ribs !== 2 || !loose || compared) {
+    await page.screenshot({ path: "/tmp/ribs-last.png" });
+    throw new Error(`plan is not the picture the alt describes: ${force} N, ${ribs} ribs, loose ${loose}, bare ${bare}×, ribbed ${ribbed}×, comparisons ${compared}`);
+  }
+  await expect(page.locator(".toast-error")).toHaveCount(0);
   const box = (await page.locator("#model").boundingBox())!;
   await page.mouse.move(box.x + 8, box.y + box.height - 8);
-  await page.waitForTimeout(600);
-  gain = (await page.locator("#autoRibsGain").innerText()).trim();
-  const notes = (await page.locator("#autoRibsNotes").innerText()).trim();
-  console.log(`ribs-buckling force ${force} N`);
-  console.log(`ribs-buckling gain: ${gain}`);
-  console.log(`ribs-buckling notes: ${notes}`);
+  await page.waitForTimeout(700);
   await still(page, "ribs-buckling.png");
 });
+
+function stress(force: number): string {
+  return (force / SECTION).toFixed(3);
+}
+
+/** Fill the force, Apply, and wait until the gain line is a new sentence or the card refuses the load. */
+async function planAt(page: Page, force: number): Promise<{ ok: boolean; text: string }> {
+  await fill(page, "autoRibsDirX", DIR.x);
+  await fill(page, "autoRibsDirY", DIR.y);
+  await fill(page, "autoRibsDirZ", DIR.z);
+  const field = page.locator("#autoRibsForce");
+  await field.scrollIntoViewIfNeeded();
+  await field.fill(String(force));
+  await field.press("Tab");
+  await expect(field).toHaveValue(String(force));
+  const previous = (await page.locator("#autoRibsGain").innerText()).trim();
+  await page.locator("#modelApply").click();
+  let outcome = "";
+  await expect.poll(async () => {
+    const error = page.locator("#autoRibsError");
+    if (await error.isVisible()) outcome = `error:${(await error.innerText()).trim()}`;
+    else if (await page.locator("#autoRibsGain").isVisible()) {
+      const text = (await page.locator("#autoRibsGain").innerText()).trim();
+      outcome = text && text !== previous ? `gain:${text}` : "";
+    } else outcome = "";
+    return outcome;
+  }, { timeout: 600_000 }).not.toBe("");
+  if (outcome.startsWith("error:")) return { ok: false, text: outcome.slice(6) };
+  return { ok: true, text: outcome.slice(5) };
+}
 
 async function fill(page: Page, id: string, value: string) {
   const field = page.locator(`#${id}`);
@@ -133,19 +184,19 @@ async function handleAt(page: Page, id: string): Promise<{ x: number; y: number 
   return null;
 }
 
-/** Top view, so the open top shows the inner floor. T is the Model command; blur first so it is not typed into a field. */
-async function lookDown(page: Page) {
+/** T is top, I is the three-quarter iso. Blur first so the key is not typed into a field. */
+async function look(page: Page, key: "t" | "i") {
   await page.evaluate(() => {
     const active = document.activeElement;
     if (active instanceof HTMLElement) active.blur();
   });
-  await page.keyboard.press("t");
-  await page.waitForTimeout(400);
+  await page.keyboard.press(key);
+  await page.waitForTimeout(500);
 }
 
 /**
  * Click the inner floor. Each try starts from a clear wall, because a click toggles the face it hits.
- * The floor is the single face of about (64 − 4) × (40 − 4) mm², 2 mm thick.
+ * The floor is the single face of about (160 − 2) × (100 − 2) mm², 1 mm thick.
  */
 async function innerFloor(page: Page): Promise<{ x: number; y: number }> {
   const box = (await page.locator("#model").boundingBox())!;
@@ -167,7 +218,7 @@ async function innerFloor(page: Page): Promise<{ x: number; y: number }> {
     }
   }
   await page.screenshot({ path: "/tmp/ribs-floor-miss.png" });
-  throw new Error(`inner floor (~${FLOOR_MM2} mm²) was not found; last wall line: ${last}`);
+  throw new Error(`inner floor (~${Math.round(FLOOR_MM2)} mm²) was not found; last wall line: ${last}`);
 }
 
 async function clickFloor(page: Page, at: { x: number; y: number }): Promise<boolean> {
@@ -178,11 +229,11 @@ async function clickFloor(page: Page, at: { x: number; y: number }): Promise<boo
     await expect.poll(async () => {
       text = await line.innerText();
       return /wall /.test(text) && !/reading/.test(text);
-    }, { timeout: 8_000 }).toBe(true);
+    }, { timeout: 20_000 }).toBe(true);
   } catch {
     return false;
   }
   text = await line.innerText();
   const area = Number(/([\d,]+) mm²/.exec(text)?.[1]?.replace(/,/g, ""));
-  return /^1 face/.test(text) && /wall 2 mm/.test(text) && Math.abs(area - FLOOR_MM2) < 200;
+  return /^1 face/.test(text) && new RegExp(`wall ${THICK} mm`).test(text) && Math.abs(area - FLOOR_MM2) < 400;
 }
