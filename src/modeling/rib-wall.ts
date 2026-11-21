@@ -404,13 +404,135 @@ function closestOnSegment(p: V3, a: V3, b: V3): { q: V3; s: number } {
 
 /** The three angles of a triangle, radians. */
 function angles(a: V3, b: V3, c: V3): [number, number, number] {
-  const at = (p: V3, q: V3, r: V3) => {
-    const u = sub(q, p);
-    const v = sub(r, p);
-    const l = len(u) * len(v);
-    return l > 0 ? Math.acos(Math.max(-1, Math.min(1, dot(u, v) / l))) : 0;
-  };
-  return [at(a, b, c), at(b, c, a), at(c, a, b)];
+  const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+  const acx = c[0] - a[0], acy = c[1] - a[1], acz = c[2] - a[2];
+  const bcx = c[0] - b[0], bcy = c[1] - b[1], bcz = c[2] - b[2];
+  const lab = Math.hypot(abx, aby, abz);
+  const lac = Math.hypot(acx, acy, acz);
+  const lbc = Math.hypot(bcx, bcy, bcz);
+  const l0 = lab * lac;
+  const l1 = lab * lbc;
+  const l2 = lac * lbc;
+  const a0 = l0 > 0 ? Math.acos(Math.max(-1, Math.min(1, (abx * acx + aby * acy + abz * acz) / l0))) : 0;
+  const a1 = l1 > 0 ? Math.acos(Math.max(-1, Math.min(1, (-abx * bcx - aby * bcy - abz * bcz) / l1))) : 0;
+  const a2 = l2 > 0 ? Math.acos(Math.max(-1, Math.min(1, (acx * bcx + acy * bcy + acz * bcz) / l2))) : 0;
+  return [a0, a1, a2];
+}
+
+/** Smallest angle of triangle (ax,ay,az)-(bx,by,bz)-(cx,cy,cz), radians, zero allocations. */
+function minAngleXYZ(
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+  cx: number, cy: number, cz: number,
+): number {
+  const abx = bx - ax, aby = by - ay, abz = bz - az;
+  const acx = cx - ax, acy = cy - ay, acz = cz - az;
+  const bcx = cx - bx, bcy = cy - by, bcz = cz - bz;
+  const lab = Math.hypot(abx, aby, abz);
+  const lac = Math.hypot(acx, acy, acz);
+  const lbc = Math.hypot(bcx, bcy, bcz);
+  const l0 = lab * lac;
+  const l1 = lab * lbc;
+  const l2 = lac * lbc;
+  const c0 = l0 > 0 ? (abx * acx + aby * acy + abz * acz) / l0 : 1;
+  const c1 = l1 > 0 ? (-abx * bcx - aby * bcy - abz * bcz) / l1 : 1;
+  const c2 = l2 > 0 ? (acx * bcx + acy * bcy + acz * bcz) / l2 : 1;
+  const maxC = c0 > c1 ? (c0 > c2 ? c0 : c2) : (c1 > c2 ? c1 : c2);
+  return Math.acos(maxC < -1 ? -1 : maxC > 1 ? 1 : maxC);
+}
+
+/** Squared distance from (px, py, pz) to triangle stored at `pos[off..off+9]`, zero allocations. */
+function triDistSq(px: number, py: number, pz: number, pos: Float64Array, off: number): number {
+  const ax = pos[off]!, ay = pos[off + 1]!, az = pos[off + 2]!;
+  const bx = pos[off + 3]!, by = pos[off + 4]!, bz = pos[off + 5]!;
+  const cx = pos[off + 6]!, cy = pos[off + 7]!, cz = pos[off + 8]!;
+  const abx = bx - ax, aby = by - ay, abz = bz - az;
+  const acx = cx - ax, acy = cy - ay, acz = cz - az;
+  const apx = px - ax, apy = py - ay, apz = pz - az;
+  const d1 = abx * apx + aby * apy + abz * apz;
+  const d2 = acx * apx + acy * apy + acz * apz;
+  if (d1 <= 0 && d2 <= 0) return apx * apx + apy * apy + apz * apz;
+  const bpx = px - bx, bpy = py - by, bpz = pz - bz;
+  const d3 = abx * bpx + aby * bpy + abz * bpz;
+  const d4 = acx * bpx + acy * bpy + acz * bpz;
+  if (d3 >= 0 && d4 <= d3) return bpx * bpx + bpy * bpy + bpz * bpz;
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const v = d1 / (d1 - d3);
+    const dx = ax + abx * v - px, dy = ay + aby * v - py, dz = az + abz * v - pz;
+    return dx * dx + dy * dy + dz * dz;
+  }
+  const cpx = px - cx, cpy = py - cy, cpz = pz - cz;
+  const d5 = abx * cpx + aby * cpy + abz * cpz;
+  const d6 = acx * cpx + acy * cpy + acz * cpz;
+  if (d6 >= 0 && d5 <= d6) return cpx * cpx + cpy * cpy + cpz * cpz;
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const w = d2 / (d2 - d6);
+    const dx = ax + acx * w - px, dy = ay + acy * w - py, dz = az + acz * w - pz;
+    return dx * dx + dy * dy + dz * dz;
+  }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+    const dx = bx + (cx - bx) * w - px, dy = by + (cy - by) * w - py, dz = bz + (cz - bz) * w - pz;
+    return dx * dx + dy * dy + dz * dz;
+  }
+  const den = 1 / (va + vb + vc);
+  const v = vb * den;
+  const w = vc * den;
+  const dx = ax + abx * v + acx * w - px;
+  const dy = ay + aby * v + acy * w - py;
+  const dz = az + abz * v + acz * w - pz;
+  return dx * dx + dy * dy + dz * dz;
+}
+
+/** Squared distance from (px, py, pz) to segment stored at `pos[off..off+6]`, zero allocations. */
+function segDistSq(px: number, py: number, pz: number, pos: Float64Array, off: number): number {
+  const ax = pos[off]!, ay = pos[off + 1]!, az = pos[off + 2]!;
+  const abx = pos[off + 3]! - ax, aby = pos[off + 4]! - ay, abz = pos[off + 5]! - az;
+  const l2 = abx * abx + aby * aby + abz * abz;
+  const apx = px - ax, apy = py - ay, apz = pz - az;
+  let s = l2 > 0 ? (apx * abx + apy * aby + apz * abz) / l2 : 0;
+  if (s < 0) s = 0;
+  else if (s > 1) s = 1;
+  const dx = abx * s - apx, dy = aby * s - apy, dz = abz * s - apz;
+  return dx * dx + dy * dy + dz * dz;
+}
+
+/** In-place median partition of `order[from..to)` around `target` by `(centre[id * 3 + axis], id)`. */
+function nthElement(order: Int32Array, centre: Float64Array, from: number, to: number, target: number, axis: number) {
+  let lo = from;
+  let hi = to - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    // Median-of-three pivot selection.
+    const a = order[lo]!, b = order[mid]!, c = order[hi]!;
+    const ca = centre[a * 3 + axis]!, cb = centre[b * 3 + axis]!, cc = centre[c * 3 + axis]!;
+    const ab = ca < cb || (ca === cb && a < b);
+    const bc = cb < cc || (cb === cc && b < c);
+    const ac = ca < cc || (ca === cc && a < c);
+    const pivIdx = ab ? (bc ? mid : ac ? hi : lo) : (ac ? lo : bc ? hi : mid);
+    const piv = order[pivIdx]!;
+    const cpiv = centre[piv * 3 + axis]!;
+    order[pivIdx] = order[hi]!;
+    order[hi] = piv;
+    let store = lo;
+    for (let i = lo; i < hi; i += 1) {
+      const x = order[i]!;
+      const cx = centre[x * 3 + axis]!;
+      if (cx < cpiv || (cx === cpiv && x < piv)) {
+        order[i] = order[store]!;
+        order[store] = x;
+        store += 1;
+      }
+    }
+    order[hi] = order[store]!;
+    order[store] = piv;
+    if (store === target) return;
+    if (store < target) lo = store + 1;
+    else hi = store - 1;
+  }
 }
 
 // ------------------------------------------------------------------------------------------------ box tree
@@ -418,96 +540,149 @@ function angles(a: V3, b: V3, c: V3): [number, number, number] {
 /** A box tree over primitives given by their boxes; nearest-by-distance and box-overlap queries. */
 class Bvh {
   private readonly order: Int32Array;
-  private readonly box: number[] = [];
-  private readonly kids: number[] = [];
-  private readonly range: number[] = [];
+  private readonly box: Float64Array;
+  private readonly kids: Int32Array;
+  private readonly range: Int32Array;
+  private readonly count: number;
+  private readonly stack = new Int32Array(128);
 
   constructor(lo: ArrayLike<number>, hi: ArrayLike<number>, n: number) {
-    this.order = Int32Array.from({ length: n }, (_, i) => i);
+    this.order = new Int32Array(n);
+    for (let i = 0; i < n; i += 1) this.order[i] = i;
+    const cap = Math.max(1, n * 2);
+    const box = new Float64Array(cap * 6);
+    const kids = new Int32Array(cap * 2);
+    const range = new Int32Array(cap * 2);
+    let nodes = 0;
     const centre = new Float64Array(n * 3);
-    for (let i = 0; i < n * 3; i += 1) centre[i] = (lo[i]! + hi[i]!) / 2;
+    for (let i = 0; i < n * 3; i += 1) centre[i] = (lo[i]! + hi[i]!) * 0.5;
+    const order = this.order;
     const build = (from: number, to: number): number => {
-      const id = this.range.length / 2;
-      this.range.push(from, to);
-      this.kids.push(-1, -1);
-      const bl = [Infinity, Infinity, Infinity];
-      const bh = [-Infinity, -Infinity, -Infinity];
+      const id = nodes;
+      nodes += 1;
+      range[id * 2] = from;
+      range[id * 2 + 1] = to;
+      kids[id * 2] = -1;
+      kids[id * 2 + 1] = -1;
+      let lx = Infinity, ly = Infinity, lz = Infinity;
+      let hx = -Infinity, hy = -Infinity, hz = -Infinity;
       for (let i = from; i < to; i += 1) {
-        const p = this.order[i]!;
-        for (let k = 0; k < 3; k += 1) {
-          bl[k] = Math.min(bl[k]!, lo[p * 3 + k]!);
-          bh[k] = Math.max(bh[k]!, hi[p * 3 + k]!);
-        }
+        const p3 = order[i]! * 3;
+        const x0 = lo[p3]!, y0 = lo[p3 + 1]!, z0 = lo[p3 + 2]!;
+        const x1 = hi[p3]!, y1 = hi[p3 + 1]!, z1 = hi[p3 + 2]!;
+        if (x0 < lx) lx = x0;
+        if (y0 < ly) ly = y0;
+        if (z0 < lz) lz = z0;
+        if (x1 > hx) hx = x1;
+        if (y1 > hy) hy = y1;
+        if (z1 > hz) hz = z1;
       }
-      this.box.push(bl[0]!, bl[1]!, bl[2]!, bh[0]!, bh[1]!, bh[2]!);
+      const b6 = id * 6;
+      box[b6] = lx; box[b6 + 1] = ly; box[b6 + 2] = lz;
+      box[b6 + 3] = hx; box[b6 + 4] = hy; box[b6 + 5] = hz;
       if (to - from <= 4) return id;
-      const axis = bh[0]! - bl[0]! >= bh[1]! - bl[1]! && bh[0]! - bl[0]! >= bh[2]! - bl[2]! ? 0 : bh[1]! - bl[1]! >= bh[2]! - bl[2]! ? 1 : 2;
-      const part = Array.from(this.order.subarray(from, to)).sort((x, y) => centre[x * 3 + axis]! - centre[y * 3 + axis]! || x - y);
-      this.order.set(part, from);
+      const sx = hx - lx, sy = hy - ly, sz = hz - lz;
+      const axis = sx >= sy && sx >= sz ? 0 : sy >= sz ? 1 : 2;
       const mid = (from + to) >> 1;
+      nthElement(order, centre, from, to, mid, axis);
       const left = build(from, mid);
       const right = build(mid, to);
-      this.kids[id * 2] = left;
-      this.kids[id * 2 + 1] = right;
+      kids[id * 2] = left;
+      kids[id * 2 + 1] = right;
       return id;
     };
     if (n > 0) build(0, n);
+    this.count = nodes;
+    this.box = box.subarray(0, nodes * 6);
+    this.kids = kids.subarray(0, nodes * 2);
+    this.range = range.subarray(0, nodes * 2);
   }
 
-  private gap(node: number, p: V3): number {
-    let sum = 0;
-    for (let k = 0; k < 3; k += 1) {
-      const lo = this.box[node * 6 + k]!;
-      const hi = this.box[node * 6 + 3 + k]!;
-      const d = p[k]! < lo ? lo - p[k]! : p[k]! > hi ? p[k]! - hi : 0;
-      sum += d * d;
-    }
-    return Math.sqrt(sum);
+  private gapSq(node: number, px: number, py: number, pz: number): number {
+    const b = node * 6;
+    const box = this.box;
+    const lx = box[b]!, ly = box[b + 1]!, lz = box[b + 2]!;
+    const hx = box[b + 3]!, hy = box[b + 4]!, hz = box[b + 5]!;
+    const dx = px < lx ? lx - px : px > hx ? px - hx : 0;
+    const dy = py < ly ? ly - py : py > hy ? py - hy : 0;
+    const dz = pz < lz ? lz - pz : pz > hz ? pz - hz : 0;
+    return dx * dx + dy * dy + dz * dz;
   }
 
-  /** The primitive nearest p by `measure` (Infinity skips one), within `far`; ties go to the lower index. */
-  nearest(p: V3, far: number, measure: (i: number) => number): { i: number; d: number } | null {
-    if (this.range.length === 0) return null;
-    let best = far;
+  /** The primitive nearest (px, py, pz) by squared distance `measureSq`, within `farSq`; ties go to the lower index. */
+  nearestSq(px: number, py: number, pz: number, farSq: number, measureSq: (i: number) => number): { i: number; dSq: number } | null {
+    if (this.count === 0) return null;
+    let bestSq = farSq;
     let bi = -1;
-    const stack = [0];
-    while (stack.length) {
-      const node = stack.pop()!;
-      if (this.gap(node, p) > best) continue;
-      const left = this.kids[node * 2]!;
+    const stack = this.stack;
+    let sp = 1;
+    stack[0] = 0;
+    const kids = this.kids;
+    const range = this.range;
+    const order = this.order;
+    while (sp > 0) {
+      const node = stack[--sp]!;
+      if (this.gapSq(node, px, py, pz) > bestSq) continue;
+      const left = kids[node * 2]!;
       if (left >= 0) {
-        const right = this.kids[node * 2 + 1]!;
-        if (this.gap(left, p) <= this.gap(right, p)) stack.push(right, left);
-        else stack.push(left, right);
+        const right = kids[node * 2 + 1]!;
+        const gl = this.gapSq(left, px, py, pz);
+        const gr = this.gapSq(right, px, py, pz);
+        if (gl <= gr) {
+          if (gr <= bestSq) stack[sp++] = right;
+          if (gl <= bestSq) stack[sp++] = left;
+        } else {
+          if (gl <= bestSq) stack[sp++] = left;
+          if (gr <= bestSq) stack[sp++] = right;
+        }
         continue;
       }
-      for (let i = this.range[node * 2]!; i < this.range[node * 2 + 1]!; i += 1) {
-        const prim = this.order[i]!;
-        const d = measure(prim);
-        if (d < best || (d === best && bi >= 0 && prim < bi) || (d <= best && bi < 0 && Number.isFinite(d))) {
-          best = d;
+      const from = range[node * 2]!;
+      const to = range[node * 2 + 1]!;
+      for (let i = from; i < to; i += 1) {
+        const prim = order[i]!;
+        const dSq = measureSq(prim);
+        if (dSq < bestSq || (dSq === bestSq && bi >= 0 && prim < bi) || (dSq <= bestSq && bi < 0 && Number.isFinite(dSq))) {
+          bestSq = dSq;
           bi = prim;
         }
       }
     }
-    return bi >= 0 ? { i: bi, d: best } : null;
+    return bi >= 0 ? { i: bi, dSq: bestSq } : null;
+  }
+
+  /** The primitive nearest p by `measure` (Infinity skips one), within `far`; ties go to the lower index. */
+  nearest(p: V3, far: number, measure: (i: number) => number): { i: number; d: number } | null {
+    const farSq = Number.isFinite(far) ? far * far : Infinity;
+    const hit = this.nearestSq(p[0], p[1], p[2], farSq, (i) => {
+      const d = measure(i);
+      return Number.isFinite(d) ? d * d : Infinity;
+    });
+    return hit ? { i: hit.i, d: Math.sqrt(hit.dSq) } : null;
   }
 
   /** Every primitive whose box meets [lo, hi]. */
   overlap(lo: V3, hi: V3, visit: (i: number) => void) {
-    if (this.range.length === 0) return;
+    if (this.count === 0) return;
+    const lx = lo[0], ly = lo[1], lz = lo[2];
+    const hx = hi[0], hy = hi[1], hz = hi[2];
+    const box = this.box;
+    const kids = this.kids;
+    const range = this.range;
+    const order = this.order;
     const stack = [0];
     while (stack.length) {
       const node = stack.pop()!;
-      let miss = false;
-      for (let k = 0; k < 3; k += 1) if (this.box[node * 6 + k]! > hi[k]! || this.box[node * 6 + 3 + k]! < lo[k]!) miss = true;
-      if (miss) continue;
-      const left = this.kids[node * 2]!;
+      const b = node * 6;
+      if (box[b]! > hx || box[b + 3]! < lx || box[b + 1]! > hy || box[b + 4]! < ly || box[b + 2]! > hz || box[b + 5]! < lz) continue;
+      const left = kids[node * 2]!;
       if (left >= 0) {
-        stack.push(this.kids[node * 2 + 1]!, left);
+        stack.push(kids[node * 2 + 1]!, left);
         continue;
       }
-      for (let i = this.range[node * 2]!; i < this.range[node * 2 + 1]!; i += 1) visit(this.order[i]!);
+      const from = range[node * 2]!;
+      const to = range[node * 2 + 1]!;
+      for (let i = from; i < to; i += 1) visit(order[i]!);
     }
   }
 }
@@ -526,10 +701,17 @@ class TriSet {
     const lo = new Float64Array(this.count * 3);
     const hi = new Float64Array(this.count * 3);
     for (let t = 0; t < this.count; t += 1) {
-      for (let k = 0; k < 3; k += 1) {
-        lo[t * 3 + k] = Math.min(pos[t * 9 + k]!, pos[t * 9 + 3 + k]!, pos[t * 9 + 6 + k]!);
-        hi[t * 3 + k] = Math.max(pos[t * 9 + k]!, pos[t * 9 + 3 + k]!, pos[t * 9 + 6 + k]!);
-      }
+      const o = t * 9;
+      const t3 = t * 3;
+      const x0 = pos[o]!, x1 = pos[o + 3]!, x2 = pos[o + 6]!;
+      const y0 = pos[o + 1]!, y1 = pos[o + 4]!, y2 = pos[o + 7]!;
+      const z0 = pos[o + 2]!, z1 = pos[o + 5]!, z2 = pos[o + 8]!;
+      lo[t3] = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
+      lo[t3 + 1] = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
+      lo[t3 + 2] = z0 < z1 ? (z0 < z2 ? z0 : z2) : (z1 < z2 ? z1 : z2);
+      hi[t3] = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
+      hi[t3 + 1] = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
+      hi[t3 + 2] = z0 > z1 ? (z0 > z2 ? z0 : z2) : (z1 > z2 ? z1 : z2);
     }
     this.bvh = new Bvh(lo, hi, this.count);
   }
@@ -541,16 +723,33 @@ class TriSet {
 
   /** The closest point within `far`, its triangle, weights, and (with corner normals) the interpolated unit normal. */
   closest(p: V3, far = Infinity, skip?: (t: number) => boolean): { q: V3; w: V3; t: number; d: number; n: V3 } | null {
-    const hit = this.bvh.nearest(p, far, (t) => (skip && skip(t) ? Infinity : dist(p, closestOnTriangle(p, this.corner(t, 0), this.corner(t, 1), this.corner(t, 2)).q)));
+    const px = p[0], py = p[1], pz = p[2];
+    const pos = this.pos;
+    const farSq = Number.isFinite(far) ? far * far : Infinity;
+    const hit = skip
+      ? this.bvh.nearestSq(px, py, pz, farSq, (t) => (skip(t) ? Infinity : triDistSq(px, py, pz, pos, t * 9)))
+      : this.bvh.nearestSq(px, py, pz, farSq, (t) => triDistSq(px, py, pz, pos, t * 9));
     if (!hit) return null;
     const { q, w } = closestOnTriangle(p, this.corner(hit.i, 0), this.corner(hit.i, 1), this.corner(hit.i, 2));
     let n: V3;
     if (this.nrm) {
-      n = [0, 0, 0];
-      for (let k = 0; k < 3; k += 1) for (let m = 0; m < 3; m += 1) n[m] += this.nrm[hit.i * 9 + k * 3 + m]! * w[k]!;
-      n = unit(n);
+      const o = hit.i * 9;
+      const w0 = w[0], w1 = w[1], w2 = w[2];
+      const nrm = this.nrm;
+      const nx = nrm[o]! * w0 + nrm[o + 3]! * w1 + nrm[o + 6]! * w2;
+      const ny = nrm[o + 1]! * w0 + nrm[o + 4]! * w1 + nrm[o + 7]! * w2;
+      const nz = nrm[o + 2]! * w0 + nrm[o + 5]! * w1 + nrm[o + 8]! * w2;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      n = [nx / l, ny / l, nz / l];
     } else n = unit(cross(sub(this.corner(hit.i, 1), this.corner(hit.i, 0)), sub(this.corner(hit.i, 2), this.corner(hit.i, 0))));
-    return { q, w, t: hit.i, d: hit.d, n };
+    return { q, w, t: hit.i, d: Math.sqrt(hit.dSq), n };
+  }
+
+  /** Closest distance to (px, py, pz) without computing normal or weights. */
+  closestDist(px: number, py: number, pz: number): number {
+    const pos = this.pos;
+    const hit = this.bvh.nearestSq(px, py, pz, Infinity, (t) => triDistSq(px, py, pz, pos, t * 9));
+    return hit ? Math.sqrt(hit.dSq) : Infinity;
   }
 }
 
@@ -564,10 +763,17 @@ class SegSet {
     const lo = new Float64Array(n * 3);
     const hi = new Float64Array(n * 3);
     for (let s = 0; s < n; s += 1) {
-      for (let k = 0; k < 3; k += 1) {
-        lo[s * 3 + k] = Math.min(pos[s * 6 + k]!, pos[s * 6 + 3 + k]!);
-        hi[s * 3 + k] = Math.max(pos[s * 6 + k]!, pos[s * 6 + 3 + k]!);
-      }
+      const o = s * 6;
+      const s3 = s * 3;
+      const x0 = pos[o]!, x1 = pos[o + 3]!;
+      const y0 = pos[o + 1]!, y1 = pos[o + 4]!;
+      const z0 = pos[o + 2]!, z1 = pos[o + 5]!;
+      lo[s3] = x0 < x1 ? x0 : x1;
+      lo[s3 + 1] = y0 < y1 ? y0 : y1;
+      lo[s3 + 2] = z0 < z1 ? z0 : z1;
+      hi[s3] = x0 > x1 ? x0 : x1;
+      hi[s3 + 1] = y0 > y1 ? y0 : y1;
+      hi[s3 + 2] = z0 > z1 ? z0 : z1;
     }
     this.bvh = new Bvh(lo, hi, n);
   }
@@ -576,7 +782,9 @@ class SegSet {
     return [this.pos[i]!, this.pos[i + 1]!, this.pos[i + 2]!];
   }
   closest(p: V3): V3 | null {
-    const hit = this.bvh.nearest(p, Infinity, (s) => dist(p, closestOnSegment(p, this.end(s, 0), this.end(s, 1)).q));
+    const px = p[0], py = p[1], pz = p[2];
+    const pos = this.pos;
+    const hit = this.bvh.nearestSq(px, py, pz, Infinity, (s) => segDistSq(px, py, pz, pos, s * 6));
     return hit ? closestOnSegment(p, this.end(hit.i, 0), this.end(hit.i, 1)).q : null;
   }
 }
@@ -585,33 +793,52 @@ class SegSet {
 class Welder {
   readonly pts: number[] = [];
   private readonly cells = new Map<number, number[]>();
-  private readonly tol: number;
+  private readonly tolSq: number;
+  private readonly invTol: number;
   constructor(tol: number) {
-    this.tol = tol;
-  }
-  private hash(x: number, y: number, z: number): number {
-    return ((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) | 0;
+    this.tolSq = tol * tol;
+    this.invTol = 1 / tol;
   }
   id(p: V3): number {
-    const c = [Math.floor(p[0] / this.tol), Math.floor(p[1] / this.tol), Math.floor(p[2] / this.tol)];
+    return this.idXYZ(p[0], p[1], p[2]);
+  }
+  idXYZ(px: number, py: number, pz: number): number {
+    const cx = Math.floor(px * this.invTol);
+    const cy = Math.floor(py * this.invTol);
+    const cz = Math.floor(pz * this.invTol);
+    const cells = this.cells;
+    const pts = this.pts;
+    const tolSq = this.tolSq;
     let best = -1;
-    let bestD = Infinity;
-    for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1) for (let dz = -1; dz <= 1; dz += 1) {
-      for (const i of this.cells.get(this.hash(c[0]! + dx, c[1]! + dy, c[2]! + dz)) ?? []) {
-        const d = Math.hypot(this.pts[i * 3]! - p[0], this.pts[i * 3 + 1]! - p[1], this.pts[i * 3 + 2]! - p[2]);
-        if (d <= this.tol && (d < bestD || (d === bestD && i < best))) {
-          best = i;
-          bestD = d;
+    let bestD2 = Infinity;
+    for (let dx = -1; dx <= 1; dx += 1) {
+      const hx = (cx + dx) * 73856093;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const hxy = hx ^ ((cy + dy) * 19349663);
+        for (let dz = -1; dz <= 1; dz += 1) {
+          const row = cells.get((hxy ^ ((cz + dz) * 83492791)) | 0);
+          if (!row) continue;
+          for (let j = 0; j < row.length; j += 1) {
+            const i = row[j]!;
+            const rx = pts[i * 3]! - px;
+            const ry = pts[i * 3 + 1]! - py;
+            const rz = pts[i * 3 + 2]! - pz;
+            const d2 = rx * rx + ry * ry + rz * rz;
+            if (d2 <= tolSq && (d2 < bestD2 || (d2 === bestD2 && i < best))) {
+              best = i;
+              bestD2 = d2;
+            }
+          }
         }
       }
     }
     if (best >= 0) return best;
-    const id = this.pts.length / 3;
-    this.pts.push(p[0], p[1], p[2]);
-    const h = this.hash(c[0]!, c[1]!, c[2]!);
-    const row = this.cells.get(h);
+    const id = pts.length / 3;
+    pts.push(px, py, pz);
+    const h = ((cx * 73856093) ^ (cy * 19349663) ^ (cz * 83492791)) | 0;
+    const row = cells.get(h);
     if (row) row.push(id);
-    else this.cells.set(h, [id]);
+    else cells.set(h, [id]);
     return id;
   }
 }
@@ -634,6 +861,8 @@ interface Indexed {
   vp: number[];
   /** Per face, its loops and surface, read once (`faceGeometry`). */
   geometry: Map<number, FaceGeometry>;
+  /** Ray grid over the solid's triangles, built lazily once per solid. */
+  rays?: ReturnType<typeof meshRays>;
 }
 
 const indexCache = new WeakMap<object, Map<number, Indexed>>();
@@ -646,7 +875,13 @@ function indexSolid(solid: RibWallSolid, weld: number): Indexed {
   const face = Int32Array.from({ length: count }, (_, t) => solid.faceOf[t]!);
   const welder = new Welder(weld);
   const vid = new Int32Array(count * 3);
-  for (let t = 0; t < count; t += 1) for (let k = 0; k < 3; k += 1) vid[t * 3 + k] = welder.id([pos[t * 9 + k * 3]!, pos[t * 9 + k * 3 + 1]!, pos[t * 9 + k * 3 + 2]!]);
+  for (let t = 0; t < count; t += 1) {
+    const o = t * 9;
+    const v3 = t * 3;
+    vid[v3] = welder.idXYZ(pos[o]!, pos[o + 1]!, pos[o + 2]!);
+    vid[v3 + 1] = welder.idXYZ(pos[o + 3]!, pos[o + 4]!, pos[o + 5]!);
+    vid[v3 + 2] = welder.idXYZ(pos[o + 6]!, pos[o + 7]!, pos[o + 8]!);
+  }
   const normal = new Float64Array(count * 3);
   const area = new Float64Array(count);
   const faceTris = new Map<number, number[]>();
@@ -1092,7 +1327,7 @@ export function wallFaces(
   const stops = new Map<number, { face: number; from: number; kinkDeg: number; why?: "kink" | "fold-back" | "thick" }>();
   // Thickness of a face, for the fold test only: a few rays straight in. The median is of the faces already taken.
   const facing = Math.cos((WALL_FACING_DEG * Math.PI) / 180);
-  const rays = folded ? meshRays(ix.pos) : null;
+  const rays = folded ? (ix.rays ??= meshRays(ix.pos)) : null;
   const faceTh = new Map<number, number>();
   const readFace = (face: number): number => {
     const hit = faceTh.get(face);
@@ -1536,7 +1771,9 @@ class Remesher {
   T: number[];
   L: number[];
   VT: number[][] = [];
-  private readonly keys = new Map<string, number>();
+  private readonly boundKeys = new Map<number, number>();
+  private readonly seamKeys = new Map<number, Map<number, number>>();
+  private keyCount = 0;
   private readonly curves: SegSet[] = [];
   private readonly patches = new Map<number, TriSet>();
   private readonly lmin: number;
@@ -1546,6 +1783,12 @@ class Remesher {
   private readonly budget: number;
   /** The most the budget grew the sizes by, 1 when it never did. */
   coarsened = 1;
+  private ringMark = new Int32Array(0);
+  private ringStamp = 0;
+  private readonly ringBuf: number[] = [];
+  private et0 = -1;
+  private et1 = -1;
+  private readonly etExtra: number[] = [];
 
   constructor(mesh: InMesh, target: number, chord: number, cornerDeg: number, budget = 0) {
     this.target = target;
@@ -1556,6 +1799,7 @@ class Remesher {
     this.L = [...mesh.L];
     this.lmin = target / 8;
     const nv = this.P.length / 3;
+    this.ringMark = new Int32Array(Math.max(64, nv * 2));
     for (let v = 0; v < nv; v += 1) this.VT.push([]);
     for (let t = 0; t < this.T.length / 3; t += 1) for (let k = 0; k < 3; k += 1) this.VT[this.T[t * 3 + k]!]!.push(t);
     // --- The original surface per label, with corner normals smoothed within the label.
@@ -1565,6 +1809,7 @@ class Remesher {
       if (row) row.push(t);
       else byLabel.set(this.L[t]!, [t]);
     }
+    const initN = new Float64Array(nv * 3);
     for (const [label, tris] of [...byLabel.entries()].sort((a, b) => a[0] - b[0])) {
       const sums = new Map<number, V3>();
       for (const t of tris) {
@@ -1581,11 +1826,19 @@ class Remesher {
       }
       const pos = new Float64Array(tris.length * 9);
       const nrm = new Float64Array(tris.length * 9);
+      const unitSums = new Map<number, V3>();
+      for (const [v, s] of sums) {
+        const u = unit(s);
+        unitSums.set(v, u);
+        initN[v * 3] = initN[v * 3]! + u[0];
+        initN[v * 3 + 1] = initN[v * 3 + 1]! + u[1];
+        initN[v * 3 + 2] = initN[v * 3 + 2]! + u[2];
+      }
       tris.forEach((t, i) => {
         for (let k = 0; k < 3; k += 1) {
           const v = this.T[t * 3 + k]!;
           pos.set(this.at(v), i * 9 + k * 3);
-          nrm.set(unit(sums.get(v)!), i * 9 + k * 3);
+          nrm.set(unitSums.get(v)!, i * 9 + k * 3);
         }
       });
       this.patches.set(label, new TriSet(pos, nrm));
@@ -1593,12 +1846,18 @@ class Remesher {
     // --- Feature curves: edges on the boundary or between labels, grouped by the labels on their sides.
     const segs = new Map<number, number[]>();
     const featureAt = new Map<number, { key: number; other: number }[]>();
-    for (const [a, b] of this.edges()) {
-      const key = this.keyOf(a, b, this.edgeTris(a, b), true);
+    const initEdges = this.edgesFlat();
+    for (let v = 0; v < nv; v += 1) this.B.push(false);
+    for (let i = 0; i < initEdges.length; i += 2) {
+      const a = initEdges[i]!, b = initEdges[i + 1]!;
+      const ec = this.findEdgeTris(a, b);
+      if (ec === 1) this.B[a] = this.B[b] = true;
+      const key = this.keyOfCurrent(ec, true);
       if (key === -1) continue;
       if (key >= 0) {
         const row = segs.get(key) ?? [];
-        row.push(...this.at(a), ...this.at(b));
+        const a3 = a * 3, b3 = b * 3;
+        row.push(this.P[a3]!, this.P[a3 + 1]!, this.P[a3 + 2]!, this.P[b3]!, this.P[b3 + 1]!, this.P[b3 + 2]!);
         segs.set(key, row);
       }
       for (const [v, o] of [[a, b], [b, a]] as const) {
@@ -1607,9 +1866,7 @@ class Remesher {
         featureAt.set(v, row);
       }
     }
-    for (let i = 0; i < this.keys.size; i += 1) this.curves.push(new SegSet(Float64Array.from(segs.get(i) ?? [])));
-    for (let v = 0; v < nv; v += 1) this.B.push(false);
-    for (const [a, b] of this.edges()) if (this.edgeTris(a, b).length === 1) this.B[a] = this.B[b] = true;
+    for (let i = 0; i < this.keyCount; i += 1) this.curves.push(new SegSet(Float64Array.from(segs.get(i) ?? [])));
     for (let v = 0; v < nv; v += 1) {
       const f = featureAt.get(v);
       this.C.push(-1);
@@ -1626,19 +1883,17 @@ class Remesher {
       this.C[v] = f[0]!.key;
     }
     for (let v = 0; v < nv; v += 1) {
-      this.N.push(0, 0, 0);
       this.H.push(target);
-      if (this.K[v]! >= 0) this.setNormal(v);
+      if (this.K[v]! >= 0) {
+        const nx = initN[v * 3]!, ny = initN[v * 3 + 1]!, nz = initN[v * 3 + 2]!;
+        const l = Math.hypot(nx, ny, nz) || 1;
+        this.N.push(nx / l, ny / l, nz / l);
+      } else this.N.push(0, 0, 0);
     }
   }
 
   at(v: number): V3 {
     return [this.P[v * 3]!, this.P[v * 3 + 1]!, this.P[v * 3 + 2]!];
-  }
-  private put(v: number, p: V3) {
-    this.P[v * 3] = p[0];
-    this.P[v * 3 + 1] = p[1];
-    this.P[v * 3 + 2] = p[2];
   }
   private nrm(v: number): V3 {
     return [this.N[v * 3]!, this.N[v * 3 + 1]!, this.N[v * 3 + 2]!];
@@ -1647,63 +1902,171 @@ class Remesher {
     return this.T[t * 3]! >= 0;
   }
 
-  /** Every live edge once, in order of first appearance. */
-  edges(): [number, number][] {
-    const seen = new Set<number>();
-    const out: [number, number][] = [];
-    for (let t = 0; t < this.T.length / 3; t += 1) {
-      if (!this.alive(t)) continue;
-      for (let k = 0; k < 3; k += 1) {
-        const a = this.T[t * 3 + k]!;
-        const b = this.T[t * 3 + ((k + 1) % 3)]!;
-        const key = ekey(a, b);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push(a < b ? [a, b] : [b, a]);
+  private distV(a: number, b: number): number {
+    const P = this.P;
+    const a3 = a * 3, b3 = b * 3;
+    return Math.hypot(P[a3]! - P[b3]!, P[a3 + 1]! - P[b3 + 1]!, P[a3 + 2]! - P[b3 + 2]!);
+  }
+  private removeVT(v: number, t: number) {
+    const list = this.VT[v]!;
+    const idx = list.indexOf(t);
+    if (idx >= 0) list.splice(idx, 1);
+  }
+  private ensureRingMark(nv: number) {
+    if (this.ringMark.length < nv) {
+      const next = new Int32Array(Math.max(nv * 2, this.ringMark.length * 2));
+      this.ringMark = next;
+      this.ringStamp = 0;
+    }
+  }
+  private nextStamp(): number {
+    this.ringStamp += 1;
+    if (this.ringStamp >= 0x7fffffff) {
+      this.ringMark.fill(0);
+      this.ringStamp = 1;
+    }
+    return this.ringStamp;
+  }
+  /** Every live edge once as flat `[a0, b0, a1, b1, ...]` in order of first appearance, zero Set/HeapNumber overhead. */
+  private edgesFlat(): number[] {
+    const out: number[] = [];
+    const T = this.T;
+    const VT = this.VT;
+    const nt = T.length / 3;
+    for (let t = 0; t < nt; t += 1) {
+      const t3 = t * 3;
+      const v0 = T[t3]!;
+      if (v0 < 0) continue;
+      const v1 = T[t3 + 1]!;
+      const v2 = T[t3 + 2]!;
+      // Edge 0: (v0, v1)
+      let lo = v0 < v1 ? v0 : v1;
+      let hi = v0 < v1 ? v1 : v0;
+      let vt = VT[lo]!;
+      let seen = false;
+      for (let j = 0; j < vt.length; j += 1) {
+        const t2 = vt[j]!;
+        if (t2 < t) {
+          const q = t2 * 3;
+          if (T[q] === hi || T[q + 1] === hi || T[q + 2] === hi) { seen = true; break; }
+        }
       }
+      if (!seen) out.push(lo, hi);
+      // Edge 1: (v1, v2)
+      lo = v1 < v2 ? v1 : v2;
+      hi = v1 < v2 ? v2 : v1;
+      vt = VT[lo]!;
+      seen = false;
+      for (let j = 0; j < vt.length; j += 1) {
+        const t2 = vt[j]!;
+        if (t2 < t) {
+          const q = t2 * 3;
+          if (T[q] === hi || T[q + 1] === hi || T[q + 2] === hi) { seen = true; break; }
+        }
+      }
+      if (!seen) out.push(lo, hi);
+      // Edge 2: (v2, v0)
+      lo = v2 < v0 ? v2 : v0;
+      hi = v2 < v0 ? v0 : v2;
+      vt = VT[lo]!;
+      seen = false;
+      for (let j = 0; j < vt.length; j += 1) {
+        const t2 = vt[j]!;
+        if (t2 < t) {
+          const q = t2 * 3;
+          if (T[q] === hi || T[q + 1] === hi || T[q + 2] === hi) { seen = true; break; }
+        }
+      }
+      if (!seen) out.push(lo, hi);
     }
     return out;
   }
 
-  edgeTris(a: number, b: number): number[] {
-    return this.VT[a]!.filter((t) => this.T[t * 3] === b || this.T[t * 3 + 1] === b || this.T[t * 3 + 2] === b);
+  /** Every live edge once, in order of first appearance. */
+  edges(): [number, number][] {
+    const flat = this.edgesFlat();
+    const out: [number, number][] = [];
+    for (let i = 0; i < flat.length; i += 2) out.push([flat[i]!, flat[i + 1]!]);
+    return out;
+  }
+
+  /** Find incident triangles of edge (a, b) into scratch slots `et0`, `et1`, `etExtra`; returns count. */
+  private findEdgeTris(a: number, b: number): number {
+    const vt = this.VT[a]!;
+    const T = this.T;
+    let c = 0;
+    for (let i = 0; i < vt.length; i += 1) {
+      const t = vt[i]!;
+      const t3 = t * 3;
+      if (T[t3] === b || T[t3 + 1] === b || T[t3 + 2] === b) {
+        if (c === 0) this.et0 = t;
+        else if (c === 1) this.et1 = t;
+        else {
+          if (c === 2) this.etExtra.length = 0;
+          this.etExtra.push(t);
+        }
+        c += 1;
+      }
+    }
+    return c;
+  }
+
+  private keyOfCurrent(count: number, create = false): number {
+    if (count === 2) {
+      const la = this.L[this.et0]!;
+      const lb = this.L[this.et1]!;
+      if (la === lb) return -1;
+      const lo = la < lb ? la : lb;
+      const hi = la < lb ? lb : la;
+      let row = this.seamKeys.get(lo);
+      let key = row?.get(hi);
+      if (key === undefined && create) {
+        key = this.keyCount++;
+        if (!row) {
+          row = new Map<number, number>();
+          this.seamKeys.set(lo, row);
+        }
+        row.set(hi, key);
+      }
+      return key ?? NM;
+    }
+    if (count === 1) {
+      const la = this.L[this.et0]!;
+      let key = this.boundKeys.get(la);
+      if (key === undefined && create) {
+        key = this.keyCount++;
+        this.boundKeys.set(la, key);
+      }
+      return key ?? NM;
+    }
+    return NM;
+  }
+
+  private hasEdge(a: number, b: number): boolean {
+    const vt = this.VT[a]!;
+    const T = this.T;
+    for (let i = 0; i < vt.length; i += 1) {
+      const t3 = vt[i]! * 3;
+      if (T[t3] === b || T[t3 + 1] === b || T[t3 + 2] === b) return true;
+    }
+    return false;
+  }
+
+  private triRuns(t: number, x: number, y: number): boolean {
+    const T = this.T;
+    const t3 = t * 3;
+    return (T[t3] === x && T[t3 + 1] === y) || (T[t3 + 1] === x && T[t3 + 2] === y) || (T[t3 + 2] === x && T[t3] === y);
   }
 
   private third(t: number, a: number, b: number): number {
-    for (let k = 0; k < 3; k += 1) {
-      const v = this.T[t * 3 + k]!;
-      if (v !== a && v !== b) return v;
-    }
-    return -1;
-  }
-
-  /** -1 for an inner edge of one label; the curve's index for a feature edge; NM where more than two triangles meet. */
-  keyOf(a: number, b: number, tris: number[], create = false): number {
-    let name: string;
-    if (tris.length === 2) {
-      const la = this.L[tris[0]!]!;
-      const lb = this.L[tris[1]!]!;
-      if (la === lb) return -1;
-      name = `${Math.min(la, lb)}|${Math.max(la, lb)}`;
-    } else if (tris.length === 1) name = `${this.L[tris[0]!]!}|b`;
-    else return NM;
-    void a;
-    void b;
-    let key = this.keys.get(name);
-    if (key === undefined && create) {
-      key = this.keys.size;
-      this.keys.set(name, key);
-    }
-    return key ?? NM;
-  }
-
-  ring(v: number): Set<number> {
-    const out = new Set<number>();
-    for (const t of this.VT[v]!) for (let k = 0; k < 3; k += 1) {
-      const x = this.T[t * 3 + k]!;
-      if (x !== v) out.add(x);
-    }
-    return out;
+    const T = this.T;
+    const t3 = t * 3;
+    const v0 = T[t3]!;
+    if (v0 !== a && v0 !== b) return v0;
+    const v1 = T[t3 + 1]!;
+    if (v1 !== a && v1 !== b) return v1;
+    const v2 = T[t3 + 2]!;
+    return v2 !== a && v2 !== b ? v2 : -1;
   }
 
   isBoundary(v: number): boolean {
@@ -1716,29 +2079,43 @@ class Remesher {
   }
 
   private adjacent(c: number, d: number): boolean {
-    return this.VT[c]!.some((t) => this.T[t * 3] === d || this.T[t * 3 + 1] === d || this.T[t * 3 + 2] === d);
+    const vt = this.VT[c]!;
+    const T = this.T;
+    for (let i = 0; i < vt.length; i += 1) {
+      const t3 = vt[i]! * 3;
+      if (T[t3] === d || T[t3 + 1] === d || T[t3 + 2] === d) return true;
+    }
+    return false;
   }
 
   private labelsAt(v: number): number[] {
-    return [...new Set(this.VT[v]!.map((t) => this.L[t]!))].sort((a, b) => a - b);
+    const vt = this.VT[v]!;
+    const L = this.L;
+    const out: number[] = [];
+    for (let i = 0; i < vt.length; i += 1) {
+      const l = L[vt[i]!]!;
+      if (!out.includes(l)) out.push(l);
+    }
+    if (out.length > 1) out.sort((a, b) => a - b);
+    return out;
   }
 
   /** The smooth normal at v, from the original surface of its labels. */
   private setNormal(v: number) {
-    let n: V3 = [0, 0, 0];
+    let nx = 0, ny = 0, nz = 0;
+    const p = this.at(v);
     for (const label of this.labelsAt(v)) {
-      const hit = this.patches.get(label)!.closest(this.at(v));
-      if (hit) n = add(n, hit.n);
+      const hit = this.patches.get(label)!.closest(p);
+      if (hit) {
+        nx += hit.n[0];
+        ny += hit.n[1];
+        nz += hit.n[2];
+      }
     }
-    n = unit(n);
-    this.N[v * 3] = n[0];
-    this.N[v * 3 + 1] = n[1];
-    this.N[v * 3 + 2] = n[2];
-  }
-
-  private normalOn(v: number, label: number): V3 {
-    if (this.K[v] === 0) return this.nrm(v);
-    return this.patches.get(label)!.closest(this.at(v))?.n ?? this.nrm(v);
+    const l = Math.hypot(nx, ny, nz) || 1;
+    this.N[v * 3] = nx / l;
+    this.N[v * 3 + 1] = ny / l;
+    this.N[v * 3 + 2] = nz / l;
   }
 
   /** Where p lands: on its curve for a feature vertex, else on its label's surface. */
@@ -1752,8 +2129,31 @@ class Remesher {
   }
 
   private curveNeighbours(v: number): number[] {
+    const nv = this.P.length / 3;
+    this.ensureRingMark(nv);
+    const stamp = this.nextStamp();
+    const mark = this.ringMark;
+    const vt = this.VT[v]!;
+    const T = this.T;
+    const ring: number[] = [];
+    for (let i = 0; i < vt.length; i += 1) {
+      const t3 = vt[i]! * 3;
+      for (let k = 0; k < 3; k += 1) {
+        const x = T[t3 + k]!;
+        if (x !== v && mark[x] !== stamp) {
+          mark[x] = stamp;
+          ring.push(x);
+        }
+      }
+    }
+    ring.sort((a, b) => a - b);
+    const cv = this.C[v]!;
     const out: number[] = [];
-    for (const x of [...this.ring(v)].sort((a, b) => a - b)) if (this.keyOf(v, x, this.edgeTris(v, x)) === this.C[v]) out.push(x);
+    for (let i = 0; i < ring.length; i += 1) {
+      const x = ring[i]!;
+      const ec = this.findEdgeTris(v, x);
+      if (this.keyOfCurrent(ec) === cv) out.push(x);
+    }
     return out;
   }
 
@@ -1761,24 +2161,67 @@ class Remesher {
   updateSizes() {
     const nv = this.P.length / 3;
     const kap = new Float64Array(nv);
-    const list = this.edges();
-    for (const [a, b] of list) {
-      const tris = this.edgeTris(a, b);
-      if (this.keyOf(a, b, tris) !== -1) continue;
-      const label = this.L[tris[0]!]!;
-      const l = dist(this.at(a), this.at(b));
+    const list = this.edgesFlat();
+    const normalCache = new Map<number, V3>();
+    const P = this.P;
+    const N = this.N;
+    const K = this.K;
+    for (let i = 0; i < list.length; i += 2) {
+      const a = list[i]!, b = list[i + 1]!;
+      const ec = this.findEdgeTris(a, b);
+      if (this.keyOfCurrent(ec) !== -1) continue;
+      const label = this.L[this.et0]!;
+      const l = this.distV(a, b);
       if (!(l > 0)) continue;
-      const k = (angleDeg(this.normalOn(a, label), this.normalOn(b, label)) * Math.PI) / 180 / l;
-      kap[a] = Math.max(kap[a]!, k);
-      kap[b] = Math.max(kap[b]!, k);
+      let nax: number, nay: number, naz: number;
+      if (K[a] === 0) {
+        const a3 = a * 3;
+        nax = N[a3]!; nay = N[a3 + 1]!; naz = N[a3 + 2]!;
+      } else {
+        const ck = label * BIG + a;
+        let na = normalCache.get(ck);
+        if (na === undefined) {
+          na = this.patches.get(label)!.closest(this.at(a))?.n ?? this.nrm(a);
+          normalCache.set(ck, na);
+        }
+        nax = na[0]; nay = na[1]; naz = na[2];
+      }
+      let nbx: number, nby: number, nbz: number;
+      if (K[b] === 0) {
+        const b3 = b * 3;
+        nbx = N[b3]!; nby = N[b3 + 1]!; nbz = N[b3 + 2]!;
+      } else {
+        const ck = label * BIG + b;
+        let nb = normalCache.get(ck);
+        if (nb === undefined) {
+          nb = this.patches.get(label)!.closest(this.at(b))?.n ?? this.nrm(b);
+          normalCache.set(ck, nb);
+        }
+        nbx = nb[0]; nby = nb[1]; nbz = nb[2];
+      }
+      const la = Math.hypot(nax, nay, naz) || 1;
+      const lb = Math.hypot(nbx, nby, nbz) || 1;
+      const cos = (nax * nbx + nay * nby + naz * nbz) / (la * lb);
+      const k = Math.acos(cos < -1 ? -1 : cos > 1 ? 1 : cos) / l;
+      if (k > kap[a]!) kap[a] = k;
+      if (k > kap[b]!) kap[b] = k;
     }
     for (let v = 0; v < nv; v += 1) {
-      if (this.K[v] !== 1) continue;
+      if (K[v] !== 1) continue;
       const nb = this.curveNeighbours(v);
       if (nb.length !== 2) continue;
-      const p = this.at(v);
-      const l = (dist(p, this.at(nb[0]!)) + dist(p, this.at(nb[1]!))) / 2;
-      if (l > 0) kap[v] = Math.max(kap[v]!, ((angleDeg(sub(p, this.at(nb[0]!)), sub(this.at(nb[1]!), p)) * Math.PI) / 180) / l);
+      const n0 = nb[0]!, n1 = nb[1]!;
+      const l = (this.distV(v, n0) + this.distV(v, n1)) * 0.5;
+      if (l > 0) {
+        const v3 = v * 3, a3 = n0 * 3, b3 = n1 * 3;
+        const ux = P[v3]! - P[a3]!, uy = P[v3 + 1]! - P[a3 + 1]!, uz = P[v3 + 2]! - P[a3 + 2]!;
+        const wx = P[b3]! - P[v3]!, wy = P[b3 + 1]! - P[v3 + 1]!, wz = P[b3 + 2]! - P[v3 + 2]!;
+        const lu = Math.hypot(ux, uy, uz) || 1;
+        const lw = Math.hypot(wx, wy, wz) || 1;
+        const cos = (ux * wx + uy * wy + uz * wz) / (lu * lw);
+        const k = Math.acos(cos < -1 ? -1 : cos > 1 ? 1 : cos) / l;
+        if (k > kap[v]!) kap[v] = k;
+      }
     }
     for (let v = 0; v < nv; v += 1) {
       const k = kap[v]!;
@@ -1786,23 +2229,36 @@ class Remesher {
       this.H[v] = k > 0 ? Math.max(this.lmin, Math.min(this.target, 0.75 * Math.sqrt((8 * this.chord) / k))) : this.target;
     }
     for (let pass = 0; pass < 3; pass += 1) {
-      for (const [a, b] of list) {
-        const l = dist(this.at(a), this.at(b));
-        this.H[a] = Math.min(this.H[a]!, this.H[b]! + 0.3 * l);
-        this.H[b] = Math.min(this.H[b]!, this.H[a]! + 0.3 * l);
+      for (let i = 0; i < list.length; i += 2) {
+        const a = list[i]!, b = list[i + 1]!;
+        const l = this.distV(a, b);
+        const ha = this.H[a]!, hb = this.H[b]!;
+        const ha2 = hb + 0.3 * l;
+        if (ha2 < ha) this.H[a] = ha2;
+        const hb2 = this.H[a]! + 0.3 * l;
+        if (hb2 < hb) this.H[b] = hb2;
       }
     }
     // The budget: the triangles these sizes come to (each triangle's area over an equilateral one of its corners' mean
     // size). Over it, every size short of the target grows by the same factor, so tight curves still get the finest
     // mesh and the whole stays within it.
     if (this.budget > 0) {
+      const T = this.T;
+      const nt = T.length / 3;
+      const invEq = 1 / (Math.sqrt(3) / 4);
       for (let tries = 0; tries < 6; tries += 1) {
         let count = 0;
-        for (let t = 0; t < this.T.length / 3; t += 1) {
-          if (!this.alive(t)) continue;
-          const [a, b, c] = [this.T[t * 3]!, this.T[t * 3 + 1]!, this.T[t * 3 + 2]!];
+        for (let t = 0; t < nt; t += 1) {
+          const t3 = t * 3;
+          const a = T[t3]!;
+          if (a < 0) continue;
+          const b = T[t3 + 1]!, c = T[t3 + 2]!;
           const h = (this.H[a]! + this.H[b]! + this.H[c]!) / 3;
-          count += len(cross(sub(this.at(b), this.at(a)), sub(this.at(c), this.at(a)))) / 2 / ((Math.sqrt(3) / 4) * h * h);
+          const a3 = a * 3, b3 = b * 3, c3 = c * 3;
+          const abx = P[b3]! - P[a3]!, aby = P[b3 + 1]! - P[a3 + 1]!, abz = P[b3 + 2]! - P[a3 + 2]!;
+          const acx = P[c3]! - P[a3]!, acy = P[c3 + 1]! - P[a3 + 1]!, acz = P[c3 + 2]! - P[a3 + 2]!;
+          const cx = aby * acz - abz * acy, cy = abz * acx - abx * acz, cz = abx * acy - aby * acx;
+          count += (Math.hypot(cx, cy, cz) * 0.5) * invEq / (h * h);
         }
         // Measured: the remesh ends about a fifth over this count (edges run between 4/5 and 4/3 of the size).
         const expected = 1.2 * count;
@@ -1822,7 +2278,7 @@ class Remesher {
 
   private addVertex(p: V3, kind: number, key: number, h: number): number {
     const v = this.P.length / 3;
-    this.P.push(...p);
+    this.P.push(p[0], p[1], p[2]);
     this.N.push(0, 0, 0);
     this.H.push(h);
     this.K.push(kind);
@@ -1832,21 +2288,29 @@ class Remesher {
     return v;
   }
 
-  private split(a: number, b: number, tris: number[], key: number): number {
-    const mid = mul(add(this.at(a), this.at(b)), 0.5);
+  private split(a: number, b: number, ec: number, key: number): number {
+    const P = this.P;
+    const a3 = a * 3, b3 = b * 3;
+    const mid: V3 = [(P[a3]! + P[b3]!) * 0.5, (P[a3 + 1]! + P[b3 + 1]!) * 0.5, (P[a3 + 2]! + P[b3 + 2]!) * 0.5];
     const kind = key >= 0 ? 1 : key === NM ? 2 : 0;
-    const label = this.L[tris[0]!]!;
+    const label = this.L[this.et0]!;
     const placed = this.project(mid, kind, key, label);
-    const m = this.addVertex(placed.p, kind, key >= 0 ? key : -1, (this.H[a]! + this.H[b]!) / 2);
-    this.B[m] = tris.length === 1;
-    for (const t of tris) {
+    const m = this.addVertex(placed.p, kind, key >= 0 ? key : -1, (this.H[a]! + this.H[b]!) * 0.5);
+    this.B[m] = ec === 1;
+    const T = this.T;
+    const t0 = this.et0, t1 = this.et1;
+    for (let i = 0; i < ec; i += 1) {
+      const t = i === 0 ? t0 : i === 1 ? t1 : this.etExtra[i - 2]!;
       const c = this.third(t, a, b);
-      const t2 = this.T.length / 3;
-      const row = [this.T[t * 3]!, this.T[t * 3 + 1]!, this.T[t * 3 + 2]!];
-      this.T.push(...row.map((v) => (v === a ? m : v)));
+      const t2 = T.length / 3;
+      const t3 = t * 3;
+      const v0 = T[t3]!, v1 = T[t3 + 1]!, v2 = T[t3 + 2]!;
+      T.push(v0 === a ? m : v0, v1 === a ? m : v1, v2 === a ? m : v2);
       this.L.push(this.L[t]!);
-      for (let k = 0; k < 3; k += 1) if (this.T[t * 3 + k] === b) this.T[t * 3 + k] = m;
-      this.VT[b] = this.VT[b]!.filter((x) => x !== t);
+      if (v0 === b) T[t3] = m;
+      if (v1 === b) T[t3 + 1] = m;
+      if (v2 === b) T[t3 + 2] = m;
+      this.removeVT(b, t);
       this.VT[b]!.push(t2);
       this.VT[c]!.push(t2);
       this.VT[m]!.push(t, t2);
@@ -1862,78 +2326,125 @@ class Remesher {
   /** Split every edge longer than 4/3 of its size, the new edges queued behind, first in first out. */
   splitLong(): number {
     let total = 0;
-    const queue = this.edges();
-    for (let head = 0; head < queue.length; head += 1) {
-      const [a, b] = queue[head]!;
-      const tris = this.edgeTris(a, b);
-      if (tris.length === 0) continue;
-      const key = this.keyOf(a, b, tris);
+    const queue = this.edgesFlat();
+    for (let head = 0; head < queue.length; head += 2) {
+      const a = queue[head]!, b = queue[head + 1]!;
+      const ec = this.findEdgeTris(a, b);
+      if (ec === 0) continue;
+      const key = this.keyOfCurrent(ec);
       if (key === NM) continue;
-      if (dist(this.at(a), this.at(b)) <= (4 / 3) * ((this.H[a]! + this.H[b]!) / 2)) continue;
-      const thirds = tris.map((t) => this.third(t, a, b));
-      const m = this.split(a, b, tris, key);
-      queue.push([a, m], [m, b], ...thirds.map((c): [number, number] => [m, c]));
+      if (this.distV(a, b) <= (4 / 3) * ((this.H[a]! + this.H[b]!) * 0.5)) continue;
+      const c0 = this.third(this.et0, a, b);
+      const c1 = ec >= 2 ? this.third(this.et1, a, b) : -1;
+      const m = this.split(a, b, ec, key);
+      queue.push(a, m, m, b, m, c0);
+      if (ec >= 2) queue.push(m, c1);
       total += 1;
     }
     return total;
   }
 
   private kill(t: number) {
+    const t3 = t * 3;
     for (let k = 0; k < 3; k += 1) {
-      const v = this.T[t * 3 + k]!;
-      this.VT[v] = this.VT[v]!.filter((x) => x !== t);
-      this.T[t * 3 + k] = -1;
+      const v = this.T[t3 + k]!;
+      this.removeVT(v, t);
+      this.T[t3 + k] = -1;
     }
-  }
-
-  private triNormalWith(t: number, from: number, to: number): V3 {
-    const p = [0, 1, 2].map((k) => {
-      const v = this.T[t * 3 + k]!;
-      return this.at(v === from ? to : v);
-    });
-    return cross(sub(p[1]!, p[0]!), sub(p[2]!, p[0]!));
   }
 
   /** Collapse a into b (b stays where it is). */
   tryCollapse(a: number, b: number, stretch = 4 / 3): boolean {
     if (this.K[a] === 2 || this.K[a]! < 0) return false;
-    const tris = this.edgeTris(a, b);
-    if (tris.length === 0) return false;
-    const key = this.keyOf(a, b, tris);
+    const ec = this.findEdgeTris(a, b);
+    if (ec === 0) return false;
+    const key = this.keyOfCurrent(ec);
     if (key === NM) return false;
     if (this.K[a] === 1 && key !== this.C[a]) return false;
     if (this.K[a] === 0 && key !== -1) return false;
-    const ra = this.ring(a);
-    const rb = this.ring(b);
+    const t0 = this.et0;
+    const t1 = ec >= 2 ? this.et1 : -1;
+    const P = this.P;
+    const T = this.T;
+    const nv = P.length / 3;
+    this.ensureRingMark(nv);
+    const stampB = this.nextStamp();
+    const mark = this.ringMark;
+    const vtb = this.VT[b]!;
+    for (let i = 0; i < vtb.length; i += 1) {
+      const t3 = vtb[i]! * 3;
+      const u0 = T[t3]!, u1 = T[t3 + 1]!, u2 = T[t3 + 2]!;
+      if (u0 !== b) mark[u0] = stampB;
+      if (u1 !== b) mark[u1] = stampB;
+      if (u2 !== b) mark[u2] = stampB;
+    }
+    const stampA = this.nextStamp();
+    const vta = this.VT[a]!;
+    const ra = this.ringBuf;
+    ra.length = 0;
     let common = 0;
-    for (const x of ra) if (rb.has(x)) common += 1;
-    if (common !== tris.length) return false;
-    if (tris.length === 2 && this.isBoundary(a) && this.isBoundary(b) && key === -1) return false;
-    const pb = this.at(b);
-    for (const x of ra) {
+    for (let i = 0; i < vta.length; i += 1) {
+      const t3 = vta[i]! * 3;
+      for (let k = 0; k < 3; k += 1) {
+        const x = T[t3 + k]!;
+        if (x !== a && mark[x] !== stampA) {
+          if (mark[x] === stampB) common += 1;
+          mark[x] = stampA;
+          ra.push(x);
+        }
+      }
+    }
+    if (common !== ec) return false;
+    if (ec === 2 && this.B[a] && this.B[b] && key === -1) return false;
+    const b3 = b * 3;
+    const bx = P[b3]!, by = P[b3 + 1]!, bz = P[b3 + 2]!;
+    const hb = this.H[b]!;
+    const H = this.H;
+    const halfStretch = stretch * 0.5;
+    for (let i = 0; i < ra.length; i += 1) {
+      const x = ra[i]!;
       if (x === b) continue;
-      if (dist(pb, this.at(x)) > stretch * ((this.H[b]! + this.H[x]!) / 2)) return false;
+      const x3 = x * 3;
+      const d = Math.hypot(bx - P[x3]!, by - P[x3 + 1]!, bz - P[x3 + 2]!);
+      if (d > halfStretch * (hb + H[x]!)) return false;
     }
-    for (const t of this.VT[a]!) {
-      if (tris.includes(t)) continue;
-      const before = this.triNormalWith(t, -1, -1);
-      const after = this.triNormalWith(t, a, b);
-      const la = len(after);
+    const minRad = (5 * Math.PI) / 180;
+    for (let ti = 0; ti < vta.length; ti += 1) {
+      const t = vta[ti]!;
+      if (t === t0 || t === t1) continue;
+      const t3 = t * 3;
+      const u0 = T[t3]!, u1 = T[t3 + 1]!, u2 = T[t3 + 2]!;
+      const p0 = u0 * 3, p1 = u1 * 3, p2 = u2 * 3;
+      const x0 = P[p0]!, y0 = P[p0 + 1]!, z0 = P[p0 + 2]!;
+      const x1 = P[p1]!, y1 = P[p1 + 1]!, z1 = P[p1 + 2]!;
+      const x2 = P[p2]!, y2 = P[p2 + 1]!, z2 = P[p2 + 2]!;
+      const abx = x1 - x0, aby = y1 - y0, abz = z1 - z0;
+      const acx = x2 - x0, acy = y2 - y0, acz = z2 - z0;
+      const bnx = aby * acz - abz * acy, bny = abz * acx - abx * acz, bnz = abx * acy - aby * acx;
+      const q0x = u0 === a ? bx : x0, q0y = u0 === a ? by : y0, q0z = u0 === a ? bz : z0;
+      const q1x = u1 === a ? bx : x1, q1y = u1 === a ? by : y1, q1z = u1 === a ? bz : z1;
+      const q2x = u2 === a ? bx : x2, q2y = u2 === a ? by : y2, q2z = u2 === a ? bz : z2;
+      const e1x = q1x - q0x, e1y = q1y - q0y, e1z = q1z - q0z;
+      const e2x = q2x - q0x, e2y = q2y - q0y, e2z = q2z - q0z;
+      const anx = e1y * e2z - e1z * e2y, any = e1z * e2x - e1x * e2z, anz = e1x * e2y - e1y * e2x;
+      const la = Math.hypot(anx, any, anz);
       if (!(la > 1e-12)) return false;
-      if (dot(after, before) / (la * len(before)) < 0.5) return false;
-      const ps = [0, 1, 2].map((k) => {
-        const v = this.T[t * 3 + k]!;
-        return this.at(v === a ? b : v);
-      });
-      const old = [0, 1, 2].map((k) => this.at(this.T[t * 3 + k]!));
-      const after3 = Math.min(...angles(ps[0]!, ps[1]!, ps[2]!));
-      const before3 = Math.min(...angles(old[0]!, old[1]!, old[2]!));
-      if (after3 < (5 * Math.PI) / 180 && after3 < before3) return false;
+      if ((anx * bnx + any * bny + anz * bnz) / (la * Math.hypot(bnx, bny, bnz)) < 0.5) return false;
+      const after3 = minAngleXYZ(q0x, q0y, q0z, q1x, q1y, q1z, q2x, q2y, q2z);
+      if (after3 < minRad) {
+        const before3 = minAngleXYZ(x0, y0, z0, x1, y1, z1, x2, y2, z2);
+        if (after3 < before3) return false;
+      }
     }
-    for (const t of tris) this.kill(t);
-    for (const t of this.VT[a]!) {
-      for (let k = 0; k < 3; k += 1) if (this.T[t * 3 + k] === a) this.T[t * 3 + k] = b;
-      this.VT[b]!.push(t);
+    this.kill(t0);
+    if (t1 >= 0) this.kill(t1);
+    for (let ti = 0; ti < vta.length; ti += 1) {
+      const t = vta[ti]!;
+      const t3 = t * 3;
+      if (T[t3] === a) T[t3] = b;
+      if (T[t3 + 1] === a) T[t3 + 1] = b;
+      if (T[t3 + 2] === a) T[t3 + 2] = b;
+      vtb.push(t);
     }
     this.VT[a] = [];
     this.K[a] = -1;
@@ -1942,10 +2453,12 @@ class Remesher {
 
   collapseShort(): number {
     let did = 0;
-    for (const [a, b] of this.edges()) {
+    const list = this.edgesFlat();
+    for (let i = 0; i < list.length; i += 2) {
+      const a = list[i]!, b = list[i + 1]!;
       if (this.K[a]! < 0 || this.K[b]! < 0) continue;
-      if (this.edgeTris(a, b).length === 0) continue;
-      if (dist(this.at(a), this.at(b)) >= (4 / 5) * ((this.H[a]! + this.H[b]!) / 2)) continue;
+      if (!this.hasEdge(a, b)) continue;
+      if (this.distV(a, b) >= (4 / 5) * ((this.H[a]! + this.H[b]!) * 0.5)) continue;
       const ka = this.K[a]!;
       const kb = this.K[b]!;
       const ok = ka < kb ? this.tryCollapse(a, b) : kb < ka ? this.tryCollapse(b, a) : this.tryCollapse(a, b) || this.tryCollapse(b, a);
@@ -1955,45 +2468,73 @@ class Remesher {
   }
 
   private targetValence(v: number): number {
-    if (!this.isBoundary(v)) return 6;
+    if (!this.B[v]) return 6;
     let sum = 0;
-    for (const t of this.VT[v]!) {
-      const k = [0, 1, 2].find((j) => this.T[t * 3 + j] === v)!;
-      sum += angles(this.at(v), this.at(this.T[t * 3 + ((k + 1) % 3)]!), this.at(this.T[t * 3 + ((k + 2) % 3)]!))[0];
+    const vt = this.VT[v]!;
+    const T = this.T;
+    const P = this.P;
+    const v3 = v * 3;
+    const vx = P[v3]!, vy = P[v3 + 1]!, vz = P[v3 + 2]!;
+    for (let i = 0; i < vt.length; i += 1) {
+      const t3 = vt[i]! * 3;
+      const u0 = T[t3]!, u1 = T[t3 + 1]!, u2 = T[t3 + 2]!;
+      let p1: number, p2: number;
+      if (u0 === v) { p1 = u1 * 3; p2 = u2 * 3; }
+      else if (u1 === v) { p1 = u2 * 3; p2 = u0 * 3; }
+      else { p1 = u0 * 3; p2 = u1 * 3; }
+      const ux = P[p1]! - vx, uy = P[p1 + 1]! - vy, uz = P[p1 + 2]! - vz;
+      const wx = P[p2]! - vx, wy = P[p2 + 1]! - vy, wz = P[p2 + 2]! - vz;
+      const l = Math.hypot(ux, uy, uz) * Math.hypot(wx, wy, wz);
+      if (l > 0) {
+        const c = (ux * wx + uy * wy + uz * wz) / l;
+        sum += Math.acos(c < -1 ? -1 : c > 1 ? 1 : c);
+      }
     }
     return Math.max(2, Math.round(sum / (Math.PI / 3)) + 1);
   }
 
-  /** Flip a–b to c–d when `better` says so and the new pair keeps the surface's orientation. */
-  private tryFlip(a: number, b: number, better: (c: number, d: number, t1: number, t2: number) => boolean): boolean {
-    const tris = this.edgeTris(a, b);
-    if (tris.length !== 2 || this.keyOf(a, b, tris) !== -1) return false;
-    let [t1, t2] = tris as [number, number];
-    // t1 runs a→b.
-    const runs = (t: number, x: number, y: number) => [0, 1, 2].some((k) => this.T[t * 3 + k] === x && this.T[t * 3 + ((k + 1) % 3)] === y);
-    if (!runs(t1, a, b)) [t1, t2] = [t2, t1];
-    if (!runs(t1, a, b) || !runs(t2, b, a)) return false;
-    const c = this.third(t1, a, b);
-    const d = this.third(t2, a, b);
-    if (c === d || c < 0 || d < 0 || this.adjacent(c, d)) return false;
-    if (!better(c, d, t1, t2)) return false;
-    const pa = this.at(a);
-    const pb = this.at(b);
-    const pc = this.at(c);
-    const pd = this.at(d);
-    const old = unit(add(unit(cross(sub(pb, pa), sub(pc, pa))), unit(cross(sub(pa, pb), sub(pd, pb)))));
-    const n1 = cross(sub(pd, pa), sub(pc, pa));
-    const n2 = cross(sub(pc, pb), sub(pd, pb));
-    if (!(len(n1) > 1e-12 && len(n2) > 1e-12)) return false;
-    if (dot(unit(n1), old) < 0.5 || dot(unit(n2), old) < 0.5 || dot(unit(n1), unit(n2)) < 0.5) return false;
-    this.T[t1 * 3] = a;
-    this.T[t1 * 3 + 1] = d;
-    this.T[t1 * 3 + 2] = c;
-    this.T[t2 * 3] = b;
-    this.T[t2 * 3 + 1] = c;
-    this.T[t2 * 3 + 2] = d;
-    this.VT[a] = this.VT[a]!.filter((x) => x !== t2);
-    this.VT[b] = this.VT[b]!.filter((x) => x !== t1);
+  /** Commit flip of a–b to c–d on (t1, t2) if orientation stays valid. */
+  private commitFlip(a: number, b: number, c: number, d: number, t1: number, t2: number): boolean {
+    const P = this.P;
+    const a3 = a * 3, b3 = b * 3, c3 = c * 3, d3 = d * 3;
+    const ax = P[a3]!, ay = P[a3 + 1]!, az = P[a3 + 2]!;
+    const bx = P[b3]!, by = P[b3 + 1]!, bz = P[b3 + 2]!;
+    const cx = P[c3]!, cy = P[c3 + 1]!, cz = P[c3 + 2]!;
+    const dx = P[d3]!, dy = P[d3 + 1]!, dz = P[d3 + 2]!;
+    // old = unit(unit((b-a)×(c-a)) + unit((a-b)×(d-b)))
+    const o1x = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+    const o1y = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+    const o1z = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    const lo1 = Math.hypot(o1x, o1y, o1z) || 1;
+    const o2x = (ay - by) * (dz - bz) - (az - bz) * (dy - by);
+    const o2y = (az - bz) * (dx - bx) - (ax - bx) * (dz - bz);
+    const o2z = (ax - bx) * (dy - by) - (ay - by) * (dx - bx);
+    const lo2 = Math.hypot(o2x, o2y, o2z) || 1;
+    const ox = o1x / lo1 + o2x / lo2, oy = o1y / lo1 + o2y / lo2, oz = o1z / lo1 + o2z / lo2;
+    const lo = Math.hypot(ox, oy, oz) || 1;
+    const uox = ox / lo, uoy = oy / lo, uoz = oz / lo;
+    // n1 = (d-a)×(c-a), n2 = (c-b)×(d-b)
+    const n1x = (dy - ay) * (cz - az) - (dz - az) * (cy - ay);
+    const n1y = (dz - az) * (cx - ax) - (dx - ax) * (cz - az);
+    const n1z = (dx - ax) * (cy - ay) - (dy - ay) * (cx - ax);
+    const n2x = (cy - by) * (dz - bz) - (cz - bz) * (dy - by);
+    const n2y = (cz - bz) * (dx - bx) - (cx - bx) * (dz - bz);
+    const n2z = (cx - bx) * (dy - by) - (cy - by) * (dx - bx);
+    const l1 = Math.hypot(n1x, n1y, n1z);
+    const l2 = Math.hypot(n2x, n2y, n2z);
+    if (!(l1 > 1e-12 && l2 > 1e-12)) return false;
+    const u1x = n1x / l1, u1y = n1y / l1, u1z = n1z / l1;
+    const u2x = n2x / l2, u2y = n2y / l2, u2z = n2z / l2;
+    if (u1x * uox + u1y * uoy + u1z * uoz < 0.5 || u2x * uox + u2y * uoy + u2z * uoz < 0.5 || u1x * u2x + u1y * u2y + u1z * u2z < 0.5) return false;
+    const T = this.T;
+    T[t1 * 3] = a;
+    T[t1 * 3 + 1] = d;
+    T[t1 * 3 + 2] = c;
+    T[t2 * 3] = b;
+    T[t2 * 3 + 1] = c;
+    T[t2 * 3 + 2] = d;
+    this.removeVT(a, t2);
+    this.removeVT(b, t1);
     this.VT[c]!.push(t2);
     this.VT[d]!.push(t1);
     return true;
@@ -2001,27 +2542,27 @@ class Remesher {
 
   flipValence(): number {
     let did = 0;
-    const target = new Map<number, number>();
-    const tgt = (v: number) => {
-      let x = target.get(v);
-      if (x === undefined) {
-        x = this.targetValence(v);
-        target.set(v, x);
-      }
-      return x;
-    };
-    for (const [a, b] of this.edges()) {
-      const ok = this.tryFlip(a, b, (c, d) => {
-        const val = (v: number) => this.valence(v);
-        const va = val(a);
-        const vb = val(b);
-        const vc = val(c);
-        const vd = val(d);
-        const before = Math.abs(va - tgt(a)) + Math.abs(vb - tgt(b)) + Math.abs(vc - tgt(c)) + Math.abs(vd - tgt(d));
-        const after = Math.abs(va - 1 - tgt(a)) + Math.abs(vb - 1 - tgt(b)) + Math.abs(vc + 1 - tgt(c)) + Math.abs(vd + 1 - tgt(d));
-        return after < before;
-      });
-      if (ok) did += 1;
+    const nv = this.P.length / 3;
+    const targets = new Int8Array(nv);
+    const list = this.edgesFlat();
+    for (let i = 0; i < list.length; i += 2) {
+      const a = list[i]!, b = list[i + 1]!;
+      const ec = this.findEdgeTris(a, b);
+      if (ec !== 2 || this.keyOfCurrent(ec) !== -1) continue;
+      let t1 = this.et0, t2 = this.et1;
+      if (!this.triRuns(t1, a, b)) { const tmp = t1; t1 = t2; t2 = tmp; }
+      if (!this.triRuns(t1, a, b) || !this.triRuns(t2, b, a)) continue;
+      const c = this.third(t1, a, b);
+      const d = this.third(t2, a, b);
+      if (c === d || c < 0 || d < 0 || this.adjacent(c, d)) continue;
+      const va = this.valence(a), vb = this.valence(b), vc = this.valence(c), vd = this.valence(d);
+      const ta = targets[a]! || (targets[a] = this.targetValence(a));
+      const tb = targets[b]! || (targets[b] = this.targetValence(b));
+      const tc = targets[c]! || (targets[c] = this.targetValence(c));
+      const td = targets[d]! || (targets[d] = this.targetValence(d));
+      const before = Math.abs(va - ta) + Math.abs(vb - tb) + Math.abs(vc - tc) + Math.abs(vd - td);
+      const after = Math.abs(va - 1 - ta) + Math.abs(vb - 1 - tb) + Math.abs(vc + 1 - tc) + Math.abs(vd + 1 - td);
+      if (after < before && this.commitFlip(a, b, c, d, t1, t2)) did += 1;
     }
     return did;
   }
@@ -2029,47 +2570,81 @@ class Remesher {
   /** Tangential relaxation toward the area-weighted centre of the triangles around, then back onto the surface. */
   relax(): number {
     let moved = 0;
-    for (let v = 0; v < this.P.length / 3; v += 1) {
+    const P = this.P;
+    const N = this.N;
+    const T = this.T;
+    const nv = P.length / 3;
+    for (let v = 0; v < nv; v += 1) {
       const kind = this.K[v]!;
-      if ((kind !== 0 && kind !== 1) || this.VT[v]!.length === 0) continue;
-      const p = this.at(v);
+      const vt = this.VT[v]!;
+      if ((kind !== 0 && kind !== 1) || vt.length === 0) continue;
+      const v3 = v * 3;
+      const px = P[v3]!, py = P[v3 + 1]!, pz = P[v3 + 2]!;
       let cand: V3;
       if (kind === 0) {
-        let q: V3 = [0, 0, 0];
+        let qx = 0, qy = 0, qz = 0;
         let wsum = 0;
-        for (const t of this.VT[v]!) {
-          const ps = [0, 1, 2].map((k) => this.at(this.T[t * 3 + k]!));
-          const area = len(cross(sub(ps[1]!, ps[0]!), sub(ps[2]!, ps[0]!))) / 2;
-          q = add(q, mul(add(add(ps[0]!, ps[1]!), ps[2]!), area / 3));
+        for (let i = 0; i < vt.length; i += 1) {
+          const t3 = vt[i]! * 3;
+          const a3 = T[t3]! * 3, b3 = T[t3 + 1]! * 3, c3 = T[t3 + 2]! * 3;
+          const ax = P[a3]!, ay = P[a3 + 1]!, az = P[a3 + 2]!;
+          const bx = P[b3]!, by = P[b3 + 1]!, bz = P[b3 + 2]!;
+          const cx = P[c3]!, cy = P[c3 + 1]!, cz = P[c3 + 2]!;
+          const abx = bx - ax, aby = by - ay, abz = bz - az;
+          const acx = cx - ax, acy = cy - ay, acz = cz - az;
+          const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+          const area = Math.hypot(nx, ny, nz) * 0.5;
+          const w = area / 3;
+          qx += (ax + bx + cx) * w;
+          qy += (ay + by + cy) * w;
+          qz += (az + bz + cz) * w;
           wsum += area;
         }
         if (!(wsum > 0)) continue;
-        q = mul(q, 1 / wsum);
-        const n = this.nrm(v);
-        const d = sub(q, p);
-        cand = add(p, sub(d, mul(n, dot(n, d))));
+        const invW = 1 / wsum;
+        const dx = qx * invW - px, dy = qy * invW - py, dz = qz * invW - pz;
+        const nx = N[v3]!, ny = N[v3 + 1]!, nz = N[v3 + 2]!;
+        const nd = nx * dx + ny * dy + nz * dz;
+        cand = [px + dx - nx * nd, py + dy - ny * nd, pz + dz - nz * nd];
       } else {
         const nb = this.curveNeighbours(v);
         if (nb.length !== 2) continue;
-        cand = mul(add(this.at(nb[0]!), this.at(nb[1]!)), 0.5);
+        const a3 = nb[0]! * 3, b3 = nb[1]! * 3;
+        cand = [(P[a3]! + P[b3]!) * 0.5, (P[a3 + 1]! + P[b3 + 1]!) * 0.5, (P[a3 + 2]! + P[b3 + 2]!) * 0.5];
       }
-      const placed = this.project(cand, kind, this.C[v]!, this.L[this.VT[v]![0]!]!);
+      const placed = this.project(cand, kind, this.C[v]!, this.L[vt[0]!]!);
+      const plx = placed.p[0], ply = placed.p[1], plz = placed.p[2];
       let ok = true;
-      for (const t of this.VT[v]!) {
-        const before = this.triNormalWith(t, -1, -1);
-        const ps = [0, 1, 2].map((k) => (this.T[t * 3 + k] === v ? placed.p : this.at(this.T[t * 3 + k]!)));
-        const after = cross(sub(ps[1]!, ps[0]!), sub(ps[2]!, ps[0]!));
-        if (!(len(after) > 1e-12) || dot(after, before) / (len(after) * len(before)) < 0.3) {
+      for (let i = 0; i < vt.length; i += 1) {
+        const t3 = vt[i]! * 3;
+        const u0 = T[t3]!, u1 = T[t3 + 1]!, u2 = T[t3 + 2]!;
+        const a3 = u0 * 3, b3 = u1 * 3, c3 = u2 * 3;
+        const ax = P[a3]!, ay = P[a3 + 1]!, az = P[a3 + 2]!;
+        const bx = P[b3]!, by = P[b3 + 1]!, bz = P[b3 + 2]!;
+        const cx = P[c3]!, cy = P[c3 + 1]!, cz = P[c3 + 2]!;
+        const abx = bx - ax, aby = by - ay, abz = bz - az;
+        const acx = cx - ax, acy = cy - ay, acz = cz - az;
+        const bnx = aby * acz - abz * acy, bny = abz * acx - abx * acz, bnz = abx * acy - aby * acx;
+        const pa0x = u0 === v ? plx : ax, pa0y = u0 === v ? ply : ay, pa0z = u0 === v ? plz : az;
+        const pa1x = u1 === v ? plx : bx, pa1y = u1 === v ? ply : by, pa1z = u1 === v ? plz : bz;
+        const pa2x = u2 === v ? plx : cx, pa2y = u2 === v ? ply : cy, pa2z = u2 === v ? plz : cz;
+        const e1x = pa1x - pa0x, e1y = pa1y - pa0y, e1z = pa1z - pa0z;
+        const e2x = pa2x - pa0x, e2y = pa2y - pa0y, e2z = pa2z - pa0z;
+        const anx = e1y * e2z - e1z * e2y, any = e1z * e2x - e1x * e2z, anz = e1x * e2y - e1y * e2x;
+        const la = Math.hypot(anx, any, anz);
+        if (!(la > 1e-12) || (anx * bnx + any * bny + anz * bnz) / (la * Math.hypot(bnx, bny, bnz)) < 0.3) {
           ok = false;
           break;
         }
       }
       if (!ok) continue;
-      this.put(v, placed.p);
+      P[v3] = plx;
+      P[v3 + 1] = ply;
+      P[v3 + 2] = plz;
       if (placed.n) {
-        this.N[v * 3] = placed.n[0];
-        this.N[v * 3 + 1] = placed.n[1];
-        this.N[v * 3 + 2] = placed.n[2];
+        N[v3] = placed.n[0];
+        N[v3 + 1] = placed.n[1];
+        N[v3 + 2] = placed.n[2];
       } else this.setNormal(v);
       moved += 1;
     }
@@ -2080,32 +2655,61 @@ class Remesher {
   improve(minDeg: number): number {
     let did = 0;
     const floor = (minDeg * Math.PI) / 180;
-    for (let t = 0; t < this.T.length / 3; t += 1) {
-      if (!this.alive(t)) continue;
-      const vs = [this.T[t * 3]!, this.T[t * 3 + 1]!, this.T[t * 3 + 2]!];
-      const ang = angles(this.at(vs[0]!), this.at(vs[1]!), this.at(vs[2]!));
-      if (Math.min(...ang) >= floor) continue;
-      const big = ang.indexOf(Math.max(...ang));
-      const a = vs[(big + 1) % 3]!;
-      const b = vs[(big + 2) % 3]!;
-      const flipped = this.tryFlip(a, b, (c, d, t1, t2) => {
-        const pa = this.at(a);
-        const pb = this.at(b);
-        const pc = this.at(c);
-        const pd = this.at(d);
-        const before = Math.min(...angles(pa, pb, pc), ...angles(pb, pa, pd));
-        void t1;
-        void t2;
-        const after = Math.min(...angles(pa, pd, pc), ...angles(pb, pc, pd));
-        return after > before + 1e-9;
-      });
+    const cosFloor = Math.cos(floor);
+    const T = this.T;
+    const P = this.P;
+    const nt = T.length / 3;
+    for (let t = 0; t < nt; t += 1) {
+      const t3 = t * 3;
+      const v0 = T[t3]!;
+      if (v0 < 0) continue;
+      const v1 = T[t3 + 1]!, v2 = T[t3 + 2]!;
+      // Quick scalar angle check: if all three cosines <= cos(floor), min angle >= floor.
+      const a3 = v0 * 3, b3 = v1 * 3, c3 = v2 * 3;
+      const abx = P[b3]! - P[a3]!, aby = P[b3 + 1]! - P[a3 + 1]!, abz = P[b3 + 2]! - P[a3 + 2]!;
+      const acx = P[c3]! - P[a3]!, acy = P[c3 + 1]! - P[a3 + 1]!, acz = P[c3 + 2]! - P[a3 + 2]!;
+      const bcx = P[c3]! - P[b3]!, bcy = P[c3 + 1]! - P[b3 + 1]!, bcz = P[c3 + 2]! - P[b3 + 2]!;
+      const lab = Math.hypot(abx, aby, abz), lac = Math.hypot(acx, acy, acz), lbc = Math.hypot(bcx, bcy, bcz);
+      const c0 = lab * lac > 0 ? (abx * acx + aby * acy + abz * acz) / (lab * lac) : 1;
+      const c1 = lab * lbc > 0 ? (-abx * bcx - aby * bcy - abz * bcz) / (lab * lbc) : 1;
+      const c2 = lac * lbc > 0 ? (acx * bcx + acy * bcy + acz * bcz) / (lac * lbc) : 1;
+      if (c0 <= cosFloor && c1 <= cosFloor && c2 <= cosFloor) continue;
+      const ang0 = Math.acos(c0 < -1 ? -1 : c0 > 1 ? 1 : c0);
+      const ang1 = Math.acos(c1 < -1 ? -1 : c1 > 1 ? 1 : c1);
+      const ang2 = Math.acos(c2 < -1 ? -1 : c2 > 1 ? 1 : c2);
+      if (ang0 >= floor && ang1 >= floor && ang2 >= floor) continue;
+      const big = ang0 >= ang1 && ang0 >= ang2 ? 0 : ang1 >= ang2 ? 1 : 2;
+      const a = big === 0 ? v1 : big === 1 ? v2 : v0;
+      const b = big === 0 ? v2 : big === 1 ? v0 : v1;
+      let flipped = false;
+      const ec = this.findEdgeTris(a, b);
+      if (ec === 2 && this.keyOfCurrent(ec) === -1) {
+        let t1 = this.et0, t2 = this.et1;
+        if (!this.triRuns(t1, a, b)) { const tmp = t1; t1 = t2; t2 = tmp; }
+        if (this.triRuns(t1, a, b) && this.triRuns(t2, b, a)) {
+          const c = this.third(t1, a, b);
+          const d = this.third(t2, a, b);
+          if (c !== d && c >= 0 && d >= 0 && !this.adjacent(c, d)) {
+            const p0 = a * 3, p1 = b * 3, p2 = c * 3, p3 = d * 3;
+            const before = Math.min(
+              minAngleXYZ(P[p0]!, P[p0 + 1]!, P[p0 + 2]!, P[p1]!, P[p1 + 1]!, P[p1 + 2]!, P[p2]!, P[p2 + 1]!, P[p2 + 2]!),
+              minAngleXYZ(P[p1]!, P[p1 + 1]!, P[p1 + 2]!, P[p0]!, P[p0 + 1]!, P[p0 + 2]!, P[p3]!, P[p3 + 1]!, P[p3 + 2]!),
+            );
+            const after = Math.min(
+              minAngleXYZ(P[p0]!, P[p0 + 1]!, P[p0 + 2]!, P[p3]!, P[p3 + 1]!, P[p3 + 2]!, P[p2]!, P[p2 + 1]!, P[p2 + 2]!),
+              minAngleXYZ(P[p1]!, P[p1 + 1]!, P[p1 + 2]!, P[p2]!, P[p2 + 1]!, P[p2 + 2]!, P[p3]!, P[p3 + 1]!, P[p3 + 2]!),
+            );
+            if (after > before + 1e-9) flipped = this.commitFlip(a, b, c, d, t1, t2);
+          }
+        }
+      }
       if (flipped) {
         did += 1;
         continue;
       }
-      const small = ang.indexOf(Math.min(...ang));
-      const x = vs[(small + 1) % 3]!;
-      const y = vs[(small + 2) % 3]!;
+      const small = ang0 <= ang1 && ang0 <= ang2 ? 0 : ang1 <= ang2 ? 1 : 2;
+      const x = small === 0 ? v1 : small === 1 ? v2 : v0;
+      const y = small === 0 ? v2 : small === 1 ? v0 : v1;
       const kx = this.K[x]!;
       const ky = this.K[y]!;
       const ok = kx < ky ? this.tryCollapse(x, y, 1.6) : ky < kx ? this.tryCollapse(y, x, 1.6) : this.tryCollapse(x, y, 1.6) || this.tryCollapse(y, x, 1.6);
@@ -2148,13 +2752,29 @@ class Remesher {
   /** The largest distance from an edge's middle to the original surface of its triangles. */
   chordError(): number {
     let worst = 0;
-    for (const [a, b] of this.edges()) {
-      const tris = this.edgeTris(a, b);
-      if (tris.length === 0) continue;
-      const m = mul(add(this.at(a), this.at(b)), 0.5);
-      let best = Infinity;
-      for (const label of new Set(tris.map((t) => this.L[t]!))) best = Math.min(best, this.patches.get(label)!.closest(m)?.d ?? Infinity);
-      if (Number.isFinite(best)) worst = Math.max(worst, best);
+    const list = this.edgesFlat();
+    const P = this.P;
+    for (let i = 0; i < list.length; i += 2) {
+      const a = list[i]!, b = list[i + 1]!;
+      const ec = this.findEdgeTris(a, b);
+      if (ec === 0) continue;
+      const a3 = a * 3, b3 = b * 3;
+      const mx = (P[a3]! + P[b3]!) * 0.5;
+      const my = (P[a3 + 1]! + P[b3 + 1]!) * 0.5;
+      const mz = (P[a3 + 2]! + P[b3 + 2]!) * 0.5;
+      const l0 = this.L[this.et0]!;
+      let best = this.patches.get(l0)!.closestDist(mx, my, mz);
+      if (ec >= 2) {
+        const l1 = this.L[this.et1]!;
+        if (l1 !== l0) best = Math.min(best, this.patches.get(l1)!.closestDist(mx, my, mz));
+      }
+      if (ec > 2) {
+        for (let k = 0; k < this.etExtra.length; k += 1) {
+          const lk = this.L[this.etExtra[k]!]!;
+          if (lk !== l0) best = Math.min(best, this.patches.get(lk)!.closestDist(mx, my, mz));
+        }
+      }
+      if (Number.isFinite(best) && best > worst) worst = best;
     }
     return worst;
   }
@@ -2259,7 +2879,7 @@ export function ribWall(solidIn: RibWallSolid, options: RibWallOptions): RibWall
   const tSelect = now();
 
   // --- The solid's rays, and thickness on the original wall triangles for the target edge.
-  const rays = meshRays(ix.pos);
+  const rays = (ix.rays ??= meshRays(ix.pos));
   const facing = Math.cos((WALL_FACING_DEG * Math.PI) / 180);
   let areaIn = 0;
   const samples: number[] = [];

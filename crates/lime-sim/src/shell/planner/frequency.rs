@@ -14,6 +14,8 @@
 
 use std::time::Instant;
 
+use rayon::prelude::*;
+
 use super::select::{network_volume, CandChain, DRib};
 use super::trace;
 use super::{
@@ -22,6 +24,7 @@ use super::{
     RibPlanRequest, TARGET_FLOOR,
 };
 use crate::error::SimError;
+use crate::shell::model::PreparedRib;
 use crate::shell::modes::{cluster_count, ModeSet};
 use crate::shell::{LoadCase, Rib, ShellLoad, ShellModel, ShellResult};
 use crate::units::{norm, sub};
@@ -125,6 +128,12 @@ pub(crate) fn plan(
 
     let mut model = ShellModel::new(mesh1, req.material, &holds1, req.options.shell())?;
     model.set_threads(1);
+    let workers = match req.options.workers {
+        0 => std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(8),
+        n => n,
+    };
     let ctx_width = rules.width;
     let ctx_profile = rules.profile;
     let ctx_max = rules.max_height;
@@ -152,6 +161,7 @@ pub(crate) fn plan(
             density,
             ask,
             shortlist,
+            workers,
             ctx_width,
             ctx_max,
             ctx_profile,
@@ -174,9 +184,9 @@ pub(crate) fn plan(
                 d: d.clone(),
             })
             .collect();
-        let solved = clean_solve_freq(req, &s0, &cases0, &gribs)?;
+        let mut solved = clean_solve_freq(req, &s0, &cases0, &gribs)?;
         stats.solves += 2;
-        let (bare_hz, rib_hz, eigen_s) = frequencies(req, &solved, density)?;
+        let (bare_hz, rib_hz, eigen_s) = frequencies(&mut solved, density)?;
         stats.seconds.solver += eigen_s;
         hz = [bare_hz, rib_hz];
         let got = if bare_hz > 0.0 { rib_hz / bare_hz } else { 1.0 };
@@ -461,6 +471,7 @@ fn grow(
     density: f64,
     factor: f64,
     shortlist: usize,
+    workers: usize,
     width: f64,
     max_height: f64,
     profile: super::RibProfile,
@@ -487,6 +498,27 @@ fn grow(
     let mut used = vec![false; cands.len()];
     let mut first_eff: Option<f64> = None;
     let mut reached = false;
+    let w_count = workers.max(1);
+    let mut pool_models: Vec<ShellModel> = (0..w_count)
+        .map(|_| {
+            let mut m = model.clone_bare();
+            m.set_threads(1);
+            m
+        })
+        .collect();
+    // Precompute each candidate's layout, beam stiffnesses, and factored Kψψ once.
+    let prepared: Vec<Option<Result<Vec<PreparedRib>, SimError>>> = cands
+        .par_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let d = candidate_rib(c, i, width, max_height, profile);
+            if d.heights().iter().all(|&h| h < min_height) {
+                return None;
+            }
+            let ribs = d.solver_ribs(side);
+            Some(ribs.iter().map(|r| model.prepare_rib(r)).collect())
+        })
+        .collect();
     for _round in 0..cands.len() {
         if rep.cancelled() {
             return Ok(Grown {
@@ -519,36 +551,36 @@ fn grow(
             .collect();
         let gram = model.mass_gram(&vectors, &mass);
         let base_volume = network_volume(pos, &design);
-        let mut pool: Vec<(f64, usize, f64)> = Vec::new();
-        for (i, c) in cands.iter().enumerate() {
-            // A cancel here keeps the ribs already accepted and does not
-            // finish this round or start another.
-            if rep.cancelled() {
-                return Ok(Grown {
-                    design,
-                    reached: false,
-                    stopped: true,
-                });
-            }
-            if used[i] {
-                continue;
-            }
-            let d = candidate_rib(c, i, width, max_height, profile);
-            if d.heights().iter().all(|&h| h < min_height) {
-                continue;
-            }
-            let trial = {
-                let mut t = design.clone();
-                t.push(d.clone());
-                t
-            };
-            let dv = network_volume(pos, &trial) - base_volume;
-            if dv <= 0.0 {
-                continue;
-            }
-            let ribs = d.solver_ribs(side);
-            let shift = model.cluster_shift_mass(&ribs, &vectors, &gram)?;
-            pool.push((shift / dv, i, dv));
+        let mut pool: Vec<(f64, usize, f64)> = (0..cands.len())
+            .into_par_iter()
+            .filter(|&i| !used[i])
+            .filter_map(|i| {
+                if rep.cancelled() {
+                    return None;
+                }
+                let preps_res = prepared[i].as_ref()?;
+                let d = candidate_rib(&cands[i], i, width, max_height, profile);
+                let mut trial = design.clone();
+                trial.push(d);
+                let dv = network_volume(pos, &trial) - base_volume;
+                if dv <= 0.0 {
+                    return None;
+                }
+                match preps_res {
+                    Ok(preps) => match model.cluster_shift_prepared(preps, &vectors, &gram) {
+                        Ok(shift) => Some(Ok((shift / dv, i, dv))),
+                        Err(e) => Some(Err(e)),
+                    },
+                    Err(e) => Some(Err(e.clone())),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if rep.cancelled() {
+            return Ok(Grown {
+                design,
+                reached: false,
+                stopped: true,
+            });
         }
         if pool.is_empty() {
             break;
@@ -560,32 +592,58 @@ fn grow(
             shortlist.min(pool.len())
         };
         pool.truncate(keep);
-        let mut best: Option<(f64, usize, DRib, f64)> = None;
-        for &(_, i, dv) in &pool {
-            if rep.cancelled() {
-                return Ok(Grown {
-                    design,
-                    reached: false,
-                    stopped: true,
-                });
-            }
-            let d = candidate_rib(&cands[i], i, width, max_height, profile);
-            let mut trial = design.clone();
-            trial.push(d.clone());
-            let built: Vec<Rib> = trial.iter().flat_map(|r| r.solver_ribs(side)).collect();
-            model.set_ribs(built)?;
-            let got = model.lowest_modes(density, 1)?;
-            let w = got.modes[0].omega2.sqrt();
-            let eff = (w - omega) / dv;
+        let base_ribs: Vec<Rib> = design.iter().flat_map(|r| r.solver_ribs(side)).collect();
+        let trials: Vec<(usize, f64, DRib, Vec<Rib>)> = pool
+            .iter()
+            .map(|&(_, i, dv)| {
+                let d = candidate_rib(&cands[i], i, width, max_height, profile);
+                let mut built = base_ribs.clone();
+                built.extend(d.solver_ribs(side));
+                (i, dv, d, built)
+            })
+            .collect();
+        let mut last_qs = vec![None::<usize>; w_count];
+        let mut evals: Vec<(usize, Result<f64, SimError>)> = pool_models
+            .par_iter_mut()
+            .zip(last_qs.par_iter_mut())
+            .enumerate()
+            .flat_map_iter(|(k, (m, last_q))| {
+                let mut out = Vec::new();
+                for (q, (_, _, _, built)) in trials.iter().enumerate() {
+                    if q % w_count != k {
+                        continue;
+                    }
+                    if rep.cancelled() {
+                        break;
+                    }
+                    let res = m.set_ribs(built.clone()).and_then(|()| {
+                        let got = m.lowest_modes(density, 1)?;
+                        Ok(got.modes[0].omega2.sqrt())
+                    });
+                    *last_q = Some(q);
+                    out.push((q, res));
+                }
+                out
+            })
+            .collect();
+        if rep.cancelled() {
+            return Ok(Grown {
+                design,
+                reached: false,
+                stopped: true,
+            });
+        }
+        evals.sort_by_key(|x| x.0);
+        let mut best: Option<(f64, usize, usize, DRib, f64)> = None;
+        for (q, res) in evals {
+            let w = res?;
+            let (i, dv, d, _) = &trials[q];
+            let eff = (w - omega) / *dv;
             if best.as_ref().is_none_or(|b| eff > b.0) {
-                best = Some((eff, i, d, w));
+                best = Some((eff, q, *i, d.clone(), w));
             }
         }
-        // Put the model back on the ribs already accepted. The trials
-        // above replaced them.
-        let accepted: Vec<Rib> = design.iter().flat_map(|r| r.solver_ribs(side)).collect();
-        model.set_ribs(accepted)?;
-        let Some((eff, i, mut d, w)) = best else {
+        let Some((eff, best_q, i, mut d, w)) = best else {
             break;
         };
         if eff <= 0.0 {
@@ -602,8 +660,15 @@ fn grow(
         d.gain = (w - omega) / omega0;
         omega = w;
         design.push(d);
-        let with: Vec<Rib> = design.iter().flat_map(|r| r.solver_ribs(side)).collect();
-        model.set_ribs(with)?;
+        // Reuse the winning worker's model (already factored for `with`) when
+        // it was the last trial solved on that worker.
+        let wk = best_q % w_count;
+        if last_qs[wk] == Some(best_q) {
+            std::mem::swap(model, &mut pool_models[wk]);
+        } else {
+            let with: Vec<Rib> = design.iter().flat_map(|r| r.solver_ribs(side)).collect();
+            model.set_ribs(with)?;
+        }
         let ratio = if omega0 > 0.0 { omega / omega0 } else { 1.0 };
         let within = if factor > 1.0 {
             ((ratio - 1.0) / (factor - 1.0)).clamp(0.0, 1.0)
@@ -666,26 +731,12 @@ fn clean_solve_freq(
     super::clean_solve(req, s0, cases0, ribs)
 }
 
-fn frequencies(
-    req: &RibPlanRequest,
-    clean: &Clean,
-    density: f64,
-) -> Result<(f64, f64, f64), SimError> {
-    let mut model = ShellModel::new(
-        clean.mesh.clone(),
-        req.material,
-        &clean.holds,
-        req.options.shell(),
-    )?;
-    model.set_threads(1);
-    let bare = model.lowest_modes(density, 1)?;
-    let built: Vec<Rib> = clean
-        .design
-        .iter()
-        .flat_map(|d| d.solver_ribs(req.rules.side))
-        .collect();
-    model.set_ribs(built)?;
-    let ribbed = model.lowest_modes(density, 1)?;
+fn frequencies(clean: &mut Clean, density: f64) -> Result<(f64, f64, f64), SimError> {
+    let mut bare_model = clean.model.clone_bare();
+    bare_model.set_threads(1);
+    let bare = bare_model.lowest_modes(density, 1)?;
+    // `clean.model` already has `clean.design` ribs set and factored.
+    let ribbed = clean.model.lowest_modes(density, 1)?;
     Ok((
         bare.modes[0].hz,
         ribbed.modes[0].hz,

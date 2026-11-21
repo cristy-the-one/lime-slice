@@ -62,8 +62,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use rayon::prelude::*;
-
 use crate::error::SimError;
 use crate::units::{dot, norm, sub};
 
@@ -1007,17 +1005,12 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             .min(8),
         n => n,
     };
-    let models: Vec<ShellModel> = (0..workers)
-        .into_par_iter()
-        .map(|_| {
-            ShellModel::new(
-                mesh1.clone(),
-                req.material,
-                &holds1,
-                req.options.shell(),
-            )
-        })
-        .collect::<Result<_, _>>()?;
+    let base_model = ShellModel::new(mesh1, req.material, &holds1, req.options.shell())?;
+    let mut models = Vec::with_capacity(workers);
+    for _ in 1..workers {
+        models.push(base_model.clone_bare());
+    }
+    models.push(base_model);
     let mut ev = select::Evaluator::new(
         models,
         cases1.clone(),
@@ -1296,12 +1289,11 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 rep: &rep,
             };
             // The two searches are independent: run them side by side.
+            let clean_model = clean.model;
             let (th, gr) = rayon::join(
                 || {
                     baseline::thickening(
-                        &clean.mesh,
-                        req.material,
-                        &clean.holds,
+                        clean_model,
                         &clean.cases,
                         &baseline::ThickeningGoal {
                             mix: &clean.mix,
@@ -1510,10 +1502,12 @@ fn resize(
     let holds = resolve_holds(&s, &req.holds);
     let cases = remap_cases(&s, input.cases0, req.mesh.triangles.len());
     let mesh = s.to_mesh();
-    let models: Vec<ShellModel> = (0..workers)
-        .into_par_iter()
-        .map(|_| ShellModel::new(mesh.clone(), req.material, &holds, req.options.shell()))
-        .collect::<Result<_, _>>()?;
+    let base_model = ShellModel::new(mesh, req.material, &holds, req.options.shell())?;
+    let mut models = Vec::with_capacity(workers);
+    for _ in 1..workers {
+        models.push(base_model.clone_bare());
+    }
+    models.push(base_model);
     let mut ev = select::Evaluator::new(
         models,
         cases,
@@ -1595,6 +1589,7 @@ fn scale3(a: [f64; 3], k: f64) -> [f64; 3] {
 struct Clean {
     mesh: ShellMesh,
     pos: Vec<[f64; 3]>,
+    #[allow(dead_code)]
     holds: Vec<ShellHold>,
     cases: Vec<LoadCase>,
     /// The ribs on the clean mesh, and for each the index of the rib it is
@@ -1614,6 +1609,8 @@ struct Clean {
     factor: f64,
     case_factors: Vec<f64>,
     case_deflection_mm: Vec<[f64; 2]>,
+    /// The clean mesh's model with `design` ribs set and factored.
+    model: ShellModel,
 }
 
 fn clean_solve(
@@ -1628,7 +1625,7 @@ fn clean_solve(
     let mesh = s.to_mesh();
     let mut model = ShellModel::new(mesh.clone(), req.material, &holds, req.options.shell())?;
     model.set_threads(1);
-    let bare = model.solve_cases(&cases)?;
+    let bare = model.solve_cases_light(&cases, false)?;
     let bare_cs: Vec<f64> = bare.iter().map(|r| r.compliance).collect();
     let mix = select::Mix::from_bare(
         &req.case_weights,
@@ -1670,6 +1667,7 @@ fn clean_solve(
         ends,
         eval,
         volume,
+        model,
     })
 }
 

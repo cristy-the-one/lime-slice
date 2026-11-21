@@ -352,6 +352,86 @@ function closestOnTriangle(p: V3, a: V3, b: V3, c: V3): { q: V3; w: V3 } {
   return { q: add(a, add(mul(ab, v), mul(ac, w))), w: [1 - v - w, v, w] };
 }
 
+/** Squared distance from (px, py, pz) to triangle at `pos[off..off+9]`, zero allocations. */
+function triDistSq(px: number, py: number, pz: number, pos: ArrayLike<number>, off: number): number {
+  const ax = pos[off]!, ay = pos[off + 1]!, az = pos[off + 2]!;
+  const bx = pos[off + 3]!, by = pos[off + 4]!, bz = pos[off + 5]!;
+  const cx = pos[off + 6]!, cy = pos[off + 7]!, cz = pos[off + 8]!;
+  const abx = bx - ax, aby = by - ay, abz = bz - az;
+  const acx = cx - ax, acy = cy - ay, acz = cz - az;
+  const apx = px - ax, apy = py - ay, apz = pz - az;
+  const d1 = abx * apx + aby * apy + abz * apz;
+  const d2 = acx * apx + acy * apy + acz * apz;
+  if (d1 <= 0 && d2 <= 0) return apx * apx + apy * apy + apz * apz;
+  const bpx = px - bx, bpy = py - by, bpz = pz - bz;
+  const d3 = abx * bpx + aby * bpy + abz * bpz;
+  const d4 = acx * bpx + acy * bpy + acz * bpz;
+  if (d3 >= 0 && d4 <= d3) return bpx * bpx + bpy * bpy + bpz * bpz;
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const v = d1 / (d1 - d3);
+    const dx = ax + abx * v - px, dy = ay + aby * v - py, dz = az + abz * v - pz;
+    return dx * dx + dy * dy + dz * dz;
+  }
+  const cpx = px - cx, cpy = py - cy, cpz = pz - cz;
+  const d5 = abx * cpx + aby * cpy + abz * cpz;
+  const d6 = acx * cpx + acy * cpy + acz * cpz;
+  if (d6 >= 0 && d5 <= d6) return cpx * cpx + cpy * cpy + cpz * cpz;
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const w = d2 / (d2 - d6);
+    const dx = ax + acx * w - px, dy = ay + acy * w - py, dz = az + acz * w - pz;
+    return dx * dx + dy * dy + dz * dz;
+  }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+    const dx = bx + (cx - bx) * w - px, dy = by + (cy - by) * w - py, dz = bz + (cz - bz) * w - pz;
+    return dx * dx + dy * dy + dz * dz;
+  }
+  const den = 1 / (va + vb + vc);
+  const v = vb * den;
+  const w = vc * den;
+  const dx = ax + abx * v + acx * w - px;
+  const dy = ay + aby * v + acy * w - py;
+  const dz = az + abz * v + acz * w - pz;
+  return dx * dx + dy * dy + dz * dz;
+}
+
+/** In-place median partition of `order[from..to)` around `target` by `(centre[id * 3 + axis], id)`. */
+function nthElement(order: Int32Array, centre: Float64Array, from: number, to: number, target: number, axis: number) {
+  let lo = from;
+  let hi = to - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const a = order[lo]!, b = order[mid]!, c = order[hi]!;
+    const ca = centre[a * 3 + axis]!, cb = centre[b * 3 + axis]!, cc = centre[c * 3 + axis]!;
+    const ab = ca < cb || (ca === cb && a < b);
+    const bc = cb < cc || (cb === cc && b < c);
+    const ac = ca < cc || (ca === cc && a < c);
+    const pivIdx = ab ? (bc ? mid : ac ? hi : lo) : (ac ? lo : bc ? hi : mid);
+    const piv = order[pivIdx]!;
+    const cpiv = centre[piv * 3 + axis]!;
+    order[pivIdx] = order[hi]!;
+    order[hi] = piv;
+    let store = lo;
+    for (let i = lo; i < hi; i += 1) {
+      const x = order[i]!;
+      const cx = centre[x * 3 + axis]!;
+      if (cx < cpiv || (cx === cpiv && x < piv)) {
+        order[i] = order[store]!;
+        order[store] = x;
+        store += 1;
+      }
+    }
+    order[hi] = order[store]!;
+    order[store] = piv;
+    if (store === target) return;
+    if (store < target) lo = store + 1;
+    else hi = store - 1;
+  }
+}
+
 /** A point on the surface: where, its outward normal there, and the face it lies on. */
 export interface SurfacePoint {
   point: V3;
@@ -422,34 +502,51 @@ export class RibSurface {
       }
     }
     // --- A box tree: nodes split at the median of their longest side, four triangles to a leaf.
-    const order = Int32Array.from({ length: count }, (_, i) => i);
+    const order = new Int32Array(count);
+    for (let i = 0; i < count; i += 1) order[i] = i;
     const centre = new Float64Array(count * 3);
+    const pos = this.pos;
     for (let t = 0; t < count; t += 1) {
-      for (let k = 0; k < 3; k += 1) centre[t * 3 + k] = (this.pos[t * 9 + k]! + this.pos[t * 9 + 3 + k]! + this.pos[t * 9 + 6 + k]!) / 3;
+      const o = t * 9;
+      const t3 = t * 3;
+      centre[t3] = (pos[o]! + pos[o + 3]! + pos[o + 6]!) / 3;
+      centre[t3 + 1] = (pos[o + 1]! + pos[o + 4]! + pos[o + 7]!) / 3;
+      centre[t3 + 2] = (pos[o + 2]! + pos[o + 5]! + pos[o + 8]!) / 3;
     }
-    const boxes: number[] = [];
-    const kids: number[] = [];
-    const range: number[] = [];
+    const cap = Math.max(1, count * 2);
+    const box = new Float64Array(cap * 6);
+    const kids = new Int32Array(cap * 2);
+    const range = new Int32Array(cap * 2);
+    let nodes = 0;
     const build = (from: number, to: number): number => {
-      const id = range.length / 2;
-      range.push(from, to);
-      kids.push(-1, -1);
-      const lo: V3 = [Infinity, Infinity, Infinity];
-      const hi: V3 = [-Infinity, -Infinity, -Infinity];
+      const id = nodes;
+      nodes += 1;
+      range[id * 2] = from;
+      range[id * 2 + 1] = to;
+      kids[id * 2] = -1;
+      kids[id * 2 + 1] = -1;
+      let lx = Infinity, ly = Infinity, lz = Infinity;
+      let hx = -Infinity, hy = -Infinity, hz = -Infinity;
       for (let i = from; i < to; i += 1) {
-        const t = order[i]!;
-        for (let c = 0; c < 9; c += 1) {
-          const k = c % 3;
-          lo[k] = Math.min(lo[k]!, this.pos[t * 9 + c]!);
-          hi[k] = Math.max(hi[k]!, this.pos[t * 9 + c]!);
+        const o = order[i]! * 9;
+        for (let k = 0; k < 9; k += 3) {
+          const x = pos[o + k]!, y = pos[o + k + 1]!, z = pos[o + k + 2]!;
+          if (x < lx) lx = x;
+          if (y < ly) ly = y;
+          if (z < lz) lz = z;
+          if (x > hx) hx = x;
+          if (y > hy) hy = y;
+          if (z > hz) hz = z;
         }
       }
-      boxes.push(...lo, ...hi);
+      const b6 = id * 6;
+      box[b6] = lx; box[b6 + 1] = ly; box[b6 + 2] = lz;
+      box[b6 + 3] = hx; box[b6 + 4] = hy; box[b6 + 5] = hz;
       if (to - from <= 4) return id;
-      const axis = hi[0] - lo[0] >= hi[1] - lo[1] && hi[0] - lo[0] >= hi[2] - lo[2] ? 0 : hi[1] - lo[1] >= hi[2] - lo[2] ? 1 : 2;
-      const part = Array.from(order.subarray(from, to)).sort((x, y) => centre[x * 3 + axis]! - centre[y * 3 + axis]! || x - y);
-      order.set(part, from);
+      const sx = hx - lx, sy = hy - ly, sz = hz - lz;
+      const axis = sx >= sy && sx >= sz ? 0 : sy >= sz ? 1 : 2;
       const mid = (from + to) >> 1;
+      nthElement(order, centre, from, to, mid, axis);
       const left = build(from, mid);
       const right = build(mid, to);
       kids[id * 2] = left;
@@ -458,9 +555,9 @@ export class RibSurface {
     };
     if (count > 0) build(0, count);
     this.order = order;
-    this.box = Float64Array.from(boxes);
-    this.kids = Int32Array.from(kids);
-    this.range = Int32Array.from(range);
+    this.box = box.subarray(0, nodes * 6);
+    this.kids = kids.subarray(0, nodes * 2);
+    this.range = range.subarray(0, nodes * 2);
   }
 
   private corner(t: number, k: number): V3 {
@@ -468,42 +565,93 @@ export class RibSurface {
     return [this.pos[i]!, this.pos[i + 1]!, this.pos[i + 2]!];
   }
 
-  private boxGap(node: number, p: V3): number {
-    let sum = 0;
-    for (let k = 0; k < 3; k += 1) {
-      const lo = this.box[node * 6 + k]!;
-      const hi = this.box[node * 6 + 3 + k]!;
-      const d = p[k]! < lo ? lo - p[k]! : p[k]! > hi ? p[k]! - hi : 0;
-      sum += d * d;
+  private boxGapSq(node: number, px: number, py: number, pz: number): number {
+    const b = node * 6;
+    const box = this.box;
+    const lx = box[b]!, ly = box[b + 1]!, lz = box[b + 2]!;
+    const hx = box[b + 3]!, hy = box[b + 4]!, hz = box[b + 5]!;
+    const dx = px < lx ? lx - px : px > hx ? px - hx : 0;
+    const dy = py < ly ? ly - py : py > hy ? py - hy : 0;
+    const dz = pz < lz ? lz - pz : pz > hz ? pz - hz : 0;
+    return dx * dx + dy * dy + dz * dz;
+  }
+
+  /** Minimum squared distance to any triangle within `radius`, tightening as closer triangles are found. */
+  private nearestDistSq(px: number, py: number, pz: number, radius: number): number {
+    if (this.range.length === 0) return Infinity;
+    let bestSq = Number.isFinite(radius) ? radius * radius : Infinity;
+    const kids = this.kids;
+    const range = this.range;
+    const order = this.order;
+    const pos = this.pos;
+    const stack = [0];
+    while (stack.length) {
+      const node = stack.pop()!;
+      if (this.boxGapSq(node, px, py, pz) > bestSq) continue;
+      const left = kids[node * 2]!;
+      if (left >= 0) {
+        const right = kids[node * 2 + 1]!;
+        const gl = this.boxGapSq(left, px, py, pz);
+        const gr = this.boxGapSq(right, px, py, pz);
+        if (gl <= gr) {
+          if (gr <= bestSq) stack.push(right);
+          if (gl <= bestSq) stack.push(left);
+        } else {
+          if (gl <= bestSq) stack.push(left);
+          if (gr <= bestSq) stack.push(right);
+        }
+        continue;
+      }
+      const from = range[node * 2]!;
+      const to = range[node * 2 + 1]!;
+      for (let i = from; i < to; i += 1) {
+        const dSq = triDistSq(px, py, pz, pos, order[i]! * 9);
+        if (dSq < bestSq) bestSq = dSq;
+      }
     }
-    return Math.sqrt(sum);
+    return bestSq;
   }
 
   /** Every triangle within `radius` of p, with its closest point and the weights there. */
   private near(p: V3, radius: number, visit: (t: number, q: V3, w: V3, d: number) => void) {
     if (this.range.length === 0) return;
+    const px = p[0], py = p[1], pz = p[2];
+    const radiusSq = radius * radius;
+    const kids = this.kids;
+    const range = this.range;
+    const order = this.order;
+    const pos = this.pos;
     const stack = [0];
     while (stack.length) {
       const node = stack.pop()!;
-      if (this.boxGap(node, p) > radius) continue;
-      const left = this.kids[node * 2]!;
+      if (this.boxGapSq(node, px, py, pz) > radiusSq) continue;
+      const left = kids[node * 2]!;
       if (left >= 0) {
-        stack.push(this.kids[node * 2 + 1]!, left);
+        stack.push(kids[node * 2 + 1]!, left);
         continue;
       }
-      for (let i = this.range[node * 2]!; i < this.range[node * 2 + 1]!; i += 1) {
-        const t = this.order[i]!;
+      const from = range[node * 2]!;
+      const to = range[node * 2 + 1]!;
+      for (let i = from; i < to; i += 1) {
+        const t = order[i]!;
+        const dSq = triDistSq(px, py, pz, pos, t * 9);
+        if (dSq > radiusSq) continue;
         const { q, w } = closestOnTriangle(p, this.corner(t, 0), this.corner(t, 1), this.corner(t, 2));
-        const d = len(sub(q, p));
+        const d = Math.sqrt(dSq);
         if (d <= radius) visit(t, q, w, d);
       }
     }
   }
 
   private normalOf(t: number, w: V3): V3 {
-    const n: V3 = [0, 0, 0];
-    for (let k = 0; k < 3; k += 1) for (let m = 0; m < 3; m += 1) n[m] += this.cornerNormal[t * 9 + k * 3 + m]! * w[k]!;
-    return unit(n);
+    const o = t * 9;
+    const cn = this.cornerNormal;
+    const w0 = w[0], w1 = w[1], w2 = w[2];
+    const nx = cn[o]! * w0 + cn[o + 3]! * w1 + cn[o + 6]! * w2;
+    const ny = cn[o + 1]! * w0 + cn[o + 4]! * w1 + cn[o + 7]! * w2;
+    const nz = cn[o + 2]! * w0 + cn[o + 5]! * w1 + cn[o + 8]! * w2;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    return [nx / l, ny / l, nz / l];
   }
 
   /**
@@ -511,11 +659,9 @@ export class RibSurface {
    * the one whose normal is nearest `prefer` wins, so a path keeps to the face it is on.
    */
   closest(p: V3, radius: number, prefer?: V3): SurfacePoint | null {
-    let best = Infinity;
-    this.near(p, radius, (_t, _q, _w, d) => {
-      best = Math.min(best, d);
-    });
-    if (!Number.isFinite(best)) return null;
+    const bestSq = this.nearestDistSq(p[0], p[1], p[2], radius);
+    if (!Number.isFinite(bestSq) || bestSq > radius * radius) return null;
+    const best = Math.sqrt(bestSq);
     let out: SurfacePoint | null = null;
     let score = -Infinity;
     let chosen = -1;
