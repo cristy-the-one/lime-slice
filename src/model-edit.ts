@@ -12,7 +12,7 @@ import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { BoreShape } from "./model-gear.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
-import { isPartKind, type PartKind } from "./model-part.ts";
+import { heatRow, isPartKind, isShaftFit, type PartKind } from "./model-part.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
 import { draftOp } from "./model-request.ts";
@@ -302,9 +302,12 @@ export interface EditPanel {
   /** A ring gear's step opens with the panel on Ring, a rack's on Rack. */
   ring?: boolean;
   rack?: boolean;
-  /** A fastener's kind and nominal, for the selects beside the numbers. */
+  /** A part's kind and the selects beside the numbers. */
   partKind?: PartKind;
   nominal?: string;
+  fit?: string;
+  article?: string;
+  hollow?: boolean;
   /**
    * A split's base axis, and whether its normal is that axis turned around: a face split on a face that points down an
    * axis keeps the other side, which the panel's X, Y and Z cannot say on their own.
@@ -370,10 +373,19 @@ export function draftPanelOp(
 }
 
 /** The panel's choices that are not numbers: a polygon's Flats or Corners, a gear's bore shape. */
-function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack" | "partKind" | "nominal"> {
+function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack" | "partKind" | "nominal" | "fit" | "article" | "hollow"> {
   if (spec.primitive === "polygon") return { flats: spec.flats ?? false };
   if (spec.primitive === "gear") return { boreShape: spec.boreShape ?? "round", ...(spec.internal ? { ring: true } : {}), ...(spec.rack ? { rack: true } : {}) };
-  if (spec.primitive === "part") return { partKind: isPartKind(spec.partKind) ? spec.partKind : "nut", nominal: spec.nominal || "M6" };
+  if (spec.primitive === "part") {
+    const partKind = isPartKind(spec.partKind) ? spec.partKind : "nut";
+    return {
+      partKind,
+      nominal: spec.nominal || "M6",
+      ...(partKind === "shaft" ? { fit: isShaftFit(spec.fit) ? spec.fit : "sliding" } : {}),
+      ...(partKind === "heat-set" ? { article: spec.article || "RX-M3x5,7" } : {}),
+      ...(partKind === "spacer" ? { hollow: spec.hollow !== false } : {}),
+    };
+  }
   return {};
 }
 
@@ -529,6 +541,15 @@ function sizeFields(spec: PrimitiveSpec): Record<string, number> {
         };
       }
       if (kind === "hex") return { modelPartLength: spec.length ?? 20, modelPartThick: thick };
+      if (kind === "spacer") return { modelPartDiameter: spec.diameter ?? 10, modelPartLength: spec.height > 0 ? spec.height : 12, modelPartBore: spec.bore ?? 4.2 };
+      if (kind === "shaft") return { modelPartDiameter: spec.diameter ?? 8, modelPartLength: spec.height > 0 ? spec.height : 40, modelPartAllowance: spec.allowance ?? 0.1 };
+      if (kind === "collar") return { modelPartBore: spec.bore ?? 8, modelPartDiameter: spec.diameter ?? 14, modelPartLength: spec.height > 0 ? spec.height : 6, modelPartScrew: spec.setScrew ?? 3 };
+      if (kind === "heat-set") {
+        const row = heatRow(spec.article);
+        const boss = row ? row.d1 + 2 * row.w : 7.8;
+        const length = row?.l ?? 5.7;
+        return { modelPartDiameter: spec.diameter ?? boss, modelPartLength: spec.height > 0 ? spec.height : length, modelPartTaper: spec.taper ?? 0, modelPartAllowance: spec.allowance ?? 0 };
+      }
       return { modelPartAllowance: spec.allowance ?? 0, modelPartThick: thick };
     }
   }

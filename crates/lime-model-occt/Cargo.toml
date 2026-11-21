@@ -26,3 +26,5 @@ cc = "1"
 
 [dev-dependencies]
 lime-model-load = { path = "../lime-model-load" }
+# The shaft test's oracle is `horology::shaft`, the same function the kernel calls.
+lime-recipe = { path = "../lime-recipe" }

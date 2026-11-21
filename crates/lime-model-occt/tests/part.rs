@@ -303,7 +303,7 @@ fn unknown_sizes_and_a_washer_with_no_wall_are_refused() {
     refused(
         "part-no-kind",
         json!({ "primitive": "part", "origin": [0.0, 0.0, 0.0] }),
-        "A part needs a kind: nut, socket, hex, or washer.",
+        "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, or heat-set.",
     );
     refused(
         "part-m7-nut",
@@ -334,5 +334,185 @@ fn unknown_sizes_and_a_washer_with_no_wall_are_refused() {
         "part-thread",
         json!({ "primitive": "part", "partKind": "nut", "nominal": "M6", "boreKind": "thread", "origin": [0.0, 0.0, 0.0] }),
         "A modelled thread is not available yet. Use tap drill.",
+    );
+}
+
+fn cylinder(radius: f64, height: f64) -> f64 {
+    std::f64::consts::PI * radius * radius * height
+}
+
+fn tube_volume(od: f64, hole: f64, height: f64) -> f64 {
+    cylinder(od / 2.0, height) - cylinder(hole / 2.0, height)
+}
+
+/// A cone (or a cylinder, when the taper is 0) less its through hole.
+fn frustum_volume(boss: f64, taper: f64, hole: f64, height: f64) -> f64 {
+    let big = boss / 2.0;
+    let small = (boss - taper) / 2.0;
+    let pi = std::f64::consts::PI;
+    pi * height / 3.0 * (big * big + big * small + small * small) - cylinder(hole / 2.0, height)
+}
+
+#[test]
+fn fittings_match_the_analytic_solid() {
+    if !kernel() {
+        return;
+    }
+    // Spacer. Outside, hole, length. The closed form is the tube, or the solid cylinder when hollow is off.
+    for (name, od, hole, length, hollow) in [
+        ("spacer-10", 10.0, 4.2, 12.0, true),
+        ("spacer-5", 5.0, 2.0, 6.0, true),
+        ("spacer-30", 30.0, 12.0, 50.0, true),
+        ("spacer-solid", 10.0, 4.2, 12.0, false),
+    ] {
+        let r = od / 2.0;
+        let want = if hollow { tube_volume(od, hole, length) } else { cylinder(r, length) };
+        let mut solid = json!({ "primitive": "part", "partKind": "spacer", "diameter": od, "bore": hole, "height": length, "origin": [0.0, 0.0, 0.0] });
+        if !hollow {
+            solid["hollow"] = json!(false);
+        }
+        check_open(name, solid, want, [[-r, -r, 0.0], [r, r, length]]);
+    }
+    // Shaft. The diameter is the crate's, not a table copied into this test. Length is the default 40; allowance 0.1.
+    for nominal in [3.0, 8.0, 25.0] {
+        for (fit_name, fit) in [
+            ("running", lime_recipe::horology::Fit::Running),
+            ("sliding", lime_recipe::horology::Fit::Sliding),
+            ("press", lime_recipe::horology::Fit::Press),
+        ] {
+            let diameter = lime_recipe::horology::shaft(nominal, fit, 0.1).expect("3, 8 and 25 mm are inside 0 to 30");
+            let r = diameter / 2.0;
+            check_open(
+                &format!("shaft-{nominal}-{fit_name}"),
+                json!({ "primitive": "part", "partKind": "shaft", "diameter": nominal, "fit": fit_name, "allowance": 0.1, "origin": [0.0, 0.0, 0.0] }),
+                cylinder(r, 40.0),
+                [[-r, -r, 0.0], [r, r, 40.0]],
+            );
+        }
+    }
+    // Heat-set. The rows are section 4.10. The taper case widens the boss by the taper, so the top is exactly d1 + 2W.
+    for (name, article, d1, w, length, d3, taper) in [
+        ("heat-m3", "RX-M3x5,7", 4.6, 1.6, 5.7, 4.0, 0.0),
+        ("heat-m2", "RX-M2x4", 3.6, 1.3, 4.0, 3.2, 0.0),
+        ("heat-m8", "RX-M8x12,7", 10.1, 4.5, 12.7, 9.6, 0.0),
+        ("heat-taper", "RX-M3x5,7", 4.6, 1.6, 5.7, 4.0, 1.0),
+    ] {
+        let boss = d1 + 2.0 * w + taper;
+        let r = boss / 2.0;
+        let mut solid = json!({ "primitive": "part", "partKind": "heat-set", "article": article, "origin": [0.0, 0.0, 0.0] });
+        if taper > 0.0 {
+            solid["diameter"] = json!(boss);
+            solid["taper"] = json!(taper);
+        }
+        check_open(name, solid, frustum_volume(boss, taper, d3, length), [[-r, -r, 0.0], [r, r, length]]);
+    }
+}
+
+/// The set-screw hole and the slit cut curved faces, so the volume sits between two boxes around those cuts.
+fn collar_bounds(od: f64, bore: f64, width: f64, screw: f64) -> (f64, f64, f64) {
+    let tube = tube_volume(od, bore, width);
+    let depth = (od - bore) / 2.0 + 0.2;
+    let screw_tool = cylinder(screw / 2.0, depth);
+    let slit_y = (od - bore) / 2.0 + 0.4;
+    let slit_tool = 0.6 * slit_y * (width + 0.4);
+    // A square inside the screw's circle, only as far as that square stays inside the outside radius.
+    let side = screw / 2.0_f64.sqrt();
+    let screw_len = (((od / 2.0).powi(2) - (side / 2.0).powi(2)).sqrt() - bore / 2.0).max(0.0);
+    let screw_in = side * side * screw_len;
+    let outer = ((od / 2.0).powi(2) - 0.3_f64.powi(2)).sqrt();
+    let inner = ((bore / 2.0).powi(2) - 0.3_f64.powi(2)).sqrt();
+    let slit_in = 0.6 * (outer - inner) * width;
+    (tube, tube - screw_tool - slit_tool, tube - screw_in.max(0.0) - slit_in.max(0.0))
+}
+
+fn probe_at(key: &str, at: [f64; 3], radius: f64) -> Value {
+    call(json!({
+        "call": "probe", "key": key, "node": 0,
+        "op": { "kind": "boolean", "op": "cut", "primitive": "sphere", "origin": at, "radius": radius }
+    }))
+}
+
+#[test]
+fn a_collar_is_between_the_tube_and_the_cuts_and_the_cuts_land() {
+    if !kernel() {
+        return;
+    }
+    for (name, od, bore, width, screw) in [("collar-14", 14.0, 8.0, 6.0, 3.0), ("collar-16", 16.0, 10.0, 8.0, 4.0)] {
+        let (tube, low, high) = collar_bounds(od, bore, width, screw);
+        let opened = ok(json!({
+            "call": "open", "key": name, "chordMm": 0.01,
+            "primitive": { "primitive": "part", "partKind": "collar", "diameter": od, "bore": bore, "height": width, "setScrew": screw, "origin": [0.0, 0.0, 0.0] }
+        }));
+        let got = volume(&opened);
+        let box_ = bounds(&opened);
+        println!(
+            "part {name}: measured volume {got} mm3, analytic tube {tube} mm3, volume window {low}..{high} mm3, measured bounds {box_:?}, analytic bounds {:?}",
+            [[-od / 2.0, -od / 2.0, 0.0], [od / 2.0, od / 2.0, width]]
+        );
+        assert!(got + 1e-6 >= low && got <= high + 1e-6, "{name}: {got} is not in {low}..{high} (tube {tube})");
+        near_box(box_, [[-od / 2.0, -od / 2.0, 0.0], [od / 2.0, od / 2.0, width]]);
+        let piece = step_check(name, 0);
+        assert!(piece.valid && piece.closed && piece.solids == 1, "{name}: {piece:?}");
+        let before = got;
+        // Just inside the bore, on the set-screw axis. The point is in the bore; the sphere reaches the wall, so a hole that stops short of the bore removes metal.
+        let into_bore = [0.0, bore / 2.0 - 0.05, width / 2.0];
+        let bored = probe_at(name, into_bore, 0.4);
+        let bored_volume = if bored.get("error").is_some() { before } else { volume(&bored) };
+        println!("part {name}: set-screw point {into_bore:?} probe {bored_volume} mm3, solid {before} mm3");
+        assert!((bored_volume - before).abs() < 0.01, "{name}: the set screw does not reach the bore ({bored_volume} vs {before})");
+        // The slit cuts through the ring on −Y.
+        let slit_at = [0.0, -od / 2.0 + 0.5, width / 2.0];
+        let slit = probe_at(name, slit_at, 0.2);
+        let slit_volume = if slit.get("error").is_some() { before } else { volume(&slit) };
+        println!("part {name}: slit point {slit_at:?} probe {slit_volume} mm3, solid {before} mm3");
+        assert!((slit_volume - before).abs() < 0.01, "{name}: the slit does not cut the ring ({slit_volume} vs {before})");
+        // The same radius, 20° off −Y, is still material.
+        let y = -(od / 2.0 - 0.5);
+        let turned = [-y * 20.0_f64.to_radians().sin(), y * 20.0_f64.to_radians().cos(), width / 2.0];
+        let metal = probe_at(name, turned, 0.2);
+        assert!(metal.get("error").is_none(), "{name}: {}", short(&metal));
+        println!("part {name}: wall point {turned:?} probe {} mm3, solid {before} mm3", volume(&metal));
+        assert!(before - volume(&metal) > 0.02, "{name}: the wall beside the slit is empty");
+    }
+}
+
+#[test]
+fn fittings_name_the_limit_they_refuse() {
+    if !kernel() {
+        return;
+    }
+    let refused = |key: &str, solid: Value, sentence: &str| {
+        let reply = call(json!({ "call": "open", "key": key, "primitive": solid }));
+        assert_eq!(reply["error"].as_str(), Some(sentence), "{}", short(&reply));
+    };
+    refused(
+        "shaft-40",
+        json!({ "primitive": "part", "partKind": "shaft", "diameter": 40.0, "origin": [0.0, 0.0, 0.0] }),
+        "A printed shaft is only defined over 0 to 30 mm.",
+    );
+    refused(
+        "heat-thin",
+        json!({ "primitive": "part", "partKind": "heat-set", "article": "RX-M3x5,7", "diameter": 7.0, "origin": [0.0, 0.0, 0.0] }),
+        "The boss must be at least 7.8 mm across, the insert's outside plus twice the minimum wall.",
+    );
+    refused(
+        "heat-taper",
+        json!({ "primitive": "part", "partKind": "heat-set", "article": "RX-M3x5,7", "taper": 0.2, "origin": [0.0, 0.0, 0.0] }),
+        "A taper of 0.2 mm needs a boss at least 8 mm across.",
+    );
+    refused(
+        "collar-wall",
+        json!({ "primitive": "part", "partKind": "collar", "bore": 8.0, "diameter": 9.0, "origin": [0.0, 0.0, 0.0] }),
+        "The outside diameter must be at least 10 mm, 2 mm above the bore.",
+    );
+    refused(
+        "collar-screw",
+        json!({ "primitive": "part", "partKind": "collar", "diameter": 14.0, "bore": 8.0, "height": 6.0, "setScrew": 5.5, "origin": [0.0, 0.0, 0.0] }),
+        "The set screw must be at most 5 mm so 0.5 mm of the collar stays on each side.",
+    );
+    refused(
+        "spacer-hole",
+        json!({ "primitive": "part", "partKind": "spacer", "diameter": 10.0, "bore": 10.0, "hollow": true, "origin": [0.0, 0.0, 0.0] }),
+        "The hole is at least as wide as the outside diameter. Turn hollow off, or use a smaller hole.",
     );
 }

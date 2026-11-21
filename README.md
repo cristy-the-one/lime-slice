@@ -14,7 +14,7 @@ The pictures are the web UI in the dark theme against a local engine with the Op
 
 ### Model a part
 
-Model edits a STEP solid, or starts one from a primitive, a gear, a fastener, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
+Model edits a STEP solid, or starts one from a primitive, a gear, a fastener, a fitting, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
 
 ![Sketching a 40 × 24 mm rectangle on the bed, extruding it 16 mm, cutting a 10 mm hole up through it, then editing the first extrude down to 12 mm from History.](docs/screenshots/clip-model.gif)
 

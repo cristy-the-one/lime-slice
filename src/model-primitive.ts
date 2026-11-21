@@ -66,6 +66,7 @@ export interface PrimitiveSpec {
   backlash?: number;
   profileShift?: number;
   phaseDeg?: number;
+  /** A gear's bore, a spacer's hole, or a collar's bore, mm. */
   bore?: number;
   boreShape?: GearFields["boreShape"];
   boreFlat?: number;
@@ -77,7 +78,7 @@ export interface PrimitiveSpec {
   /** A straight rack (stage 3) and its bar under the roots. */
   rack?: boolean;
   back?: number;
-  // --- A fastener (src/model-part.ts). `height` 0 is the table row. Only a part carries these.
+  // --- A part (src/model-part.ts). `height` 0 is a fastener's table row, or a fitting's default length.
   partKind?: PartFields["partKind"];
   nominal?: string;
   allowance?: number;
@@ -86,6 +87,12 @@ export interface PrimitiveSpec {
   headHeight?: number;
   socketDepth?: number;
   boreKind?: PartFields["boreKind"];
+  diameter?: number;
+  hollow?: boolean;
+  fit?: PartFields["fit"];
+  article?: string;
+  taper?: number;
+  setScrew?: number;
 }
 
 /** A gear spec's gear numbers, or null for any other kind. */
@@ -283,6 +290,13 @@ function partSpec(spec: PrimitiveSpec): PartSpec {
     headHeight: spec.headHeight,
     socketDepth: spec.socketDepth,
     boreKind: spec.boreKind,
+    diameter: spec.diameter,
+    bore: spec.bore,
+    hollow: spec.hollow,
+    fit: spec.fit,
+    article: spec.article,
+    taper: spec.taper,
+    setScrew: spec.setScrew,
     height: spec.height,
   };
 }
@@ -363,8 +377,9 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
         lathe(shift(part.hex.z0), 6, -Math.PI / 2 - Math.PI / 6, corner, corner, part.hex.z1 - part.hex.z0, part.hex.hole);
       }
       for (const round of part.rounds) {
-        if (round.z1 > round.z0 && round.radius > 0 && round.hole < round.radius) {
-          lathe(shift(round.z0), ROUND, 0, round.radius, round.radius, round.z1 - round.z0, round.hole);
+        const top = round.top ?? round.radius;
+        if (round.z1 > round.z0 && (round.radius > 0 || top > 0) && round.hole < Math.min(round.radius || top, top || round.radius)) {
+          lathe(shift(round.z0), ROUND, 0, round.radius, top, round.z1 - round.z0, round.hole);
         }
       }
       break;
