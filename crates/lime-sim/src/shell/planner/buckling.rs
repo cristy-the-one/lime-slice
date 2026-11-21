@@ -364,6 +364,9 @@ fn ideal_notes(vent: bool) -> Vec<String> {
     notes
 }
 
+/// Carried by a buckling plan that has ribs: the same sentence a frequency plan gives.
+pub const AS_TRACED: &str = "Loose ends are not extended or closed, and ribs stay at full height.";
+
 fn buckling_notes(
     lam: [f64; 2],
     asked: f64,
@@ -381,6 +384,9 @@ fn buckling_notes(
         if unreached.is_some() {
             notes.push(reached_short(lam[1], asked));
         }
+        // As a frequency plan, a buckling plan leaves each trace where it stopped and
+        // plans no comparisons. Say so, or the card's loose-end line reads as a fault.
+        notes.push(AS_TRACED.to_string());
     }
     if vent {
         notes.push("Venting was skipped: a buckling plan is not notched.".to_string());

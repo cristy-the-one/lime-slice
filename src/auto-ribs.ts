@@ -893,7 +893,8 @@ export function comparisonLines(plan: RibPlanResult, densityGCm3: number): strin
   const g = (mm3: number) => `${fmt(grams(mm3, densityGCm3), 1)} g`;
   if (plan.thickening) out.push(`A wall ${fmt(plan.thickening.addedThicknessMm, 2)} mm thicker all over is as stiff for ${g(plan.thickening.addedVolumeMm3)}.`);
   if (plan.grid) out.push(plan.grid.reached && plan.grid.volumeMm3 != null ? `An even grid of the same ribs is as stiff for ${g(plan.grid.volumeMm3)} (${fmt(plan.grid.pitchMm, 0)} mm apart).` : `No even grid of the same ribs, down to ${fmt(plan.grid.pitchMm, 0)} mm apart, is as stiff.`);
-  if (!plan.thickening && !plan.grid) out.push(plan.stoppedEarly ? "Stopped before the comparisons with a thicker wall and an even grid." : "The comparisons were not computed.");
+  // A frequency or buckling plan never compares: say why, not only that it did not.
+  if (!plan.thickening && !plan.grid) out.push(plan.stoppedEarly ? "Stopped before the comparisons with a thicker wall and an even grid." : plan.frequencyHz || plan.bucklingFactor ? "A thicker wall and an even grid are compared only on a Stiffer plan." : "The comparisons were not computed.");
   else if (plan.notBetterThanBaseline) out.push(`These ribs are no better: a thicker wall or an even grid gets the same stiffness for no more material than the ribs' ${g(plan.ribVolumeMm3)}.`);
   else out.push(`The ribs need ${g(plan.ribVolumeMm3)}, less than either.`);
   return out;

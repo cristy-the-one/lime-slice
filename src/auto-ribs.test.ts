@@ -4,7 +4,7 @@
  * reopens with, and the preview's geometry (the rib under a ray, the boxes drawn).
  */
 import { readFileSync } from "node:fs";
-import { againstCase, alreadyEnough, bucklesAt, loadTimes, reachedShort } from "./auto-ribs-plan.ts";
+import { againstCase, alreadyEnough, AS_TRACED, bucklesAt, bucklingNotes, IDEAL_BUCKLING, loadTimes, reachedShort } from "./auto-ribs-plan.ts";
 import {
   applicable,
   cardFromRibNet,
@@ -162,6 +162,9 @@ eq("the plan beats both", comparisonLines(plan, 1.24), ["A wall 0.62 mm thicker 
 check("a plan that beats neither says so", comparisonLines({ ...plan, notBetterThanBaseline: true }, 1.24).at(-1)!.startsWith("These ribs are no better"));
 eq("an unreached grid", comparisonLines({ ...plan, grid: { reached: false, pitchMm: 10, volumeMm3: null, gridVolumeMm3: 1 } }, 1.24)[1], "No even grid of the same ribs, down to 10 mm apart, is as stiff.");
 eq("stopped before the comparisons", comparisonLines({ ...plan, thickening: null, grid: null, stoppedEarly: true }, 1.24), ["Stopped before the comparisons with a thicker wall and an even grid."]);
+eq("a stiffness plan with no comparisons says they were not computed", comparisonLines({ ...plan, thickening: null, grid: null }, 1.24), ["The comparisons were not computed."]);
+eq("a buckling plan says why there are no comparisons", comparisonLines({ ...plan, thickening: null, grid: null, bucklingFactor: { bare: 1.3, ribbed: 3.1 } }, 1.24), ["A thicker wall and an even grid are compared only on a Stiffer plan."]);
+eq("a frequency plan says why there are no comparisons", comparisonLines({ ...plan, thickening: null, grid: null, frequencyHz: { bare: 100, ribbed: 140 } }, 1.24), ["A thicker wall and an even grid are compared only on a Stiffer plan."]);
 eq("a target not met", goalLine({ kind: "stiffer", factor: 3 }, { ...plan, goalMet: false, stiffnessFactor: 2.3 }, 1.24), "Reached 2.3× of the 3× asked: no further rib pays enough.");
 eq("a met goal says nothing", goalLine({ kind: "stiffer", factor: 3 }, plan, 1.24), "");
 eq("loose ends said with why", looseLine({ ...plan, looseEnds: [{ rib: 0, end: 1, reason: "noRibZone" }, { rib: 2, end: 0, reason: "noRibZone" }] }), "2 rib ends stop short of a wall or another rib: 2 at a keep-clear zone.");
@@ -391,6 +394,8 @@ eq("the gain is the buckling sentence", resultNumbers({ ...runDone(startedRun(),
 const editedBucklingGain = resultNumbers({ ...runDone(startedRun(), { ok: true, plan: bucklePlan }), removed: [0] }, 1.24, 200000)?.gain;
 eq("an edited buckling run's gain names the edit", editedBucklingGain, "Before the edit: Buckles at 3.1× the load (was 0.9×).");
 console.log("an edited buckling run's gain names the edit:", editedBucklingGain);
+eq("a buckling plan with ribs says its ends are as traced", bucklingNotes(1.3, 3.1, 3, 2, false, true), [IDEAL_BUCKLING, bucklesAt(3.1, 1.3), AS_TRACED]);
+eq("a wall that already holds has no as-traced note", bucklingNotes(4, 4, 3, 0, false, true), [IDEAL_BUCKLING, alreadyEnough(4, 3)]);
 eq("an edit of a buckling plan does not say stiffness", editedNote({ ...runDone(startedRun(), { ok: true, plan: bucklePlan }), removed: [0] }).includes("the buckling load is the plan's before the edit"), true);
 eq("a reached note is not repeated as the goal line", goalLine({ kind: "buckling", factor: 3 }, { ...bucklePlan, goalMet: false, notes: [...(bucklePlan.notes ?? []), "Reached 1.7× of the 3× asked: no further rib pays enough."] }, 1.24), "");
 
