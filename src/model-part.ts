@@ -817,7 +817,8 @@ export function partRowText(kind: string, nominal: string, article?: string, hol
     return row ? `Ruthex ${row.article}: insert ⌀${row.d1} mm, wall ${row.w} mm, hole ⌀${row.d3} mm, tall ${row.l} mm.` : "";
   }
   if (kind === "gt2") return "An approximate GT2 groove. Pitch 2 mm, no flanges.";
-  if (kind === "v") return V_PULLEY;
+  // The card already shows why in its note (partProblem); repeating it here printed the sentence twice.
+  if (kind === "v") return "";
   if (kind === "plate" || kind === "bracket") {
     const choice = (holeFor ?? "").trim() || "M4";
     if (choice === "free") return "Free diameter, 2 to 30 mm. The number is the hole.";
