@@ -131,7 +131,7 @@ pub struct Solid {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_deg: Option<f64>,
     /// The bore's size, mm: a gear's round or D bore diameter, or a hexagon's width across its flats (none or 0 for no bore).
-    /// On a part, a spacer's hole or a collar's bore.
+    /// On a part, a spacer's hole, a collar's bore, or a plate or L-bracket's free hole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bore: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,7 +158,7 @@ pub struct Solid {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back: Option<f64>,
     // --- A part (docs/plan-mech-parts.md). `height` 0 is a fastener's table row, or a fitting's default length.
-    /// nut, socket, hex, washer, spacer, shaft, collar, or heat-set. Not `kind`: a boolean op is already tagged `kind`.
+    /// nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, or bracket. Not `kind`: a boolean op is already tagged `kind`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_kind: Option<String>,
     /// M3, M4, M5, M6, M8, M10, M12, M16, M20, M24. M6 when absent.
@@ -200,6 +200,15 @@ pub struct Solid {
     /// Collar set-screw diameter, mm. 3 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_screw: Option<f64>,
+    /// Plate or L-bracket: M3–M24, or "free". M4 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole_for: Option<String>,
+    /// Plate hole count, or holes per leg of an L-bracket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holes: Option<f64>,
+    /// Plate pitch-circle diameter, mm. 0 or absent lays the holes on the inset rectangle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch_circle: Option<f64>,
 }
 
 impl Solid {

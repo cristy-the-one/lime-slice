@@ -712,7 +712,7 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
     if (typeof value.nominal !== "string") return undefined;
     spec.nominal = value.nominal;
   }
-  for (const key of ["allowance", "length", "headDiameter", "headHeight", "socketDepth", "diameter", "taper", "setScrew"] as const) {
+  for (const key of ["allowance", "length", "headDiameter", "headHeight", "socketDepth", "diameter", "taper", "setScrew", "holes", "pitchCircle"] as const) {
     const raw = value[key];
     if (raw === undefined) continue;
     if (!finite(raw)) return undefined;
@@ -733,6 +733,10 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   if (value.article !== undefined) {
     if (typeof value.article !== "string") return undefined;
     spec.article = value.article;
+  }
+  if (value.holeFor !== undefined) {
+    if (typeof value.holeFor !== "string") return undefined;
+    spec.holeFor = value.holeFor;
   }
   return spec;
 }
