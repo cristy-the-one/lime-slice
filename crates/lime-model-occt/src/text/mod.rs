@@ -221,8 +221,8 @@ pub const DEFAULT_LINE_SPACING: f64 = 1.3;
 #[derive(Clone, Debug)]
 pub struct Laid {
     pub faces: Vec<GlyphFace>,
-    /// Which laid-out character (or merged cluster) each face came from, parallel to `faces`.
-    pub(crate) groups: Vec<usize>,
+    /// Which unmerged character occurrence each face came from (`None` when merged with another face), parallel to `faces`.
+    pub(crate) groups: Vec<Option<usize>>,
     /// Each line's advance width, mm.
     pub widths: Vec<f64>,
     /// The ink's box: min u, min v, max u, max v. Empty text has none.
@@ -618,6 +618,7 @@ fn faces_of_region(ch: char, region: &Region) -> Vec<GlyphFace> {
 /// Letters that touch or overlap are united in 2D, so the build never sees two outlines crossing. Only the faces that meet
 /// another are rebuilt (as polylines); every other face keeps its curves. Faces keep their order, a united group taking the
 /// place of its first.
+#[cfg(test)]
 pub fn merge_overlaps(faces: Vec<GlyphFace>) -> Vec<GlyphFace> {
     let groups: Vec<usize> = (0..faces.len()).collect();
     merge_overlaps_grouped(faces, groups).0
@@ -626,7 +627,7 @@ pub fn merge_overlaps(faces: Vec<GlyphFace>) -> Vec<GlyphFace> {
 fn merge_overlaps_grouped(
     faces: Vec<GlyphFace>,
     groups: Vec<usize>,
-) -> (Vec<GlyphFace>, Vec<usize>) {
+) -> (Vec<GlyphFace>, Vec<Option<usize>>) {
     let n = faces.len();
     let rings: Vec<Vec<Vec<P>>> = faces
         .iter()
@@ -674,7 +675,7 @@ fn merge_overlaps_grouped(
         let members: Vec<usize> = (0..n).filter(|&k| roots[k] == i).collect();
         if members.len() == 1 {
             out.push(faces[i].clone());
-            out_groups.push(groups[i]);
+            out_groups.push(Some(groups[i]));
             continue;
         }
         let regs: Vec<Region> = members
@@ -687,7 +688,7 @@ fn merge_overlaps_grouped(
             .collect();
         let region = Region::union_all(&regs);
         let merged = faces_of_region(faces[i].ch, &region);
-        out_groups.extend(std::iter::repeat_n(groups[i], merged.len()));
+        out_groups.extend(std::iter::repeat_n(None, merged.len()));
         out.extend(merged);
     }
     (out, out_groups)
@@ -974,13 +975,21 @@ pub fn thin_letters(laid: &Laid, line_mm: f64) -> Vec<Thin> {
             continue;
         }
         seen.push(glyph.ch);
-        // Every piece of this letter's first occurrence (e.g. stem and dot of 'i'): testing one copy gives the same ratio as
-        // unioning every copy in the string, without scaling the boolean with the string's length.
-        let group = laid.groups.get(idx).copied();
+        // When no copy of this character was merged with a neighbour, every occurrence is a rigid copy of the first (keeping
+        // multi-piece glyphs like 'i' together), so testing one occurrence gives the exact same ratio. When any copy merged
+        // with another face (tight spacing, overlapping script), fall back to unioning all faces with this character.
+        let any_merged = laid.faces.iter().enumerate().any(|(j, other)| {
+            other.ch == glyph.ch && laid.groups.get(j).copied().flatten().is_none()
+        });
+        let single_group = if any_merged {
+            None
+        } else {
+            laid.groups.get(idx).copied().flatten()
+        };
         let mut pieces: Vec<Region> = Vec::new();
         for (j, same) in laid.faces.iter().enumerate() {
-            let matches = match group {
-                Some(g) => laid.groups.get(j).copied() == Some(g) && same.ch == glyph.ch,
+            let matches = match single_group {
+                Some(g) => laid.groups.get(j).copied().flatten() == Some(g) && same.ch == glyph.ch,
                 None => same.ch == glyph.ch,
             };
             if !matches {

@@ -449,6 +449,7 @@ impl<'a> Placer<'a> {
     }
 
     /// The point of the surface at `(u, v)` and the same point moved `lift` along its outward normal (negative goes into the part).
+    #[cfg(test)]
     pub fn base_and_top(&self, u: f64, v: f64, lift: f64) -> Option<(V3, V3)> {
         let f = self.g.frame(u, v).ok()?;
         Some((f.p, add(f.p, mul(f.n, lift))))
