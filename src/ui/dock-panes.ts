@@ -18,21 +18,30 @@ export interface PaneHeight {
 }
 
 /**
- * Move the line between `above` and `below` by `delta` px (down is positive): one pane gives what the other takes,
- * neither goes under its min, and neither grows past its content. Every open pane comes back with a height, so the
- * others stay where they are.
+ * Move the line between `above` and `below` by `delta` px (down is positive). `free` is the dock's unused height under
+ * its panes. Up: `above` gives height down to its min; `below` takes what it can show (up to its content, or any amount
+ * when it is already stretched past it) and the rest stays free. Down: `above` grows up to its content, from the free
+ * height first and then from `below`, down to `below`'s min. Every open pane comes back with a height, so the others
+ * stay where they are. Holding every move to one pane giving what the other takes stopped the line whenever the pane
+ * below could not grow: a card over a short History could not be made shorter.
  */
-export function moveLine(open: readonly PaneHeight[], above: PaneId, below: PaneId, delta: number): Record<string, number> {
+export function moveLine(open: readonly PaneHeight[], above: PaneId, below: PaneId, delta: number, free = 0): Record<string, number> {
   const out: Record<string, number> = {};
   for (const pane of open) out[pane.id] = Math.round(pane.height);
   const a = open.find((pane) => pane.id === above);
   const b = open.find((pane) => pane.id === below);
   if (!a || !b) return out;
-  const lowest = Math.max(a.min - a.height, b.height - b.max);
-  const highest = Math.min(b.height - b.min, a.max - a.height);
-  const moved = Math.min(Math.max(delta, Math.min(lowest, 0)), Math.max(highest, 0));
-  out[above] = Math.round(a.height + moved);
-  out[below] = Math.round(b.height - moved);
+  const spare = Math.max(free, 0);
+  if (delta < 0) {
+    const moved = Math.max(delta, Math.min(a.min - a.height, 0));
+    const room = b.height > b.max ? Infinity : Math.max(b.max - b.height, 0);
+    out[above] = Math.round(a.height + moved);
+    out[below] = Math.round(b.height + Math.min(-moved, room));
+  } else if (delta > 0) {
+    const moved = Math.min(delta, Math.max(a.max - a.height, 0), spare + Math.max(b.height - b.min, 0));
+    out[above] = Math.round(a.height + moved);
+    out[below] = Math.round(b.height - Math.max(0, moved - spare));
+  }
   return out;
 }
 
@@ -52,14 +61,20 @@ const STEP = 16;
 
 let panes: Pane[] = [];
 let dock: HTMLElement | null = null;
-let sizes: Partial<Record<PaneId, number>> = {};
+/**
+ * Remembered heights, by pane. The tool pane holds a different card each time, so its height is kept per card
+ * (`tool:Auto ribs`): one height for every tool opened the next card at a size picked for another, and a long card
+ * like Auto ribs came up with its controls out of sight.
+ */
+let sizes: Record<string, number> = {};
 let laying = false;
 
-function readSizes(): Partial<Record<PaneId, number>> {
+function readSizes(): Record<string, number> {
   try {
     const parsed = (prefs.getJson(SIZES_KEY) ?? {}) as Record<string, unknown>;
-    const out: Partial<Record<PaneId, number>> = {};
-    for (const [key, value] of Object.entries(parsed)) if (typeof value === "number" && value > 0) out[key as PaneId] = value;
+    const out: Record<string, number> = {};
+    // A plain "tool" height came from before it was kept per card: drop it, so it can't hide a long card again.
+    for (const [key, value] of Object.entries(parsed)) if (key !== "tool" && typeof value === "number" && value > 0) out[key] = value;
     return out;
   } catch {
     return {};
@@ -73,6 +88,15 @@ function writeSizes() {
   } catch {
     /* storage off: the sizes last for this visit */
   }
+}
+
+/** The key a pane's height is remembered under: the tool pane's is its card's title. */
+function sizeKey(pane: Pane): string {
+  if (pane.id !== "tool") return pane.id;
+  const edit = byId("#modelEditHead");
+  const title = edit && !edit.hidden ? edit : byId("#modelPanelTitle");
+  const name = title?.textContent?.trim();
+  return name ? `tool:${name}` : "tool:";
 }
 
 function compact() {
@@ -133,7 +157,7 @@ export function layoutPanes() {
     const isOpen = !off && open.includes(pane);
     el.toggleAttribute("data-pane-open", isOpen);
     el.toggleAttribute("data-pane-fill", !off && pane === fill);
-    const size = sizes[pane.id];
+    const size = sizes[sizeKey(pane)];
     if (isOpen && size) el.style.setProperty("--pane-basis", `${size}px`);
     else el.style.removeProperty("--pane-basis");
     if (isOpen) el.style.setProperty("--pane-min", `${minOf(pane)}px`);
@@ -160,12 +184,23 @@ export function layoutPanes() {
   laying = false;
 }
 
+/** The dock's height left under its last section, px. */
+function freeHeight(): number {
+  if (!dock) return 0;
+  const box = dock.getBoundingClientRect();
+  const pad = Number.parseFloat(getComputedStyle(dock).paddingBottom) || 0;
+  let bottom = box.top;
+  for (const child of Array.from(dock.children)) if (child instanceof HTMLElement && !child.hidden && child.offsetParent !== null) bottom = Math.max(bottom, child.getBoundingClientRect().bottom);
+  return Math.max(0, box.bottom - pad - bottom);
+}
+
 function apply(line: HTMLElement, delta: number) {
   const { above, below } = neighbours(line);
   if (!above || !below) return;
   const open = panes.filter((pane) => shown(pane) && pane.open());
-  const next = moveLine(open.map(measure), above.id, below.id, delta);
-  for (const pane of open) sizes[pane.id] = next[pane.id];
+  const next = moveLine(open.map(measure), above.id, below.id, delta, freeHeight());
+  // Only the two panes the line sits between take a height. Pinning every open pane made one drag fix the others too.
+  for (const pane of [above, below]) sizes[sizeKey(pane)] = next[pane.id]!;
   layoutPanes();
 }
 
