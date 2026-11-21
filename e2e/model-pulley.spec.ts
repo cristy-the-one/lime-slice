@@ -61,6 +61,8 @@ test("the Part card makes a GT2 pulley, scrubs the teeth, refuses a V pulley, sa
 
   await page.locator("#modelPartKind").selectOption("v");
   await expect(page.locator("#modelNote")).toHaveText(V_PULLEY);
+  // Said once: the note gives the reason, and the part's row under the select stays empty.
+  await expect(page.locator("#modelPartRow")).toHaveText("");
   await expect(apply(page)).toBeDisabled();
   await page.screenshot({ path: path.join(shots, "part-v-refused.png") });
 
