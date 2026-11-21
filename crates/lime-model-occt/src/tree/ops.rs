@@ -158,7 +158,7 @@ pub struct Solid {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back: Option<f64>,
     // --- A part (docs/plan-mech-parts.md). `height` 0 is a fastener's table row, or a fitting's default length.
-    /// nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, or bracket. Not `kind`: a boolean op is already tagged `kind`.
+    /// nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, bracket, gt2, or v. Not `kind`: a boolean op is already tagged `kind`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_kind: Option<String>,
     /// M3, M4, M5, M6, M8, M10, M12, M16, M20, M24. M6 when absent.

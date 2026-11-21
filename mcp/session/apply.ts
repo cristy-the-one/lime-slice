@@ -22,7 +22,7 @@ import { stepOutOfDate, withExprs } from "../../src/modeling/params.ts";
 import { isFeatureTool } from "../../src/model-features.ts";
 import { CHORD, NAME_LIMIT, type PlateObject, UNKNOWN_OBJECT, firstAfter, stableKey, typedExprs } from "./shared.ts";
 import type { Session } from "../session.ts";
-import { NEXT, refuse } from "../refusals.ts";
+import { NEXT, refuse, refusePartReason } from "../refusals.ts";
 import { ensureMeshes, lightSolid } from "./mesh-end.ts";
 
 /**
@@ -130,7 +130,7 @@ async function apply(this: Session, obj: PlateObject, raw: unknown): Promise<Rec
   const tree = await this.opened(obj);
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const baked = this.bake(obj, raw);
-  if ("reason" in baked) return refuse("bad-op", baked.reason);
+  if ("reason" in baked) return refusePartReason(baked.reason, "bad-op");
   const done = await this.applyBaked(obj, tree, baked, raw);
   const label = raw && typeof raw === "object" ? (raw as { label?: unknown }).label : undefined;
   if (done.ok === true && typeof label === "string" && label.trim()) {
@@ -353,7 +353,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
     if (raw.kind === "array" && (raw.cell as { loops?: unknown } | undefined)?.loops !== undefined) {
       if ((made += 1) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
       const baked = await this.bakeCells(obj, raw);
-      const done = "reason" in baked ? refuse("bad-op", baked.reason) : await this.bakedApply(obj, baked, label);
+      const done = "reason" in baked ? refusePartReason(baked.reason, "bad-op") : await this.bakedApply(obj, baked, label);
       if (done.ok !== true) {
         const ended = await endRun({ reason: String(done.reason ?? "This array did not apply.") });
         if (ended) return ended;

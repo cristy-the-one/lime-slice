@@ -1,8 +1,10 @@
-//! Fasteners (docs/plan-mech-parts.md, sections 4.1–4.4 and 9). The analytic box and volume are computed
+//! Fasteners and pulleys (docs/plan-mech-parts.md, sections 4, 5.1 and 9). The analytic box and volume are computed
 //! here from the plan's rows. They are not read back from the solid. `LIME_REQUIRE_OCCT=1` makes a missing
 //! kernel a failure.
 //!
 //! `cargo test -p lime-model-occt --test part -- --nocapture` prints measured volume and bounds against the analytic solid.
+
+use std::collections::HashMap;
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -303,7 +305,7 @@ fn unknown_sizes_and_a_washer_with_no_wall_are_refused() {
     refused(
         "part-no-kind",
         json!({ "primitive": "part", "origin": [0.0, 0.0, 0.0] }),
-        "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, or bracket.",
+        "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, bracket, gt2, or v.",
     );
     refused(
         "part-m7-nut",
@@ -765,5 +767,253 @@ fn brackets_name_the_limit_they_refuse() {
         "spacer-pitch",
         json!({ "primitive": "part", "partKind": "spacer", "pitchCircle": 20.0, "origin": [0.0, 0.0, 0.0] }),
         "Only a plate takes a pitch circle.",
+    );
+}
+
+fn gt2_radius(teeth: f64) -> f64 {
+    (teeth * 2.0 / std::f64::consts::PI - 0.508) * 0.5
+}
+
+fn tenth_down(value: f64) -> f64 {
+    (value * 10.0 + 1e-6).floor() / 10.0
+}
+
+fn mm_tenth(value: f64) -> String {
+    let tenths = (value * 10.0).round() / 10.0;
+    if (tenths - tenths.round()).abs() < 1e-9 {
+        format!("{}", tenths.round() as i64)
+    } else {
+        format!("{tenths:.1}")
+    }
+}
+
+/// Closed form while the grooves do not overlap. `a` is half the tangential groove width.
+fn gt2_volume(teeth: f64, bore: f64, width: f64) -> f64 {
+    let r = gt2_radius(teeth);
+    let a = 0.705;
+    let area = a * (r * r - a * a).sqrt() + r * r * (a / r).asin() - 2.0 * a * (r - 0.75);
+    (std::f64::consts::PI * r * r - teeth * area - std::f64::consts::PI * (bore / 2.0).powi(2)) * width
+}
+
+fn angle_apart(a: f64, b: f64) -> f64 {
+    let mut d = (a - b).rem_euclid(std::f64::consts::TAU);
+    if d > std::f64::consts::PI {
+        d = std::f64::consts::TAU - d;
+    }
+    d
+}
+
+/// Extent along the direction at `beta`: `R` when that direction misses every groove, else the
+/// larger `R·cos` of the outside corners at `φ ± asin(0.705/R)`.
+fn axis_extent(teeth: i32, radius: f64, beta: f64) -> f64 {
+    let alpha = (0.705 / radius).asin();
+    let mut hit = false;
+    let mut best: f64 = 0.0;
+    for i in 0..teeth {
+        let phi = std::f64::consts::TAU * f64::from(i) / f64::from(teeth);
+        if angle_apart(phi, beta) < alpha {
+            hit = true;
+            for sign in [-1.0, 1.0] {
+                best = best.max(radius * angle_apart(phi + sign * alpha, beta).cos());
+            }
+        }
+    }
+    if hit { best } else { radius }
+}
+
+fn gt2_box(teeth: i32, width: f64) -> [[f64; 3]; 2] {
+    let radius = gt2_radius(f64::from(teeth));
+    let x_pos = axis_extent(teeth, radius, 0.0);
+    let x_neg = axis_extent(teeth, radius, std::f64::consts::PI);
+    let y_pos = axis_extent(teeth, radius, std::f64::consts::FRAC_PI_2);
+    let y_neg = axis_extent(teeth, radius, -std::f64::consts::FRAC_PI_2);
+    [[-x_neg, -y_neg, 0.0], [x_pos, y_pos, width]]
+}
+
+/// Edges of the triangle soup used once, and by more than two, with corners matched bit for bit.
+fn mesh_edges(reply: &Value) -> (usize, usize) {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(reply["positions"].as_str().expect("positions"))
+        .expect("base64");
+    let corners: Vec<[u32; 3]> = bytes
+        .chunks_exact(12)
+        .map(|point| {
+            let word = |at: usize| u32::from_le_bytes(point[at..at + 4].try_into().unwrap());
+            [word(0), word(4), word(8)]
+        })
+        .collect();
+    let mut ids: HashMap<[u32; 3], u32> = HashMap::new();
+    let key = |p: [u32; 3]| p.map(|word| if word == 0x8000_0000 { 0 } else { word });
+    let mut uses: HashMap<(u32, u32), u32> = HashMap::new();
+    for triangle in corners.chunks_exact(3) {
+        let mut id = [0u32; 3];
+        for (slot, point) in id.iter_mut().zip(triangle) {
+            let next = ids.len() as u32;
+            *slot = *ids.entry(key(*point)).or_insert(next);
+        }
+        for k in 0..3 {
+            let (a, b) = (id[k], id[(k + 1) % 3]);
+            if a != b {
+                *uses.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+    }
+    (
+        uses.values().filter(|&&count| count == 1).count(),
+        uses.values().filter(|&&count| count > 2).count(),
+    )
+}
+
+/// Clearance between adjacent groove boxes in the XY plane. Positive means they do not overlap.
+/// They share the whole axial range, so a positive gap is a gap in 3D too.
+fn groove_gap(teeth: i32) -> f64 {
+    let radius = gt2_radius(f64::from(teeth));
+    let centre = radius - 0.275;
+    let step = std::f64::consts::TAU / f64::from(teeth);
+    let hu = 0.475;
+    let hv = 0.705;
+    let normals = [0.0, std::f64::consts::FRAC_PI_2, step, step + std::f64::consts::FRAC_PI_2];
+    let mut clearance = f64::NEG_INFINITY;
+    for beta in normals {
+        let n = [beta.cos(), beta.sin()];
+        let p0 = centre * n[0];
+        let p1 = centre * (step.cos() * n[0] + step.sin() * n[1]);
+        let reach = |angle: f64| {
+            hu * (angle.cos() * n[0] + angle.sin() * n[1]).abs()
+                + hv * ((-angle.sin()) * n[0] + angle.cos() * n[1]).abs()
+        };
+        clearance = clearance.max((p0 - p1).abs() - (reach(0.0) + reach(step)));
+    }
+    clearance
+}
+
+#[test]
+fn gt2_grooves_do_not_overlap_from_12_to_60_teeth() {
+    let mut tightest = (0, f64::INFINITY);
+    for teeth in 12..=60 {
+        let gap = groove_gap(teeth);
+        println!("gt2 groove gap at {teeth} teeth: {gap} mm");
+        assert!(gap > 0.0, "{teeth} teeth: adjacent grooves overlap by {} mm", -gap);
+        if gap < tightest.1 {
+            tightest = (teeth, gap);
+        }
+    }
+    println!("gt2 tightest groove gap: {} teeth, {} mm", tightest.0, tightest.1);
+    assert_eq!(tightest.0, 12, "12 teeth is the tightest");
+}
+
+fn probe_removed(key: &str, at: [f64; 3], radius: f64, before: f64) -> f64 {
+    let reply = probe_at(key, at, radius);
+    if reply.get("error").is_some() {
+        println!("gt2 {key}: probe at {at:?} r {radius} refused: {}", short(&reply));
+        return 0.0;
+    }
+    let removed = before - volume(&reply);
+    println!("gt2 {key}: probe at {at:?} r {radius} removed {removed} mm3 (solid {before} mm3)");
+    removed
+}
+
+#[test]
+fn gt2_pulleys_match_the_closed_form() {
+    if !kernel() {
+        return;
+    }
+    // 12, 16, 20 and 36 are multiples of 4, so a groove sits on every axis. 15 puts +Y
+    // inside the groove at 96°, off that groove's centre, so the extent is R·cos of the corner.
+    let cases: [(i32, f64, f64); 5] = [
+        (20, 5.0, 6.0),
+        (16, 5.0, 6.0),
+        (36, 5.0, 6.0),
+        (15, 5.0, 6.0),
+        (12, 2.0 * (gt2_radius(12.0) - 1.75), 6.0),
+    ];
+    for (teeth, bore, width) in cases {
+        let key = format!("gt2-{teeth}");
+        let solid = json!({
+            "primitive": "part", "partKind": "gt2", "teeth": teeth, "bore": bore, "height": width,
+            "origin": [0.0, 0.0, 0.0]
+        });
+        let opened = ok(json!({ "call": "open", "key": key, "primitive": solid, "chordMm": 0.01 }));
+        let got = volume(&opened);
+        let box_ = bounds(&opened);
+        let want_volume = gt2_volume(f64::from(teeth), bore, width);
+        let want = gt2_box(teeth, width);
+        let (open, shared) = mesh_edges(&opened);
+        println!(
+            "part {key}: measured volume {got} mm3, analytic {want_volume} mm3, measured bounds {box_:?}, analytic bounds {want:?}, open edges {open}, non-manifold edges {shared}"
+        );
+        assert!((got - want_volume).abs() < 0.5, "{key}: volume {got} vs {want_volume}");
+        near_box(box_, want);
+        if teeth == 15 {
+            let radius = gt2_radius(15.0);
+            let centred = (radius * radius - 0.705 * 0.705).sqrt();
+            println!(
+                "part {key}: +Y extent measured {} mm, analytic {} mm, centred-on-axis formula {} mm",
+                box_[1][1], want[1][1], centred
+            );
+            assert!(
+                (want[1][1] - centred).abs() > 0.02,
+                "15 teeth +Y must be the off-centre corner, not the centred formula"
+            );
+        }
+        assert_eq!(open, 0, "{key}: {open} open edges");
+        assert_eq!(shared, 0, "{key}: {shared} non-manifold edges");
+        let piece = step_check(&key, 0);
+        assert!(piece.valid && piece.closed && piece.solids == 1, "{key}: {piece:?}");
+        if teeth == 20 {
+            let radius = gt2_radius(20.0);
+            let at = |deg: f64, rho: f64, z: f64| {
+                let rad = deg.to_radians();
+                [rho * rad.cos(), rho * rad.sin(), z]
+            };
+            let groove = at(18.0, radius - 0.2, width / 2.0);
+            let low = at(18.0, radius - 0.2, 0.2);
+            let land = at(27.0, radius - 0.2, width / 2.0);
+            let root = at(18.0, radius - 0.8, width / 2.0);
+            assert!(probe_removed(&key, groove, 0.12, got) < 1e-4, "tooth 1 at mid height is material");
+            assert!(probe_removed(&key, low, 0.12, got) < 1e-4, "tooth 1 at z 0.2 is material");
+            assert!(probe_removed(&key, land, 0.12, got) > 1e-3, "the land at 27° removed nothing");
+            assert!(probe_removed(&key, root, 0.02, got) > 1e-6, "just inside the root is empty, so the groove is deeper than 0.75");
+        }
+    }
+}
+
+#[test]
+fn gt2_and_the_v_pulley_name_the_limit_they_refuse() {
+    if !kernel() {
+        return;
+    }
+    let refused = |key: &str, solid: Value, sentence: &str| {
+        let reply = call(json!({ "call": "open", "key": key, "primitive": solid }));
+        let got = reply["error"].as_str().unwrap_or("");
+        println!("part {key}: refused with {got:?}");
+        assert_eq!(got, sentence, "{}", short(&reply));
+    };
+    refused(
+        "gt2-11",
+        json!({ "primitive": "part", "partKind": "gt2", "teeth": 11, "origin": [0.0, 0.0, 0.0] }),
+        "A GT2 pulley takes 12 to 60 teeth.",
+    );
+    refused(
+        "gt2-half",
+        json!({ "primitive": "part", "partKind": "gt2", "teeth": 12.5, "origin": [0.0, 0.0, 0.0] }),
+        "The teeth are a whole number from 12 to 60.",
+    );
+    let limit = 2.0 * (gt2_radius(20.0) - 1.75);
+    let shown = mm_tenth(tenth_down(limit));
+    refused(
+        "gt2-bore",
+        json!({ "primitive": "part", "partKind": "gt2", "teeth": 20, "bore": limit + 0.05, "origin": [0.0, 0.0, 0.0] }),
+        &format!("The bore is at most {shown} mm on 20 teeth, so 1 mm stays inside the grooves."),
+    );
+    refused(
+        "gt2-v",
+        json!({ "primitive": "part", "partKind": "v", "origin": [0.0, 0.0, 0.0] }),
+        "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.",
+    );
+    refused(
+        "gt2-nominal",
+        json!({ "primitive": "part", "partKind": "gt2", "nominal": "M6", "origin": [0.0, 0.0, 0.0] }),
+        "A GT2 pulley has no nominal size.",
     );
 }

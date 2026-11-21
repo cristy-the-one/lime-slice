@@ -17,7 +17,7 @@ import { readTransitionRows, transitionSentence, transitionSkinWarns, TRANSITION
 import { cleanOp, expand, isComposite } from "../../src/modeling/compose.ts";
 import { CHORD, type PlateObject, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
-import { NEXT, refuse } from "../refusals.ts";
+import { NEXT, refuse, refusePartReason } from "../refusals.ts";
 
 function bake(this: Session, obj: PlateObject, raw: unknown): Baked | { reason: string } {
   return bakeOp(raw, this.bakeContext(obj));
@@ -150,7 +150,7 @@ async function probe(this: Session, obj: PlateObject, raw: unknown, nodeHandleVa
 
 async function bakeAndProbe(this: Session, obj: PlateObject, tree: ModelTree, at: number, raw: unknown, measure: boolean): Promise<Record<string, unknown>> {
   const baked = this.bake(obj, raw);
-  if ("reason" in baked) return refuse("bad-op", baked.reason);
+  if ("reason" in baked) return refusePartReason(baked.reason, "bad-op");
   return this.probeBaked(obj, tree, at, baked, measure);
 }
 

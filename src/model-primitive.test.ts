@@ -76,6 +76,7 @@ const ghosts: [string, PrimitiveSpec, [V, V]][] = [
   ["shaft 8 sliding", spec("part", { partKind: "shaft" }), [[-3.944, -3.944, 0], [3.944, 3.944, 40]]],
   ["collar 14 × 6", spec("part", { partKind: "collar" }), [[-7, -7, 0], [7, 7, 6]]],
   ["heat-set RX-M3x5,7", spec("part", { partKind: "heat-set" }), [[-3.9, -3.9, 0], [3.9, 3.9, 5.7]]],
+  ["GT2 pulley 20 teeth", spec("part", { partKind: "gt2" }), [[-6.112, -6.112, 0], [6.112, 6.112, 6]]],
   ["plate 80 × 60 × 4", spec("part", { partKind: "plate" }), [[-40, -30, 0], [40, 30, 4]]],
   ["L-bracket 40 × 30 × 3", spec("part", { partKind: "bracket" }), [[-20, -15, 0], [20, 15, 40]]],
 ];
@@ -106,6 +107,7 @@ for (const [name, bad] of [
   ["a polygon of two sides", spec("polygon", { sides: 2, across: 10, height: 5 })],
   ["a tube with no wall", spec("tube", { radius: 5, innerRadius: 5, height: 5 })],
   ["a wedge whose top is longer than its base", spec("wedge", { size: [10, 10, 10], topX: 11 })],
+  ["a V pulley", spec("part", { partKind: "v" })],
 ] as const) {
   eq(`${name} draws no ghost`, primitiveMesh(bad).length, 0);
 }
@@ -152,6 +154,8 @@ const labels: [PrimitiveSpec, string][] = [
   [spec("part", { partKind: "shaft" }), "Shaft ⌀8 sliding × 40"],
   [spec("part", { partKind: "collar" }), "Collar ⌀14 / ⌀8 × 6"],
   [spec("part", { partKind: "heat-set" }), "Heat-set boss RX-M3x5,7"],
+  [spec("part", { partKind: "gt2" }), "GT2 pulley 20 teeth"],
+  [spec("part", { partKind: "gt2", teeth: 36 }), "GT2 pulley 36 teeth"],
   [spec("part", { partKind: "plate" }), "Plate 80 × 60 × 4, M4"],
   [spec("part", { partKind: "plate", holeFor: "M6" }), "Plate 80 × 60 × 4, M6"],
   [spec("part", { partKind: "bracket" }), "L-bracket 40 × 30 × 3, M4"],

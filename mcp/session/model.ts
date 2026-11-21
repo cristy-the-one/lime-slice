@@ -37,7 +37,8 @@ import { eventLoopTurn } from "../animation-run.ts";
 import { modelMass } from "./mass.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, PLACE_KEYS, type PlateObject, posedPositions, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
-import { NEXT, refuse, type Refusal } from "../refusals.ts";
+import { NEXT, refuse, refusePartReason, type Refusal } from "../refusals.ts";
+import { V_PULLEY } from "../../src/model-part.ts";
 
 const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_describe: (s, obj, input) => s.describe(obj, input),
@@ -935,8 +936,9 @@ async function solidNew(this: Session, input: Record<string, unknown>): Promise<
   if (gear && input.primitive !== undefined) return refuse("bad-argument", "Give a primitive or a gear, not both.");
   const prepared = fastenerArgs(input);
   if (!prepared.ok) return prepared;
+  if (prepared.args.partKind === "v") return refuse("v-pulley", V_PULLEY);
   const typed = gear ? primitiveFrom({ ...gear, primitive: "gear", origin: [0, 0, 0], turn: [0, 0, 0] }, "gear") : primitiveFrom(prepared.args);
-  if ("reason" in typed) return refuse("bad-argument", typed.reason);
+  if ("reason" in typed) return refusePartReason(typed.reason, "bad-argument");
   const gearWhy = gear ? gearRefusal(gearOf(typed)!, typed.height) : null;
   if (gearWhy) return refuse("bad-argument", gearWhy);
   const kind = typed.primitive;

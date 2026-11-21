@@ -7,6 +7,8 @@
 //!
 //! Fittings: spacer, shaft, collar, and heat-set boss. A shaft's diameter is
 //! `lime_recipe::horology::shaft`; the clearance table is not copied here.
+//!
+//! Pulleys: a GT2 pulley (section 5.1). The V pulley is refused until the ISO 4183 table is in the plan.
 
 use super::ffi::lime_tree_boolean;
 use super::ops::{Primitive, Solid};
@@ -14,6 +16,14 @@ use super::shape::Shape;
 
 /// A cut that must break a face extends this far past it. Boolean clearance, not a standard size.
 const OVERSHOOT_MM: f64 = 0.2;
+
+/// The sentence for kind `v` until section 5.2 holds the ISO 4183 rows.
+const V_PULLEY: &str =
+    "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.";
+
+/// GT2 groove rectangle (docs/plan-mech-parts.md §5.1). Depth is radial, width is tangential.
+const GT2_DEPTH_MM: f64 = 0.75;
+const GT2_TANGENT_MM: f64 = 1.41;
 
 const MAX_HEIGHT_MM: f64 = 1000.0;
 
@@ -364,6 +374,8 @@ enum Kind {
     Shaft,
     Collar,
     Heat,
+    Gt2,
+    V,
     Plate,
     Bracket,
 }
@@ -375,7 +387,7 @@ impl Kind {
             Kind::Socket => "ISO 4762 socket head cap screw table",
             Kind::Hex => "ISO 4017 hex head screw table",
             Kind::Washer => "ISO 7089 washer table",
-            Kind::Spacer | Kind::Shaft | Kind::Collar | Kind::Heat | Kind::Plate | Kind::Bracket => "part",
+            Kind::Spacer | Kind::Shaft | Kind::Collar | Kind::Heat | Kind::Plate | Kind::Bracket | Kind::Gt2 | Kind::V => "part",
         }
     }
 }
@@ -415,7 +427,9 @@ fn kind_of(solid: &Solid) -> Result<Kind, String> {
         Some("heat-set") => Ok(Kind::Heat),
         Some("plate") => Ok(Kind::Plate),
         Some("bracket") => Ok(Kind::Bracket),
-        _ => Err("A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, or bracket.".into()),
+        Some("gt2") => Ok(Kind::Gt2),
+        Some("v") => Ok(Kind::V),
+        _ => Err("A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, bracket, gt2, or v.".into()),
     }
 }
 
@@ -489,7 +503,54 @@ fn text_set(value: &Option<String>) -> bool {
     value.as_deref().is_some_and(|text| !text.trim().is_empty())
 }
 
+/// Fields a GT2 pulley does not read. Teeth, height (belt width) and bore are its own.
+fn refuse_gt2(solid: &Solid) -> Result<(), String> {
+    if solid.length.is_some() {
+        return Err("A GT2 pulley's belt width is its height.".into());
+    }
+    if text_set(&solid.nominal) {
+        return Err("A GT2 pulley has no nominal size.".into());
+    }
+    if solid.allowance.is_some() {
+        return Err("A GT2 pulley has no allowance.".into());
+    }
+    if set_positive(solid.head_diameter) {
+        return Err("Only a socket screw takes a head diameter.".into());
+    }
+    if set_positive(solid.head_height) {
+        return Err("Only a socket screw takes a head height.".into());
+    }
+    if set_positive(solid.socket_depth) {
+        return Err("Only a socket screw takes a socket depth.".into());
+    }
+    if solid.diameter.is_some() {
+        return Err("A GT2 pulley has no diameter.".into());
+    }
+    if solid.hollow.is_some() {
+        return Err("Only a spacer is hollow or solid.".into());
+    }
+    if text_set(&solid.fit) {
+        return Err("Only a shaft takes a fit.".into());
+    }
+    if text_set(&solid.article) {
+        return Err("Only a heat-set boss takes an article.".into());
+    }
+    if set_positive(solid.taper) {
+        return Err("Only a heat-set boss takes a taper.".into());
+    }
+    if solid.set_screw.is_some() {
+        return Err("Only a collar takes a set screw.".into());
+    }
+    Ok(())
+}
+
 fn refuse_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
+    if matches!(kind, Kind::V) {
+        return Err(V_PULLEY.into());
+    }
+    if solid.teeth.is_some() && !matches!(kind, Kind::Gt2) {
+        return Err("Only a GT2 pulley takes teeth.".into());
+    }
     if matches!(kind, Kind::Plate | Kind::Bracket) {
         return refuse_bracket_stray(solid, kind);
     }
@@ -501,6 +562,9 @@ fn refuse_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
     }
     if solid.pitch_circle.is_some() {
         return Err("Only a plate takes a pitch circle.".into());
+    }
+    if matches!(kind, Kind::Gt2) {
+        return refuse_gt2(solid);
     }
     let fastener = matches!(kind, Kind::Nut | Kind::Socket | Kind::Hex | Kind::Washer);
     if matches!(kind, Kind::Nut | Kind::Washer) && solid.length.is_some() {
@@ -642,6 +706,11 @@ fn in_range(value: f64, lo: f64, hi: f64) -> bool {
     value.is_finite() && value >= lo && value <= hi
 }
 
+/// A maximum named in a sentence, rounded down to a tenth. A value already on a tenth stays.
+fn tenth_down(value: f64) -> f64 {
+    (value * 10.0 + 1e-6).floor() / 10.0
+}
+
 /// A tenth of a millimetre when the value needs it, else a whole number.
 fn mm(value: f64) -> String {
     let tenths = (value * 10.0).round() / 10.0;
@@ -738,9 +807,16 @@ fn pose_cylinder(
     )
 }
 
-/// A box whose midpoint is `local_mid`. Its origin is the minimum corner, and the turn is the part's.
-fn pose_box(part: &Solid, centre_z: f64, local_mid: [f64; 3], size: [f64; 3]) -> ([f64; 3], [f64; 3]) {
-    let (at, turn) = pose_cylinder(part, centre_z, local_mid, [0.0, 0.0, 0.0], size[2]);
+/// A box whose midpoint is `local_mid`, turned by `local_turn` before the part turns.
+/// Open CASCADE builds the box axis-aligned, then turns it about its own midpoint.
+fn pose_box_turned(
+    part: &Solid,
+    centre_z: f64,
+    local_mid: [f64; 3],
+    local_turn: [f64; 3],
+    size: [f64; 3],
+) -> ([f64; 3], [f64; 3]) {
+    let (at, turn) = pose_cylinder(part, centre_z, local_mid, local_turn, size[2]);
     let mid = [at[0], at[1], at[2] + size[2] * 0.5];
     (
         [
@@ -750,6 +826,11 @@ fn pose_box(part: &Solid, centre_z: f64, local_mid: [f64; 3], size: [f64; 3]) ->
         ],
         turn,
     )
+}
+
+/// A box whose midpoint is `local_mid`. Its origin is the minimum corner, and the turn is the part's.
+fn pose_box(part: &Solid, centre_z: f64, local_mid: [f64; 3], size: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    pose_box_turned(part, centre_z, local_mid, [0.0, 0.0, 0.0], size)
 }
 
 fn block(origin: [f64; 3], turn: [f64; 3], size: [f64; 3]) -> Solid {
@@ -1139,6 +1220,60 @@ fn build_washer(solid: &Solid) -> Result<Shape, String> {
     Shape::primitive(&tube(origin, turn, outer, inner, h))
 }
 
+/// Outside radius of a GT2 pulley: `(teeth · 2 / π − 0.508) / 2`.
+fn gt2_radius(teeth: f64) -> f64 {
+    (teeth * 2.0 / std::f64::consts::PI - 0.508) * 0.5
+}
+
+fn gt2_teeth(solid: &Solid) -> Result<i32, String> {
+    let teeth = solid.teeth.unwrap_or(20.0);
+    if !teeth.is_finite() || (teeth - teeth.round()).abs() > 1e-9 {
+        return Err("The teeth are a whole number from 12 to 60.".into());
+    }
+    let count = teeth.round() as i32;
+    if !(12..=60).contains(&count) {
+        return Err("A GT2 pulley takes 12 to 60 teeth.".into());
+    }
+    Ok(count)
+}
+
+/// A cylinder of radius `R` with one rectangular groove per tooth and a round bore.
+/// The groove box spans `R − 0.75` to `R + 0.2`, so the overshoot leaves the part and the cut stays 0.75 deep.
+fn build_gt2(solid: &Solid) -> Result<Shape, String> {
+    let teeth = gt2_teeth(solid)?;
+    let width = if solid.height == 0.0 { 6.0 } else { solid.height };
+    if !in_range(width, 4.0, 15.0) {
+        return Err("The belt width is from 4 to 15 mm.".into());
+    }
+    let bore = solid.bore.unwrap_or(5.0);
+    if !in_range(bore, 3.0, 20.0) {
+        return Err("The bore is from 3 to 20 mm.".into());
+    }
+    let radius = gt2_radius(f64::from(teeth));
+    let limit = 2.0 * (radius - GT2_DEPTH_MM - 1.0);
+    if bore > limit + 1e-9 {
+        return Err(format!(
+            "The bore is at most {} mm on {teeth} teeth, so 1 mm stays inside the grooves.",
+            mm(tenth_down(limit))
+        ));
+    }
+    let centre_z = width * 0.5;
+    let (origin, turn) = place(solid, centre_z, 0.0, width);
+    let mut body = Shape::primitive(&tube(origin, turn, radius, bore * 0.5, width))?;
+    let radial = GT2_DEPTH_MM + OVERSHOOT_MM;
+    let axial = width + 2.0 * OVERSHOOT_MM;
+    let size = [radial, GT2_TANGENT_MM, axial];
+    let centre_r = radius - GT2_DEPTH_MM * 0.5 + OVERSHOOT_MM * 0.5;
+    for i in 0..teeth {
+        let angle = 360.0 * f64::from(i) / f64::from(teeth);
+        let rad = angle.to_radians();
+        let local_mid = [centre_r * rad.cos(), centre_r * rad.sin(), width * 0.5];
+        let (at, groove_turn) = pose_box_turned(solid, centre_z, local_mid, [0.0, 0.0, angle], size);
+        body = combine(body, c"cut", &block(at, groove_turn, size))?;
+    }
+    Ok(body)
+}
+
 /// 0 is the default. Any other entry is the size the caller asked for.
 fn axis_or(value: f64, default: f64) -> f64 {
     if value == 0.0 { default } else { value }
@@ -1464,5 +1599,7 @@ pub(super) fn build_part(solid: &Solid) -> Result<Shape, String> {
         Kind::Heat => build_heat(solid),
         Kind::Plate => build_plate(solid),
         Kind::Bracket => build_bracket(solid),
+        Kind::Gt2 => build_gt2(solid),
+        Kind::V => Err(V_PULLEY.into()),
     }
 }

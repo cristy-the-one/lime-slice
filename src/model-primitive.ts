@@ -300,6 +300,7 @@ function partSpec(spec: PrimitiveSpec): PartSpec {
     article: spec.article,
     taper: spec.taper,
     setScrew: spec.setScrew,
+    teeth: spec.teeth,
     holeFor: spec.holeFor,
     holes: spec.holes,
     pitchCircle: spec.pitchCircle,
