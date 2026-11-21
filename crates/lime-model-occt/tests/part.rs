@@ -667,10 +667,13 @@ fn gt2_pulleys_match_the_closed_form() {
     if !kernel() {
         return;
     }
-    let cases: [(i32, f64, f64); 4] = [
+    // 12, 16, 20 and 36 are multiples of 4, so a groove sits on every axis. 15 puts +Y
+    // inside the groove at 96°, off that groove's centre, so the extent is R·cos of the corner.
+    let cases: [(i32, f64, f64); 5] = [
         (20, 5.0, 6.0),
         (16, 5.0, 6.0),
         (36, 5.0, 6.0),
+        (15, 5.0, 6.0),
         (12, 2.0 * (gt2_radius(12.0) - 1.75), 6.0),
     ];
     for (teeth, bore, width) in cases {
@@ -690,6 +693,18 @@ fn gt2_pulleys_match_the_closed_form() {
         );
         assert!((got - want_volume).abs() < 0.5, "{key}: volume {got} vs {want_volume}");
         near_box(box_, want);
+        if teeth == 15 {
+            let radius = gt2_radius(15.0);
+            let centred = (radius * radius - 0.705 * 0.705).sqrt();
+            println!(
+                "part {key}: +Y extent measured {} mm, analytic {} mm, centred-on-axis formula {} mm",
+                box_[1][1], want[1][1], centred
+            );
+            assert!(
+                (want[1][1] - centred).abs() > 0.02,
+                "15 teeth +Y must be the off-centre corner, not the centred formula"
+            );
+        }
         assert_eq!(open, 0, "{key}: {open} open edges");
         assert_eq!(shared, 0, "{key}: {shared} non-manifold edges");
         let piece = step_check(&key, 0);
