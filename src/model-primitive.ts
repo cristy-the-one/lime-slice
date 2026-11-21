@@ -93,6 +93,9 @@ export interface PrimitiveSpec {
   article?: string;
   taper?: number;
   setScrew?: number;
+  holeFor?: string;
+  holes?: number;
+  pitchCircle?: number;
 }
 
 /** A gear spec's gear numbers, or null for any other kind. */
@@ -182,7 +185,7 @@ export function rootSpec(spec: PrimitiveSpec): PrimitiveSpec {
   return {
     ...spec,
     origin,
-    size: reads.size ? spec.size : [0, 0, 0],
+    size: reads.size || (spec.primitive === "part" && (spec.partKind === "plate" || spec.partKind === "bracket")) ? spec.size : [0, 0, 0],
     radius: reads.radius ? spec.radius : 0,
     height: reads.height ? spec.height : 0,
     turn: [0, 0, 0],
@@ -297,6 +300,10 @@ function partSpec(spec: PrimitiveSpec): PartSpec {
     article: spec.article,
     taper: spec.taper,
     setScrew: spec.setScrew,
+    holeFor: spec.holeFor,
+    holes: spec.holes,
+    pitchCircle: spec.pitchCircle,
+    size: spec.partKind === "plate" || spec.partKind === "bracket" ? spec.size : undefined,
     height: spec.height,
   };
 }
@@ -368,6 +375,13 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
     case "part": {
       const part = resolvedPart(partSpec(spec));
       if (!part) break;
+      if (part.boxes) {
+        for (const box of part.boxes) {
+          const move = (p: Vec3): Vec3 => [p[0] + box.x, p[1] + box.y, p[2] + box.z];
+          block((a, b, c, d) => quad(move(a), move(b), move(c), move(d)), box.dx, box.dy, box.dz, box.dx);
+        }
+        break;
+      }
       const shift = (dz: number): Quad => {
         const up = (p: Vec3): Vec3 => [p[0], p[1], p[2] + dz];
         return (a, b, c, d) => quad(up(a), up(b), up(c), up(d));

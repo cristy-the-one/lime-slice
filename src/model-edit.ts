@@ -308,6 +308,8 @@ export interface EditPanel {
   fit?: string;
   article?: string;
   hollow?: boolean;
+  /** A plate or L-bracket's Hole for select. */
+  holeFor?: string;
   /**
    * A split's base axis, and whether its normal is that axis turned around: a face split on a face that points down an
    * axis keeps the other side, which the panel's X, Y and Z cannot say on their own.
@@ -373,7 +375,7 @@ export function draftPanelOp(
 }
 
 /** The panel's choices that are not numbers: a polygon's Flats or Corners, a gear's bore shape. */
-function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack" | "partKind" | "nominal" | "fit" | "article" | "hollow"> {
+function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack" | "partKind" | "nominal" | "fit" | "article" | "hollow" | "holeFor"> {
   if (spec.primitive === "polygon") return { flats: spec.flats ?? false };
   if (spec.primitive === "gear") return { boreShape: spec.boreShape ?? "round", ...(spec.internal ? { ring: true } : {}), ...(spec.rack ? { rack: true } : {}) };
   if (spec.primitive === "part") {
@@ -384,6 +386,7 @@ function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape
       ...(partKind === "shaft" ? { fit: isShaftFit(spec.fit) ? spec.fit : "sliding" } : {}),
       ...(partKind === "heat-set" ? { article: spec.article || "RX-M3x5,7" } : {}),
       ...(partKind === "spacer" ? { hollow: spec.hollow !== false } : {}),
+      ...(partKind === "plate" || partKind === "bracket" ? { holeFor: spec.holeFor || "M4" } : {}),
     };
   }
   return {};
@@ -549,6 +552,19 @@ function sizeFields(spec: PrimitiveSpec): Record<string, number> {
         const boss = row ? row.d1 + 2 * row.w : 7.8;
         const length = row?.l ?? 5.7;
         return { modelPartDiameter: spec.diameter ?? boss, modelPartLength: spec.height > 0 ? spec.height : length, modelPartTaper: spec.taper ?? 0, modelPartAllowance: spec.allowance ?? 0 };
+      }
+      if (kind === "plate" || kind === "bracket") {
+        const [a, b, c] = spec.size;
+        const plate = kind === "plate";
+        return {
+          modelPartWidth: a > 0 ? a : plate ? 80 : 40,
+          modelPartDepth: b > 0 ? b : plate ? 60 : 30,
+          modelPartGauge: c > 0 ? c : plate ? 4 : 3,
+          modelPartHoles: spec.holes ?? (plate ? 4 : 2),
+          modelPartPitch: spec.pitchCircle ?? 0,
+          modelPartAllowance: spec.allowance ?? 0.2,
+          modelPartBore: spec.bore ?? 4.7,
+        };
       }
       return { modelPartAllowance: spec.allowance ?? 0, modelPartThick: thick };
     }

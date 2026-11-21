@@ -80,7 +80,7 @@ const primitiveFields = {
   sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
   across: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Polygon width." },
   flats: { type: "boolean", description: "Across flats." },
-  partKind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set"], description: "Part kind. guide {topic:\"ops\", section:\"part\"}." },
+  partKind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket"], description: "Part kind. guide {topic:\"ops\", section:\"part\"}." },
   nominal: { type: "string", description: "M3–M24. Default M6." },
   allowance: { type: "number", minimum: 0, maximum: 1, description: "Hole or shaft allowance, mm." },
   length: { type: "number", minimum: 0, maximum: 200, description: "Under the head, mm." },
@@ -95,6 +95,9 @@ const primitiveFields = {
   article: { type: "string", description: "Heat-set article. Default RX-M3x5,7." },
   taper: { type: "number", minimum: 0, maximum: 2, description: "Heat-set taper, mm." },
   setScrew: { type: "number", exclusiveMinimum: 0, maximum: 6, description: "Collar set screw, mm." },
+  holeFor: { enum: ["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M16", "M20", "M24", "free"], description: "Plate or L-bracket hole. Default M4. guide {topic:\"ops\", section:\"part\"}." },
+  holes: { type: "number", minimum: 0, maximum: 12, description: "Plate holes, or per leg." },
+  pitchCircle: { type: "number", minimum: 0, maximum: 200, description: "Plate pitch circle, mm. 0 is the inset rectangle." },
   origin: { ...vec3, description: "Box min corner, or round base centre, before the turn." },
   centre: { ...vec3, description: "Turn point: box middle, mid-axis." },
   turn: { ...vec3, description: "Degrees X, then Y, then Z." },
@@ -1502,13 +1505,13 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "solid_new",
-    description: "Add a primitive, a gear, a fastener, a fitting or a fit coupon, centred on X and Y on Z = 0. Needs Open CASCADE.",
+    description: "Add a primitive, a gear, a fastener, a fitting, a plate, an L-bracket or a fit coupon, centred on X and Y on Z = 0. Needs Open CASCADE.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         ...solidFields,
-        kind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set"], description: "With primitive part. Same as partKind." },
+        kind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket"], description: "With primitive part. Same as partKind." },
         name: objectName,
         gear: { type: "object", description: "guide {kind:\"gear\"}." },
         coupon: {
@@ -1776,7 +1779,7 @@ export const TOOLS: ToolSpec[] = [
           description: "As solid_new takes it.",
           properties: {
             ...solidFields,
-            kind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set"], description: "With primitive part. Same as partKind." },
+            kind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket"], description: "With primitive part. Same as partKind." },
           },
         },
         ops: { type: "array", maxItems: 1000, items: opPointer("One edit."), description: "Edits, in order; each and use expand first." },
