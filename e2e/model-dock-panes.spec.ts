@@ -146,3 +146,39 @@ test("a line beside a folded section only, or above the first, does not drag", a
   await expect(line).toHaveAttribute("tabindex", "-1");
   await expect(page.locator("#modelDock > .pane-line:has(+ #modelHistory)")).toBeHidden();
 });
+
+test("a tool's height is its own: a drag on one card does not shrink the next, and pins only the two sides", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#modelPanelTitle")).toHaveText("Boolean");
+  const line = page.locator("#modelDock > .pane-line:has(+ #modelHistory)");
+  await expect(line).toHaveAttribute("data-live", "");
+  const full = await height(page, "#modelPanel");
+  const box = (await line.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 60, { steps: 6 });
+  await page.mouse.up();
+  const small = await height(page, "#modelPanel");
+  expect(small, `the Boolean card was dragged shorter than ${full}`).toBeLessThan(full - 20);
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("lime-slice-dock-panes") ?? "{}") as Record<string, number>);
+  expect(Object.keys(saved).sort(), "only the two panes either side of the line").toEqual(["history", "tool:Boolean"]);
+
+  // Another tool opens at its own content's height, not at the height given to Boolean.
+  await page.locator("#modelToolNew").click();
+  await expect(page.locator("#modelPanelTitle")).toHaveText("New solid");
+  expect(await page.locator("#modelPanel").evaluate((el) => el.style.getPropertyValue("--pane-basis")), "New solid has no height of its own yet").toBe("");
+
+  // Back on Boolean, it has the height it was given.
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#modelPanelTitle")).toHaveText("Boolean");
+  expect(await height(page, "#modelPanel")).toBeCloseTo(small, 0);
+});
+
+test("a height saved for every tool by an older version is dropped", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-dock-panes", JSON.stringify({ tool: 90, history: 400 })));
+  await openModel(page);
+  await page.locator("#modelToolNew").click();
+  await expect(page.locator("#modelPanelTitle")).toHaveText("New solid");
+  expect(await page.locator("#modelPanel").evaluate((el) => el.style.getPropertyValue("--pane-basis")), "the old shared tool height is not used").toBe("");
+});
