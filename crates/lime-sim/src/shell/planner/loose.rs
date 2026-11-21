@@ -121,17 +121,21 @@ fn solve_all(
     designs: &[Vec<DRib>],
     mix: &Mix,
 ) -> Result<Vec<Eval>, SimError> {
+    if designs.is_empty() {
+        return Ok(Vec::new());
+    }
     let req = input.req;
     let holds = resolve_holds(s, &req.holds);
     let cases = remap_cases(s, input.cases0, req.mesh.triangles.len());
     let mesh = s.to_mesh();
+    let mut base = ShellModel::new(mesh, req.material, &holds, req.options.shell())?;
+    base.set_threads(1);
+    let forces = base.precompute_loads(&cases)?;
     designs
         .par_iter()
         .map(|d| {
-            let mut m =
-                ShellModel::new(mesh.clone(), req.material, &holds, req.options.shell())?;
-            m.set_threads(1);
-            select::evaluate(&mut m, &cases, req.rules.side, d, mix)
+            let mut m = base.clone_bare();
+            select::evaluate_precomputed_light(&mut m, &forces, req.rules.side, d, mix, false)
         })
         .collect()
 }

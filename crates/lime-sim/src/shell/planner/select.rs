@@ -36,6 +36,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::error::SimError;
+use crate::shell::model::PreparedRib;
 use crate::shell::{LoadCase, Rib, RibSide, ShellModel, ShellResult};
 use crate::units::{cross, norm, normalize, sub};
 
@@ -323,12 +324,47 @@ pub(crate) struct Eval {
 pub(crate) struct Evaluator {
     pub models: Vec<ShellModel>,
     pub cases: Vec<LoadCase>,
+    forces: Option<Vec<Vec<f64>>>,
     pub side: RibSide,
     pub solves: usize,
     pub seconds: f64,
     /// Case weights. Empty means all 1. The [`Mix`] is bound to a bare solve.
     weights: Vec<f64>,
     pub mix: Mix,
+}
+
+fn eval_from_results(
+    results: Vec<ShellResult>,
+    design_len: usize,
+    owner: &[usize],
+    mix: &Mix,
+) -> Eval {
+    let mut rib_energy = vec![0.0; design_len];
+    for r in &results {
+        for (k, e) in r.rib_energy.iter().enumerate() {
+            rib_energy[owner[k]] += e;
+        }
+    }
+    let cs: Vec<f64> = results.iter().map(|r| r.compliance).collect();
+    Eval {
+        compliance: mix.of(&cs),
+        max_deflection: results.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
+        strain_energy: results.iter().map(|r| r.strain_energy).sum(),
+        rib_energy,
+        results,
+    }
+}
+
+fn collect_ribs(design: &[DRib], side: RibSide) -> (Vec<Rib>, Vec<usize>) {
+    let mut ribs: Vec<Rib> = Vec::new();
+    let mut owner: Vec<usize> = Vec::new();
+    for (i, d) in design.iter().enumerate() {
+        for r in d.solver_ribs(side) {
+            ribs.push(r);
+            owner.push(i);
+        }
+    }
+    (ribs, owner)
 }
 
 pub(crate) fn evaluate(
@@ -338,30 +374,26 @@ pub(crate) fn evaluate(
     design: &[DRib],
     mix: &Mix,
 ) -> Result<Eval, SimError> {
-    let mut ribs: Vec<Rib> = Vec::new();
-    let mut owner: Vec<usize> = Vec::new();
-    for (i, d) in design.iter().enumerate() {
-        for r in d.solver_ribs(side) {
-            ribs.push(r);
-            owner.push(i);
-        }
-    }
+    let (ribs, owner) = collect_ribs(design, side);
     model.set_ribs(ribs)?;
     let results = model.solve_cases(cases)?;
-    let mut rib_energy = vec![0.0; design.len()];
-    for r in &results {
-        for (k, e) in r.rib_energy.iter().enumerate() {
-            rib_energy[owner[k]] += e;
-        }
-    }
-    let cs: Vec<f64> = results.iter().map(|r| r.compliance).collect();
-    Ok(Eval {
-        compliance: mix.of(&cs),
-        max_deflection: results.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
-        strain_energy: results.iter().map(|r| r.strain_energy).sum(),
-        rib_energy,
-        results,
-    })
+    Ok(eval_from_results(results, design.len(), &owner, mix))
+}
+
+/// Evaluate a design using precomputed load vectors, skipping per-triangle
+/// element recovery (unused during selection, pruning, sizing, and loose ends).
+pub(crate) fn evaluate_precomputed_light(
+    model: &mut ShellModel,
+    forces: &[Vec<f64>],
+    side: RibSide,
+    design: &[DRib],
+    mix: &Mix,
+    need_displacements: bool,
+) -> Result<Eval, SimError> {
+    let (ribs, owner) = collect_ribs(design, side);
+    model.set_ribs(ribs)?;
+    let results = model.solve_precomputed_light(forces, need_displacements)?;
+    Ok(eval_from_results(results, design.len(), &owner, mix))
 }
 
 impl Evaluator {
@@ -381,6 +413,7 @@ impl Evaluator {
         Self {
             models,
             cases,
+            forces: None,
             side,
             solves: 0,
             seconds: 0.0,
@@ -401,6 +434,22 @@ impl Evaluator {
         self.models.len()
     }
 
+    /// Compute the symbolic ordering of `design` once on worker 0 and share it
+    /// with all sibling workers so height-sizing trials reuse it without
+    /// repeating AMD on each worker.
+    pub fn prime_symbolic(&mut self, design: &[DRib]) -> Result<(), SimError> {
+        if self.models.len() <= 1 || design.is_empty() {
+            return Ok(());
+        }
+        let (ribs, _) = collect_ribs(design, self.side);
+        self.models[0].set_ribs(ribs)?;
+        let (first, rest) = self.models.split_at_mut(1);
+        for m in rest {
+            m.share_rib_symbolic(&first[0]);
+        }
+        Ok(())
+    }
+
     pub fn eval(&mut self, design: &[DRib]) -> Result<Eval, SimError> {
         let mut all = self.eval_many(&[design.to_vec()])?;
         Ok(all.remove(0))
@@ -409,8 +458,13 @@ impl Evaluator {
     /// Solve every design, spread over the models; answers in order.
     pub fn eval_many(&mut self, designs: &[Vec<DRib>]) -> Result<Vec<Eval>, SimError> {
         let started = Instant::now();
+        if self.forces.is_none() {
+            self.forces = Some(self.models[0].precompute_loads(&self.cases)?);
+        }
+        let forces = self.forces.as_deref().expect("precomputed above");
         let w = self.models.len();
-        let (cases, side) = (&self.cases, self.side);
+        let side = self.side;
+        let mix = &self.mix;
         let mut out: Vec<(usize, Result<Eval, SimError>)> = self
             .models
             .par_iter_mut()
@@ -420,7 +474,12 @@ impl Evaluator {
                     .iter()
                     .enumerate()
                     .filter(|(q, _)| q % w == k)
-                    .map(|(q, d)| (q, evaluate(m, cases, side, d, &self.mix)))
+                    .map(|(q, d)| {
+                        (
+                            q,
+                            evaluate_precomputed_light(m, forces, side, d, mix, true),
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -430,22 +489,15 @@ impl Evaluator {
         out.into_iter().map(|x| x.1).collect()
     }
 
-    /// The first-order drop in the decision objective of adding rib `d` to
-    /// the design `at` was solved for.
-    ///
-    /// Each case's compliance falls by the one-spring saturation
-    /// `C g / (C + g)`. A weighted sum adds those drops, which is what a
-    /// one-case plan has always done. Worst-case subtracts the p-norm of
-    /// the predicted compliances from the p-norm of the current ones.
-    fn estimate(&self, d: &DRib, at: &Eval) -> Result<f64, SimError> {
-        let ribs = d.solver_ribs(self.side);
+    /// First-order drop using precomputed [`PreparedRib`]s.
+    fn estimate_prepared(&self, preps: &[PreparedRib], at: &Eval) -> f64 {
         let model = &self.models[0];
         if self.mix.worst() {
             let mut next = Vec::with_capacity(at.results.len());
             for r in &at.results {
                 let mut u = 0.0;
-                for rib in &ribs {
-                    u += model.probe_rib_energy(rib, r)?;
+                for prep in preps {
+                    u += model.probe_prepared_rib_energy(prep, r);
                 }
                 let g = 2.0 * u;
                 let c = r.compliance.abs();
@@ -453,13 +505,13 @@ impl Evaluator {
                 next.push(r.compliance - sat);
             }
             let now: Vec<f64> = at.results.iter().map(|r| r.compliance).collect();
-            return Ok(self.mix.of(&now) - self.mix.of(&next));
+            return self.mix.of(&now) - self.mix.of(&next);
         }
         let mut drop = 0.0;
         for (i, r) in at.results.iter().enumerate() {
             let mut u = 0.0;
-            for rib in &ribs {
-                u += model.probe_rib_energy(rib, r)?;
+            for prep in preps {
+                u += model.probe_prepared_rib_energy(prep, r);
             }
             let g = 2.0 * u;
             let c = r.compliance.abs();
@@ -468,7 +520,7 @@ impl Evaluator {
                 drop += scale * (c * g / (c + g));
             }
         }
-        Ok(drop)
+        drop
     }
 }
 
@@ -665,30 +717,61 @@ pub(crate) fn run(
     let t = Instant::now();
     rep.stage(PlanStage::Select, 0.0);
     if !goal_met(ctx.goal, c0, &cur) {
+        // Precompute candidate layouts, beam stiffnesses, and factored Kψψ once.
+        let prepared: Vec<Result<Vec<PreparedRib>, SimError>> = {
+            let model = &ev.models[0];
+            cands
+                .par_iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let d = DRib {
+                        chain: c.chain.clone(),
+                        caps: c.caps.clone(),
+                        height: ctx.max_height,
+                        width: ctx.width,
+                        profile: ctx.profile,
+                        family: c.family,
+                        cand: i,
+                        gain: 0.0,
+                        id: i,
+                    };
+                    d.solver_ribs(ev.side)
+                        .iter()
+                        .map(|r| model.prepare_rib(r))
+                        .collect()
+                })
+                .collect()
+        };
         loop {
             if rep.cancelled() {
                 stopped = true;
                 break;
             }
             let base_volume = network_volume(&ctx.pos, &design);
-            let mut pool: Vec<(f64, usize, f64)> = Vec::new();
-            for (i, c) in cands.iter().enumerate() {
-                if used[i] {
-                    continue;
-                }
-                let trial = with(&design, c, i, ctx);
-                let dv = network_volume(&ctx.pos, &trial) - base_volume;
-                if dv <= 0.0 {
-                    continue;
-                }
-                if let Goal::Budget { volume_mm3 } = ctx.goal {
-                    if base_volume + dv > volume_mm3 {
-                        continue;
+            let mut pool: Vec<(f64, usize, f64)> = (0..cands.len())
+                .into_par_iter()
+                .filter(|&i| !used[i])
+                .filter_map(|i| {
+                    let c = &cands[i];
+                    let trial = with(&design, c, i, ctx);
+                    let dv = network_volume(&ctx.pos, &trial) - base_volume;
+                    if dv <= 0.0 {
+                        return None;
                     }
-                }
-                let est = ev.estimate(trial.last().expect("added"), &cur)?;
-                pool.push((est / dv, i, dv));
-            }
+                    if let Goal::Budget { volume_mm3 } = ctx.goal {
+                        if base_volume + dv > volume_mm3 {
+                            return None;
+                        }
+                    }
+                    match &prepared[i] {
+                        Ok(preps) => {
+                            let est = ev.estimate_prepared(preps, &cur);
+                            Some(Ok((est / dv, i, dv)))
+                        }
+                        Err(e) => Some(Err(e.clone())),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             if pool.is_empty() {
                 break;
             }
@@ -1006,6 +1089,7 @@ pub(crate) fn size(
     let mut stopped = false;
     rep.stage(PlanStage::Size, 0.0);
     if !matches!(ctx.goal, Goal::Budget { .. }) && !design.is_empty() {
+        ev.prime_symbolic(&design)?;
         let step = ctx.max_height / 6.0;
         let mut frozen: Vec<usize> = Vec::new();
         let budget_steps = (design.len() * 7).max(1) as f64;

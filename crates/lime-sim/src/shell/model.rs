@@ -2,6 +2,7 @@
 //! principal directions out.
 
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use faer::sparse::linalg::cholesky::SymbolicCholesky;
@@ -14,7 +15,7 @@ use super::membrane::{self, MembraneKind, K9};
 use super::plate;
 use super::rib_section::RibSection;
 use super::section::ShellSection;
-use super::sparse::{self, Factor, Pattern, HELD};
+use super::sparse::{self, Pattern, ScratchBuf, HELD};
 use super::tensor::Principal;
 use crate::error::SimError;
 use crate::units::{add, cross, dot, norm, normalize, scale, sub};
@@ -298,29 +299,84 @@ struct RibLayout {
     value: Vec<f64>,
 }
 
-/// A shell with its stiffness assembled and its pattern analysed, ready to
-/// take ribs and load cases.
-///
-/// **Re-solving with other ribs.** The shell's part of the matrix is
-/// assembled once, in [`ShellModel::new`], and kept. [`ShellModel::set_ribs`],
-/// [`ShellModel::add_rib`] and [`ShellModel::remove_rib`] only rebuild the
-/// rib part and mark the factor stale. Free dofs number the shell's first
-/// and the ribs' web rotations after them, so the shell's columns of the
-/// matrix never move: its values are reused as they are, and a rib change
-/// appends columns, re-runs the ordering (AMD) and the numeric
-/// factorisation. The timing test gives both costs. A rank-k update of
-/// that factor (Sherman–Morrison–Woodbury on the rib's own dofs) was
-/// measured and lost: the condensed block is full rank, and one solve
-/// per rib dof costs more than refactoring except for ribs shorter than
-/// any candidate (see the note in `select`, and handover §3).
-///
-/// **Web rotations.** Each rib has one extra dof per vertex it runs
-/// through, ψ (see [`super::beam`]). It is held when the vertex's three
-/// rotations are all held (a clamped end clamps the web too) and free
-/// otherwise.
-pub struct ShellModel {
+/// Pre-factored small SPD matrix `Kψψ` for a candidate rib.
+#[derive(Clone, Debug)]
+enum SmallFactor {
+    /// Tridiagonal Thomas factor: `mult[i - 1] = off[i - 1] / diag[i - 1]`,
+    /// reduced `diag`, and subdiagonal `off`.
+    Tridiag {
+        mult: Vec<f64>,
+        diag: Vec<f64>,
+        off: Vec<f64>,
+    },
+    /// Dense lower-triangular Cholesky factor `L` (row-major `nf × nf`).
+    Dense { l: Vec<f64>, nf: usize },
+}
+
+impl SmallFactor {
+    fn solve(&self, rhs: &[f64]) -> Vec<f64> {
+        let mut x = rhs.to_vec();
+        match self {
+            Self::Tridiag { mult, diag, off } => {
+                let n = diag.len();
+                for i in 1..n {
+                    x[i] -= mult[i - 1] * x[i - 1];
+                }
+                for i in (0..n).rev() {
+                    if i + 1 < n {
+                        x[i] -= off[i] * x[i + 1];
+                    }
+                    x[i] /= diag[i];
+                }
+            }
+            Self::Dense { l, nf } => {
+                let n = *nf;
+                for i in 0..n {
+                    for q in 0..i {
+                        x[i] -= l[i * n + q] * x[q];
+                    }
+                    x[i] /= l[i * n + i];
+                }
+                for i in (0..n).rev() {
+                    for q in i + 1..n {
+                        x[i] -= l[q * n + i] * x[q];
+                    }
+                    x[i] /= l[i * n + i];
+                }
+            }
+        }
+        x
+    }
+}
+
+/// A candidate rib's layout, element stiffnesses, and factored `Kψψ`,
+/// computed once and reused across greedy selection rounds.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedRib {
+    layout: RibLayout,
+    elements: Vec<([usize; 14], K14)>,
+    nf: usize,
+    factor: SmallFactor,
+}
+
+/// How much post-processing [`ShellModel::solve_forces`] performs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoverMode {
+    /// Full element stresses/energies, rib energies, displacements and rotations.
+    Full,
+    /// Displacements, rotations, compliance, max deflection and rib energies;
+    /// skips per-triangle stress/energy recovery.
+    LightWithDisplacements,
+    /// Compliance and max deflection only; skips elements, rib energies, and
+    /// displacement/rotation vector copies.
+    ComplianceOnly,
+}
+
+/// Immutable shell geometry, holds, pattern, and assembled shell stiffness,
+/// shared across worker clones via [`Arc`].
+struct ShellCore {
     mesh: ShellMesh,
-    section: Box<dyn ShellSection>,
+    section: Arc<dyn ShellSection>,
     options: ShellOptions,
     tris: Vec<Tri>,
     element_thickness: Vec<f64>,
@@ -334,17 +390,162 @@ pub struct ShellModel {
     prescribed: Vec<f64>,
     /// The pattern of the shell's free dofs alone.
     shell_pattern: Pattern,
-    /// Ribs' web rotations: where they sit and how they number.
-    layout: RibLayout,
-    /// The current pattern: the shell's columns, then the web rotations'.
-    pattern: Pattern,
-    symbolic: SymbolicCholesky<usize>,
+    /// Bare symbolic factor, computed lazily on first bare solve and shared
+    /// across all clones.
+    shell_symbolic: OnceLock<Arc<SymbolicCholesky<usize>>>,
     shell_values: Vec<f64>,
     shell_lift: Vec<f64>,
+}
+
+impl ShellCore {
+    fn element_local(&self, e: usize) -> (K9, K9) {
+        let tri = &self.tris[e];
+        let t = self.element_thickness[e];
+        let a = self.section.membrane(t, &tri.frame);
+        let d = self.section.bending(t, &tri.frame);
+        let km = membrane::stiffness(
+            self.options.membrane,
+            &tri.xy,
+            tri.area,
+            &a,
+            self.options.drill_penalty,
+        );
+        let kb = plate::stiffness(&tri.xy, tri.area, &d);
+        (km, kb)
+    }
+
+    fn element_global(&self, e: usize) -> [[f64; 18]; 18] {
+        let (km, kb) = self.element_local(e);
+        let mut kl = [[0.0; 18]; 18];
+        for a in 0..3 {
+            for b in 0..3 {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        kl[6 * a + MEMBRANE[i]][6 * b + MEMBRANE[j]] = km[3 * a + i][3 * b + j];
+                        kl[6 * a + BENDING[i]][6 * b + BENDING[j]] = kb[3 * a + i][3 * b + j];
+                    }
+                }
+            }
+        }
+        let r = self.tris[e].frame.rows();
+        // Each 3 × 3 block: Rᵀ K R.
+        let mut kg = [[0.0; 18]; 18];
+        for bi in 0..6 {
+            for bj in 0..6 {
+                let mut kr = [[0.0; 3]; 3];
+                for i in 0..3 {
+                    for j in 0..3 {
+                        kr[i][j] = (0..3).map(|q| kl[3 * bi + i][3 * bj + q] * r[q][j]).sum();
+                    }
+                }
+                for i in 0..3 {
+                    for j in 0..3 {
+                        kg[3 * bi + i][3 * bj + j] = (0..3).map(|q| r[q][i] * kr[q][j]).sum();
+                    }
+                }
+            }
+        }
+        kg
+    }
+
+    fn assemble_shell(&mut self) {
+        let mut values = vec![0.0; self.shell_pattern.nnz()];
+        let mut lift = vec![0.0; self.shell_pattern.n];
+        let count = self.tris.len();
+        let mut start = 0;
+        while start < count {
+            let end = (start + CHUNK).min(count);
+            let mats: Vec<[[f64; 18]; 18]> = (start..end)
+                .into_par_iter()
+                .map(|e| self.element_global(e))
+                .collect();
+            for (e, k) in (start..end).zip(&mats) {
+                let t = self.mesh.triangles[e];
+                let mut g = [0usize; 18];
+                for a in 0..3 {
+                    for q in 0..6 {
+                        g[6 * a + q] = 6 * t[a] as usize + q;
+                    }
+                }
+                let free: [usize; 18] = g.map(|id| self.dof[id]);
+                for i in 0..18 {
+                    let fi = free[i];
+                    if fi == HELD {
+                        continue;
+                    }
+                    for j in 0..18 {
+                        let fj = free[j];
+                        if fj == HELD {
+                            let v = self.prescribed[g[j]];
+                            if v != 0.0 {
+                                lift[fi] -= k[i][j] * v;
+                            }
+                        } else if fi <= fj {
+                            let p = self
+                                .shell_pattern
+                                .position(fi, fj)
+                                .expect("every element pair is in the pattern");
+                            values[p] += k[i][j];
+                        }
+                    }
+                }
+            }
+            start = end;
+        }
+        self.shell_values = values;
+        self.shell_lift = lift;
+    }
+}
+
+/// A shell with its stiffness assembled and its pattern analysed, ready to
+/// take ribs and load cases.
+///
+/// **Re-solving with other ribs.** The shell's part of the matrix is
+/// assembled once, in [`ShellModel::new`], and kept. [`ShellModel::set_ribs`],
+/// [`ShellModel::add_rib`] and [`ShellModel::remove_rib`] only rebuild the
+/// rib part and mark the factor stale. Free dofs number the shell's first
+/// and the ribs' web rotations after them, so the shell's columns of the
+/// matrix never move: its values are reused as they are, and a rib change
+/// appends columns, re-runs the ordering (AMD) when the pattern changed, and
+/// runs the numeric factorisation. The timing test gives both costs. A
+/// rank-k update of that factor (Sherman–Morrison–Woodbury on the rib's own
+/// dofs) was measured and lost: the condensed block is full rank, and one
+/// solve per rib dof costs more than refactoring except for ribs shorter
+/// than any candidate (see the note in `select`, and handover §3).
+///
+/// **Web rotations.** Each rib has one extra dof per vertex it runs
+/// through, ψ (see [`super::beam`]). It is held when the vertex's three
+/// rotations are all held (a clamped end clamps the web too) and free
+/// otherwise.
+pub struct ShellModel {
+    core: Arc<ShellCore>,
+    /// Ribs' web rotations: where they sit and how they number.
+    layout: RibLayout,
+    /// Extended pattern when ribs add free web rotations; `None` means `core.shell_pattern`.
+    rib_pattern: Option<Pattern>,
+    /// Symbolic factor for `rib_pattern`; `None` means `core.shell_symbolic`.
+    rib_symbolic: Option<Arc<SymbolicCholesky<usize>>>,
     ribs: Vec<Rib>,
+    /// Cached `(g, K14)` per rib edge, built during [`Self::rebuild_ribs`] and
+    /// reused by recovery so beam stiffnesses are never computed twice.
+    rib_elements: Vec<Vec<([usize; 14], K14)>>,
+    /// Rib stiffness contribution (empty when `ribs.is_empty()`).
     rib_values: Vec<f64>,
+    /// Indices in `rib_values` written by the current ribs (sparse overlay).
+    rib_touched: Vec<usize>,
+    /// Rib lift contribution (empty when `ribs.is_empty()`).
     rib_lift: Vec<f64>,
-    factor: Option<Factor>,
+    /// Reusable buffer for `shell_values + rib_values`, kept in sync with
+    /// `core.shell_values` outside `rib_touched`.
+    work_values: Vec<f64>,
+    /// Whether `work_values` has been seeded with `core.shell_values`.
+    work_seeded: bool,
+    /// Reusable numeric LDLᵀ factor values.
+    factor_values: Vec<f64>,
+    /// `Some(pivot_ratio)` when `factor_values` is current.
+    factor_pivot: Option<f64>,
+    factor_scratch: ScratchBuf,
+    solve_scratch: ScratchBuf,
     factorisations: usize,
     timings: Timings,
     /// Threads for the factor and the solve; 0 is the crate default.
@@ -508,12 +709,9 @@ impl ShellModel {
             .map(|(b, near)| near.iter().copied().filter(|&a| a as usize <= b).collect())
             .collect();
         let pattern = Pattern::build(&below, &dof, free);
-        let analysing = Instant::now();
-        let symbolic = pattern.analyse()?;
-        let analyse = analysing.elapsed().as_secs_f64();
-        let mut model = Self {
+        let mut core = ShellCore {
             mesh,
-            section: Box::new(section),
+            section: Arc::new(section),
             options,
             tris,
             element_thickness,
@@ -523,38 +721,200 @@ impl ShellModel {
             neighbours,
             dof,
             prescribed,
-            shell_values: vec![0.0; pattern.nnz()],
-            shell_lift: vec![0.0; free],
-            rib_values: vec![0.0; pattern.nnz()],
-            rib_lift: vec![0.0; free],
-            symbolic,
-            shell_pattern: pattern.clone(),
-            layout: RibLayout::default(),
-            pattern,
-            ribs: Vec::new(),
-            factor: None,
-            factorisations: 0,
-            timings: Timings::default(),
-            threads: 0,
+            shell_values: Vec::new(),
+            shell_lift: Vec::new(),
+            shell_pattern: pattern,
+            shell_symbolic: OnceLock::new(),
         };
-        model.assemble_shell();
-        // Mesh checks, adjacency and the element loop; the ordering apart.
-        model.timings.assemble_shell = started.elapsed().as_secs_f64() - analyse;
-        model.timings.analyse = analyse;
-        Ok(model)
+        core.assemble_shell();
+        let assemble_shell = started.elapsed().as_secs_f64();
+        let timings = Timings {
+            assemble_shell,
+            ..Timings::default()
+        };
+        Ok(Self {
+            core: Arc::new(core),
+            layout: RibLayout::default(),
+            rib_pattern: None,
+            rib_symbolic: None,
+            ribs: Vec::new(),
+            rib_elements: Vec::new(),
+            rib_values: Vec::new(),
+            rib_touched: Vec::new(),
+            rib_lift: Vec::new(),
+            work_values: Vec::new(),
+            work_seeded: false,
+            factor_values: Vec::new(),
+            factor_pivot: None,
+            factor_scratch: ScratchBuf::new(),
+            solve_scratch: ScratchBuf::new(),
+            factorisations: 0,
+            timings,
+            threads: 0,
+        })
+    }
+
+    /// Cheap bare clone sharing the assembled shell, pattern, and bare
+    /// symbolic factor via [`Arc`]. Ribs and factor buffers start empty.
+    pub(crate) fn clone_bare(&self) -> Self {
+        Self {
+            core: Arc::clone(&self.core),
+            layout: RibLayout::default(),
+            rib_pattern: None,
+            rib_symbolic: None,
+            ribs: Vec::new(),
+            rib_elements: Vec::new(),
+            rib_values: Vec::new(),
+            rib_touched: Vec::new(),
+            rib_lift: Vec::new(),
+            work_values: Vec::new(),
+            work_seeded: false,
+            factor_values: Vec::new(),
+            factor_pivot: None,
+            factor_scratch: ScratchBuf::new(),
+            solve_scratch: ScratchBuf::new(),
+            factorisations: 0,
+            timings: self.timings,
+            threads: self.threads,
+        }
+    }
+
+    /// Seed `self`'s cached rib pattern and symbolic ordering from a sibling
+    /// worker on the same shell so identical sparsity patterns skip AMD.
+    pub(crate) fn share_rib_symbolic(&mut self, other: &Self) {
+        if !Arc::ptr_eq(&self.core, &other.core) {
+            return;
+        }
+        self.clear_rib_overlay();
+        self.ribs.clear();
+        self.rib_elements.clear();
+        self.layout = RibLayout::default();
+        self.rib_pattern = other.rib_pattern.clone();
+        self.rib_symbolic = other.rib_symbolic.clone();
+        self.factor_pivot = None;
+    }
+
+    /// Restore `work_values` and zero `rib_values` only at previously touched
+    /// indices (O(rib nnz) instead of O(shell nnz)).
+    fn clear_rib_overlay(&mut self) {
+        if self.rib_touched.is_empty() {
+            return;
+        }
+        let shell_nnz = self.core.shell_values.len();
+        if self.work_seeded {
+            for &p in &self.rib_touched {
+                if p < shell_nnz {
+                    self.work_values[p] = self.core.shell_values[p];
+                } else if p < self.work_values.len() {
+                    self.work_values[p] = 0.0;
+                }
+            }
+        }
+        for &p in &self.rib_touched {
+            if p < self.rib_values.len() {
+                self.rib_values[p] = 0.0;
+            }
+        }
+        self.rib_touched.clear();
+    }
+
+    /// Replace vertex thicknesses on a bare shell without rebuilding
+    /// adjacency, sparsity pattern, or symbolic ordering. Clears any ribs.
+    pub(crate) fn set_thickness(&mut self, thickness: Vec<f64>) -> Result<(), SimError> {
+        let n = self.core.mesh.vertices.len();
+        if thickness.len() != n {
+            return Err(SimError::new("The shell needs one thickness per vertex."));
+        }
+        if thickness.iter().any(|t| !(t.is_finite() && *t > 0.0)) {
+            return Err(SimError::new("Every wall thickness must be above zero."));
+        }
+        self.clear_rib_overlay();
+        self.ribs.clear();
+        self.rib_elements.clear();
+        self.layout = RibLayout::default();
+        self.rib_pattern = None;
+        self.rib_symbolic = None;
+        self.rib_values.clear();
+        self.rib_lift.clear();
+        self.work_seeded = false;
+        self.factor_pivot = None;
+
+        let started = Instant::now();
+        if let Some(core) = Arc::get_mut(&mut self.core) {
+            core.mesh.thickness = thickness;
+            for (e, t) in core.mesh.triangles.iter().enumerate() {
+                core.element_thickness[e] =
+                    t.iter().map(|&v| core.mesh.thickness[v as usize]).sum::<f64>() / 3.0;
+            }
+            core.assemble_shell();
+        } else {
+            let old = &*self.core;
+            let mut mesh = old.mesh.clone();
+            mesh.thickness = thickness;
+            let element_thickness: Vec<f64> = mesh
+                .triangles
+                .iter()
+                .map(|t| t.iter().map(|&v| mesh.thickness[v as usize]).sum::<f64>() / 3.0)
+                .collect();
+            let shell_symbolic = OnceLock::new();
+            if let Some(sym) = old.shell_symbolic.get() {
+                let _ = shell_symbolic.set(Arc::clone(sym));
+            }
+            let mut core = ShellCore {
+                mesh,
+                section: Arc::clone(&old.section),
+                options: old.options,
+                tris: old.tris.clone(),
+                element_thickness,
+                normals: old.normals.clone(),
+                on_crease: old.on_crease.clone(),
+                edge_faces: old.edge_faces.clone(),
+                neighbours: old.neighbours.clone(),
+                dof: old.dof.clone(),
+                prescribed: old.prescribed.clone(),
+                shell_pattern: old.shell_pattern.clone(),
+                shell_symbolic,
+                shell_values: Vec::new(),
+                shell_lift: Vec::new(),
+            };
+            core.assemble_shell();
+            self.core = Arc::new(core);
+        }
+        self.timings.assemble_shell = started.elapsed().as_secs_f64();
+        Ok(())
+    }
+
+    fn pattern(&self) -> &Pattern {
+        self.rib_pattern
+            .as_ref()
+            .unwrap_or(&self.core.shell_pattern)
+    }
+
+    fn ensure_symbolic(&mut self) -> Result<Arc<SymbolicCholesky<usize>>, SimError> {
+        if let Some(sym) = &self.rib_symbolic {
+            return Ok(Arc::clone(sym));
+        }
+        if let Some(sym) = self.core.shell_symbolic.get() {
+            return Ok(Arc::clone(sym));
+        }
+        let analysing = Instant::now();
+        let sym = Arc::new(self.core.shell_pattern.analyse()?);
+        self.timings.analyse = analysing.elapsed().as_secs_f64();
+        let stored = self.core.shell_symbolic.get_or_init(|| Arc::clone(&sym));
+        Ok(Arc::clone(stored))
     }
 
     pub fn mesh(&self) -> &ShellMesh {
-        &self.mesh
+        &self.core.mesh
     }
 
     pub fn options(&self) -> ShellOptions {
-        self.options
+        self.core.options
     }
 
     /// Unit normal at each vertex: the area-weighted mean of its triangles'.
     pub fn vertex_normals(&self) -> &[[f64; 3]] {
-        &self.normals
+        &self.core.normals
     }
 
     pub fn ribs(&self) -> &[Rib] {
@@ -563,7 +923,7 @@ impl ShellModel {
 
     /// How many free dofs the system has.
     pub fn free_dofs(&self) -> usize {
-        self.pattern.n
+        self.pattern().n
     }
 
     /// How many numeric factorisations have run.
@@ -627,13 +987,24 @@ impl ShellModel {
     }
 
     /// Number the web rotations, extend the shell's pattern by their
-    /// columns, order it, and assemble every rib.
+    /// columns, order it (when the pattern changed), and assemble every rib.
     fn rebuild_ribs(&mut self) -> Result<(), SimError> {
         let started = Instant::now();
-        self.factor = None;
+        self.factor_pivot = None;
+        self.clear_rib_overlay();
+        if self.ribs.is_empty() {
+            self.layout = RibLayout::default();
+            self.rib_pattern = None;
+            self.rib_symbolic = None;
+            self.rib_elements.clear();
+            self.rib_lift.clear();
+            self.timings.analyse = 0.0;
+            self.timings.assemble_ribs = 0.0;
+            return Ok(());
+        }
         let layout = self.layout_ribs();
-        let n_shell = self.shell_pattern.n;
-        let base = 6 * self.mesh.vertices.len();
+        let n_shell = self.core.shell_pattern.n;
+        let base = 6 * self.core.mesh.vertices.len();
         // Columns of the free web rotations, rows from every rib element
         // that touches them.
         let n_free = layout.free.iter().filter(|&&f| f != HELD).count();
@@ -641,16 +1012,20 @@ impl ShellModel {
         for edges in &layout.edges {
             for &(pa, pb) in edges {
                 let ids = rib_ids(&layout, pa, pb, base);
-                let frees: Vec<usize> = ids
-                    .iter()
-                    .map(|&id| self.free_in(&layout, id))
-                    .filter(|&f| f != HELD)
-                    .collect();
-                for &c in &frees {
+                let mut frees = [0usize; 14];
+                let mut count = 0usize;
+                for &id in &ids {
+                    let f = self.free_in(&layout, id);
+                    if f != HELD {
+                        frees[count] = f;
+                        count += 1;
+                    }
+                }
+                for &c in &frees[..count] {
                     if c < n_shell {
                         continue;
                     }
-                    for &r in &frees {
+                    for &r in &frees[..count] {
                         if r <= c {
                             extra[c - n_shell].push(r);
                         }
@@ -662,21 +1037,53 @@ impl ShellModel {
             col.sort_unstable();
             col.dedup();
         }
-        let pattern = self.shell_pattern.extend(&extra);
-        let analysing = Instant::now();
-        self.symbolic = pattern.analyse()?;
-        self.timings.analyse = analysing.elapsed().as_secs_f64();
+        if extra.is_empty() {
+            self.rib_pattern = None;
+            self.rib_symbolic = None;
+            self.timings.analyse = 0.0;
+        } else if self
+            .rib_pattern
+            .as_ref()
+            .is_some_and(|p| p.matches_extended(&self.core.shell_pattern, &extra))
+            && self.rib_symbolic.is_some()
+        {
+            self.timings.analyse = 0.0;
+        } else {
+            let pattern = self.core.shell_pattern.extend(&extra);
+            let analysing = Instant::now();
+            let sym = Arc::new(pattern.analyse()?);
+            self.timings.analyse = analysing.elapsed().as_secs_f64();
+            self.rib_pattern = Some(pattern);
+            self.rib_symbolic = Some(sym);
+        }
         self.layout = layout;
-        self.pattern = pattern;
-        let mut values = vec![0.0; self.pattern.nnz()];
-        let mut lift = vec![0.0; self.pattern.n];
+        let nnz = self.pattern().nnz();
+        let n_total = self.pattern().n;
+        // `rib_values` is already zeroed at all previously touched positions;
+        // only adjust length without touching untouched zeros.
+        let mut values = std::mem::take(&mut self.rib_values);
+        if values.len() < nnz {
+            values.resize(nnz, 0.0);
+        } else {
+            values.truncate(nnz);
+        }
+        let mut touched = std::mem::take(&mut self.rib_touched);
+        let mut lift = std::mem::take(&mut self.rib_lift);
+        lift.clear();
+        lift.resize(n_total, 0.0);
+        let mut rib_elements = Vec::with_capacity(self.ribs.len());
         for r in 0..self.ribs.len() {
+            let mut elems = Vec::with_capacity(self.ribs[r].edges.len());
             for e in 0..self.ribs[r].edges.len() {
                 let (g, k) = self.rib_element(r, e);
-                self.scatter(&g, &k, &mut values, &mut lift);
+                self.scatter_tracked(&g, &k, &mut values, &mut lift, &mut touched);
+                elems.push((g, k));
             }
+            rib_elements.push(elems);
         }
+        self.rib_elements = rib_elements;
         self.rib_values = values;
+        self.rib_touched = touched;
         self.rib_lift = lift;
         self.timings.assemble_ribs = started.elapsed().as_secs_f64() - self.timings.analyse;
         Ok(())
@@ -685,15 +1092,16 @@ impl ShellModel {
     /// Give every rib a web rotation at each of its vertices, with its axis
     /// and hold.
     fn layout_ribs(&self) -> RibLayout {
-        self.layout_of(&self.ribs, self.shell_pattern.n)
+        self.layout_of(&self.ribs, self.core.shell_pattern.n)
     }
 
     /// The web-rotation layout of `ribs`, free ψ numbered from `first_free`.
     fn layout_of(&self, ribs: &[Rib], first_free: usize) -> RibLayout {
+        let core = &self.core;
         let mut layout = RibLayout::default();
         let mut tangent: Vec<[f64; 3]> = Vec::new();
         // Face normals of the rib edges at each crease vertex. A vertex
-        // that is not a crease never reads this and keeps `self.normals`.
+        // that is not a crease never reads this and keeps `core.normals`.
         let mut face_sum: Vec<[f64; 3]> = Vec::new();
         let mut free = first_free;
         for rib in ribs {
@@ -701,8 +1109,8 @@ impl ShellModel {
             let mut edges = Vec::with_capacity(rib.edges.len());
             for &(a, b) in &rib.edges {
                 let dir = normalize(sub(
-                    self.mesh.vertices[b as usize],
-                    self.mesh.vertices[a as usize],
+                    core.mesh.vertices[b as usize],
+                    core.mesh.vertices[a as usize],
                 ))
                 .expect("a mesh edge has a length");
                 let mut ids = [0usize; 2];
@@ -729,12 +1137,12 @@ impl ShellModel {
                     tangent[id] = add(t, d);
                     ids[slot] = id;
                 }
-                if self.on_crease[a as usize] || self.on_crease[b as usize] {
+                if core.on_crease[a as usize] || core.on_crease[b as usize] {
                     let nf = self.rib_face_normal(a, b);
-                    if self.on_crease[a as usize] {
+                    if core.on_crease[a as usize] {
                         face_sum[ids[0]] = add(face_sum[ids[0]], nf);
                     }
-                    if self.on_crease[b as usize] {
+                    if core.on_crease[b as usize] {
                         face_sum[ids[1]] = add(face_sum[ids[1]], nf);
                     }
                 }
@@ -743,10 +1151,10 @@ impl ShellModel {
             layout.edges.push(edges);
         }
         for (k, &v) in layout.vertex.iter().enumerate() {
-            let n = if self.on_crease[v as usize] {
-                normalize(face_sum[k]).unwrap_or(self.normals[v as usize])
+            let n = if core.on_crease[v as usize] {
+                normalize(face_sum[k]).unwrap_or(core.normals[v as usize])
             } else {
-                self.normals[v as usize]
+                core.normals[v as usize]
             };
             let lateral = normalize(cross(n, tangent[k]))
                 .or_else(|| normalize(cross(n, [1.0, 0.0, 0.0])))
@@ -754,8 +1162,8 @@ impl ShellModel {
                 .expect("a unit normal has a perpendicular");
             layout.lateral.push(lateral);
             let rot = 6 * v as usize + 3;
-            if (0..3).all(|q| self.dof[rot + q] == HELD) {
-                let theta = [0, 1, 2].map(|q| self.prescribed[rot + q]);
+            if (0..3).all(|q| core.dof[rot + q] == HELD) {
+                let theta = [0, 1, 2].map(|q| core.prescribed[rot + q]);
                 layout.free.push(HELD);
                 layout.value.push(dot(theta, lateral));
             } else {
@@ -768,12 +1176,21 @@ impl ShellModel {
     }
 
     fn free_in(&self, layout: &RibLayout, id: usize) -> usize {
-        let base = 6 * self.mesh.vertices.len();
+        let base = 6 * self.core.mesh.vertices.len();
         if id < base {
-            self.dof[id]
+            self.core.dof[id]
         } else {
             layout.free[id - base]
         }
+    }
+
+    /// Precompute global load vectors once for repeated solves on this mesh.
+    pub(crate) fn precompute_loads(&self, cases: &[LoadCase]) -> Result<Vec<Vec<f64>>, SimError> {
+        let mut forces = Vec::with_capacity(cases.len());
+        for case in cases {
+            forces.push(self.load_vector(case)?);
+        }
+        Ok(forces)
     }
 
     /// Solve one load case.
@@ -784,38 +1201,84 @@ impl ShellModel {
 
     /// Solve several load cases on one factor.
     pub fn solve_cases(&mut self, cases: &[LoadCase]) -> Result<Vec<ShellResult>, SimError> {
-        let n = self.mesh.vertices.len();
-        let mut forces = Vec::with_capacity(cases.len());
-        for case in cases {
-            forces.push(self.load_vector(case)?);
-        }
-        self.ensure_factor()?;
+        let forces = self.precompute_loads(cases)?;
+        self.solve_forces(&forces, RecoverMode::Full)
+    }
+
+    /// Solve several load cases without per-triangle element recovery.
+    pub(crate) fn solve_cases_light(
+        &mut self,
+        cases: &[LoadCase],
+        need_displacements: bool,
+    ) -> Result<Vec<ShellResult>, SimError> {
+        let forces = self.precompute_loads(cases)?;
+        self.solve_precomputed_light(&forces, need_displacements)
+    }
+
+    /// Solve precomputed load vectors without per-triangle element recovery.
+    pub(crate) fn solve_precomputed_light(
+        &mut self,
+        forces: &[Vec<f64>],
+        need_displacements: bool,
+    ) -> Result<Vec<ShellResult>, SimError> {
+        let mode = if need_displacements {
+            RecoverMode::LightWithDisplacements
+        } else {
+            RecoverMode::ComplianceOnly
+        };
+        self.solve_forces(forces, mode)
+    }
+
+    fn solve_forces(
+        &mut self,
+        forces: &[Vec<f64>],
+        mode: RecoverMode,
+    ) -> Result<Vec<ShellResult>, SimError> {
+        let n = self.core.mesh.vertices.len();
+        let pivot_ratio = self.ensure_factor()?;
+        let symbolic = self.ensure_symbolic()?;
         let started = Instant::now();
-        let free = self.pattern.n;
-        let mut rhs = Mat::<f64>::zeros(free, cases.len());
+        let free = self.pattern().n;
+        let mut rhs = Mat::<f64>::zeros(free, forces.len());
+        let shell_lift = &self.core.shell_lift;
+        let rib_lift = &self.rib_lift;
+        let dof = &self.core.dof;
         for (c, f) in forces.iter().enumerate() {
-            for d in 0..free {
-                let shell = self.shell_lift.get(d).copied().unwrap_or(0.0);
-                rhs[(d, c)] = shell + self.rib_lift[d];
+            if rib_lift.is_empty() {
+                for d in 0..free {
+                    rhs[(d, c)] = shell_lift[d];
+                }
+            } else {
+                for d in 0..free {
+                    let shell = shell_lift.get(d).copied().unwrap_or(0.0);
+                    rhs[(d, c)] = shell + rib_lift[d];
+                }
             }
             for i in 0..6 * n {
-                let d = self.dof[i];
+                let d = dof[i];
                 if d != HELD {
                     rhs[(d, c)] += f[i];
                 }
             }
         }
-        let factor = self.factor.as_ref().expect("factored above");
-        sparse::solve_in_place(&self.symbolic, factor, &mut rhs, self.threads)?;
+        sparse::solve_in_place_with(
+            &symbolic,
+            &self.factor_values,
+            &mut rhs,
+            self.threads,
+            &mut self.solve_scratch,
+        )?;
         self.timings.solve = started.elapsed().as_secs_f64();
         let started = Instant::now();
-        let mut out = Vec::with_capacity(cases.len());
+        let mut out = Vec::with_capacity(forces.len());
+        let u_len = 6 * n + self.layout.value.len();
+        let mut u = vec![0.0; u_len];
         for (c, f) in forces.iter().enumerate() {
             // Vertex dofs, then the web rotations.
-            let mut u = self.prescribed.clone();
-            u.extend_from_slice(&self.layout.value);
+            u[..6 * n].copy_from_slice(&self.core.prescribed);
+            u[6 * n..].copy_from_slice(&self.layout.value);
             for i in 0..6 * n {
-                let d = self.dof[i];
+                let d = self.core.dof[i];
                 if d != HELD {
                     u[i] = rhs[(d, c)];
                 }
@@ -828,7 +1291,7 @@ impl ShellModel {
             if u.iter().any(|v| !v.is_finite()) {
                 return Err(crate::error::not_held());
             }
-            out.push(self.recover(&u, f, factor.pivot_ratio));
+            out.push(self.recover_mode(&u, f, pivot_ratio, mode));
         }
         self.timings.recover = started.elapsed().as_secs_f64();
         Ok(out)
@@ -840,136 +1303,120 @@ impl ShellModel {
     /// then the free web rotations ([`ShellModel::web_rotations`]).
     pub fn stiffness_upper(&self) -> (usize, Vec<(usize, usize, f64)>) {
         let values = self.values();
-        let mut out = Vec::with_capacity(self.pattern.nnz());
-        for c in 0..self.pattern.n {
-            for p in self.pattern.col_ptr[c]..self.pattern.col_ptr[c + 1] {
-                out.push((self.pattern.row_idx[p], c, values[p]));
+        let pattern = self.pattern();
+        let mut out = Vec::with_capacity(pattern.nnz());
+        for c in 0..pattern.n {
+            for p in pattern.col_ptr[c]..pattern.col_ptr[c + 1] {
+                out.push((pattern.row_idx[p], c, values[p]));
             }
         }
-        (self.pattern.n, out)
+        (pattern.n, out)
     }
 
     /// Shell and rib values over the current pattern. The shell's columns
     /// come first in it, so the shell's values are its prefix.
     fn values(&self) -> Vec<f64> {
-        let mut values = self.rib_values.clone();
-        for (v, s) in values.iter_mut().zip(&self.shell_values) {
-            *v += s;
+        if self.ribs.is_empty() {
+            return self.core.shell_values.clone();
         }
-        values
+        let nnz = self.pattern().nnz();
+        let shell_nnz = self.core.shell_values.len();
+        let mut out = vec![0.0; nnz];
+        out[..shell_nnz].copy_from_slice(&self.core.shell_values);
+        for &p in &self.rib_touched {
+            let s = if p < shell_nnz {
+                self.core.shell_values[p]
+            } else {
+                0.0
+            };
+            out[p] = self.rib_values[p] + s;
+        }
+        out
     }
 
-    fn ensure_factor(&mut self) -> Result<(), SimError> {
-        if self.factor.is_some() {
-            return Ok(());
+    fn sync_work_values(&mut self) {
+        let nnz = self.pattern().nnz();
+        let shell_nnz = self.core.shell_values.len();
+        if !self.work_seeded {
+            self.work_values.clear();
+            self.work_values.extend_from_slice(&self.core.shell_values);
+            self.work_values.resize(nnz, 0.0);
+            self.work_seeded = true;
+        } else if self.work_values.len() < nnz {
+            self.work_values.resize(nnz, 0.0);
+        } else {
+            self.work_values.truncate(nnz);
         }
+        for &p in &self.rib_touched {
+            let s = if p < shell_nnz {
+                self.core.shell_values[p]
+            } else {
+                0.0
+            };
+            self.work_values[p] = self.rib_values[p] + s;
+        }
+    }
+
+    fn ensure_factor(&mut self) -> Result<f64, SimError> {
+        if let Some(pivot) = self.factor_pivot {
+            return Ok(pivot);
+        }
+        let symbolic = self.ensure_symbolic()?;
         let started = Instant::now();
-        let values = self.values();
-        let factor = sparse::factor(&self.pattern, &self.symbolic, &values, self.threads)?;
+        let pivot = if self.ribs.is_empty() {
+            let pattern = self
+                .rib_pattern
+                .as_ref()
+                .unwrap_or(&self.core.shell_pattern);
+            sparse::factor_into(
+                pattern,
+                &symbolic,
+                &self.core.shell_values,
+                self.threads,
+                &mut self.factor_values,
+                &mut self.factor_scratch,
+            )?
+        } else {
+            self.sync_work_values();
+            let pattern = self
+                .rib_pattern
+                .as_ref()
+                .unwrap_or(&self.core.shell_pattern);
+            sparse::factor_into(
+                pattern,
+                &symbolic,
+                &self.work_values,
+                self.threads,
+                &mut self.factor_values,
+                &mut self.factor_scratch,
+            )?
+        };
         self.factorisations += 1;
-        self.factor = Some(factor);
+        self.factor_pivot = Some(pivot);
         self.timings.factor = started.elapsed().as_secs_f64();
-        Ok(())
-    }
-
-    /// Membrane and bending stiffness of facet `e` in its own frame.
-    fn element_local(&self, e: usize) -> (K9, K9) {
-        let tri = &self.tris[e];
-        let t = self.element_thickness[e];
-        let a = self.section.membrane(t, &tri.frame);
-        let d = self.section.bending(t, &tri.frame);
-        let km = membrane::stiffness(
-            self.options.membrane,
-            &tri.xy,
-            tri.area,
-            &a,
-            self.options.drill_penalty,
-        );
-        let kb = plate::stiffness(&tri.xy, tri.area, &d);
-        (km, kb)
-    }
-
-    /// Facet `e`'s 18 × 18 stiffness on its corners' global dofs.
-    fn element_global(&self, e: usize) -> [[f64; 18]; 18] {
-        let (km, kb) = self.element_local(e);
-        let mut kl = [[0.0; 18]; 18];
-        for a in 0..3 {
-            for b in 0..3 {
-                for i in 0..3 {
-                    for j in 0..3 {
-                        kl[6 * a + MEMBRANE[i]][6 * b + MEMBRANE[j]] = km[3 * a + i][3 * b + j];
-                        kl[6 * a + BENDING[i]][6 * b + BENDING[j]] = kb[3 * a + i][3 * b + j];
-                    }
-                }
-            }
-        }
-        let r = self.tris[e].frame.rows();
-        // Each 3 × 3 block: Rᵀ K R.
-        let mut kg = [[0.0; 18]; 18];
-        for bi in 0..6 {
-            for bj in 0..6 {
-                let mut kr = [[0.0; 3]; 3];
-                for i in 0..3 {
-                    for j in 0..3 {
-                        kr[i][j] = (0..3).map(|q| kl[3 * bi + i][3 * bj + q] * r[q][j]).sum();
-                    }
-                }
-                for i in 0..3 {
-                    for j in 0..3 {
-                        kg[3 * bi + i][3 * bj + j] = (0..3).map(|q| r[q][i] * kr[q][j]).sum();
-                    }
-                }
-            }
-        }
-        kg
-    }
-
-    fn assemble_shell(&mut self) {
-        let mut values = vec![0.0; self.pattern.nnz()];
-        let mut lift = vec![0.0; self.pattern.n];
-        let count = self.tris.len();
-        let mut start = 0;
-        while start < count {
-            let end = (start + CHUNK).min(count);
-            let mats: Vec<[[f64; 18]; 18]> = (start..end)
-                .into_par_iter()
-                .map(|e| self.element_global(e))
-                .collect();
-            for (e, k) in (start..end).zip(&mats) {
-                let t = self.mesh.triangles[e];
-                let mut g = [0usize; 18];
-                for a in 0..3 {
-                    for q in 0..6 {
-                        g[6 * a + q] = 6 * t[a] as usize + q;
-                    }
-                }
-                self.scatter(&g, k, &mut values, &mut lift);
-            }
-            start = end;
-        }
-        self.shell_values = values;
-        self.shell_lift = lift;
+        Ok(pivot)
     }
 
     /// The held value of dof id `id` (vertex dofs, then web rotations).
     fn held_value(&self, id: usize) -> f64 {
-        let base = 6 * self.mesh.vertices.len();
+        let base = 6 * self.core.mesh.vertices.len();
         if id < base {
-            self.prescribed[id]
+            self.core.prescribed[id]
         } else {
             self.layout.value[id - base]
         }
     }
 
-    /// Add an element matrix on dof ids `g`: free–free pairs into the
-    /// matrix, free–held pairs times the held value into the load lift.
-    fn scatter<const N: usize>(
+    /// Add an element matrix on dof ids `g`, recording touched matrix entries.
+    fn scatter_tracked<const N: usize>(
         &self,
         g: &[usize; N],
         k: &[[f64; N]; N],
         values: &mut [f64],
         lift: &mut [f64],
+        touched: &mut Vec<usize>,
     ) {
+        let pattern = self.pattern();
         let free: [usize; N] = g.map(|id| self.free_in(&self.layout, id));
         for i in 0..N {
             let fi = free[i];
@@ -984,11 +1431,42 @@ impl ShellModel {
                         lift[fi] -= k[i][j] * v;
                     }
                 } else if fi <= fj {
-                    let p = self
-                        .pattern
+                    let p = pattern
                         .position(fi, fj)
                         .expect("every element pair is in the pattern");
+                    if values[p] == 0.0 {
+                        touched.push(p);
+                    }
                     values[p] += k[i][j];
+                }
+            }
+        }
+    }
+
+    /// Add nonzero upper-triangle free–free entries of `k` on dof ids `g`.
+    fn scatter_upper_nonzero<const N: usize>(
+        &self,
+        g: &[usize; N],
+        k: &[[f64; N]; N],
+        values: &mut [f64],
+    ) {
+        let pattern = self.pattern();
+        let free: [usize; N] = g.map(|id| self.free_in(&self.layout, id));
+        for i in 0..N {
+            let fi = free[i];
+            if fi == HELD {
+                continue;
+            }
+            for j in 0..N {
+                let fj = free[j];
+                if fj != HELD && fi <= fj {
+                    let v = k[i][j];
+                    if v != 0.0 {
+                        let p = pattern
+                            .position(fi, fj)
+                            .expect("every element pair is in the pattern");
+                        values[p] += v;
+                    }
                 }
             }
         }
@@ -999,14 +1477,14 @@ impl ShellModel {
         if rib.edges.is_empty() {
             return Err(SimError::new("A rib needs at least one edge."));
         }
-        let n = self.mesh.vertices.len();
+        let n = self.core.mesh.vertices.len();
         for &(a, b) in &rib.edges {
             if a as usize >= n || b as usize >= n {
                 return Err(SimError::new(format!(
                     "Rib edge {a}–{b} names a vertex the shell does not have."
                 )));
             }
-            if a == b || self.neighbours[a as usize].binary_search(&b).is_err() {
+            if a == b || self.core.neighbours[a as usize].binary_search(&b).is_err() {
                 return Err(SimError::new(format!(
                     "Rib edge {a}–{b} is not an edge of the mesh."
                 )));
@@ -1020,24 +1498,83 @@ impl ShellModel {
         self.rib_element_in(&self.layout, &self.ribs[r], r, e)
     }
 
-    /// The strain energy rib `rib` would take if it were added to this
-    /// model and the wall kept the displacements and rotations of `result`
-    /// (a solution of this model), with the rib's own web rotations ψ
-    /// relaxed to their best fit. N·mm.
-    ///
-    /// This is the first-order estimate of what the rib is worth: adding
-    /// stiffness `ΔK` lowers the compliance by `uᵀ ΔK u = 2 ×` this, to first
-    /// order, before the wall redistributes. The rib planner ranks its
-    /// candidates with it before solving the best exactly.
-    pub fn probe_rib_energy(&self, rib: &Rib, result: &ShellResult) -> Result<f64, SimError> {
+    /// Precompute a candidate rib's layout, element stiffnesses, and factored
+    /// `Kψψ` so it can be probed across rounds without re-assembling beam
+    /// matrices or allocating a dense `nf × nf` matrix.
+    pub(crate) fn prepare_rib(&self, rib: &Rib) -> Result<PreparedRib, SimError> {
         self.check_rib(rib)?;
-        let n = self.mesh.vertices.len();
-        if result.displacement.len() != n || result.rotation.len() != n {
-            return Err(SimError::new("The result is not one of this shell."));
-        }
-        let layout = self.layout_of(std::slice::from_ref(rib), 0);
-        let m = layout.vertex.len();
+        let n = self.core.mesh.vertices.len();
         let base = 6 * n;
+        let layout = self.layout_of(std::slice::from_ref(rib), 0);
+        let elements: Vec<([usize; 14], K14)> = (0..rib.edges.len())
+            .map(|e| self.rib_element_in(&layout, rib, 0, e))
+            .collect();
+        let free = &layout.free;
+        let nf = free.iter().filter(|&&f| f != HELD).count();
+        let tridiagonal = elements.iter().all(|(g, _)| {
+            let fa = free[g[12] - base];
+            let fb = free[g[13] - base];
+            fa == HELD || fb == HELD || fa.abs_diff(fb) <= 1
+        });
+        let factor = if tridiagonal {
+            let mut diag = vec![0.0; nf];
+            let mut off = vec![0.0; nf.saturating_sub(1)];
+            for (g, k) in &elements {
+                for i in 12..14 {
+                    let fi = free[g[i] - base];
+                    if fi == HELD {
+                        continue;
+                    }
+                    for j in 12..14 {
+                        let fj = free[g[j] - base];
+                        if fj == HELD {
+                            continue;
+                        }
+                        if fi == fj {
+                            diag[fi] += k[i][j];
+                        } else if fi == fj + 1 {
+                            off[fj] += k[i][j];
+                        }
+                    }
+                }
+            }
+            factor_tridiag(diag, off)
+                .ok_or_else(|| SimError::new("A probed rib's web has no stiffness."))?
+        } else {
+            let mut kpp = vec![0.0; nf * nf];
+            for (g, k) in &elements {
+                for i in 12..14 {
+                    let fi = free[g[i] - base];
+                    if fi == HELD {
+                        continue;
+                    }
+                    for j in 12..14 {
+                        let fj = free[g[j] - base];
+                        if fj != HELD {
+                            kpp[fi * nf + fj] += k[i][j];
+                        }
+                    }
+                }
+            }
+            factor_small_spd(kpp, nf)
+                .ok_or_else(|| SimError::new("A probed rib's web has no stiffness."))?
+        };
+        Ok(PreparedRib {
+            layout,
+            elements,
+            nf,
+            factor,
+        })
+    }
+
+    /// Probe strain energy using a [`PreparedRib`], bit-identical to
+    /// [`ShellModel::probe_rib_energy`].
+    pub(crate) fn probe_prepared_rib_energy(
+        &self,
+        prep: &PreparedRib,
+        result: &ShellResult,
+    ) -> f64 {
+        let base = 6 * self.core.mesh.vertices.len();
         let value = |id: usize| -> f64 {
             let v = id / 6;
             let k = id % 6;
@@ -1047,15 +1584,9 @@ impl ShellModel {
                 result.rotation[v][k - 3]
             }
         };
-        let elements: Vec<([usize; 14], K14)> = (0..rib.edges.len())
-            .map(|e| self.rib_element_in(&layout, rib, 0, e))
-            .collect();
-        // Kψψ ψ = −Kψu u over the free ψ; held ψ move to the right side.
-        let free: Vec<usize> = layout.free.clone();
-        let nf = free.iter().filter(|&&f| f != HELD).count();
-        let mut kpp = vec![0.0; nf * nf];
-        let mut rhs = vec![0.0; nf];
-        for (g, k) in &elements {
+        let free = &prep.layout.free;
+        let mut rhs = vec![0.0; prep.nf];
+        for (g, k) in &prep.elements {
             for i in 12..14 {
                 let fi = free[g[i] - base];
                 if fi == HELD {
@@ -1067,24 +1598,22 @@ impl ShellModel {
                     } else {
                         let fj = free[g[j] - base];
                         if fj == HELD {
-                            rhs[fi] -= k[i][j] * layout.value[g[j] - base];
-                        } else {
-                            kpp[fi * nf + fj] += k[i][j];
+                            rhs[fi] -= k[i][j] * prep.layout.value[g[j] - base];
                         }
                     }
                 }
             }
         }
-        let psi_free = solve_small_spd(&mut kpp, &mut rhs, nf)
-            .ok_or_else(|| SimError::new("A probed rib's web has no stiffness."))?;
-        let mut psi = layout.value.clone();
+        let psi_free = prep.factor.solve(&rhs);
+        let m = prep.layout.vertex.len();
+        let mut psi = prep.layout.value.clone();
         for k in 0..m {
             if free[k] != HELD {
                 psi[k] = psi_free[free[k]];
             }
         }
         let mut energy = 0.0;
-        for (g, k) in &elements {
+        for (g, k) in &prep.elements {
             let x: [f64; 14] = std::array::from_fn(|q| {
                 if q < 12 {
                     value(g[q])
@@ -1094,7 +1623,25 @@ impl ShellModel {
             });
             energy += quadratic(k, &x);
         }
-        Ok(energy)
+        energy
+    }
+
+    /// The strain energy rib `rib` would take if it were added to this
+    /// model and the wall kept the displacements and rotations of `result`
+    /// (a solution of this model), with the rib's own web rotations ψ
+    /// relaxed to their best fit. N·mm.
+    ///
+    /// This is the first-order estimate of what the rib is worth: adding
+    /// stiffness `ΔK` lowers the compliance by `uᵀ ΔK u = 2 ×` this, to first
+    /// order, before the wall redistributes. The rib planner ranks its
+    /// candidates with it before solving the best exactly.
+    pub fn probe_rib_energy(&self, rib: &Rib, result: &ShellResult) -> Result<f64, SimError> {
+        let n = self.core.mesh.vertices.len();
+        if result.displacement.len() != n || result.rotation.len() != n {
+            return Err(SimError::new("The result is not one of this shell."));
+        }
+        let prep = self.prepare_rib(rib)?;
+        Ok(self.probe_prepared_rib_energy(&prep, result))
     }
 
     /// The normal of the face the directed edge `a` → `b` belongs to.
@@ -1102,14 +1649,15 @@ impl ShellModel {
     /// wins; if none does, the lowest that lists it reversed. Both ends
     /// of a rib element call this once, so they stand on the same face.
     fn rib_face_normal(&self, a: u32, b: u32) -> [f64; 3] {
+        let core = &self.core;
         let key = if a < b { (a, b) } else { (b, a) };
-        let Some(faces) = self.edge_faces.get(&key) else {
-            return self.normals[a as usize];
+        let Some(faces) = core.edge_faces.get(&key) else {
+            return core.normals[a as usize];
         };
         let mut forward = None;
         let mut reverse = None;
         for &e in faces {
-            let t = self.mesh.triangles[e as usize];
+            let t = core.mesh.triangles[e as usize];
             let goes = (0..3).any(|k| t[k] == a && t[(k + 1) % 3] == b);
             if goes && forward.is_none() {
                 forward = Some(e);
@@ -1118,8 +1666,8 @@ impl ShellModel {
             }
         }
         match forward.or(reverse) {
-            Some(e) => self.tris[e as usize].frame.normal,
-            None => self.normals[a as usize],
+            Some(e) => core.tris[e as usize].frame.normal,
+            None => core.normals[a as usize],
         }
     }
 
@@ -1131,10 +1679,11 @@ impl ShellModel {
         r: usize,
         e: usize,
     ) -> ([usize; 14], K14) {
+        let core = &self.core;
         let (pa, pb) = layout.edges[r][e];
-        let g = rib_ids(layout, pa, pb, 6 * self.mesh.vertices.len());
+        let g = rib_ids(layout, pa, pb, 6 * core.mesh.vertices.len());
         let (a, b) = (layout.vertex[pa] as usize, layout.vertex[pb] as usize);
-        let (xa, xb) = (self.mesh.vertices[a], self.mesh.vertices[b]);
+        let (xa, xb) = (core.mesh.vertices[a], core.mesh.vertices[b]);
         let sign = match rib.side {
             RibSide::Positive => 1.0,
             RibSide::Negative => -1.0,
@@ -1151,40 +1700,40 @@ impl ShellModel {
         // normal, so a flat wall is unchanged. At a crease the foot is
         // that face's normal; the web axis (set in `layout_of`) is the
         // miter of the rib's own faces.
-        let on_edge = self.on_crease[a] || self.on_crease[b];
+        let on_edge = core.on_crease[a] || core.on_crease[b];
         let face = if on_edge {
             self.rib_face_normal(a as u32, b as u32)
         } else {
             [0.0; 3]
         };
         let end = |v: usize, psi: usize| {
-            let n = if self.on_crease[v] {
+            let n = if core.on_crease[v] {
                 face
             } else {
-                self.normals[v]
+                core.normals[v]
             };
             RibEnd {
-                foot: scale(n, sign * 0.5 * self.mesh.thickness[v]),
+                foot: scale(n, sign * 0.5 * core.mesh.thickness[v]),
                 up_web: scale(n, sign * props.centroid),
                 lateral: layout.lateral[psi],
             }
         };
         let axis = normalize(sub(xb, xa)).unwrap_or([1.0, 0.0, 0.0]);
-        let (modulus, shear) = self.section.rib_moduli(axis);
+        let (modulus, shear) = core.section.rib_moduli(axis);
         let section = BeamSection {
             e: modulus,
             g: shear,
             props,
         };
-        let na = if self.on_crease[a] {
+        let na = if core.on_crease[a] {
             face
         } else {
-            self.normals[a]
+            core.normals[a]
         };
-        let nb = if self.on_crease[b] {
+        let nb = if core.on_crease[b] {
             face
         } else {
-            self.normals[b]
+            core.normals[b]
         };
         // A mesh edge lies in the surface, so the mean normal is never along it.
         let k = beam::rib_stiffness(xa, xb, add(na, nb), [end(a, pa), end(b, pb)], &section)
@@ -1193,7 +1742,8 @@ impl ShellModel {
     }
 
     fn load_vector(&self, case: &[ShellLoad]) -> Result<Vec<f64>, SimError> {
-        let n = self.mesh.vertices.len();
+        let core = &self.core;
+        let n = core.mesh.vertices.len();
         let mut f = vec![0.0; 6 * n];
         let node_ok = |node: u32| {
             if node as usize >= n {
@@ -1208,7 +1758,7 @@ impl ShellModel {
             if list.is_empty() {
                 return Err(SimError::new("A load needs at least one triangle."));
             }
-            if list.iter().any(|&t| t as usize >= self.tris.len()) {
+            if list.iter().any(|&t| t as usize >= core.tris.len()) {
                 return Err(SimError::new(
                     "A load names a triangle the shell does not have.",
                 ));
@@ -1223,7 +1773,7 @@ impl ShellModel {
             }
         };
         let spread = |f: &mut Vec<f64>, t: usize, force: [f64; 3]| {
-            for &v in &self.mesh.triangles[t] {
+            for &v in &core.mesh.triangles[t] {
                 for k in 0..3 {
                     f[6 * v as usize + k] += force[k] / 3.0;
                 }
@@ -1252,7 +1802,7 @@ impl ShellModel {
                     finite(&[*pressure])?;
                     tris_ok(triangles)?;
                     for &t in triangles {
-                        let tri = &self.tris[t as usize];
+                        let tri = &core.tris[t as usize];
                         spread(
                             &mut f,
                             t as usize,
@@ -1263,9 +1813,9 @@ impl ShellModel {
                 ShellLoad::SpreadForce { triangles, force } => {
                     finite(force)?;
                     tris_ok(triangles)?;
-                    let total: f64 = triangles.iter().map(|&t| self.tris[t as usize].area).sum();
+                    let total: f64 = triangles.iter().map(|&t| core.tris[t as usize].area).sum();
                     for &t in triangles {
-                        let share = self.tris[t as usize].area / total;
+                        let share = core.tris[t as usize].area / total;
                         spread(&mut f, t as usize, scale(*force, share));
                     }
                 }
@@ -1274,28 +1824,61 @@ impl ShellModel {
         Ok(f)
     }
 
-    fn recover(&self, u: &[f64], f: &[f64], pivot_ratio: f64) -> ShellResult {
-        let n = self.mesh.vertices.len();
-        let elements: Vec<ElementResult> = (0..self.tris.len())
-            .into_par_iter()
-            .map(|e| self.element_result(e, u))
-            .collect();
-        let rib_energy: Vec<f64> = (0..self.ribs.len())
-            .map(|r| {
-                (0..self.ribs[r].edges.len())
-                    .map(|e| {
-                        let (g, k) = self.rib_element(r, e);
-                        quadratic(&k, &g.map(|id| u[id]))
-                    })
+    fn recover_mode(
+        &self,
+        u: &[f64],
+        f: &[f64],
+        pivot_ratio: f64,
+        mode: RecoverMode,
+    ) -> ShellResult {
+        let core = &self.core;
+        let n = core.mesh.vertices.len();
+        let compliance = f.iter().zip(u).map(|(a, b)| a * b).sum();
+        if mode == RecoverMode::ComplianceOnly {
+            let mut max = (0.0, 0usize);
+            for i in 0..n {
+                let m = norm([u[6 * i], u[6 * i + 1], u[6 * i + 2]]);
+                if m > max.0 {
+                    max = (m, i);
+                }
+            }
+            return ShellResult {
+                displacement: Vec::new(),
+                rotation: Vec::new(),
+                strain_energy: 0.0,
+                compliance,
+                elements: Vec::new(),
+                rib_energy: Vec::new(),
+                max_deflection: max.0,
+                max_deflection_node: max.1 as u32,
+                max_deflection_at: core.mesh.vertices[max.1],
+                pivot_ratio,
+            };
+        }
+        let rib_energy: Vec<f64> = self
+            .rib_elements
+            .iter()
+            .map(|elems| {
+                elems
+                    .iter()
+                    .map(|(g, k)| quadratic(k, &g.map(|id| u[id])))
                     .sum()
             })
             .collect();
-        let strain_energy = elements
-            .iter()
-            .map(|e| e.membrane_energy + e.bending_energy)
-            .sum::<f64>()
-            + rib_energy.iter().sum::<f64>();
-        let compliance = f.iter().zip(u).map(|(a, b)| a * b).sum();
+        let (elements, strain_energy) = if mode == RecoverMode::Full {
+            let elements: Vec<ElementResult> = (0..core.tris.len())
+                .into_par_iter()
+                .map(|e| self.element_result(e, u))
+                .collect();
+            let strain_energy = elements
+                .iter()
+                .map(|e| e.membrane_energy + e.bending_energy)
+                .sum::<f64>()
+                + rib_energy.iter().sum::<f64>();
+            (elements, strain_energy)
+        } else {
+            (Vec::new(), 0.0)
+        };
         let displacement: Vec<[f64; 3]> = (0..n)
             .map(|i| [u[6 * i], u[6 * i + 1], u[6 * i + 2]])
             .collect();
@@ -1318,15 +1901,16 @@ impl ShellModel {
             rib_energy,
             max_deflection: max.0,
             max_deflection_node: max.1 as u32,
-            max_deflection_at: self.mesh.vertices[max.1],
+            max_deflection_at: core.mesh.vertices[max.1],
             pivot_ratio,
         }
     }
 
     fn element_result(&self, e: usize, u: &[f64]) -> ElementResult {
-        let tri = &self.tris[e];
+        let core = &self.core;
+        let tri = &core.tris[e];
         let frame = tri.frame;
-        let t = self.mesh.triangles[e];
+        let t = core.mesh.triangles[e];
         let mut um = [0.0; 9];
         let mut ub = [0.0; 9];
         for a in 0..3 {
@@ -1339,11 +1923,11 @@ impl ShellModel {
                 ub[3 * a + i] = local[BENDING[i]];
             }
         }
-        let (km, kb) = self.element_local(e);
-        let th = self.element_thickness[e];
-        let a = self.section.membrane(th, &frame);
-        let d = self.section.bending(th, &frame);
-        let strain = membrane::centroid_strain(self.options.membrane, &tri.xy, &um);
+        let (km, kb) = core.element_local(e);
+        let th = core.element_thickness[e];
+        let a = core.section.membrane(th, &frame);
+        let d = core.section.bending(th, &frame);
+        let strain = membrane::centroid_strain(core.options.membrane, &tri.xy, &um);
         let curvature = plate::centroid_curvature(&tri.xy, &ub);
         let mut force = [0.0; 3];
         let mut moment = [0.0; 3];
@@ -1362,16 +1946,110 @@ impl ShellModel {
         }
     }
 
+    /// Membrane force `[Nxx, Nyy, Nxy]` in facet `e`'s local frame, matching
+    /// `element_result(e, u).membrane_force.local` bit for bit without
+    /// rebuilding Allman/DKT element stiffness matrices.
+    fn element_membrane_force(&self, e: usize, u: &[f64]) -> [f64; 3] {
+        let core = &self.core;
+        let tri = &core.tris[e];
+        let frame = tri.frame;
+        let t = core.mesh.triangles[e];
+        let mut um = [0.0; 9];
+        for a in 0..3 {
+            let base = 6 * t[a] as usize;
+            let tr = frame.to_local([u[base], u[base + 1], u[base + 2]]);
+            let rot = frame.to_local([u[base + 3], u[base + 4], u[base + 5]]);
+            let local = [tr[0], tr[1], tr[2], rot[0], rot[1], rot[2]];
+            for i in 0..3 {
+                um[3 * a + i] = local[MEMBRANE[i]];
+            }
+        }
+        let th = core.element_thickness[e];
+        let a = core.section.membrane(th, &frame);
+        let strain = membrane::centroid_strain(core.options.membrane, &tri.xy, &um);
+        let mut force = [0.0; 3];
+        for r in 0..3 {
+            force[r] = (0..3).map(|q| a[r][q] * strain[q]).sum();
+        }
+        force
+    }
+
+    /// Solve one load case and recover only per-triangle membrane forces plus
+    /// compliance and max deflection, for [`Self::buckling_state`].
+    fn solve_for_buckling(
+        &mut self,
+        case: &[ShellLoad],
+    ) -> Result<(Vec<[f64; 3]>, ShellResult), SimError> {
+        let f = self.load_vector(case)?;
+        let n = self.core.mesh.vertices.len();
+        let pivot_ratio = self.ensure_factor()?;
+        let symbolic = self.ensure_symbolic()?;
+        let started = Instant::now();
+        let free = self.pattern().n;
+        let mut rhs = Mat::<f64>::zeros(free, 1);
+        let shell_lift = &self.core.shell_lift;
+        let rib_lift = &self.rib_lift;
+        let dof = &self.core.dof;
+        if rib_lift.is_empty() {
+            for d in 0..free {
+                rhs[(d, 0)] = shell_lift[d];
+            }
+        } else {
+            for d in 0..free {
+                let shell = shell_lift.get(d).copied().unwrap_or(0.0);
+                rhs[(d, 0)] = shell + rib_lift[d];
+            }
+        }
+        for i in 0..6 * n {
+            let d = dof[i];
+            if d != HELD {
+                rhs[(d, 0)] += f[i];
+            }
+        }
+        sparse::solve_in_place_with(
+            &symbolic,
+            &self.factor_values,
+            &mut rhs,
+            self.threads,
+            &mut self.solve_scratch,
+        )?;
+        self.timings.solve = started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let mut u = self.core.prescribed.clone();
+        u.extend_from_slice(&self.layout.value);
+        for i in 0..6 * n {
+            let d = self.core.dof[i];
+            if d != HELD {
+                u[i] = rhs[(d, 0)];
+            }
+        }
+        for (k, &d) in self.layout.free.iter().enumerate() {
+            if d != HELD {
+                u[6 * n + k] = rhs[(d, 0)];
+            }
+        }
+        if u.iter().any(|v| !v.is_finite()) {
+            return Err(crate::error::not_held());
+        }
+        let forces: Vec<[f64; 3]> = (0..self.core.tris.len())
+            .map(|e| self.element_membrane_force(e, &u))
+            .collect();
+        let result = self.recover_mode(&u, &f, pivot_ratio, RecoverMode::ComplianceOnly);
+        self.timings.recover = started.elapsed().as_secs_f64();
+        Ok((forces, result))
+    }
+
     /// The free-dof mass matrix, upper triangle, same pattern as the
     /// stiffness. Consistent translational mass of the wall (linear
     /// triangle, ρ t) on ux, uy, uz, and the same for each rib end through
     /// the offset map that builds its stiffness. No mass on a rotation,
     /// the drilling dof, or the web's own ψ.
     pub(crate) fn mass_upper(&self, density: f64, rib_mass: bool) -> Vec<f64> {
-        let mut values = vec![0.0; self.pattern.nnz()];
-        for (e, tri) in self.tris.iter().enumerate() {
-            let t = self.mesh.triangles[e];
-            let mass = density * self.element_thickness[e] * tri.area;
+        let core = &self.core;
+        let mut values = vec![0.0; self.pattern().nnz()];
+        for (e, tri) in core.tris.iter().enumerate() {
+            let t = core.mesh.triangles[e];
+            let mass = density * core.element_thickness[e] * tri.area;
             let corners = [t[0] as usize, t[1] as usize, t[2] as usize];
             for a in 0..3 {
                 for b in a..3 {
@@ -1403,7 +2081,7 @@ impl ShellModel {
         }
         let (r, c) = if fa <= fb { (fa, fb) } else { (fb, fa) };
         let p = self
-            .pattern
+            .pattern()
             .position(r, c)
             .expect("a mass pair is a stiffness pair");
         values[p] += m;
@@ -1413,12 +2091,13 @@ impl ShellModel {
     /// of the section centroid, carried to the vertex dofs by the same map
     /// as the stiffness. No ρ I L on ψ.
     fn add_rib_mass(&self, values: &mut [f64], r: usize, e: usize, density: f64) {
+        let core = &self.core;
         let layout = &self.layout;
         let rib = &self.ribs[r];
         let (pa, pb) = layout.edges[r][e];
-        let ids = rib_ids(layout, pa, pb, 6 * self.mesh.vertices.len());
+        let ids = rib_ids(layout, pa, pb, 6 * core.mesh.vertices.len());
         let (a, b) = (layout.vertex[pa] as usize, layout.vertex[pb] as usize);
-        let (xa, xb) = (self.mesh.vertices[a], self.mesh.vertices[b]);
+        let (xa, xb) = (core.mesh.vertices[a], core.mesh.vertices[b]);
         let len = norm(sub(xb, xa));
         let props = rib
             .section
@@ -1429,20 +2108,20 @@ impl ShellModel {
             RibSide::Negative => -1.0,
             RibSide::Centered => 0.0,
         };
-        let on_edge = self.on_crease[a] || self.on_crease[b];
+        let on_edge = core.on_crease[a] || core.on_crease[b];
         let face = if on_edge {
             self.rib_face_normal(a as u32, b as u32)
         } else {
             [0.0; 3]
         };
         let end = |v: usize, psi: usize| {
-            let n = if self.on_crease[v] {
+            let n = if core.on_crease[v] {
                 face
             } else {
-                self.normals[v]
+                core.normals[v]
             };
             RibEnd {
-                foot: scale(n, sign * 0.5 * self.mesh.thickness[v]),
+                foot: scale(n, sign * 0.5 * core.mesh.thickness[v]),
                 up_web: scale(n, sign * props.centroid),
                 lateral: layout.lateral[psi],
             }
@@ -1469,7 +2148,7 @@ impl ShellModel {
 
     /// `uᵀ M v` on free dofs. `mass` is [`ShellModel::mass_upper`].
     pub(crate) fn mass_inner(&self, mass: &[f64], u: &[f64], v: &[f64]) -> f64 {
-        super::modes::sym_dot(&self.pattern, mass, u, v)
+        super::modes::sym_dot(self.pattern(), mass, u, v)
     }
 
     /// The lowest `count` modes. Rayleigh ω² = vᵀ K v / vᵀ M v. Rib mass is
@@ -1494,7 +2173,7 @@ impl ShellModel {
         if !(density.is_finite() && density > 0.0) {
             return Err(SimError::new("The density must be above zero."));
         }
-        if count == 0 || self.pattern.n == 0 {
+        if count == 0 || self.pattern().n == 0 {
             return Ok(super::modes::ModeSet {
                 modes: Vec::new(),
                 seconds: 0.0,
@@ -1503,13 +2182,13 @@ impl ShellModel {
         let mass = self.mass_upper(density, rib_mass);
         let stiffness = self.values();
         self.ensure_factor()?;
-        let factor = self.factor.as_ref().expect("just factored");
+        let symbolic = self.ensure_symbolic()?;
         super::modes::lowest(
-            &self.pattern,
+            self.pattern(),
             &stiffness,
             &mass,
-            &self.symbolic,
-            factor,
+            &symbolic,
+            &self.factor_values,
             count,
         )
     }
@@ -1561,18 +2240,13 @@ impl ShellModel {
         case: &[ShellLoad],
         count: usize,
     ) -> Result<(BucklingSet, Vec<f64>, ShellResult), SimError> {
-        if self.pattern.n == 0 {
+        if self.pattern().n == 0 {
             return Err(SimError::new("The shell has nothing free to buckle."));
         }
         if count == 0 {
             return Err(SimError::new("A buckling solve needs at least one mode."));
         }
-        let solved = self.solve(case)?;
-        let forces: Vec<[f64; 3]> = solved
-            .elements
-            .iter()
-            .map(|e| e.membrane_force.local)
-            .collect();
+        let (forces, solved) = self.solve_for_buckling(case)?;
         // A wall with no compression has S = 0. The Krylov–Schur step then
         // reorthogonalises a zero vector and never returns (faer's Arnoldi
         // loop treats `0 < ε·0` as false). There is no positive λ in that
@@ -1585,13 +2259,13 @@ impl ShellModel {
         let metric = self.geometric_upper(&forces);
         let stiffness = self.values();
         self.ensure_factor()?;
-        let factor = self.factor.as_ref().expect("just factored");
+        let symbolic = self.ensure_symbolic()?;
         let (found, seconds) = super::modes::positive_rays(
-            &self.pattern,
+            self.pattern(),
             &stiffness,
             &metric,
-            &self.symbolic,
-            factor,
+            &symbolic,
+            &self.factor_values,
             count,
         )?;
         if found.is_empty() {
@@ -1604,20 +2278,16 @@ impl ShellModel {
                 vector: m.vector,
             })
             .collect();
-        Ok((
-            BucklingSet { modes, seconds },
-            metric,
-            solved,
-        ))
+        Ok((BucklingSet { modes, seconds }, metric, solved))
     }
 
     /// Upper triangle of S = −Kg. Plate bending dofs only: membrane dofs
     /// and every rib carry nothing. See [`plate::geometric`].
     fn geometric_upper(&self, forces: &[[f64; 3]]) -> Vec<f64> {
-        let mut values = vec![0.0; self.pattern.nnz()];
-        let mut lift = vec![0.0; self.pattern.n];
+        let core = &self.core;
+        let mut values = vec![0.0; self.pattern().nnz()];
         for (e, force) in forces.iter().enumerate() {
-            let kg = plate::geometric(&self.tris[e].xy, self.tris[e].area, *force);
+            let kg = plate::geometric(&core.tris[e].xy, core.tris[e].area, *force);
             let mut neg = [[0.0; 9]; 9];
             for i in 0..9 {
                 for j in 0..9 {
@@ -1625,14 +2295,14 @@ impl ShellModel {
                 }
             }
             let global = self.bend_global(e, &neg);
-            let t = self.mesh.triangles[e];
+            let t = core.mesh.triangles[e];
             let mut g = [0usize; 18];
             for a in 0..3 {
                 for q in 0..6 {
                     g[6 * a + q] = 6 * t[a] as usize + q;
                 }
             }
-            self.scatter(&g, &global, &mut values, &mut lift);
+            self.scatter_upper_nonzero(&g, &global, &mut values);
         }
         values
     }
@@ -1649,7 +2319,7 @@ impl ShellModel {
                 }
             }
         }
-        let r = self.tris[e].frame.rows();
+        let r = self.core.tris[e].frame.rows();
         let mut kg = [[0.0; 18]; 18];
         for bi in 0..6 {
             for bj in 0..6 {
@@ -1674,12 +2344,13 @@ impl ShellModel {
     /// direction field a static solution does. Held dofs stay at rest:
     /// a mode is the motion about the holds, not the holds themselves.
     pub(crate) fn result_of_free(&self, free: &[f64]) -> Result<ShellResult, SimError> {
-        if free.len() != self.pattern.n {
+        let core = &self.core;
+        if free.len() != self.pattern().n {
             return Err(SimError::new("The vector is not one of this shell."));
         }
-        let n = self.mesh.vertices.len();
-        let mut u = vec![0.0; self.prescribed.len()];
-        for (id, &d) in self.dof.iter().enumerate() {
+        let n = core.mesh.vertices.len();
+        let mut u = vec![0.0; core.prescribed.len()];
+        for (id, &d) in core.dof.iter().enumerate() {
             if d != HELD {
                 u[id] = free[d];
             }
@@ -1691,8 +2362,8 @@ impl ShellModel {
             }
         }
         let f = vec![0.0; u.len()];
-        let pivot = self.factor.as_ref().map_or(1.0, |f| f.pivot_ratio);
-        Ok(self.recover(&u, &f, pivot))
+        let pivot = self.factor_pivot.unwrap_or(1.0);
+        Ok(self.recover_mode(&u, &f, pivot, RecoverMode::Full))
     }
 
     /// Lower generalised eigenvalue of φᵢᵀ ΔK φⱼ against φᵢᵀ M φⱼ, with
@@ -1734,6 +2405,20 @@ impl ShellModel {
         vectors: &[Vec<f64>],
         mass_gram: &[f64],
     ) -> Result<f64, SimError> {
+        let preps: Vec<PreparedRib> = ribs
+            .iter()
+            .map(|r| self.prepare_rib(r))
+            .collect::<Result<_, _>>()?;
+        self.cluster_shift_prepared(&preps, vectors, mass_gram)
+    }
+
+    /// Cluster shift score using precomputed [`PreparedRib`]s.
+    pub(crate) fn cluster_shift_prepared(
+        &self,
+        preps: &[PreparedRib],
+        vectors: &[Vec<f64>],
+        mass_gram: &[f64],
+    ) -> Result<f64, SimError> {
         let n = vectors.len();
         if n == 0 {
             return Err(SimError::new("A cluster score needs a mode."));
@@ -1741,14 +2426,11 @@ impl ShellModel {
         if mass_gram.len() != n * n {
             return Err(SimError::new("The mass Gram does not match the cluster."));
         }
-        for rib in ribs {
-            self.check_rib(rib)?;
-        }
         let mut states = Vec::with_capacity(n);
         for v in vectors {
             let mut one = Vec::new();
-            for rib in ribs {
-                one.extend(self.rib_state(rib, v)?);
+            for prep in preps {
+                one.extend(self.prepared_rib_state(prep, v)?);
             }
             states.push(one);
         }
@@ -1771,17 +2453,19 @@ impl ShellModel {
 
     /// One probed rib's element states: stiffness and the 14 amplitudes
     /// with ψ relaxed against `vector` (a free-dof vector of this model).
-    fn rib_state(&self, rib: &Rib, vector: &[f64]) -> Result<Vec<RibState>, SimError> {
-        if vector.len() != self.pattern.n {
+    fn prepared_rib_state(
+        &self,
+        prep: &PreparedRib,
+        vector: &[f64],
+    ) -> Result<Vec<RibState>, SimError> {
+        if vector.len() != self.pattern().n {
             return Err(SimError::new("The vector is not one of this shell."));
         }
-        let n = self.mesh.vertices.len();
-        let layout = self.layout_of(std::slice::from_ref(rib), 0);
-        let m = layout.vertex.len();
-        let base = 6 * n;
+        let core = &self.core;
+        let base = 6 * core.mesh.vertices.len();
         let value = |id: usize| -> f64 {
             if id < base {
-                let d = self.dof[id];
+                let d = core.dof[id];
                 if d == HELD {
                     0.0
                 } else {
@@ -1791,14 +2475,9 @@ impl ShellModel {
                 0.0
             }
         };
-        let elements: Vec<([usize; 14], K14)> = (0..rib.edges.len())
-            .map(|e| self.rib_element_in(&layout, rib, 0, e))
-            .collect();
-        let free = &layout.free;
-        let nf = free.iter().filter(|&&f| f != HELD).count();
-        let mut kpp = vec![0.0; nf * nf];
-        let mut rhs = vec![0.0; nf];
-        for (g, k) in &elements {
+        let free = &prep.layout.free;
+        let mut rhs = vec![0.0; prep.nf];
+        for (g, k) in &prep.elements {
             for i in 12..14 {
                 let fi = free[g[i] - base];
                 if fi == HELD {
@@ -1810,24 +2489,22 @@ impl ShellModel {
                     } else {
                         let fj = free[g[j] - base];
                         if fj == HELD {
-                            rhs[fi] -= k[i][j] * layout.value[g[j] - base];
-                        } else {
-                            kpp[fi * nf + fj] += k[i][j];
+                            rhs[fi] -= k[i][j] * prep.layout.value[g[j] - base];
                         }
                     }
                 }
             }
         }
-        let psi_free = solve_small_spd(&mut kpp, &mut rhs, nf)
-            .ok_or_else(|| SimError::new("A probed rib's web has no stiffness."))?;
-        let mut psi = layout.value.clone();
+        let psi_free = prep.factor.solve(&rhs);
+        let m = prep.layout.vertex.len();
+        let mut psi = prep.layout.value.clone();
         for k in 0..m {
             if free[k] != HELD {
                 psi[k] = psi_free[free[k]];
             }
         }
-        let mut out = Vec::with_capacity(elements.len());
-        for (g, k) in elements {
+        let mut out = Vec::with_capacity(prep.elements.len());
+        for (g, k) in &prep.elements {
             let x = std::array::from_fn(|q| {
                 if q < 12 {
                     value(g[q])
@@ -1835,7 +2512,7 @@ impl ShellModel {
                     psi[g[q] - base]
                 }
             });
-            out.push((g, k, x));
+            out.push((*g, *k, x));
         }
         Ok(out)
     }
@@ -1858,34 +2535,35 @@ fn rib_ids(layout: &RibLayout, pa: usize, pb: usize, base: usize) -> [usize; 14]
     g
 }
 
-/// Solve the dense symmetric positive definite `k x = b` (`k` row-major,
-/// `n × n`) by Cholesky, in place. A rib's web rotations form a chain, so
-/// `k` is tridiagonal in practice and the band is used when it is.
-fn solve_small_spd(k: &mut [f64], b: &mut [f64], n: usize) -> Option<Vec<f64>> {
+/// Factor a symmetric positive-definite tridiagonal matrix for Thomas solves.
+fn factor_tridiag(mut diag: Vec<f64>, off: Vec<f64>) -> Option<SmallFactor> {
+    let n = diag.len();
+    let mut mult = Vec::with_capacity(n.saturating_sub(1));
+    for i in 1..n {
+        if diag[i - 1].abs() < 1e-300 {
+            return None;
+        }
+        let f = off[i - 1] / diag[i - 1];
+        diag[i] -= f * off[i - 1];
+        mult.push(f);
+    }
+    for i in (0..n).rev() {
+        if diag[i].is_nan() || diag[i] <= 0.0 {
+            return None;
+        }
+    }
+    Some(SmallFactor::Tridiag { mult, diag, off })
+}
+
+/// Factor the dense symmetric positive definite `k` (`k` row-major, `n × n`),
+/// taking the tridiagonal band when it is tridiagonal and dense Cholesky
+/// otherwise.
+fn factor_small_spd(mut k: Vec<f64>, n: usize) -> Option<SmallFactor> {
     let tridiagonal = (0..n).all(|i| (0..n).all(|j| i.abs_diff(j) <= 1 || k[i * n + j] == 0.0));
     if tridiagonal {
-        // Thomas on the symmetric tridiagonal.
-        let mut diag: Vec<f64> = (0..n).map(|i| k[i * n + i]).collect();
+        let diag: Vec<f64> = (0..n).map(|i| k[i * n + i]).collect();
         let off: Vec<f64> = (1..n).map(|i| k[i * n + i - 1]).collect();
-        let mut x = b.to_vec();
-        for i in 1..n {
-            if diag[i - 1].abs() < 1e-300 {
-                return None;
-            }
-            let f = off[i - 1] / diag[i - 1];
-            diag[i] -= f * off[i - 1];
-            x[i] -= f * x[i - 1];
-        }
-        for i in (0..n).rev() {
-            if diag[i].is_nan() || diag[i] <= 0.0 {
-                return None;
-            }
-            if i + 1 < n {
-                x[i] -= off[i] * x[i + 1];
-            }
-            x[i] /= diag[i];
-        }
-        return Some(x);
+        return factor_tridiag(diag, off);
     }
     for j in 0..n {
         let mut d = k[j * n + j];
@@ -1905,20 +2583,7 @@ fn solve_small_spd(k: &mut [f64], b: &mut [f64], n: usize) -> Option<Vec<f64>> {
             k[i * n + j] = s / d;
         }
     }
-    let mut x = b.to_vec();
-    for i in 0..n {
-        for q in 0..i {
-            x[i] -= k[i * n + q] * x[q];
-        }
-        x[i] /= k[i * n + i];
-    }
-    for i in (0..n).rev() {
-        for q in i + 1..n {
-            x[i] -= k[q * n + i] * x[q];
-        }
-        x[i] /= k[i * n + i];
-    }
-    Some(x)
+    Some(SmallFactor::Dense { l: k, nf: n })
 }
 
 /// `uᵀ K v`.

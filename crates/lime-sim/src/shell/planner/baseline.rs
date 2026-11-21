@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::error::SimError;
-use crate::shell::{IsotropicShell, LoadCase, ShellHold, ShellMesh, ShellModel, ShellOptions};
+use crate::shell::{IsotropicShell, LoadCase, ShellModel, ShellOptions};
 use crate::units::{add, scale, sub};
 
 use super::select::{network_volume, DRib, Mix};
@@ -29,9 +29,7 @@ pub(crate) struct ThickeningGoal<'a> {
 }
 
 pub(crate) fn thickening(
-    mesh: &ShellMesh,
-    material: IsotropicShell,
-    holds: &[ShellHold],
+    mut model: ShellModel,
     cases: &[LoadCase],
     goal: &ThickeningGoal,
     rep: &Reporter,
@@ -39,6 +37,7 @@ pub(crate) fn thickening(
     let mix = goal.mix;
     let c0 = goal.bare;
     let target = goal.target;
+    let mesh = model.mesh();
     let area: f64 = mesh
         .triangles
         .iter()
@@ -55,20 +54,19 @@ pub(crate) fn thickening(
             solves: 0,
         }));
     }
-    let mean_t = mesh.thickness.iter().sum::<f64>() / mesh.thickness.len() as f64;
+    let base_thickness = mesh.thickness.clone();
+    let mean_t = base_thickness.iter().sum::<f64>() / base_thickness.len() as f64;
+    model.set_threads(1);
+    let forces = model.precompute_loads(cases)?;
     let mut solves = 0;
     let mut f = |dt: f64| -> Result<f64, SimError> {
         if rep.cancelled() {
             return Err(SimError::new(CANCELLED));
         }
         rep.stage(PlanStage::Baselines, solves as f64 / 30.0);
-        let mut m = mesh.clone();
-        for t in &mut m.thickness {
-            *t += dt;
-        }
-        let mut model = ShellModel::new(m, material, holds, ShellOptions::default())?;
-        model.set_threads(1);
-        let r = model.solve_cases(cases)?;
+        let thickness: Vec<f64> = base_thickness.iter().map(|t| t + dt).collect();
+        model.set_thickness(thickness)?;
+        let r = model.solve_precomputed_light(&forces, false)?;
         solves += 1;
         let cs: Vec<f64> = r.iter().map(|x| x.compliance).collect();
         Ok(mix.of(&cs))
@@ -321,7 +319,7 @@ fn grid_design(
     model.set_threads(1);
     let ribs = design.iter().flat_map(|d| d.solver_ribs(r.side)).collect();
     model.set_ribs(ribs)?;
-    let res = model.solve_cases(&cases)?;
+    let res = model.solve_cases_light(&cases, false)?;
     let cs: Vec<f64> = res.iter().map(|x| x.compliance).collect();
     Ok((network_volume(&s.pos, &design), input.mix.of(&cs)))
 }

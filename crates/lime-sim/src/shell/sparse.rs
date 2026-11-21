@@ -8,7 +8,7 @@
 //! the ordering and one numeric factorisation. The faer calls are the ones
 //! [`crate::solve::FaerLdlt`] makes.
 
-use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::prelude::ReborrowMut;
 use faer::sparse::linalg::cholesky::{
     factorize_symbolic_cholesky, CholeskySymbolicParams, LdltRef, SymbolicCholesky,
@@ -19,6 +19,37 @@ use faer::{Conj, Mat, Par, Side};
 
 use crate::error::{not_held, SimError};
 use crate::solve::{parallel, pivot_ratio_of, supernodal_pivot_ratio};
+
+/// Reusable aligned scratch memory for repeated faer factorisations and solves.
+pub(crate) struct ScratchBuf {
+    buf: MemBuffer,
+    req: StackReq,
+}
+
+impl ScratchBuf {
+    pub fn new() -> Self {
+        let req = StackReq::empty();
+        Self {
+            buf: MemBuffer::new(req),
+            req,
+        }
+    }
+
+    pub fn stack(&mut self, req: StackReq) -> Result<&mut MemStack, SimError> {
+        if req.size_bytes() > self.req.size_bytes() || req.align_bytes() > self.req.align_bytes() {
+            let next = StackReq::or(self.req, req);
+            self.buf = MemBuffer::try_new(next).map_err(|_| SimError::new("Out of memory."))?;
+            self.req = next;
+        }
+        Ok(MemStack::new(&mut self.buf))
+    }
+}
+
+impl Default for ScratchBuf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// The factor's parallelism: `0` is the crate default ([`parallel`]),
 /// `1` one thread, more a rayon split over that many.
@@ -92,6 +123,24 @@ impl Pattern {
         }
     }
 
+    /// Whether `self` is already `base.extend(extra)` without allocating.
+    pub fn matches_extended(&self, base: &Self, extra: &[Vec<usize>]) -> bool {
+        if self.n != base.n + extra.len() {
+            return false;
+        }
+        let mut offset = base.nnz();
+        for (k, rows) in extra.iter().enumerate() {
+            let c = base.n + k;
+            let lo = self.col_ptr[c];
+            let hi = self.col_ptr[c + 1];
+            if lo != offset || hi - lo != rows.len() || &self.row_idx[lo..hi] != rows.as_slice() {
+                return false;
+            }
+            offset = hi;
+        }
+        true
+    }
+
     pub fn nnz(&self) -> usize {
         self.row_idx.len()
     }
@@ -118,78 +167,71 @@ impl Pattern {
     }
 }
 
-/// A numeric factor over a pattern's symbolic analysis.
-pub(crate) struct Factor {
-    pub values: Vec<f64>,
-    /// `|D_min| / |D_max|`.
-    pub pivot_ratio: f64,
-}
-
 /// Below this pivot ratio the shell is taken as not held: some rigid
 /// motion is left free. Held shells in the tests stay above 1e-12; a free
 /// rigid mode comes out near machine precision.
 pub(crate) const MIN_PIVOT_RATIO: f64 = 1e-14;
 
-pub(crate) fn factor(
+/// Factor into a reusable `out` buffer and `scratch`, returning the pivot ratio.
+pub(crate) fn factor_into(
     pattern: &Pattern,
     symbolic: &SymbolicCholesky<usize>,
     values: &[f64],
     threads: usize,
-) -> Result<Factor, SimError> {
-    let mut out = vec![0.0; symbolic.len_val()];
+    out: &mut Vec<f64>,
+    scratch: &mut ScratchBuf,
+) -> Result<f64, SimError> {
+    out.clear();
+    out.resize(symbolic.len_val(), 0.0);
     if pattern.n == 0 {
-        return Ok(Factor {
-            values: out,
-            pivot_ratio: 1.0,
-        });
+        return Ok(1.0);
     }
     let matrix = SparseColMatRef::new(pattern.symbolic_ref(), values);
     let par = par_of(threads);
-    let scratch = symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default());
-    let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
+    let req = symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default());
+    let stack = scratch.stack(req)?;
     symbolic
         .factorize_numeric_ldlt(
-            &mut out,
+            out,
             matrix,
             Side::Upper,
             Default::default(),
             par,
-            MemStack::new(&mut mem),
+            stack,
             Default::default(),
         )
         .map_err(|_| not_held())?;
     let pivot_ratio = match symbolic.raw() {
-        SymbolicCholeskyRaw::Simplicial(s) => pivot_ratio_of(s.col_ptr(), s.row_idx(), &out),
-        SymbolicCholeskyRaw::Supernodal(s) => supernodal_pivot_ratio(s, &out),
+        SymbolicCholeskyRaw::Simplicial(s) => pivot_ratio_of(s.col_ptr(), s.row_idx(), out),
+        SymbolicCholeskyRaw::Supernodal(s) => supernodal_pivot_ratio(s, out),
     };
     // A NaN ratio is not held either.
     if pivot_ratio.is_nan() || pivot_ratio < MIN_PIVOT_RATIO {
         return Err(not_held());
     }
-    Ok(Factor {
-        values: out,
-        pivot_ratio,
-    })
+    Ok(pivot_ratio)
 }
 
-/// Solve for every column of `rhs` (n × cases, column-major) in place.
-pub(crate) fn solve_in_place(
+/// Solve for every column of `rhs` (n × cases, column-major) in place,
+/// reusing `scratch`.
+pub(crate) fn solve_in_place_with(
     symbolic: &SymbolicCholesky<usize>,
-    factor: &Factor,
+    factor_values: &[f64],
     rhs: &mut Mat<f64>,
     threads: usize,
+    scratch: &mut ScratchBuf,
 ) -> Result<(), SimError> {
     if rhs.nrows() == 0 {
         return Ok(());
     }
     let par = par_of(threads);
-    let scratch = symbolic.solve_in_place_scratch::<f64>(rhs.ncols(), par);
-    let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
-    LdltRef::new(symbolic, &factor.values).solve_in_place_with_conj(
+    let req = symbolic.solve_in_place_scratch::<f64>(rhs.ncols(), par);
+    let stack = scratch.stack(req)?;
+    LdltRef::new(symbolic, factor_values).solve_in_place_with_conj(
         Conj::No,
         rhs.rb_mut(),
         par,
-        MemStack::new(&mut mem),
+        stack,
     );
     Ok(())
 }

@@ -11,6 +11,7 @@
 //! bending mode. The reported frequency is the Rayleigh quotient
 //! vᵀ K v / vᵀ M v, not the raw Ritz value.
 
+use std::sync::Mutex;
 use std::time::Instant;
 
 use faer::dyn_stack::{MemBuffer, MemStack};
@@ -19,7 +20,7 @@ use faer::matrix_free::LinOp;
 use faer::sparse::linalg::cholesky::SymbolicCholesky;
 use faer::{c64, Mat, MatMut, MatRef, Par};
 
-use super::sparse::{solve_in_place, Factor, Pattern};
+use super::sparse::{solve_in_place_with, Pattern, ScratchBuf};
 use crate::error::SimError;
 
 /// ω² within this relative gap of the lowest belong to one cluster.
@@ -184,18 +185,86 @@ fn diag_scale(g: &[f64], n: usize) -> f64 {
         .max(1.0)
 }
 
+/// Compact upper-triangle symmetric matrix keeping only nonzero entries,
+/// in the exact column-major, row-ascending order of [`Pattern`]. Skipping
+/// exact zeros preserves IEEE-754 floating-point sums bit for bit while
+/// avoiding ~85-92% wasted work on mass and geometric matrices.
+struct CompactSym {
+    n: usize,
+    col_ptr: Vec<usize>,
+    row_idx: Vec<usize>,
+    values: Vec<f64>,
+}
+
+impl CompactSym {
+    fn from_upper(pattern: &Pattern, values: &[f64]) -> Self {
+        let mut col_ptr = Vec::with_capacity(pattern.n + 1);
+        let mut row_idx = Vec::new();
+        let mut vals = Vec::new();
+        col_ptr.push(0);
+        for c in 0..pattern.n {
+            for p in pattern.col_ptr[c]..pattern.col_ptr[c + 1] {
+                let v = values[p];
+                if v != 0.0 {
+                    row_idx.push(pattern.row_idx[p]);
+                    vals.push(v);
+                }
+            }
+            col_ptr.push(row_idx.len());
+        }
+        Self {
+            n: pattern.n,
+            col_ptr,
+            row_idx,
+            values: vals,
+        }
+    }
+
+    fn spmv(&self, x: &[f64], y: &mut [f64]) {
+        y.fill(0.0);
+        for c in 0..self.n {
+            let xc = x[c];
+            let mut yc = y[c];
+            for p in self.col_ptr[c]..self.col_ptr[c + 1] {
+                let r = self.row_idx[p];
+                let v = self.values[p];
+                if r != c {
+                    y[r] += v * xc;
+                    yc += v * x[r];
+                } else {
+                    yc += v * xc;
+                }
+            }
+            y[c] = yc;
+        }
+    }
+
+    fn sym_dot(&self, u: &[f64], v: &[f64]) -> f64 {
+        let mut y = vec![0.0; self.n];
+        self.spmv(u, &mut y);
+        y.iter().zip(v).map(|(a, b)| a * b).sum()
+    }
+}
+
 /// y = M x for an upper triangle stored the stiffness's way.
 pub(crate) fn spmv(pattern: &Pattern, values: &[f64], x: &[f64], y: &mut [f64]) {
     y.fill(0.0);
     for c in 0..pattern.n {
+        let xc = x[c];
+        let mut yc = y[c];
         for p in pattern.col_ptr[c]..pattern.col_ptr[c + 1] {
             let r = pattern.row_idx[p];
             let v = values[p];
-            y[r] += v * x[c];
-            if r != c {
-                y[c] += v * x[r];
+            if v != 0.0 {
+                if r != c {
+                    y[r] += v * xc;
+                    yc += v * x[r];
+                } else {
+                    yc += v * xc;
+                }
             }
         }
+        y[c] = yc;
     }
 }
 
@@ -205,16 +274,22 @@ pub(crate) fn sym_dot(pattern: &Pattern, values: &[f64], u: &[f64], v: &[f64]) -
     y.iter().zip(v).map(|(a, b)| a * b).sum()
 }
 
+struct ShiftScratch {
+    x: Vec<f64>,
+    rhs_col: Mat<f64>,
+    solve_scratch: ScratchBuf,
+}
+
 struct ShiftInv<'a> {
-    pattern: &'a Pattern,
-    mass: &'a [f64],
+    metric: CompactSym,
     symbolic: &'a SymbolicCholesky<usize>,
-    factor: &'a Factor,
+    factor_values: &'a [f64],
+    scratch: Mutex<ShiftScratch>,
 }
 
 impl std::fmt::Debug for ShiftInv<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ShiftInv({})", self.pattern.n)
+        write!(f, "ShiftInv({})", self.metric.n)
     }
 }
 
@@ -224,27 +299,31 @@ impl LinOp<f64> for ShiftInv<'_> {
     }
 
     fn nrows(&self) -> usize {
-        self.pattern.n
+        self.metric.n
     }
 
     fn ncols(&self) -> usize {
-        self.pattern.n
+        self.metric.n
     }
 
     fn apply(&self, mut out: MatMut<'_, f64>, rhs: MatRef<'_, f64>, _: Par, _: &mut MemStack) {
-        let n = self.pattern.n;
-        let mut x = vec![0.0; n];
-        let mut mx = vec![0.0; n];
+        let n = self.metric.n;
+        let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
+        let ShiftScratch {
+            x,
+            rhs_col,
+            solve_scratch,
+        } = &mut *scratch;
         for col in 0..rhs.ncols() {
             for i in 0..n {
                 x[i] = rhs[(i, col)];
             }
-            spmv(self.pattern, self.mass, &x, &mut mx);
-            let mut rhs = Mat::from_fn(n, 1, |i, _| mx[i]);
+            self.metric.spmv(x, rhs_col.col_as_slice_mut(0));
             // The factor is the one a static solve just accepted.
-            solve_in_place(self.symbolic, self.factor, &mut rhs, 1).expect("the factor holds");
+            solve_in_place_with(self.symbolic, self.factor_values, rhs_col, 1, solve_scratch)
+                .expect("the factor holds");
             for i in 0..n {
-                out[(i, col)] = rhs[(i, 0)];
+                out[(i, col)] = rhs_col[(i, 0)];
             }
         }
     }
@@ -265,10 +344,11 @@ pub(crate) fn lowest(
     stiffness: &[f64],
     mass: &[f64],
     symbolic: &SymbolicCholesky<usize>,
-    factor: &Factor,
+    factor_values: &[f64],
     count: usize,
 ) -> Result<ModeSet, SimError> {
-    let (found, seconds) = positive_rays(pattern, stiffness, mass, symbolic, factor, count)?;
+    let (found, seconds) =
+        positive_rays(pattern, stiffness, mass, symbolic, factor_values, count)?;
     if found.len() < count {
         return Err(SimError::new(format!(
             "The shell yielded {} mode(s); {count} were asked for.",
@@ -291,16 +371,21 @@ pub(crate) fn positive_rays(
     stiffness: &[f64],
     metric: &[f64],
     symbolic: &SymbolicCholesky<usize>,
-    factor: &Factor,
+    factor_values: &[f64],
     count: usize,
 ) -> Result<(Vec<ShellMode>, f64), SimError> {
-    let op = ShiftInv {
-        pattern,
-        mass: metric,
-        symbolic,
-        factor,
-    };
     let n = pattern.n;
+    let compact_metric = CompactSym::from_upper(pattern, metric);
+    let op = ShiftInv {
+        metric: compact_metric,
+        symbolic,
+        factor_values,
+        scratch: Mutex::new(ShiftScratch {
+            x: vec![0.0; n],
+            rhs_col: Mat::zeros(n, 1),
+            solve_scratch: ScratchBuf::new(),
+        }),
+    };
     let want = (count + 4).min(n.saturating_sub(1).max(1));
     let par = Par::Seq;
     let params = PartialEigenParams {
@@ -342,7 +427,7 @@ pub(crate) fn positive_rays(
         }
         let v: Vec<f64> = (0..n).map(|i| vecs[(i, j)].re).collect();
         let kk = sym_dot(pattern, stiffness, &v, &v);
-        let ss = sym_dot(pattern, metric, &v, &v);
+        let ss = op.metric.sym_dot(&v, &v);
         if ss.abs() < 1e-30 * kk.abs().max(1.0) {
             continue;
         }

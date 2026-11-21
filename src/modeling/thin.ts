@@ -22,51 +22,85 @@ const round = (n: number, k = 2) => Math.round(n * 10 ** k) / 10 ** k;
 
 class Grid {
   readonly cells = new Map<number, number[]>();
-  readonly min: V3;
+  readonly minX: number;
+  readonly minY: number;
+  readonly minZ: number;
   readonly size: number;
-  readonly dims: V3;
+  readonly invSize: number;
+  readonly dimX: number;
+  readonly dimY: number;
+  readonly dimZ: number;
   private readonly pos: ArrayLike<number>;
+  private readonly seenStamp: Int32Array;
+  private stamp = 0;
+
   constructor(pos: ArrayLike<number>) {
     this.pos = pos;
-    const min: V3 = [Infinity, Infinity, Infinity];
-    const max: V3 = [-Infinity, -Infinity, -Infinity];
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     for (let i = 0; i + 2 < pos.length; i += 3) {
-      for (let k = 0; k < 3; k += 1) {
-        min[k] = Math.min(min[k]!, pos[i + k]!);
-        max[k] = Math.max(max[k]!, pos[i + k]!);
-      }
+      const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (z < minZ) minZ = z;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+      if (z > maxZ) maxZ = z;
     }
-    const span = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 1e-3);
-    const count = pos.length / 9;
+    const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1e-3);
+    const count = Math.floor(pos.length / 9);
+    this.seenStamp = new Int32Array(count);
     // About two triangles a cell along the surface, and never more than 96 cells along the longest side.
-    this.size = Math.max(span / 96, span / Math.max(4, Math.cbrt(count) * 2));
-    this.min = [min[0] - 1e-3, min[1] - 1e-3, min[2] - 1e-3];
-    this.dims = [0, 1, 2].map((k) => Math.max(1, Math.ceil((max[k]! - this.min[k]! + 1e-3) / this.size))) as V3;
+    const size = Math.max(span / 96, span / Math.max(4, Math.cbrt(count) * 2));
+    this.size = size;
+    this.invSize = 1 / size;
+    this.minX = minX - 1e-3;
+    this.minY = minY - 1e-3;
+    this.minZ = minZ - 1e-3;
+    this.dimX = Math.max(1, Math.ceil((maxX - this.minX + 1e-3) * this.invSize));
+    this.dimY = Math.max(1, Math.ceil((maxY - this.minY + 1e-3) * this.invSize));
+    this.dimZ = Math.max(1, Math.ceil((maxZ - this.minZ + 1e-3) * this.invSize));
+    const cells = this.cells;
+    const dimY = this.dimY;
+    const dimZ = this.dimZ;
     for (let t = 0; t < count; t += 1) {
-      const lo: V3 = [Infinity, Infinity, Infinity];
-      const hi: V3 = [-Infinity, -Infinity, -Infinity];
-      for (let c = 0; c < 3; c += 1) {
-        for (let k = 0; k < 3; k += 1) {
-          const v = pos[t * 9 + c * 3 + k]!;
-          lo[k] = Math.min(lo[k]!, v);
-          hi[k] = Math.max(hi[k]!, v);
+      const o = t * 9;
+      const x0 = pos[o]!, x1 = pos[o + 3]!, x2 = pos[o + 6]!;
+      const y0 = pos[o + 1]!, y1 = pos[o + 4]!, y2 = pos[o + 7]!;
+      const z0 = pos[o + 2]!, z1 = pos[o + 5]!, z2 = pos[o + 8]!;
+      const lx = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
+      const ly = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
+      const lz = z0 < z1 ? (z0 < z2 ? z0 : z2) : (z1 < z2 ? z1 : z2);
+      const hx = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
+      const hy = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
+      const hz = z0 > z1 ? (z0 > z2 ? z0 : z2) : (z1 > z2 ? z1 : z2);
+      const ax = this.cellX(lx), ay = this.cellY(ly), az = this.cellZ(lz);
+      const bx = this.cellX(hx), by = this.cellY(hy), bz = this.cellZ(hz);
+      for (let x = ax; x <= bx; x += 1) {
+        const xd = x * dimY;
+        for (let y = ay; y <= by; y += 1) {
+          const xyd = (xd + y) * dimZ;
+          for (let z = az; z <= bz; z += 1) {
+            const key = xyd + z;
+            const row = cells.get(key);
+            if (row) row.push(t);
+            else cells.set(key, [t]);
+          }
         }
       }
-      const a = lo.map((v, k) => this.cellOf(v, k));
-      const b = hi.map((v, k) => this.cellOf(v, k));
-      for (let x = a[0]!; x <= b[0]!; x += 1) for (let y = a[1]!; y <= b[1]!; y += 1) for (let z = a[2]!; z <= b[2]!; z += 1) {
-        const key = this.key(x, y, z);
-        const row = this.cells.get(key);
-        if (row) row.push(t);
-        else this.cells.set(key, [t]);
-      }
     }
   }
-  cellOf(v: number, k: number): number {
-    return Math.min(this.dims[k]! - 1, Math.max(0, Math.floor((v - this.min[k]!) / this.size)));
+  private cellX(v: number): number {
+    const c = Math.floor((v - this.minX) * this.invSize);
+    return c < 0 ? 0 : c >= this.dimX ? this.dimX - 1 : c;
   }
-  key(x: number, y: number, z: number): number {
-    return (x * this.dims[1] + y) * this.dims[2] + z;
+  private cellY(v: number): number {
+    const c = Math.floor((v - this.minY) * this.invSize);
+    return c < 0 ? 0 : c >= this.dimY ? this.dimY - 1 : c;
+  }
+  private cellZ(v: number): number {
+    const c = Math.floor((v - this.minZ) * this.invSize);
+    return c < 0 ? 0 : c >= this.dimZ ? this.dimZ - 1 : c;
   }
   /** The distance to the nearest triangle the ray meets, other than `skip`, up to `far`. */
   hit(o: V3, d: V3, skip: number, far: number): number | null {
@@ -74,37 +108,94 @@ class Grid {
   }
   /** The nearest triangle the ray meets, other than `skip`, up to `far`, and how far along the ray it is. */
   nearest(o: V3, d: V3, skip: number, far: number): { distance: number; tri: number } | null {
+    const ox = o[0], oy = o[1], oz = o[2];
+    const dx = d[0], dy = d[1], dz = d[2];
     // A ray with no direction (the normal of a sliver of no area) never leaves its cell: with no limit it walked forever.
-    if (!(Math.abs(d[0]) + Math.abs(d[1]) + Math.abs(d[2]) > 0) || !o.every(Number.isFinite)) return null;
-    let cell: V3 = [this.cellOf(o[0], 0), this.cellOf(o[1], 1), this.cellOf(o[2], 2)];
-    const step = d.map((v) => (v > 0 ? 1 : v < 0 ? -1 : 0)) as V3;
-    const next = [0, 1, 2].map((k) => {
-      if (step[k] === 0) return Infinity;
-      const edge = this.min[k]! + (cell[k]! + (step[k]! > 0 ? 1 : 0)) * this.size;
-      return (edge - o[k]!) / d[k]!;
-    });
-    const delta = d.map((v) => (v === 0 ? Infinity : this.size / Math.abs(v)));
+    if (!(Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 0) || !Number.isFinite(ox) || !Number.isFinite(oy) || !Number.isFinite(oz)) return null;
+    let cx = this.cellX(ox), cy = this.cellY(oy), cz = this.cellZ(oz);
+    const sx = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+    const sy = dy > 0 ? 1 : dy < 0 ? -1 : 0;
+    const sz = dz > 0 ? 1 : dz < 0 ? -1 : 0;
+    const size = this.size;
+    let nx = sx === 0 ? Infinity : (this.minX + (cx + (sx > 0 ? 1 : 0)) * size - ox) / dx;
+    let ny = sy === 0 ? Infinity : (this.minY + (cy + (sy > 0 ? 1 : 0)) * size - oy) / dy;
+    let nz = sz === 0 ? Infinity : (this.minZ + (cz + (sz > 0 ? 1 : 0)) * size - oz) / dz;
+    const tx = dx === 0 ? Infinity : size / Math.abs(dx);
+    const ty = dy === 0 ? Infinity : size / Math.abs(dy);
+    const tz = dz === 0 ? Infinity : size / Math.abs(dz);
     let best = Infinity;
     let bestTri = -1;
     let travelled = 0;
-    const seen = new Set<number>();
-    while (travelled <= Math.min(far, best)) {
-      for (const t of this.cells.get(this.key(cell[0], cell[1], cell[2])) ?? []) {
-        if (t === skip || seen.has(t)) continue;
-        seen.add(t);
-        const s = this.cross(o, d, t);
-        if (s !== null && s > 1e-5 && s < best) {
-          best = s;
-          bestTri = t;
+    let stamp = this.stamp + 1;
+    if (stamp >= 0x7fffffff) {
+      this.seenStamp.fill(0);
+      stamp = 1;
+    }
+    this.stamp = stamp;
+    const seen = this.seenStamp;
+    const cells = this.cells;
+    const dimX = this.dimX, dimY = this.dimY, dimZ = this.dimZ;
+    const pos = this.pos;
+    while (travelled <= (far < best ? far : best)) {
+      const row = cells.get((cx * dimY + cy) * dimZ + cz);
+      if (row) {
+        for (let r = 0; r < row.length; r += 1) {
+          const t = row[r]!;
+          if (t === skip || seen[t] === stamp) continue;
+          seen[t] = stamp;
+          // Möller–Trumbore (inlined, zero allocations).
+          const i = t * 9;
+          const ax = pos[i]!, ay = pos[i + 1]!, az = pos[i + 2]!;
+          const e1x = pos[i + 3]! - ax, e1y = pos[i + 4]! - ay, e1z = pos[i + 5]! - az;
+          const e2x = pos[i + 6]! - ax, e2y = pos[i + 7]! - ay, e2z = pos[i + 8]! - az;
+          const hx = dy * e2z - dz * e2y;
+          const hy = dz * e2x - dx * e2z;
+          const hz = dx * e2y - dy * e2x;
+          const a = e1x * hx + e1y * hy + e1z * hz;
+          if (a > -1e-12 && a < 1e-12) continue;
+          const f = 1 / a;
+          const s0 = ox - ax, s1 = oy - ay, s2 = oz - az;
+          const u = f * (s0 * hx + s1 * hy + s2 * hz);
+          if (u < 0 || u > 1) continue;
+          const qx = s1 * e1z - s2 * e1y;
+          const qy = s2 * e1x - s0 * e1z;
+          const qz = s0 * e1y - s1 * e1x;
+          const v = f * (dx * qx + dy * qy + dz * qz);
+          if (v < 0 || u + v > 1) continue;
+          const s = f * (e2x * qx + e2y * qy + e2z * qz);
+          if (s > 1e-5 && s < best) {
+            best = s;
+            bestTri = t;
+          }
         }
       }
-      const k = next[0]! < next[1]! ? (next[0]! < next[2]! ? 0 : 2) : next[1]! < next[2]! ? 1 : 2;
-      travelled = next[k]!;
-      if (!Number.isFinite(travelled)) break;
-      next[k] = next[k]! + delta[k]!;
-      cell = [...cell] as V3;
-      cell[k] = cell[k]! + step[k]!;
-      if (cell[k]! < 0 || cell[k]! >= this.dims[k]!) break;
+      if (nx < ny) {
+        if (nx < nz) {
+          travelled = nx;
+          if (!Number.isFinite(travelled)) break;
+          nx += tx;
+          cx += sx;
+          if (cx < 0 || cx >= dimX) break;
+        } else {
+          travelled = nz;
+          if (!Number.isFinite(travelled)) break;
+          nz += tz;
+          cz += sz;
+          if (cz < 0 || cz >= dimZ) break;
+        }
+      } else if (ny < nz) {
+        travelled = ny;
+        if (!Number.isFinite(travelled)) break;
+        ny += ty;
+        cy += sy;
+        if (cy < 0 || cy >= dimY) break;
+      } else {
+        travelled = nz;
+        if (!Number.isFinite(travelled)) break;
+        nz += tz;
+        cz += sz;
+        if (cz < 0 || cz >= dimZ) break;
+      }
     }
     return bestTri >= 0 && best <= far ? { distance: best, tri: bestTri } : null;
   }
@@ -112,27 +203,9 @@ class Grid {
   normal(t: number): V3 {
     const p = this.pos;
     const i = t * 9;
-    const e1 = [p[i + 3]! - p[i]!, p[i + 4]! - p[i + 1]!, p[i + 5]! - p[i + 2]!];
-    const e2 = [p[i + 6]! - p[i]!, p[i + 7]! - p[i + 1]!, p[i + 8]! - p[i + 2]!];
-    return [e1[1]! * e2[2]! - e1[2]! * e2[1]!, e1[2]! * e2[0]! - e1[0]! * e2[2]!, e1[0]! * e2[1]! - e1[1]! * e2[0]!];
-  }
-  /** Möller–Trumbore: the ray's distance to triangle t, or null. */
-  private cross(o: V3, d: V3, t: number): number | null {
-    const p = this.pos;
-    const i = t * 9;
-    const e1 = [p[i + 3]! - p[i]!, p[i + 4]! - p[i + 1]!, p[i + 5]! - p[i + 2]!];
-    const e2 = [p[i + 6]! - p[i]!, p[i + 7]! - p[i + 1]!, p[i + 8]! - p[i + 2]!];
-    const h = [d[1] * e2[2]! - d[2] * e2[1]!, d[2] * e2[0]! - d[0] * e2[2]!, d[0] * e2[1]! - d[1] * e2[0]!];
-    const a = e1[0]! * h[0]! + e1[1]! * h[1]! + e1[2]! * h[2]!;
-    if (Math.abs(a) < 1e-12) return null;
-    const f = 1 / a;
-    const s = [o[0] - p[i]!, o[1] - p[i + 1]!, o[2] - p[i + 2]!];
-    const u = f * (s[0]! * h[0]! + s[1]! * h[1]! + s[2]! * h[2]!);
-    if (u < 0 || u > 1) return null;
-    const q = [s[1]! * e1[2]! - s[2]! * e1[1]!, s[2]! * e1[0]! - s[0]! * e1[2]!, s[0]! * e1[1]! - s[1]! * e1[0]!];
-    const v = f * (d[0] * q[0]! + d[1] * q[1]! + d[2] * q[2]!);
-    if (v < 0 || u + v > 1) return null;
-    return f * (e2[0]! * q[0]! + e2[1]! * q[1]! + e2[2]! * q[2]!);
+    const e1x = p[i + 3]! - p[i]!, e1y = p[i + 4]! - p[i + 1]!, e1z = p[i + 5]! - p[i + 2]!;
+    const e2x = p[i + 6]! - p[i]!, e2y = p[i + 7]! - p[i + 1]!, e2z = p[i + 8]! - p[i + 2]!;
+    return [e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x];
   }
 }
 
