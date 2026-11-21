@@ -131,6 +131,8 @@ const INTO_WALL = 0.5;
 const TURN_DEG = 6;
 /** A turn sharper than this (1 + cos of the turn under it) is a butt joint of two runs, not a mitre. */
 const MITRE_LIMIT = 0.35;
+/** Two samples whose normals differ by more than this sit either side of a fold: the path splits there, degrees. */
+const FOLD_DEG = 45;
 
 // --- Rib profiles: the section a rib has across its run. ---
 
@@ -902,8 +904,16 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     for (let k = 1; k < typed.length; k += 1) refine(typed[k - 1]!, typed[k]!, 0, stretchHeights ? stretchHeights[typedStretch[k]! - 1] : undefined);
     if (samples.length < 2) return { reason: `${name} has no length on the surface.` };
     // --- Split where the path turns too sharply for a mitre: two runs that meet there, each ending in a joint.
+    // A fold in the surface (a floor meeting a side wall, read across a sharp edge) splits the same way. One loft bent
+    // round it twists through the corner whenever the rib does not cross the fold square, and a self-crossing tool
+    // makes Open CASCADE's fuse drop the part. The stretch across the fold, as short as the resample left it, is
+    // dropped: each run ends at the fold and runs on into the other face, so the two still overlap.
     const pieces: Sample[][] = [[samples[0]!]];
     for (let k = 1; k < samples.length; k += 1) {
+      if (angleDeg(samples[k - 1]!.n, samples[k]!.n) > FOLD_DEG) {
+        pieces.push([samples[k]!]);
+        continue;
+      }
       const current = pieces[pieces.length - 1]!;
       current.push(samples[k]!);
       if (k + 1 < samples.length) {
