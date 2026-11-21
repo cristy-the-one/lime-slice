@@ -14,22 +14,20 @@ The pictures are the web UI in the dark theme against a local engine with the Op
 
 ### Model a part
 
-Model edits a STEP solid, or starts one from a primitive, a gear, a fastener, a fitting, a plate, an L-bracket, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
+Model edits a STEP solid, or starts one from a primitive, a gear, a part, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
 
 ![Sketching a 40 × 24 mm rectangle on the bed, extruding it 16 mm, cutting a 10 mm hole up through it, then editing the first extrude down to 12 mm from History.](docs/screenshots/clip-model.gif)
 
 - **Text** in Inter, IBM Plex Mono and Serif, Allerta Stencil, two pen fonts and five Hershey fonts, or a font file of your own. Letters go on flat faces and wrap round cylinders, cones, spheres, tori and freeform faces at their true size, raised or engraved.
 - **Gears.** New solid makes an involute spur gear, a ring (internal) gear or a rack. The gear card says whether it meshes with the gear it reaches, or how far off it is.
-- **Fasteners.** New solid's Part makes a hex nut (ISO 4032), a socket-head cap screw (ISO 4762), a hex-head screw (ISO 4017) or a washer (ISO 7089) from the standard's row. The shank is plain. A modelled thread is not available yet.
-- **Fittings.** The same Part button makes a spacer, a printed shaft (running, sliding or press), a shaft collar and a heat-set boss for a Ruthex RX insert.
-- **Brackets.** A plate and an L-bracket, with holes for an M3 to M24 screw (ISO 273 medium clearance, plus a printer allowance) or a free diameter.
+- **Parts.** New solid's Part has three groups. Fasteners: a hex nut (ISO 4032), a socket-head cap screw (ISO 4762), a hex-head screw (ISO 4017) or a washer (ISO 7089), from the standard's row. The shank is plain. A modelled thread is not available yet. Fittings: a spacer, a shaft printed at an ISO 286 fit (running, sliding or press), a collar with a set screw, and a heat-set boss for a Ruthex RX insert. Brackets: a plate and an L-bracket, with holes sized by screw from the ISO 273 medium clearance, plus an allowance, or a free diameter. Each part is one History step you reopen with new sizes, and it works as a boolean tool.
 - **Split to print** cuts a part that is too large for the printer into pieces that fit, with straight or shaped cuts (lap, zig-zag, tongue, dovetail, or a sketched line) and dowels, plugs, keys or hardware holes to join them. The pieces become plate objects, each with its number on a cut face. It can also cut for the Formlabs Form 4 and export STEP, 3MF or STL.
 - **Draft** tilts walls that are already there, a STEP part's included, so a moulded or cast part releases: pick the walls, then Draft in the face menu, an angle and the pull direction. A positive angle opens them toward the pull.
 - **Print transition** adds a flat wedge in a concave corner, or a gusset under a lip, so each row stands on the row before.
 - **STEP in and out.** A STEP file with several solids can open as one object per solid. The STEP button writes the solid on screen as AP214.
 - **Measure, Check, Section view**, and a part you hide to reach the one behind it.
 
-<img alt="Raised Inter Bold letters wrapped round a 44 mm cylinder, with History showing the cylinder and the text step." src="docs/screenshots/model-text.png" width="720">
+<img alt="Raised Inter Bold letters wrapped round a 44 mm cylinder, with History showing the cylinder and the text step. A banner says supports are off and 14 overhangs would print in the air." src="docs/screenshots/model-text.png" width="720">
 
 <img alt="Split to print on a 320 mm bar: the card says the Lime 220 bed fits 210 mm and proposes one cut; the two pieces are coloured on either side of the plane." src="docs/screenshots/model-split.png" width="720">
 
@@ -48,11 +46,11 @@ Parts can be attached into an assembly and given joints: fixed, hinge, slide, ba
 
 <img alt="A Graham escapement run in time: the pendulum swings, the anchor rocks and the escape wheel steps a tooth each beat. Drawn by the MCP server's motion_run." src="docs/screenshots/clip-escapement.gif" width="300">
 
-The escapement above was built and run over MCP with `motion_run`: from a 3.5° push it settles at a swing of 3.1° each side with a period of 0.78 s. Assemblies also export as STEP, and an interference check lists parts that cross.
+The escapement above was built and run over MCP with `motion_run`: from a 3.5° push the swing is still falling, last 3.127° each side, and the free period is 0.739 s. Assemblies also export as STEP, and an interference check lists parts that cross.
 
 ### Plugins and recipes
 
-A recipe is a short Rust program that builds a part or a whole assembly. The desktop app compiles it with the bundled lust compiler. A recipe kept as a plugin goes into your plugin library, and **Features → Plugins…** (Ctrl+Alt+L) runs it on the open part or as a new one, with a form for its values, a face or an outline you pick, and saved presets. A plugin's step stays live in History: change a value and it is built again. The same panel lists ingredients (shared code), presets, and lessons, the notes an agent left about each kind of step. Plugins export as one file you can share, and an imported plugin shows its code before its first run. Recipes run in the desktop app and over MCP, not in a plain browser.
+A recipe is a short Rust program that builds a part or a whole assembly. The desktop app compiles it with lust 0.3.2. Checks and rebuilds are faster. A recipe kept as a plugin goes into your plugin library, and **Features → Plugins…** (Ctrl+Alt+L) runs it on the open part or as a new one, with a form for its values, a face or an outline you pick, and saved presets. A plugin's step stays live in History: change a value and it is built again. The same panel lists ingredients (shared code), presets, and lessons, the notes an agent left about each kind of step. Plugins export as one file you can share, and an imported plugin shows its code before its first run. Recipes run in the desktop app and over MCP, not in a plain browser.
 
 ### Slice
 
@@ -109,12 +107,14 @@ Model → Stress… estimates how a part takes a load, solved as it will be prin
 
 The worked example and the trust levels are in [docs/modeler-guide.md](docs/modeler-guide.md#stress-estimate).
 
-**Auto ribs** (Features → Auto ribs, next to Stress) plans ribs on a wall so it bends less for the least added material: click the wall, Run, and Apply puts the ribs in History as one step. The plan says how much stiffer the wall gets and compares the ribs with a thicker wall and an even grid of the same stiffness.
+**Auto ribs** (Features → Auto ribs, next to Stress) plans ribs on a wall so it bends less for the least added material: click the wall, Run, and Apply puts the ribs in History as one step. The plan says how much stiffer the wall gets and compares the ribs with a thicker wall and an even grid of the same stiffness. Planning is faster; the ribs are the same.
 
 - **Load cases.** Add a load case gives up to eight named cases with a weight each; the ribs serve all of them, and the result gives each case's stiffness, with Check with Stress run once per case.
-- **Resist buckling.** Beside Stiffer and Higher frequency. The slider asks the wall to hold 1.5×, 2×, 3×, 4× or 5× the load before it buckles; the middle, 3×, is the default. The result says the factor before and after, and that the number is the ideal buckling load.
+- **Resist buckling.** Beside Stiffer and Higher frequency. The slider asks the wall to hold 1.5×, 2×, 3×, 4× or 5× the load before it buckles; the middle, 3×, is the default. The result says the factor before and after, and that the number is the ideal buckling load. With several load cases the card says Against case and names the one it solved.
 - **Side walls.** Include side walls (folded) takes a cover's side walls into the same wall across its sharp edges, so ribs can run over a crease. It is off unless checked.
 - **Moulding checks.** With the moulded process, the result lists each moulding rule a rib breaks: base thickness, root radius, height, draft, the junction where ribs meet, and the gap between ribs. It is a report and changes nothing.
+
+<img alt="Auto ribs, Resist buckling, on the inner floor of a 64 × 40 × 14 mm box shelled to a 2 mm wall with the top open. The floor is 2,160 mm². The card says Buckles at 4.2× the load (was 2.5×), and that this is the ideal buckling load." src="docs/screenshots/ribs-buckling.png" width="720">
 
 The stiffness numbers are relative, since the material cards are placeholders. Over MCP the same planner is `ribs_plan` and `ribs_apply`.
 
@@ -208,7 +208,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (6.13.0). Publishing that draft is a separate step. Draft releases through v6.12.0 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (6.13.0). Publishing that draft is a separate step. Releases through v6.13.0 are on the repository.
 
 ## Samples
 

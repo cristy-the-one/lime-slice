@@ -12,6 +12,7 @@ The pictures and clips in `README.md` are made by `tools/readme-media`, so they 
 | `clip-gear-train.gif` | `pose.media.ts` | three gears built by `mcp-media.ts`, coupled in Pose and turned |
 | `clip-escapement.gif` | `mcp-media.ts` | a Graham escapement run by `motion_run` and drawn by the MCP server |
 | `stress-cantilever.png` | `stress.media.ts` | the Stress worked example, with the engine's recorded reply (`e2e/fixtures/sim-cantilever.json`) |
+| `ribs-buckling.png` | `ribs.media.ts` | a 64 × 40 × 14 mm box, shelled to a 2 mm wall with the top open, then Auto ribs on the inner floor at Resist buckling (the default 3×) with a force along the floor. The card shows "Buckles at N× the load (was M×)." and the ideal-load warning |
 | `prepare-phone.png`, `preview-phone.png`, `model-phone.png` | `phone.media.ts` | the compact layout at 390 × 844 |
 
 The other files in `docs/screenshots` belong to other documents (`docs/step-modeler.md`, the tutorials and the reviews).
