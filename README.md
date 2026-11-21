@@ -14,7 +14,7 @@ The pictures are the web UI in the dark theme against a local engine with the Op
 
 ### Model a part
 
-Model edits a STEP solid, or starts one from a primitive, a gear, a fastener, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
+Model edits a STEP solid, or starts one from a primitive, a gear, a fastener, a fitting, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
 
 ![Sketching a 40 × 24 mm rectangle on the bed, extruding it 16 mm, cutting a 10 mm hole up through it, then editing the first extrude down to 12 mm from History.](docs/screenshots/clip-model.gif)
 
@@ -110,6 +110,7 @@ The worked example and the trust levels are in [docs/modeler-guide.md](docs/mode
 **Auto ribs** (Features → Auto ribs, next to Stress) plans ribs on a wall so it bends less for the least added material: click the wall, Run, and Apply puts the ribs in History as one step. The plan says how much stiffer the wall gets and compares the ribs with a thicker wall and an even grid of the same stiffness.
 
 - **Load cases.** Add a load case gives up to eight named cases with a weight each; the ribs serve all of them, and the result gives each case's stiffness, with Check with Stress run once per case.
+- **Resist buckling.** Beside Stiffer and Higher frequency. The slider asks the wall to hold 1.5×, 2×, 3×, 4× or 5× the load before it buckles; the middle, 3×, is the default. The result says the factor before and after, and that the number is the ideal buckling load.
 - **Side walls.** Include side walls (folded) takes a cover's side walls into the same wall across its sharp edges, so ribs can run over a crease. It is off unless checked.
 - **Moulding checks.** With the moulded process, the result lists each moulding rule a rib breaks: base thickness, root radius, height, draft, the junction where ribs meet, and the gap between ribs. It is a report and changes nothing.
 

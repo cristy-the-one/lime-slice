@@ -25,7 +25,7 @@ function isFeatureDrag(tool: ModelTool | null): tool is "pocket" | "boss" | "tex
 // --- end A3 ---
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
-const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack", "modelPartLength", "modelPartAllowance"];
+const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack", "modelPartLength", "modelPartAllowance", "modelPartDiameter", "modelPartBore", "modelPartTaper", "modelPartScrew"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
@@ -117,8 +117,8 @@ export interface DragContext {
   ring?: boolean;
   /** A gear card set to Rack (stage 3): a back knob under its bar. */
   rack?: boolean;
-  /** A fastener card's kind. Absent is a nut, so the default drag check has two knobs that do not meet. */
-  partKind?: "nut" | "socket" | "hex" | "washer";
+  /** A part card's kind. Absent leaves the length and allowance knobs, which do not meet. */
+  partKind?: "nut" | "socket" | "hex" | "washer" | "spacer" | "shaft" | "collar" | "heat-set";
   /** Centre and largest side of the open solid. */
   center: Vec3;
   extent: number;
@@ -356,6 +356,7 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
     case "part": {
       const kind = ctx.partKind;
       const down: Vec3 = [-axes[2][0], -axes[2][1], -axes[2][2]];
+      const diag = (a: Vec3, b: Vec3) => normalize(add(a, b));
       const length = knob("part-length", "modelPartLength", down, "z", "Length", { min: 0, max: 200 });
       const allowance = knob("part-allowance", "modelPartAllowance", axes[0], "accent", "Allowance", { min: 0, max: 1 });
       if (kind === "socket") {
@@ -369,6 +370,36 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
       if (kind === "hex") return [length, knob("part-thick", "modelPartThick", axes[2], "accent", "Head height", { min: 0 })];
       if (kind === "nut" || kind === "washer") {
         return [knob("part-thick", "modelPartThick", axes[2], "z", "Thickness", { min: 0 }), allowance];
+      }
+      if (kind === "spacer") {
+        return [
+          knob("part-diameter", "modelPartDiameter", axes[0], "accent", "Outside ⌀", { rate: 2, min: 3, max: 80 }),
+          knob("part-length", "modelPartLength", axes[2], "z", "Length", { min: 1, max: 200 }),
+          knob("part-bore", "modelPartBore", axes[1], "accent", "Hole ⌀", { rate: 2, min: 0, max: 79 }),
+        ];
+      }
+      if (kind === "shaft") {
+        return [
+          knob("part-diameter", "modelPartDiameter", axes[0], "accent", "Nominal ⌀", { rate: 2, min: 2, max: 30 }),
+          knob("part-length", "modelPartLength", axes[2], "z", "Length", { min: 5, max: 300 }),
+          knob("part-allowance", "modelPartAllowance", axes[1], "accent", "Allowance", { min: 0, max: 0.5 }),
+        ];
+      }
+      if (kind === "collar") {
+        return [
+          knob("part-diameter", "modelPartDiameter", axes[0], "accent", "Outside ⌀", { rate: 2, min: 6, max: 40 }),
+          knob("part-bore", "modelPartBore", axes[1], "accent", "Bore ⌀", { rate: 2, min: 3, max: 25 }),
+          knob("part-length", "modelPartLength", axes[2], "z", "Width", { min: 3, max: 15 }),
+          knob("part-screw", "modelPartScrew", diag(axes[0], axes[1]), "accent", "Set screw", { rate: 2, min: 2, max: 6 }),
+        ];
+      }
+      if (kind === "heat-set") {
+        return [
+          knob("part-diameter", "modelPartDiameter", axes[0], "accent", "Boss ⌀", { rate: 2, min: 0 }),
+          knob("part-length", "modelPartLength", axes[2], "z", "Height", { min: 0, max: 40 }),
+          knob("part-taper", "modelPartTaper", axes[1], "accent", "Taper", { min: 0, max: 2 }),
+          knob("part-allowance", "modelPartAllowance", diag(axes[0], axes[1]), "accent", "Allowance", { min: 0, max: 1 }),
+        ];
       }
       // No kind: the two fields the checklist always sees, on different axes.
       return [length, allowance];

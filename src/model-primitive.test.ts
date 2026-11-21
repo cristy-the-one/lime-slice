@@ -10,6 +10,7 @@ import {
   type PrimitiveFields,
   type PrimitiveSpec,
 } from "./model-primitive.ts";
+import { shaftDiameter } from "./model-part.ts";
 import { opLabel, rootLabel } from "./model-tree.ts";
 
 let failed = 0;
@@ -71,6 +72,10 @@ const ghosts: [string, PrimitiveSpec, [V, V]][] = [
   ["socket screw M6", spec("part", { partKind: "socket", nominal: "M6" }), [[-5, -5, -25], [5, 5, 6]]],
   ["hex screw M6", spec("part", { partKind: "hex", nominal: "M6" }), [[-5.774, -5, -20], [5.774, 5, 4]]],
   ["washer M6", spec("part", { partKind: "washer", nominal: "M6" }), [[-6, -6, 0], [6, 6, 1.6]]],
+  ["spacer 10 × 12", spec("part", { partKind: "spacer" }), [[-5, -5, 0], [5, 5, 12]]],
+  ["shaft 8 sliding", spec("part", { partKind: "shaft" }), [[-3.944, -3.944, 0], [3.944, 3.944, 40]]],
+  ["collar 14 × 6", spec("part", { partKind: "collar" }), [[-7, -7, 0], [7, 7, 6]]],
+  ["heat-set RX-M3x5,7", spec("part", { partKind: "heat-set" }), [[-3.9, -3.9, 0], [3.9, 3.9, 5.7]]],
 ];
 for (const [name, primitive, want] of ghosts) {
   const mesh = primitiveMesh(primitive);
@@ -122,6 +127,7 @@ eq("a root is untilted", rootSpec(spec("cylinder", { radius: 1, height: 1, turn:
 
 eq("turn centres", [spec("box", { size: [2, 4, 6] }), spec("wedge", { size: [2, 4, 6] }), spec("torus", { radius: 5 }), spec("tube", { height: 8 })].map(turnCentre), [[1, 2, 3], [1, 2, 3], [0, 0, 0], [0, 0, 4]]);
 eq("a nut turns about the middle of its box", turnCentre(spec("part", { partKind: "nut", nominal: "M6" })), [0, 0, 2.6]);
+eq("a sliding shaft of 8 mm with 0.1 mm allowance prints at 7.888", Math.round((shaftDiameter(8, "sliding", 0.1) ?? 0) * 1000) / 1000, 7.888);
 
 // Labels.
 const labels: [PrimitiveSpec, string][] = [
@@ -138,6 +144,10 @@ const labels: [PrimitiveSpec, string][] = [
   [spec("part", { partKind: "socket", nominal: "M6" }), "Socket screw M6 × 25"],
   [spec("part", { partKind: "hex", nominal: "M6" }), "Hex screw M6 × 20"],
   [spec("part", { partKind: "washer", nominal: "M6", allowance: 0.2 }), "Washer M6 +0.2"],
+  [spec("part", { partKind: "spacer" }), "Spacer ⌀10 × 12"],
+  [spec("part", { partKind: "shaft" }), "Shaft ⌀8 sliding × 40"],
+  [spec("part", { partKind: "collar" }), "Collar ⌀14 / ⌀8 × 6"],
+  [spec("part", { partKind: "heat-set" }), "Heat-set boss RX-M3x5,7"],
 ];
 for (const [primitive, want] of labels) eq(`label of ${want}`, primitiveLabel(primitive), want);
 eq("a boolean with a new primitive names it", opLabel({ kind: "boolean", op: "cut", ...spec("polygon", { sides: 6, across: 5.5, flats: true, height: 2.4 }) }), "Cut hexagon 5.5 across flats h 2.4");

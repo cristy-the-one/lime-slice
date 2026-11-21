@@ -228,6 +228,15 @@ pub enum WireGoal {
     Frequency {
         factor: f64,
     },
+    /// Hold at least this multiple of the chosen load before the wall
+    /// buckles. `on` is the load-case index when there are two or more
+    /// cases. Plate Kg only: no membrane Kg and no beam Kg (the solver).
+    #[serde(rename_all = "camelCase")]
+    Buckling {
+        factor: f64,
+        #[serde(default)]
+        on: Option<usize>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -583,6 +592,12 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
             }
             Goal::Frequency { factor }
         }
+        WireGoal::Buckling { factor, on } => {
+            if !(factor.is_finite() && factor >= 1.0) {
+                return Err("A buckling goal must be 1 or more.".into());
+            }
+            Goal::Buckling { factor, on }
+        }
     };
     let given = body.options.unwrap_or_default();
     let defaults = PlannerOptions::default();
@@ -708,6 +723,10 @@ pub fn event_json(event: &PlanEvent) -> Value {
                 let extra = json!({ "frequencyFactor": r6(factor) });
                 out["frequencyFactor"] = extra["frequencyFactor"].clone();
             }
+            if let Some(factor) = rib.buckling_factor {
+                let extra = json!({ "bucklingFactor": r6(factor) });
+                out["bucklingFactor"] = extra["bucklingFactor"].clone();
+            }
             out
         }
     }
@@ -829,6 +848,12 @@ pub fn plan_json(plan: &RibPlan) -> Value {
         let extra = json!({ "frequencyFactor": r6(factor) });
         out["frequencyFactor"] = extra["frequencyFactor"].clone();
     }
+    // Bare and ribbed load factor. A stiffness plan leaves it off, so the
+    // stiffness snapshot stays byte-identical. The case name is not here.
+    if let Some(factor) = plan.buckling_factor {
+        let extra = json!({ "bucklingFactor": { "bare": r6(factor.bare), "ribbed": r6(factor.ribbed) } });
+        out["bucklingFactor"] = extra["bucklingFactor"].clone();
+    }
     if !plan.notes.is_empty() {
         out["notes"] = json!(plan.notes);
     }
@@ -932,6 +957,10 @@ impl RibJob {
                             if let Some(factor) = rib.frequency_factor {
                                 let extra = json!({ "frequencyFactor": r6(factor) });
                                 totals["frequencyFactor"] = extra["frequencyFactor"].clone();
+                            }
+                            if let Some(factor) = rib.buckling_factor {
+                                let extra = json!({ "bucklingFactor": r6(factor) });
+                                totals["bucklingFactor"] = extra["bucklingFactor"].clone();
                             }
                             st.totals = Some(totals);
                         }
@@ -1276,6 +1305,7 @@ mod tests {
         assert_eq!(out["ok"], true, "{out}");
         assert!(out.get("frequencyHz").is_none(), "a stiffness reply gained frequencyHz");
         assert!(out.get("frequencyFactor").is_none(), "a stiffness reply gained frequencyFactor");
+        assert!(out.get("bucklingFactor").is_none(), "a stiffness reply gained bucklingFactor");
         assert!(out.get("notes").is_none(), "a stiffness reply gained notes");
         let mut stripped = out;
         stripped.as_object_mut().unwrap().remove("seconds");
@@ -1365,5 +1395,58 @@ mod tests {
         println!("unreached note: {note}");
         assert!(!note.is_empty(), "the reply did not say the ratio cannot be reached: {}", out["notes"]);
         assert!((quoted - factor).abs() < 1e-6, "the note quotes {quoted}, the reply's frequencyFactor is {factor}: {note}");
+    }
+
+    /// plan.bucklingFactor before and after, from plan_ribs_json. A factor
+    /// below 1 and a pressure with no compression are refused first.
+    #[test]
+    fn buckling_reply_prints_the_factor_before_and_after() {
+        let low = panel_body([40.0, 40.0], [4, 4], json!({ "kind": "buckling", "factor": 0.5 }), None, None, None);
+        let low_reason = reason_of(&low);
+        assert_eq!(low_reason, "A buckling goal must be 1 or more.");
+        println!("factor below 1: {low_reason}");
+
+        let pressure = panel_body([40.0, 40.0], [4, 4], json!({ "kind": "buckling", "factor": 2.0 }), None, None, None);
+        let pressure_reason = reason_of(&pressure);
+        assert_eq!(
+            pressure_reason,
+            "This load bends the wall but doesn't press along it, so it can't buckle it. Buckling needs a load along the wall, such as a push on its edge."
+        );
+        println!("pressure refusal: {pressure_reason}");
+
+        let mesh = ShellMesh::rectangle([80.0, 80.0], [8, 8], 2.0);
+        let tris: Vec<u32> = (0..mesh.triangles.len() as u32).collect();
+        let body = json!({
+            "request": {
+                "mesh": { "vertices": mesh.vertices, "triangles": mesh.triangles, "thickness": mesh.thickness },
+                "holds": { "kind": "allBoundary" },
+                "loadCases": [[{ "kind": "spreadForce", "triangles": tris, "force": [10000.0, 0.0, 0.0] }]],
+                "side": "positive",
+            },
+            "material": { "e": 2000.0, "nu": 0.3 },
+            "rules": {
+                "width": 2.0, "maxHeight": 6.0, "minHeight": 1.0,
+                "minSpacing": 12.0, "minLength": 8.0,
+                "profile": { "kind": "straight" },
+            },
+            "goal": { "kind": "buckling", "factor": 2.0 },
+            "options": { "baselines": false, "shortlist": 4 },
+        })
+        .to_string();
+        let out: Value = serde_json::from_str(&plan_ribs_json(&body)).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        let bare = out["bucklingFactor"]["bare"].as_f64().unwrap();
+        let ribbed = out["bucklingFactor"]["ribbed"].as_f64().unwrap();
+        println!(
+            "plan.bucklingFactor bare {bare} ribbed {ribbed} ribs {} goalMet {} notes {}",
+            out["ribs"].as_array().unwrap().len(),
+            out["goalMet"],
+            out["notes"]
+        );
+        assert!(bare > 0.0 && bare < 2.0, "bare load factor {bare} was not short of the 2× ask");
+        assert!(ribbed > bare, "ribbed {ribbed} did not rise above bare {bare}");
+        assert!(!out["ribs"].as_array().unwrap().is_empty(), "no rib was planned");
+        let notes = out["notes"].as_array().unwrap();
+        assert!(notes.iter().any(|n| n.as_str().unwrap_or("").starts_with("This is the ideal buckling load.")));
     }
 }
