@@ -97,7 +97,7 @@ for (const tool of MODEL_TOOLS) {
     for (const { kind: primitive } of PRIMITIVES) {
       for (const feature of features) {
         for (const repeat of repeats) {
-          const partKinds = primitive === "part" ? [undefined, "nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket"] as const : [undefined];
+          const partKinds = primitive === "part" ? [undefined, "nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket", "gt2", "v"] as const : [undefined];
           for (const partKind of partKinds) {
             for (const handle of handlesFor(tool, context(primitive, { hole, ...feature, ...repeat, partKind }))) handle.fields.forEach((field) => dragged.add(field));
           }
@@ -154,7 +154,7 @@ for (const { kind } of PRIMITIVES) {
   eq(`a ${kind}'s size knobs each have a spot of their own`, spots.size, knobs.length);
   check(`a ${kind}'s size knobs sit on the ghost`, knobs.every(ghosted));
 }
-for (const partKind of ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket"] as const) {
+for (const partKind of ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket", "gt2", "v"] as const) {
   const knobs = handlesFor("boolean", context("part", { partKind })).filter((handle) => handle.look === "knob");
   const spots = new Set(knobs.map((handle) => handle.dir.map((value) => value.toFixed(3)).join(",")));
   eq(`a ${partKind}'s size knobs each have a spot of their own`, spots.size, knobs.length);

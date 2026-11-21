@@ -449,6 +449,7 @@ Every refusal is `{ok: false, code, reason}`. `reason` is the sentence a person 
 - `bad-anchor`: An anchor label or reference does not resolve.
 - `not-probed`: The edit was not probed first; probe it, or pass probe: true.
 - `kernel-refused`: The modeling kernel refused the op; the reason is its plain-language error.
+- `v-pulley`: The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.
 - `does-not-fit`: The op does not fit the solid (a check failed).
 - `face-not-found`: The face is not on this solid.
 - `curved-face`: The face is curved, so it has no plane to use.
