@@ -927,7 +927,7 @@ export const OP_SUMMARY: Record<string, string> = {
   revolve: "revolve {op, profile, axisOrigin, axisDir, angleDeg}: a sketch about an in-plane axis.",
   loft: "loft {op, sections:[{origin, turn, radius | profile}]}: through cross-sections.",
   sweep: "sweep {op, path:[[x, y, z], ...], radius}: a tube along a curve.",
-  shell: "shell {thickness, openFaces}: hollow the solid.",
+  shell: "shell {thickness, openFaces}: hollow the solid, a box or a case.",
   faceExtrude: "faceExtrude {face, distance}: a prism on a face.",
   moveFaces: "moveFaces {faces:[{face, distance}]}: push or pull faces.",
   draft: "draft {faces, angleDeg, pull, neutral}: tilt walls so the part releases. Positive opens them toward pull.",

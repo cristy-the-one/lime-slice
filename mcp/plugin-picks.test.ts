@@ -187,8 +187,8 @@ const bad = await call("recipe_run", { source: plate, name: "outline-plate-5", p
 check("a sketch step that is not there is one sentence", bad.ok === false && /shape: this part has no step 9999\./.test(String(bad.reason)), bad);
 
 
-rmSync(workspace, { recursive: true, force: true });
-rmSync(library, { recursive: true, force: true });
+rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+rmSync(library, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 if (failed > 0) {
   console.error(`${failed} failed`);
   process.exit(1);
