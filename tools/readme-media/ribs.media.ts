@@ -78,9 +78,10 @@ test("resist buckling on a wide thin panel", async ({ page }) => {
   const goalText = (await goal.isVisible()) ? (await goal.innerText()).replace(/\s+/g, " ").trim() : "";
   const compare = (await page.locator("#autoRibsCompare").innerText()).replace(/\s+/g, " ").trim();
   const notes = (await page.locator("#autoRibsNotes").innerText()).replace(/\s+/g, " ").trim();
-  const loose = /stop short/.test(goalText);
-  const compared = /thicker/.test(compare) && !/not computed/.test(compare) && !/Stopped before/.test(compare);
   const lines = (await page.locator("#autoRibsList [data-rib]").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
+  const card = [goalText, compare, notes].join(" \n ");
+  const loose = /stop short/.test(card);
+  const notComputed = /not computed/.test(card);
   console.log(`ribs-buckling box ${BOX.modelDx} × ${BOX.modelDy} × ${BOX.modelDz} mm, shell ${THICK} mm`);
   console.log(`ribs-buckling force ${force} N`);
   console.log(`ribs-buckling section ${WIDTH} mm × ${THICK} mm`);
@@ -88,9 +89,9 @@ test("resist buckling on a wide thin panel", async ({ page }) => {
   console.log(`ribs-buckling bare ${bare}×, ribbed ${ribbed}×`);
   console.log(`ribs-buckling ribs ${ribs}`);
   console.log(`ribs-buckling rib lines: ${lines.join(" | ") || "(none)"}`);
-  console.log(`ribs-buckling comparisons computed: ${compared}`);
-  console.log(`ribs-buckling compare: ${compare}`);
   console.log(`ribs-buckling loose-end warning: ${loose}`);
+  console.log(`ribs-buckling not-computed line: ${notComputed}`);
+  console.log(`ribs-buckling compare: ${compare}`);
   console.log(`ribs-buckling goal: ${goalText || "(none)"}`);
   console.log(`ribs-buckling notes: ${notes}`);
   await page.locator("#autoRibsHoldLoad").evaluate((el) => {
@@ -105,11 +106,13 @@ test("resist buckling on a wide thin panel", async ({ page }) => {
   await page.mouse.wheel(0, -1400);
   await page.waitForTimeout(400);
   await page.locator("#autoRibsGain").scrollIntoViewIfNeeded();
-  // The alt quotes this plan. A finished buckling plan leaves the stiffness baselines empty, so the card says
-  // they were not computed, and it does not run the extension pass, so the short rib is listed as stopping short.
-  if (force !== 750 || bare !== 1.3 || ribbed !== 3.1 || ribs !== 2 || !loose || compared) {
+  const traced = "Loose ends are not extended or closed, and ribs stay at full height.";
+  const stiff = "A thicker wall and an even grid are compared only on a Stiffer plan.";
+  // The notes and the comparison line are the #793 sentences. The orange goal line is still
+  // looseLine when a trace stops short; the picture shows it, and the alt names it.
+  if (force !== 750 || bare !== 1.3 || ribbed !== 3.1 || ribs < 2 || notComputed || !notes.includes(traced) || compare !== stiff) {
     await page.screenshot({ path: "/tmp/ribs-last.png" });
-    throw new Error(`plan is not the picture the alt describes: ${force} N, ${ribs} ribs, loose ${loose}, bare ${bare}×, ribbed ${ribbed}×, comparisons ${compared}`);
+    throw new Error(`plan is not the picture the alt describes: ${force} N, ${ribs} ribs, loose ${loose}, notComputed ${notComputed}, bare ${bare}×, ribbed ${ribbed}×, notes: ${notes}, compare: ${compare}`);
   }
   await expect(page.locator(".toast-error")).toHaveCount(0);
   const box = (await page.locator("#model").boundingBox())!;

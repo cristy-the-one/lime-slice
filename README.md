@@ -117,7 +117,7 @@ The worked example and the trust levels are in [docs/modeler-guide.md](docs/mode
 - **Side walls.** Include side walls (folded) takes a cover's side walls into the same wall across its sharp edges, so ribs can run over a crease. It is off unless checked.
 - **Moulding checks.** With the moulded process, the result lists each moulding rule a rib breaks: base thickness, root radius, height, draft, the junction where ribs meet, and the gap between ribs. It is a report and changes nothing.
 
-<img alt="Auto ribs, Resist buckling, on the inner floor of a 160 × 100 × 20 mm box shelled to a 1 mm wall with the top open. The floor is 15,484 mm². A 750 N force along the floor goes through the 100 mm × 1 mm section, 7.5 MPa. The card says Buckles at 3.1× the load (was 1.3×), that this is the ideal buckling load, that 2 rib ends stop short of a wall, and that the comparisons were not computed." src="docs/screenshots/ribs-buckling.png" width="720">
+<img alt="Auto ribs, Resist buckling, on the inner floor of a 160 × 100 × 20 mm box shelled to a 1 mm wall with the top open. The floor is 15,484 mm². A 750 N force along the floor goes through the 100 mm × 1 mm section, 7.5 MPa. The card says Buckles at 3.1× the load (was 1.3×), that this is the ideal buckling load, that loose ends are not extended or closed and ribs stay at full height, that 2 rib ends stop short of a wall, and that a thicker wall and an even grid are compared only on a Stiffer plan." src="docs/screenshots/ribs-buckling.png" width="720">
 
 The stiffness numbers are relative, since the material cards are placeholders. Over MCP the same planner is `ribs_plan` and `ribs_apply`.
 
