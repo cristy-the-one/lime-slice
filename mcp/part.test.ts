@@ -64,6 +64,11 @@ check(
   guideText.includes("An approximate GT2 groove") && guideText.includes(V_PULLEY),
   guideText.slice(guideText.indexOf("GT2"), guideText.indexOf("GT2") + 500),
 );
+check(
+  "guide {topic:ops, section:part} has the ISO 273 table and the L-bracket",
+  guideText.includes("ISO 273 medium clearance") && guideText.includes("M16 17.5") && guideText.includes("L-bracket") && guideText.includes("A free diameter has no allowance"),
+  guideText.slice(guideText.indexOf("Brackets"), guideText.indexOf("Brackets") + 240),
+);
 
 const hexArea = (s: number) => (Math.sqrt(3) / 2) * s * s;
 const cylinder = (radius: number, height: number) => Math.PI * radius * radius * height;
@@ -152,6 +157,45 @@ for (const row of fittings) {
   const checked = await call("model_check", { object });
   check(`${row.name} is closed`, JSON.stringify(checked.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show(checked.edges));
 }
+
+const drilled = 4.5 + 0.2;
+const brackets: { name: string; args: Record<string, unknown>; volume: number; box: [[number, number, number], [number, number, number]] }[] = [
+  {
+    name: "clearance-plate",
+    args: { kind: "plate", holeFor: "M4" },
+    volume: 80 * 60 * 4 - 4 * Math.PI * (drilled / 2) ** 2 * 4,
+    box: [[-40, -30, 0], [40, 30, 4]],
+  },
+  {
+    name: "l-bracket",
+    args: { kind: "bracket", holeFor: "M4" },
+    volume: 30 * 3 * (80 - 3) - 4 * Math.PI * (drilled / 2) ** 2 * 3,
+    box: [[-20, -15, 0], [20, 15, 40]],
+  },
+];
+for (const row of brackets) {
+  const made = await call("solid_new", { primitive: "part", ...row.args, name: row.name });
+  const object = String(made.object ?? "");
+  const described = object ? await call("model_describe", { object, limit: 0 }) : {};
+  const volume = Number(described.volumeMm3);
+  const bounds = described.bounds as { min?: number[]; max?: number[] } | undefined;
+  console.log(`part ${row.name}: measured volume ${volume} mm3, analytic ${row.volume} mm3, measured bounds ${show(bounds)}, analytic bounds ${show(row.box)}`);
+  check(`solid_new ${row.name}`, made.ok === true, show(made));
+  check(`${row.name} volume within 0.5 mm3`, Math.abs(volume - row.volume) < 0.5, show(described));
+  check(`${row.name} bounds within 0.02 mm`, nearBox(bounds, row.box), show(bounds));
+  const checked = await call("model_check", { object });
+  check(`${row.name} is closed`, JSON.stringify(checked.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show(checked.edges));
+}
+
+const holed = await call("solid_new", { primitive: "part", kind: "plate", holeFor: "M4", name: "holed-plate" });
+const nutOn = await call("model_apply", {
+  object: holed.object,
+  probe: true,
+  op: { kind: "boolean", op: "fuse", primitive: "part", partKind: "nut", nominal: "M4", origin: [32, 22, 2] },
+});
+const nutCheck = await call("model_check", { object: holed.object });
+console.log(`M4 nut fused onto the default plate: ${show({ ok: nutOn.ok, edges: nutCheck.edges, volume: nutCheck.volumeMm3 })}`);
+check("an M4 nut fused onto the default plate stays closed", nutOn.ok === true && JSON.stringify(nutCheck.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show({ nutOn, edges: nutCheck.edges }));
 
 const plate = await call("solid_new", { primitive: "box", dx: 30, dy: 30, dz: 4, name: "plate" });
 const fused = await call("model_apply", {

@@ -25,7 +25,7 @@ function isFeatureDrag(tool: ModelTool | null): tool is "pocket" | "boss" | "tex
 // --- end A3 ---
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
-const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack", "modelPartLength", "modelPartAllowance", "modelPartDiameter", "modelPartBore", "modelPartTaper", "modelPartScrew", "modelPartTeeth"];
+const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack", "modelPartLength", "modelPartAllowance", "modelPartDiameter", "modelPartBore", "modelPartTaper", "modelPartScrew", "modelPartWidth", "modelPartDepth", "modelPartGauge", "modelPartHoles", "modelPartPitch", "modelPartTeeth"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
@@ -118,7 +118,9 @@ export interface DragContext {
   /** A gear card set to Rack (stage 3): a back knob under its bar. */
   rack?: boolean;
   /** A part card's kind. Absent leaves the length and allowance knobs, which do not meet. */
-  partKind?: "nut" | "socket" | "hex" | "washer" | "spacer" | "shaft" | "collar" | "heat-set" | "gt2" | "v";
+  partKind?: "nut" | "socket" | "hex" | "washer" | "spacer" | "shaft" | "collar" | "heat-set" | "plate" | "bracket" | "gt2" | "v";
+  /** A plate or L-bracket on Free: the free-diameter knob stands in for the allowance. */
+  holeFree?: boolean;
   /** Centre and largest side of the open solid. */
   center: Vec3;
   extent: number;
@@ -408,6 +410,21 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
           knob("part-taper", "modelPartTaper", axes[1], "accent", "Taper", { min: 0, max: 2 }),
           knob("part-allowance", "modelPartAllowance", diag(axes[0], axes[1]), "accent", "Allowance", { min: 0, max: 1 }),
         ];
+      }
+      if (kind === "plate" || kind === "bracket") {
+        const back = (v: Vec3): Vec3 => [-v[0], -v[1], -v[2]];
+        const hole = ctx.holeFree
+          ? knob("part-bore", "modelPartBore", diag(axes[0], back(axes[1])), "accent", "Free ⌀", { rate: 2, min: 2, max: 30 })
+          : knob("part-allowance", "modelPartAllowance", diag(axes[0], back(axes[1])), "accent", "Allowance", { min: 0, max: 1 });
+        const shared = [
+          knob("part-width", "modelPartWidth", axes[0], "accent", kind === "bracket" ? "Leg" : "Width", { min: 0 }),
+          knob("part-depth", "modelPartDepth", axes[1], "accent", kind === "bracket" ? "Width" : "Depth", { min: 0 }),
+          knob("part-gauge", "modelPartGauge", axes[2], "z", "Thickness", { min: 0 }),
+          knob("part-holes", "modelPartHoles", diag(axes[0], axes[1]), "accent", kind === "bracket" ? "Holes per leg" : "Holes", { min: 0, whole: true, unit: "count" as const }),
+          hole,
+        ];
+        if (kind === "plate") shared.push(knob("part-pitch", "modelPartPitch", diag(back(axes[0]), axes[1]), "accent", "Pitch circle", { min: 0, max: 200 }));
+        return shared;
       }
       // No kind: the two fields the checklist always sees, on different axes.
       return [length, allowance];

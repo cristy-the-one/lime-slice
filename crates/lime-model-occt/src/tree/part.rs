@@ -345,6 +345,25 @@ const WASHERS: &[WasherRow] = &[
     },
 ];
 
+/// ISO 273 medium clearance (section 4.8). The drilled hole is this plus the allowance.
+struct Clearance {
+    nominal: &'static str,
+    hole: f64,
+}
+
+const CLEARANCE: [Clearance; 10] = [
+    Clearance { nominal: "M3", hole: 3.4 },
+    Clearance { nominal: "M4", hole: 4.5 },
+    Clearance { nominal: "M5", hole: 5.5 },
+    Clearance { nominal: "M6", hole: 6.6 },
+    Clearance { nominal: "M8", hole: 9.0 },
+    Clearance { nominal: "M10", hole: 11.0 },
+    Clearance { nominal: "M12", hole: 13.5 },
+    Clearance { nominal: "M16", hole: 17.5 },
+    Clearance { nominal: "M20", hole: 22.0 },
+    Clearance { nominal: "M24", hole: 26.0 },
+];
+
 #[derive(Clone, Copy)]
 enum Kind {
     Nut,
@@ -357,6 +376,8 @@ enum Kind {
     Heat,
     Gt2,
     V,
+    Plate,
+    Bracket,
 }
 
 impl Kind {
@@ -366,7 +387,7 @@ impl Kind {
             Kind::Socket => "ISO 4762 socket head cap screw table",
             Kind::Hex => "ISO 4017 hex head screw table",
             Kind::Washer => "ISO 7089 washer table",
-            Kind::Spacer | Kind::Shaft | Kind::Collar | Kind::Heat | Kind::Gt2 | Kind::V => "part",
+            Kind::Spacer | Kind::Shaft | Kind::Collar | Kind::Heat | Kind::Plate | Kind::Bracket | Kind::Gt2 | Kind::V => "part",
         }
     }
 }
@@ -404,9 +425,11 @@ fn kind_of(solid: &Solid) -> Result<Kind, String> {
         Some("shaft") => Ok(Kind::Shaft),
         Some("collar") => Ok(Kind::Collar),
         Some("heat-set") => Ok(Kind::Heat),
+        Some("plate") => Ok(Kind::Plate),
+        Some("bracket") => Ok(Kind::Bracket),
         Some("gt2") => Ok(Kind::Gt2),
         Some("v") => Ok(Kind::V),
-        _ => Err("A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, gt2, or v.".into()),
+        _ => Err("A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, bracket, gt2, or v.".into()),
     }
 }
 
@@ -525,11 +548,23 @@ fn refuse_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
     if matches!(kind, Kind::V) {
         return Err(V_PULLEY.into());
     }
+    if solid.teeth.is_some() && !matches!(kind, Kind::Gt2) {
+        return Err("Only a GT2 pulley takes teeth.".into());
+    }
+    if matches!(kind, Kind::Plate | Kind::Bracket) {
+        return refuse_bracket_stray(solid, kind);
+    }
+    if text_set(&solid.hole_for) {
+        return Err("Only a plate or an L-bracket takes a hole for.".into());
+    }
+    if solid.holes.is_some() {
+        return Err("Only a plate or an L-bracket takes a hole count.".into());
+    }
+    if solid.pitch_circle.is_some() {
+        return Err("Only a plate takes a pitch circle.".into());
+    }
     if matches!(kind, Kind::Gt2) {
         return refuse_gt2(solid);
-    }
-    if solid.teeth.is_some() {
-        return Err("Only a GT2 pulley takes teeth.".into());
     }
     let fastener = matches!(kind, Kind::Nut | Kind::Socket | Kind::Hex | Kind::Washer);
     if matches!(kind, Kind::Nut | Kind::Washer) && solid.length.is_some() {
@@ -622,6 +657,51 @@ fn refuse_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
     Ok(())
 }
 
+fn refuse_bracket_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
+    let plate = matches!(kind, Kind::Plate);
+    let named = if plate { "A plate" } else { "An L-bracket" };
+    if solid.length.is_some() {
+        return Err(format!("{named} has no length."));
+    }
+    if solid.height != 0.0 {
+        return Err(format!("{named} has no height."));
+    }
+    if text_set(&solid.nominal) {
+        return Err(format!("{named} has no nominal size."));
+    }
+    if set_positive(solid.head_diameter) {
+        return Err("Only a socket screw takes a head diameter.".into());
+    }
+    if set_positive(solid.head_height) {
+        return Err("Only a socket screw takes a head height.".into());
+    }
+    if set_positive(solid.socket_depth) {
+        return Err("Only a socket screw takes a socket depth.".into());
+    }
+    if solid.diameter.is_some() {
+        return Err(format!("{named} has no diameter."));
+    }
+    if solid.hollow.is_some() {
+        return Err("Only a spacer is hollow or solid.".into());
+    }
+    if text_set(&solid.fit) {
+        return Err("Only a shaft takes a fit.".into());
+    }
+    if text_set(&solid.article) {
+        return Err("Only a heat-set boss takes an article.".into());
+    }
+    if set_positive(solid.taper) {
+        return Err("Only a heat-set boss takes a taper.".into());
+    }
+    if solid.set_screw.is_some() {
+        return Err("Only a collar takes a set screw.".into());
+    }
+    if !plate && solid.pitch_circle.is_some() {
+        return Err("Only a plate takes a pitch circle.".into());
+    }
+    Ok(())
+}
+
 fn in_range(value: f64, lo: f64, hi: f64) -> bool {
     value.is_finite() && value >= lo && value <= hi
 }
@@ -634,6 +714,20 @@ fn tenth_down(value: f64) -> f64 {
 /// A tenth of a millimetre when the value needs it, else a whole number.
 fn mm(value: f64) -> String {
     let tenths = (value * 10.0).round() / 10.0;
+    format_tenth(tenths)
+}
+
+/// A minimum, rounded up to the tenth, so the size the sentence names is one the kernel will build.
+fn mm_up(value: f64) -> String {
+    format_tenth((value * 10.0 - 1e-9).ceil() / 10.0)
+}
+
+/// A maximum, rounded down to the tenth.
+fn mm_down(value: f64) -> String {
+    format_tenth((value * 10.0 + 1e-9).floor() / 10.0)
+}
+
+fn format_tenth(tenths: f64) -> String {
     if (tenths - tenths.round()).abs() < 1e-9 {
         format!("{}", tenths.round() as i64)
     } else {
@@ -858,7 +952,7 @@ fn build_collar(solid: &Solid) -> Result<Shape, String> {
     if od < bore + 2.0 {
         return Err(format!(
             "The outside diameter must be at least {} mm, 2 mm above the bore.",
-            mm(bore + 2.0)
+            mm_up(bore + 2.0)
         ));
     }
     if !in_range(width, 3.0, 15.0) {
@@ -871,7 +965,7 @@ fn build_collar(solid: &Solid) -> Result<Shape, String> {
     if screw > width - 1.0 {
         return Err(format!(
             "The set screw must be at most {} mm so 0.5 mm of the collar stays on each side.",
-            mm(width - 1.0)
+            mm_down(width - 1.0)
         ));
     }
     let centre_z = width * 0.5;
@@ -932,11 +1026,11 @@ fn build_heat(solid: &Solid) -> Result<Shape, String> {
     if boss < min_od - 1e-9 {
         return Err(format!(
             "The boss must be at least {} mm across, the insert's outside plus twice the minimum wall.",
-            mm(min_od)
+            mm_up(min_od)
         ));
     }
     if !(height.is_finite() && height + 1e-9 >= row.l && height <= 40.0) {
-        return Err(format!("The height is from {} to 40 mm.", mm(row.l)));
+        return Err(format!("The height is from {} to 40 mm.", mm_up(row.l)));
     }
     // Ruthex's minimum wall applies at the top too: the top diameter is the boss less the taper.
     let top = boss - taper;
@@ -944,7 +1038,7 @@ fn build_heat(solid: &Solid) -> Result<Shape, String> {
         return Err(format!(
             "A taper of {} mm needs a boss at least {} mm across.",
             mm(taper),
-            mm(min_od + taper)
+            mm_up(min_od + taper)
         ));
     }
     let hole = row.d3 + allowance;
@@ -952,7 +1046,7 @@ fn build_heat(solid: &Solid) -> Result<Shape, String> {
         return Err(format!(
             "A taper of {} mm needs a boss at least {} mm across.",
             mm(taper),
-            mm(hole + taper)
+            mm_up(hole + taper)
         ));
     }
     let (origin, turn) = place(solid, height * 0.5, 0.0, height);
@@ -1180,6 +1274,315 @@ fn build_gt2(solid: &Solid) -> Result<Shape, String> {
     Ok(body)
 }
 
+/// 0 is the default. Any other entry is the size the caller asked for.
+fn axis_or(value: f64, default: f64) -> f64 {
+    if value == 0.0 { default } else { value }
+}
+
+fn whole_count(value: f64) -> Option<i32> {
+    if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= i32::MAX as f64 {
+        Some(value as i32)
+    } else {
+        None
+    }
+}
+
+enum HoleChoice {
+    Screw(f64),
+    Free,
+}
+
+fn hole_choice(solid: &Solid) -> Result<HoleChoice, String> {
+    let text = solid
+        .hole_for
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("M4");
+    if text == "free" {
+        return Ok(HoleChoice::Free);
+    }
+    if let Some(row) = CLEARANCE.iter().find(|row| row.nominal == text) {
+        return Ok(HoleChoice::Screw(row.hole));
+    }
+    Err("Hole for is M3, M4, M5, M6, M8, M10, M12, M16, M20, M24, or free.".into())
+}
+
+fn drilled(solid: &Solid, choice: HoleChoice) -> Result<f64, String> {
+    match choice {
+        HoleChoice::Free => {
+            if solid.allowance.is_some() {
+                return Err("A free diameter has no allowance; it is the hole's size.".into());
+            }
+            let diameter = solid.bore.unwrap_or(4.7);
+            if !in_range(diameter, 2.0, 30.0) {
+                return Err("The free diameter is from 2 to 30 mm.".into());
+            }
+            Ok(diameter)
+        }
+        HoleChoice::Screw(clearance) => {
+            if solid.bore.is_some() {
+                return Err("A screw's hole comes from the clearance table.".into());
+            }
+            let allowance = solid.allowance.unwrap_or(0.2);
+            if !(allowance.is_finite() && (0.0..=1.0).contains(&allowance)) {
+                return Err("The allowance is from 0 to 1 mm.".into());
+            }
+            Ok(clearance + allowance)
+        }
+    }
+}
+
+fn count_of(value: Option<f64>, default: i32, max: i32, sentence: &str) -> Result<i32, String> {
+    let n = match value {
+        None => default,
+        Some(raw) => match whole_count(raw) {
+            Some(n) => n,
+            None => return Err(sentence.into()),
+        },
+    };
+    if (0..=max).contains(&n) { Ok(n) } else { Err(sentence.into()) }
+}
+
+fn plate_walls(n: i32, d: f64, width: f64, depth: f64, pitch: f64) -> Result<(), String> {
+    if n <= 0 {
+        return Ok(());
+    }
+    if pitch > 0.0 {
+        let max_p = width.min(depth) - d - 2.0;
+        if pitch > max_p + 1e-9 {
+            return Err(format!(
+                "The pitch circle is at most {} mm on this plate.",
+                mm_down(max_p)
+            ));
+        }
+        if n >= 2 {
+            let min_p = (d + 1.0) / (std::f64::consts::PI / n as f64).sin();
+            if pitch + 1e-9 < min_p {
+                return Err(format!(
+                    "{} holes of {} mm need a pitch circle of at least {} mm.",
+                    n,
+                    mm(d),
+                    mm_up(min_p)
+                ));
+            }
+        }
+        return Ok(());
+    }
+    let inset = 8.0_f64.max(d);
+    if n == 1 {
+        if width + 1e-9 < d + 2.0 {
+            return Err(format!(
+                "A {} mm hole needs a plate at least {} mm wide.",
+                mm(d),
+                mm_up(d + 2.0)
+            ));
+        }
+        if depth + 1e-9 < d + 2.0 {
+            return Err(format!(
+                "A {} mm hole needs a plate at least {} mm deep.",
+                mm(d),
+                mm_up(d + 2.0)
+            ));
+        }
+        return Ok(());
+    }
+    let k = (n + 1) / 2;
+    if k >= 2 {
+        let need = 2.0 * inset + (k as f64 - 1.0) * (d + 1.0);
+        if width + 1e-9 < need {
+            return Err(format!(
+                "{} holes of {} mm in a row need a plate at least {} mm wide.",
+                k,
+                mm(d),
+                mm_up(need)
+            ));
+        }
+    } else if width + 1e-9 < d + 2.0 {
+        return Err(format!(
+            "A {} mm hole needs a plate at least {} mm wide.",
+            mm(d),
+            mm_up(d + 2.0)
+        ));
+    }
+    let need = 2.0 * inset + d + 1.0;
+    if depth + 1e-9 < need {
+        return Err(format!(
+            "Two rows of {} mm holes need a plate at least {} mm deep.",
+            mm(d),
+            mm_up(need)
+        ));
+    }
+    Ok(())
+}
+
+fn bracket_walls(n: i32, d: f64, leg: f64, width: f64, thickness: f64) -> Result<(), String> {
+    if n <= 0 {
+        return Ok(());
+    }
+    let need = n as f64 * (d + 2.0) + thickness;
+    if leg + 1e-9 < need {
+        return Err(format!(
+            "{} holes of {} mm need legs of at least {} mm.",
+            n,
+            mm(d),
+            mm_up(need)
+        ));
+    }
+    if width + 1e-9 < d + 2.0 {
+        return Err(format!(
+            "A {} mm hole needs the bracket at least {} mm wide.",
+            mm(d),
+            mm_up(d + 2.0)
+        ));
+    }
+    Ok(())
+}
+
+fn row_at(k: i32, y: f64, x0: f64, x1: f64, out: &mut Vec<[f64; 2]>) {
+    if k <= 0 {
+        return;
+    }
+    if k == 1 {
+        out.push([0.0, y]);
+        return;
+    }
+    for i in 0..k {
+        let t = i as f64 / (k as f64 - 1.0);
+        out.push([x0 + (x1 - x0) * t, y]);
+    }
+}
+
+fn plate_centres(n: i32, width: f64, depth: f64, d: f64, pitch: f64) -> Vec<[f64; 2]> {
+    if n <= 0 {
+        return Vec::new();
+    }
+    if pitch > 0.0 {
+        let radius = pitch * 0.5;
+        return (0..n)
+            .map(|i| {
+                let angle = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+                [radius * angle.cos(), radius * angle.sin()]
+            })
+            .collect();
+    }
+    if n == 1 {
+        return vec![[0.0, 0.0]];
+    }
+    let inset = 8.0_f64.max(d);
+    let y = depth * 0.5 - inset;
+    let x0 = -(width * 0.5 - inset);
+    let x1 = width * 0.5 - inset;
+    let mut out = Vec::new();
+    row_at((n + 1) / 2, y, x0, x1, &mut out);
+    row_at(n / 2, -y, x0, x1, &mut out);
+    out
+}
+
+fn cells(n: i32, start: f64, end: f64) -> Vec<f64> {
+    let span = end - start;
+    (0..n)
+        .map(|i| start + span * (i as f64 + 0.5) / n as f64)
+        .collect()
+}
+
+fn cut_hole(
+    body: Shape,
+    solid: &Solid,
+    centre_z: f64,
+    local_mid: [f64; 3],
+    local_turn: [f64; 3],
+    height: f64,
+    diameter: f64,
+) -> Result<Shape, String> {
+    let (at, turn) = pose_cylinder(solid, centre_z, local_mid, local_turn, height);
+    combine(body, c"cut", &cylinder(at, turn, diameter * 0.5, height))
+}
+
+fn build_plate(solid: &Solid) -> Result<Shape, String> {
+    let width = axis_or(solid.size[0], 80.0);
+    let depth = axis_or(solid.size[1], 60.0);
+    let thickness = axis_or(solid.size[2], 4.0);
+    if !in_range(width, 30.0, 250.0) {
+        return Err("The width is from 30 to 250 mm.".into());
+    }
+    if !in_range(depth, 20.0, 200.0) {
+        return Err("The depth is from 20 to 200 mm.".into());
+    }
+    if !in_range(thickness, 2.0, 15.0) {
+        return Err("The thickness is from 2 to 15 mm.".into());
+    }
+    let choice = hole_choice(solid)?;
+    let n = count_of(solid.holes, 4, 12, "The hole count is from 0 to 12.")?;
+    let pitch = solid.pitch_circle.unwrap_or(0.0);
+    if !in_range(pitch, 0.0, 200.0) {
+        return Err("The pitch circle is from 0 to 200 mm.".into());
+    }
+    let diameter = drilled(solid, choice)?;
+    plate_walls(n, diameter, width, depth, pitch)?;
+    let centre_z = thickness * 0.5;
+    let (origin, turn) = pose_box(solid, centre_z, [0.0, 0.0, centre_z], [width, depth, thickness]);
+    let mut body = Shape::primitive(&block(origin, turn, [width, depth, thickness]))?;
+    let hole_h = thickness + 2.0 * OVERSHOOT_MM;
+    for [x, y] in plate_centres(n, width, depth, diameter, pitch) {
+        body = cut_hole(body, solid, centre_z, [x, y, centre_z], [0.0, 0.0, 0.0], hole_h, diameter)?;
+    }
+    Ok(body)
+}
+
+fn build_bracket(solid: &Solid) -> Result<Shape, String> {
+    let leg = axis_or(solid.size[0], 40.0);
+    let width = axis_or(solid.size[1], 30.0);
+    let thickness = axis_or(solid.size[2], 3.0);
+    if !in_range(thickness, 1.5, 10.0) {
+        return Err("The thickness is from 1.5 to 10 mm.".into());
+    }
+    // A thickness inside its range that is still at least the leg names that limit, even when the leg is short.
+    if thickness >= leg {
+        return Err("The thickness must be less than the leg.".into());
+    }
+    if !in_range(leg, 15.0, 120.0) {
+        return Err("The leg is from 15 to 120 mm.".into());
+    }
+    if !in_range(width, 10.0, 80.0) {
+        return Err("The width is from 10 to 80 mm.".into());
+    }
+    let choice = hole_choice(solid)?;
+    let n = count_of(solid.holes, 2, 4, "The holes per leg are from 0 to 4.")?;
+    let diameter = drilled(solid, choice)?;
+    bracket_walls(n, diameter, leg, width, thickness)?;
+    let centre_z = leg * 0.5;
+    let (base_at, base_turn) = pose_box(solid, centre_z, [0.0, 0.0, thickness * 0.5], [leg, width, thickness]);
+    let base = Shape::primitive(&block(base_at, base_turn, [leg, width, thickness]))?;
+    let upright = [thickness, width, leg];
+    let (up_at, up_turn) = pose_box(
+        solid,
+        centre_z,
+        [leg * 0.5 - thickness * 0.5, 0.0, leg * 0.5],
+        upright,
+    );
+    let mut body = combine(base, c"fuse", &block(up_at, up_turn, upright))?;
+    if n == 0 {
+        return Ok(body);
+    }
+    let hole_h = thickness + 2.0 * OVERSHOOT_MM;
+    for x in cells(n, -leg * 0.5, leg * 0.5 - thickness) {
+        body = cut_hole(body, solid, centre_z, [x, 0.0, thickness * 0.5], [0.0, 0.0, 0.0], hole_h, diameter)?;
+    }
+    for z in cells(n, thickness, leg) {
+        body = cut_hole(
+            body,
+            solid,
+            centre_z,
+            [leg * 0.5 - thickness * 0.5, 0.0, z],
+            [0.0, -90.0, 0.0],
+            hole_h,
+            diameter,
+        )?;
+    }
+    Ok(body)
+}
+
 /// The part `solid` describes, or the one sentence why it is not one.
 pub(super) fn build_part(solid: &Solid) -> Result<Shape, String> {
     let kind = kind_of(solid)?;
@@ -1194,6 +1597,8 @@ pub(super) fn build_part(solid: &Solid) -> Result<Shape, String> {
         Kind::Shaft => build_shaft(solid),
         Kind::Collar => build_collar(solid),
         Kind::Heat => build_heat(solid),
+        Kind::Plate => build_plate(solid),
+        Kind::Bracket => build_bracket(solid),
         Kind::Gt2 => build_gt2(solid),
         Kind::V => Err(V_PULLEY.into()),
     }

@@ -139,13 +139,14 @@ const READS: Record<PrimitiveKind, readonly string[]> = {
   torus: ["radius", "tubeRadius"],
   polygon: ["height", "sides", "across", "flats"],
   gear: ["height", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreShape", "boreFlat", "hubDiameter", "hubHeight", "internal", "rim", "rack", "back"],
-  part: ["height", "partKind", "nominal", "allowance", "length", "headDiameter", "headHeight", "socketDepth", "boreKind", "diameter", "bore", "hollow", "fit", "article", "taper", "setScrew", "teeth"],
+  part: ["height", "partKind", "nominal", "allowance", "length", "headDiameter", "headHeight", "socketDepth", "boreKind", "diameter", "bore", "hollow", "fit", "article", "taper", "setScrew", "teeth", "holeFor", "holes", "pitchCircle"],
 };
 
 /** An op as a caller reads it back: a primitive keeps only the fields its kind reads. */
 export function cleanOp<T extends Record<string, unknown>>(op: T): Record<string, unknown> {
   if ((op.kind !== "boolean" && op.kind !== "root") || !isPrimitiveKind(op.primitive)) return op;
   const keep = new Set(["kind", "op", "primitive", "origin", "turn", ...READS[op.primitive]]);
+  if (op.primitive === "part" && (op.partKind === "plate" || op.partKind === "bracket")) keep.add("size");
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(op)) if (keep.has(key)) out[key] = value;
   return out;

@@ -305,7 +305,7 @@ fn unknown_sizes_and_a_washer_with_no_wall_are_refused() {
     refused(
         "part-no-kind",
         json!({ "primitive": "part", "origin": [0.0, 0.0, 0.0] }),
-        "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, gt2, or v.",
+        "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, bracket, gt2, or v.",
     );
     refused(
         "part-m7-nut",
@@ -516,6 +516,257 @@ fn fittings_name_the_limit_they_refuse() {
         "spacer-hole",
         json!({ "primitive": "part", "partKind": "spacer", "diameter": 10.0, "bore": 10.0, "hollow": true, "origin": [0.0, 0.0, 0.0] }),
         "The hole is at least as wide as the outside diameter. Turn hollow off, or use a smaller hole.",
+    );
+    // A nearest tenth can name a size that is still refused. Minimums round up, maximums down.
+    refused(
+        "heat-taper-tenth",
+        json!({ "primitive": "part", "partKind": "heat-set", "article": "RX-M3x5,7", "taper": 0.23, "origin": [0.0, 0.0, 0.0] }),
+        "A taper of 0.2 mm needs a boss at least 8.1 mm across.",
+    );
+    refused(
+        "collar-screw-tenth",
+        json!({ "primitive": "part", "partKind": "collar", "diameter": 14.0, "bore": 8.0, "height": 6.05, "setScrew": 5.1, "origin": [0.0, 0.0, 0.0] }),
+        "The set screw must be at most 5 mm so 0.5 mm of the collar stays on each side.",
+    );
+}
+
+#[test]
+fn a_named_tenth_is_a_size_the_kernel_builds() {
+    if !kernel() {
+        return;
+    }
+    let boss = ok(json!({
+        "call": "open", "key": "heat-taper-builds", "chordMm": 0.01,
+        "primitive": { "primitive": "part", "partKind": "heat-set", "article": "RX-M3x5,7", "diameter": 8.1, "taper": 0.23, "origin": [0.0, 0.0, 0.0] }
+    }));
+    println!("heat-set taper 0.23 on an 8.1 mm boss: measured volume {} mm3", volume(&boss));
+    let piece = step_check("heat-taper-builds", 0);
+    assert!(piece.valid && piece.closed && piece.solids == 1, "{piece:?}");
+    let collar = ok(json!({
+        "call": "open", "key": "collar-screw-builds", "chordMm": 0.01,
+        "primitive": { "primitive": "part", "partKind": "collar", "diameter": 14.0, "bore": 8.0, "height": 6.05, "setScrew": 5.0, "origin": [0.0, 0.0, 0.0] }
+    }));
+    println!("collar width 6.05 with a 5 mm set screw: measured volume {} mm3", volume(&collar));
+    let piece = step_check("collar-screw-builds", 0);
+    assert!(piece.valid && piece.closed && piece.solids == 1, "{piece:?}");
+}
+
+/// Section 4.8, copied here. The kernel's const is not the oracle.
+const CLEARANCE: &[(&str, f64)] = &[
+    ("M3", 3.4),
+    ("M4", 4.5),
+    ("M5", 5.5),
+    ("M6", 6.6),
+    ("M8", 9.0),
+    ("M10", 11.0),
+    ("M12", 13.5),
+    ("M16", 17.5),
+    ("M20", 22.0),
+    ("M24", 26.0),
+];
+
+fn clearance(nominal: &str) -> f64 {
+    CLEARANCE.iter().find(|row| row.0 == nominal).expect(nominal).1
+}
+
+fn hole_volume(diameter: f64, depth: f64, count: f64) -> f64 {
+    std::f64::consts::PI * (diameter / 2.0).powi(2) * depth * count
+}
+
+#[test]
+fn brackets_match_the_analytic_solid() {
+    if !kernel() {
+        return;
+    }
+    let plate = |name: &str, solid: Value, width: f64, depth: f64, thick: f64, holes: f64, diameter: f64| {
+        check_open(
+            name,
+            solid,
+            width * depth * thick - hole_volume(diameter, thick, holes),
+            [[-width / 2.0, -depth / 2.0, 0.0], [width / 2.0, depth / 2.0, thick]],
+        );
+    };
+    let d4 = clearance("M4") + 0.2;
+    plate(
+        "plate-default",
+        json!({ "primitive": "part", "partKind": "plate", "origin": [0.0, 0.0, 0.0] }),
+        80.0, 60.0, 4.0, 4.0, d4,
+    );
+    plate(
+        "plate-m3",
+        json!({ "primitive": "part", "partKind": "plate", "holeFor": "M3", "origin": [0.0, 0.0, 0.0] }),
+        80.0, 60.0, 4.0, 4.0, clearance("M3") + 0.2,
+    );
+    plate(
+        "plate-m12",
+        json!({ "primitive": "part", "partKind": "plate", "holeFor": "M12", "origin": [0.0, 0.0, 0.0] }),
+        80.0, 60.0, 4.0, 4.0, clearance("M12") + 0.2,
+    );
+    plate(
+        "plate-free",
+        json!({ "primitive": "part", "partKind": "plate", "holeFor": "free", "bore": 6.0, "origin": [0.0, 0.0, 0.0] }),
+        80.0, 60.0, 4.0, 4.0, 6.0,
+    );
+    plate(
+        "plate-pitch",
+        json!({ "primitive": "part", "partKind": "plate", "holes": 6.0, "pitchCircle": 40.0, "origin": [0.0, 0.0, 0.0] }),
+        80.0, 60.0, 4.0, 6.0, d4,
+    );
+    plate(
+        "plate-five",
+        json!({ "primitive": "part", "partKind": "plate", "holes": 5.0, "origin": [0.0, 0.0, 0.0] }),
+        80.0, 60.0, 4.0, 5.0, d4,
+    );
+    let bracket = |name: &str, solid: Value, leg: f64, width: f64, thick: f64, per_leg: f64, diameter: f64| {
+        let metal = width * thick * (2.0 * leg - thick);
+        check_open(
+            name,
+            solid,
+            metal - hole_volume(diameter, thick, per_leg * 2.0),
+            [[-leg / 2.0, -width / 2.0, 0.0], [leg / 2.0, width / 2.0, leg]],
+        );
+    };
+    bracket(
+        "bracket-default",
+        json!({ "primitive": "part", "partKind": "bracket", "origin": [0.0, 0.0, 0.0] }),
+        40.0, 30.0, 3.0, 2.0, d4,
+    );
+    bracket(
+        "bracket-m3",
+        json!({ "primitive": "part", "partKind": "bracket", "holeFor": "M3", "origin": [0.0, 0.0, 0.0] }),
+        40.0, 30.0, 3.0, 2.0, clearance("M3") + 0.2,
+    );
+    bracket(
+        "bracket-m12",
+        json!({ "primitive": "part", "partKind": "bracket", "holeFor": "M12", "origin": [0.0, 0.0, 0.0] }),
+        40.0, 30.0, 3.0, 2.0, clearance("M12") + 0.2,
+    );
+    bracket(
+        "bracket-free",
+        json!({ "primitive": "part", "partKind": "bracket", "holeFor": "free", "bore": 6.0, "origin": [0.0, 0.0, 0.0] }),
+        40.0, 30.0, 3.0, 2.0, 6.0,
+    );
+}
+
+#[test]
+fn bracket_holes_are_empty_and_the_metal_between_them_is_not() {
+    if !kernel() {
+        return;
+    }
+    let opened = ok(json!({
+        "call": "open", "key": "plate-probe", "chordMm": 0.01,
+        "primitive": { "primitive": "part", "partKind": "plate", "origin": [0.0, 0.0, 0.0] }
+    }));
+    let before = volume(&opened);
+    let hole = probe_at("plate-probe", [32.0, 22.0, 2.0], 0.3);
+    let hole_volume = if hole.get("error").is_some() { before } else { volume(&hole) };
+    println!("plate hole centre probe {hole_volume} mm3, solid {before} mm3");
+    assert!((hole_volume - before).abs() < 0.01, "a plate hole centre is metal ({hole_volume} vs {before})");
+    let wall = probe_at("plate-probe", [0.0, 22.0, 2.0], 0.3);
+    assert!(wall.get("error").is_none(), "{}", short(&wall));
+    println!("plate wall between holes probe {} mm3, solid {before} mm3", volume(&wall));
+    assert!(before - volume(&wall) > 0.02, "the plate between two holes is empty");
+
+    let opened = ok(json!({
+        "call": "open", "key": "bracket-probe", "chordMm": 0.01,
+        "primitive": { "primitive": "part", "partKind": "bracket", "origin": [0.0, 0.0, 0.0] }
+    }));
+    let before = volume(&opened);
+    let base = probe_at("bracket-probe", [-10.75, 0.0, 1.5], 0.3);
+    let base_volume = if base.get("error").is_some() { before } else { volume(&base) };
+    println!("bracket base hole probe {base_volume} mm3, solid {before} mm3");
+    assert!((base_volume - before).abs() < 0.01, "a base hole centre is metal ({base_volume} vs {before})");
+    let between = probe_at("bracket-probe", [-1.5, 0.0, 1.5], 0.3);
+    assert!(between.get("error").is_none(), "{}", short(&between));
+    println!("bracket metal between base holes probe {} mm3, solid {before} mm3", volume(&between));
+    assert!(before - volume(&between) > 0.02, "the base between two holes is empty");
+    let upright = probe_at("bracket-probe", [18.5, 0.0, 12.25], 0.3);
+    let upright_volume = if upright.get("error").is_some() { before } else { volume(&upright) };
+    println!("bracket upright hole probe {upright_volume} mm3, solid {before} mm3");
+    assert!((upright_volume - before).abs() < 0.01, "an upright hole centre is metal ({upright_volume} vs {before})");
+    let through = probe_at("bracket-probe", [17.0, 0.0, 12.25], 0.15);
+    let through_volume = if through.get("error").is_some() { before } else { volume(&through) };
+    println!("bracket upright inner face probe {through_volume} mm3, solid {before} mm3");
+    assert!((through_volume - before).abs() < 0.01, "the upright hole does not reach x = leg/2 − thickness ({through_volume} vs {before})");
+}
+
+#[test]
+fn brackets_name_the_limit_they_refuse() {
+    if !kernel() {
+        return;
+    }
+    let refused = |key: &str, solid: Value, sentence: &str| {
+        let reply = call(json!({ "call": "open", "key": key, "primitive": solid }));
+        assert_eq!(reply["error"].as_str(), Some(sentence), "{}", short(&reply));
+    };
+    let plate = |extra: Value| {
+        let mut solid = json!({ "primitive": "part", "partKind": "plate", "origin": [0.0, 0.0, 0.0] });
+        if let (Some(map), Some(more)) = (solid.as_object_mut(), extra.as_object()) {
+            for (key, value) in more { map.insert(key.clone(), value.clone()); }
+        }
+        solid
+    };
+    let bracket = |extra: Value| {
+        let mut solid = json!({ "primitive": "part", "partKind": "bracket", "origin": [0.0, 0.0, 0.0] });
+        if let (Some(map), Some(more)) = (solid.as_object_mut(), extra.as_object()) {
+            for (key, value) in more { map.insert(key.clone(), value.clone()); }
+        }
+        solid
+    };
+    refused("plate-width", plate(json!({ "size": [20.0, 60.0, 4.0] })), "The width is from 30 to 250 mm.");
+    refused("plate-depth", plate(json!({ "size": [80.0, 10.0, 4.0] })), "The depth is from 20 to 200 mm.");
+    refused("plate-thick", plate(json!({ "size": [80.0, 60.0, 1.0] })), "The thickness is from 2 to 15 mm.");
+    refused("plate-count", plate(json!({ "holes": 13.0 })), "The hole count is from 0 to 12.");
+    refused("plate-pitch-range", plate(json!({ "pitchCircle": 201.0 })), "The pitch circle is from 0 to 200 mm.");
+    refused("plate-allowance", plate(json!({ "allowance": 1.5 })), "The allowance is from 0 to 1 mm.");
+    refused("plate-free-range", plate(json!({ "holeFor": "free", "bore": 1.0 })), "The free diameter is from 2 to 30 mm.");
+    refused("plate-hole-for", plate(json!({ "holeFor": "M7" })), "Hole for is M3, M4, M5, M6, M8, M10, M12, M16, M20, M24, or free.");
+    refused("plate-free-allowance", plate(json!({ "holeFor": "free", "allowance": 0.2 })), "A free diameter has no allowance; it is the hole's size.");
+    refused("plate-bore", plate(json!({ "bore": 5.0 })), "A screw's hole comes from the clearance table.");
+    refused("plate-height", plate(json!({ "height": 5.0 })), "A plate has no height.");
+    refused("plate-length", plate(json!({ "length": 10.0 })), "A plate has no length.");
+    refused("plate-nominal", plate(json!({ "nominal": "M6" })), "A plate has no nominal size.");
+    refused("plate-one-wide", plate(json!({ "size": [30.0, 40.0, 4.0], "holes": 1.0, "holeFor": "free", "bore": 30.0 })), "A 30 mm hole needs a plate at least 32 mm wide.");
+    refused("plate-one-deep", plate(json!({ "size": [40.0, 20.0, 4.0], "holes": 1.0, "holeFor": "free", "bore": 30.0 })), "A 30 mm hole needs a plate at least 32 mm deep.");
+    refused(
+        "plate-row",
+        plate(json!({ "size": [100.0, 200.0, 4.0], "holes": 12.0, "holeFor": "M24", "allowance": 1.0 })),
+        "6 holes of 27 mm in a row need a plate at least 194 mm wide.",
+    );
+    refused(
+        "plate-rows",
+        plate(json!({ "size": [250.0, 60.0, 4.0], "holes": 12.0, "holeFor": "M24", "allowance": 1.0 })),
+        "Two rows of 27 mm holes need a plate at least 82 mm deep.",
+    );
+    refused("plate-pitch-big", plate(json!({ "pitchCircle": 54.0 })), "The pitch circle is at most 53.3 mm on this plate.");
+    refused("plate-pitch-small", plate(json!({ "holes": 6.0, "pitchCircle": 10.0 })), "6 holes of 4.7 mm need a pitch circle of at least 11.4 mm.");
+    refused("bracket-leg", bracket(json!({ "size": [10.0, 30.0, 3.0] })), "The leg is from 15 to 120 mm.");
+    refused("bracket-width", bracket(json!({ "size": [40.0, 5.0, 3.0] })), "The width is from 10 to 80 mm.");
+    refused("bracket-thick", bracket(json!({ "size": [40.0, 30.0, 1.0] })), "The thickness is from 1.5 to 10 mm.");
+    refused("bracket-thicker", bracket(json!({ "size": [10.0, 30.0, 10.0] })), "The thickness must be less than the leg.");
+    refused("bracket-count", bracket(json!({ "holes": 5.0 })), "The holes per leg are from 0 to 4.");
+    refused("bracket-legs", bracket(json!({ "size": [20.0, 30.0, 3.0], "holes": 4.0 })), "4 holes of 4.7 mm need legs of at least 29.8 mm.");
+    refused(
+        "bracket-wide",
+        bracket(json!({ "size": [40.0, 20.0, 3.0], "holes": 1.0, "holeFor": "M24", "allowance": 0.2 })),
+        "A 26.2 mm hole needs the bracket at least 28.2 mm wide.",
+    );
+    refused("bracket-pitch", bracket(json!({ "pitchCircle": 20.0 })), "Only a plate takes a pitch circle.");
+    refused("bracket-length", bracket(json!({ "length": 10.0 })), "An L-bracket has no length.");
+    refused(
+        "nut-hole-for",
+        json!({ "primitive": "part", "partKind": "nut", "holeFor": "M4", "origin": [0.0, 0.0, 0.0] }),
+        "Only a plate or an L-bracket takes a hole for.",
+    );
+    refused(
+        "nut-holes",
+        json!({ "primitive": "part", "partKind": "nut", "holes": 4.0, "origin": [0.0, 0.0, 0.0] }),
+        "Only a plate or an L-bracket takes a hole count.",
+    );
+    refused(
+        "spacer-pitch",
+        json!({ "primitive": "part", "partKind": "spacer", "pitchCircle": 20.0, "origin": [0.0, 0.0, 0.0] }),
+        "Only a plate takes a pitch circle.",
     );
 }
 

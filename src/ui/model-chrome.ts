@@ -25,7 +25,7 @@ import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { GEAR_DEFAULTS, gearRefusal, isBoreShape, type BoreShape, type GearFields } from "../model-gear";
-import { heatRow, isPartKind, partProblem, partRowText, type PartKind, type PartSpec } from "../model-part";
+import { heatRow, ISO_273, isPartKind, partProblem, partRowText, type PartKind, type PartSpec } from "../model-part";
 import { gearAt, nearestVerdict, verdictSentence, type WorldGear } from "../gear-pair";
 import { gearOf, isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { FEATURE_CHOICE_DEFAULTS, featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
@@ -640,9 +640,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // A part's kind, nominal, fit, article or hollow changes the row, the fields and the ghost at once.
-    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow")) {
+    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow" || ev.target.id === "modelPartHoleFor")) {
       if (ev.target.id === "modelPartKind") onPartKind();
       if (ev.target.id === "modelPartArticle") onHeatArticle();
+      if (ev.target.id === "modelPartHoleFor") onHoleFor();
       syncFields();
       refreshGhost();
       refreshApply();
@@ -682,8 +683,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow")) return;
-    if (ev.target instanceof HTMLInputElement && (ev.target.id === "modelPartLength" || ev.target.id === "modelPartDiameter")) ev.target.dataset.touched = "1";
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow" || ev.target.id === "modelPartHoleFor")) return;
+    if (ev.target instanceof HTMLInputElement && (ev.target.id === "modelPartLength" || ev.target.id === "modelPartDiameter" || ev.target.id === "modelPartBore")) ev.target.dataset.touched = "1";
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
@@ -1104,6 +1105,11 @@ function fillEdit() {
     if (article && panel.article) article.value = panel.article;
     const fit = document.querySelector<HTMLSelectElement>("#modelShaftFit");
     if (fit && panel.fit) fit.value = panel.fit;
+    const holeFor = document.querySelector<HTMLSelectElement>("#modelPartHoleFor");
+    if (holeFor && panel.holeFor) {
+      holeFor.value = panel.holeFor;
+      if (panel.holeFor !== "free") holeFor.dataset.screw = panel.holeFor;
+    }
     const hollow = document.querySelector<HTMLInputElement>("#modelPartHollow");
     if (hollow && panel.hollow !== undefined) hollow.checked = panel.hollow;
     const length = document.querySelector<HTMLInputElement>("#modelPartLength");
@@ -1466,6 +1472,16 @@ function syncFields() {
   }
   const partAllowance = document.querySelector<HTMLInputElement>("#modelPartAllowance");
   if (partAllowance) partAllowance.max = partKind === "shaft" ? "0.5" : "1";
+  const bracket = partKind === "plate" || partKind === "bracket";
+  const free = holeForNow() === "free";
+  if (bracket) {
+    document.querySelector("#modelPartBore")?.closest("label")?.toggleAttribute("hidden", !free);
+    document.querySelector("#modelPartAllowance")?.closest("label")?.toggleAttribute("hidden", free);
+  }
+  setLabel("#modelPartWidthLabel", "#modelPartWidth", partKind === "bracket" ? "Leg" : "Width", partKind === "bracket" ? "Leg, mm" : "Width, mm");
+  setLabel("#modelPartDepthLabel", "#modelPartDepth", partKind === "bracket" ? "Width" : "Depth", partKind === "bracket" ? "Width, mm" : "Depth, mm");
+  setLabel("#modelPartHolesLabel", "#modelPartHoles", partKind === "bracket" ? "Holes per leg" : "Holes");
+  if (bracket && free) setLabel("#modelPartBoreLabel", "#modelPartBore", "Free ⌀", "Free diameter, mm");
   paintPartNote();
   const flats = acrossFlats();
   setLabel("#modelAcrossLabel", "#modelAcross", flats ? "Across flats" : "Across corners", flats ? "Width across flats" : "Width across corners");
@@ -1754,8 +1770,30 @@ function partKindNow(): PartKind {
 }
 
 /** Each kind opens on its own defaults. A number the person has typed keeps its value until the kind changes. */
+function holeForNow(): string {
+  return document.querySelector<HTMLSelectElement>("#modelPartHoleFor")?.value || "M4";
+}
+
+/** Switching to Free leaves the diameter at the screw hole that was showing, unless that field was typed. */
+function onHoleFor() {
+  const select = document.querySelector<HTMLSelectElement>("#modelPartHoleFor");
+  if (!select) return;
+  const next = select.value;
+  const previous = select.dataset.screw || "M4";
+  if (next === "free") {
+    const bore = document.querySelector<HTMLInputElement>("#modelPartBore");
+    if (bore && !bore.dataset.touched) {
+      const clearance = ISO_273.find((row) => row.nominal === previous)?.hole ?? 4.5;
+      const drilled = Math.round((clearance + num("#modelPartAllowance")) * 10) / 10;
+      bore.value = String(drilled);
+    }
+  } else {
+    select.dataset.screw = next;
+  }
+}
+
 function onPartKind() {
-  for (const id of ["#modelPartLength", "#modelPartDiameter", "#modelPartBore", "#modelPartAllowance", "#modelPartTaper", "#modelPartScrew", "#modelPartTeeth"]) {
+  for (const id of ["#modelPartLength", "#modelPartDiameter", "#modelPartBore", "#modelPartAllowance", "#modelPartTaper", "#modelPartScrew", "#modelPartTeeth", "#modelPartWidth", "#modelPartDepth", "#modelPartGauge", "#modelPartHoles", "#modelPartPitch"]) {
     const field = document.querySelector<HTMLInputElement>(id);
     if (field) delete field.dataset.touched;
   }
@@ -1794,6 +1832,30 @@ function onPartKind() {
     if (taper) taper.value = "0";
     if (allowance) allowance.value = "0";
     onHeatArticle();
+  } else if (kind === "plate" || kind === "bracket") {
+    const width = document.querySelector<HTMLInputElement>("#modelPartWidth");
+    const depth = document.querySelector<HTMLInputElement>("#modelPartDepth");
+    const gauge = document.querySelector<HTMLInputElement>("#modelPartGauge");
+    const holes = document.querySelector<HTMLInputElement>("#modelPartHoles");
+    const pitch = document.querySelector<HTMLInputElement>("#modelPartPitch");
+    const holeFor = document.querySelector<HTMLSelectElement>("#modelPartHoleFor");
+    if (kind === "plate") {
+      if (width) width.value = "80";
+      if (depth) depth.value = "60";
+      if (gauge) gauge.value = "4";
+      if (holes) holes.value = "4";
+      if (pitch) pitch.value = "0";
+    } else {
+      if (width) width.value = "40";
+      if (depth) depth.value = "30";
+      if (gauge) gauge.value = "3";
+      if (holes) holes.value = "2";
+    }
+    if (allowance) allowance.value = "0.2";
+    if (holeFor) {
+      holeFor.value = "M4";
+      holeFor.dataset.screw = "M4";
+    }
   }
 }
 
@@ -1858,6 +1920,17 @@ function partFields(): PartSpec {
     const allowance = num("#modelPartAllowance");
     if (allowance !== 0) spec.allowance = allowance;
   }
+  if (kind === "plate" || kind === "bracket") {
+    spec.size = [num("#modelPartWidth"), num("#modelPartDepth"), num("#modelPartGauge")];
+    spec.holeFor = holeForNow();
+    spec.holes = num("#modelPartHoles");
+    if (kind === "plate") {
+      const pitch = num("#modelPartPitch");
+      if (pitch !== 0) spec.pitchCircle = pitch;
+    }
+    if (holeForNow() === "free") spec.bore = num("#modelPartBore");
+    else spec.allowance = num("#modelPartAllowance");
+  }
   return spec;
 }
 
@@ -1865,7 +1938,7 @@ function paintPartNote() {
   const row = document.querySelector("#modelPartRow");
   if (!row || primitiveKind() !== "part") return;
   const fields = partFields();
-  row.textContent = partRowText(fields.partKind ?? "", fields.nominal ?? "M6", fields.article);
+  row.textContent = partRowText(fields.partKind ?? "", fields.nominal ?? "M6", fields.article, fields.holeFor);
 }
 
 /** The sentence a fastener is refused with before anything is sent; null for any other primitive, or a fine part. */
@@ -2446,6 +2519,7 @@ function dragContext(): DragContext {
     ring: gearRing(),
     rack: gearKind() === "rack",
     partKind: primitiveKind() === "part" ? partKindNow() : undefined,
+    holeFree: primitiveKind() === "part" && (partKindNow() === "plate" || partKindNow() === "bracket") && holeForNow() === "free",
     center,
     extent,
     split: tool === "split" ? splitPlan() : null,

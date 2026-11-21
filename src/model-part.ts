@@ -6,7 +6,7 @@
  */
 import { formatMm } from "./model-plane.ts";
 
-export type PartKind = "nut" | "socket" | "hex" | "washer" | "spacer" | "shaft" | "collar" | "heat-set" | "gt2" | "v";
+export type PartKind = "nut" | "socket" | "hex" | "washer" | "spacer" | "shaft" | "collar" | "heat-set" | "plate" | "bracket" | "gt2" | "v";
 
 export type ShaftFit = "running" | "sliding" | "press";
 
@@ -28,6 +28,14 @@ export interface PartFields {
   setScrew?: number;
   /** GT2 tooth count. Absent is 20. */
   teeth?: number;
+  /** M3–M24, or free. M4 when absent. */
+  holeFor?: string;
+  /** Plate hole count, or holes per leg. */
+  holes?: number;
+  /** Plate pitch-circle diameter, mm. 0 lays the holes on the inset rectangle. */
+  pitchCircle?: number;
+  /** Plate [width, depth, thickness] or L-bracket [leg, width, thickness]. 0 is that axis's default. */
+  size?: [number, number, number];
 }
 
 /** What the kernel stores on a part, plus `height` (0 is a fastener's table row, or a fitting's default length). */
@@ -49,6 +57,10 @@ export interface PartSpec {
   setScrew?: number;
   /** GT2 tooth count. Absent is 20. */
   teeth?: number;
+  holeFor?: string;
+  holes?: number;
+  pitchCircle?: number;
+  size?: [number, number, number];
   height: number;
 }
 
@@ -59,6 +71,8 @@ export interface PartPiece {
   hex?: { across: number; z0: number; z1: number; hole: number };
   /** Round pieces, outer radius, optional smaller top, optional hole. */
   rounds: { radius: number; top?: number; z0: number; z1: number; hole: number }[];
+  /** Plate and L-bracket boxes, from each one's minimum corner. The ghost may omit the holes. */
+  boxes?: { x: number; y: number; z: number; dx: number; dy: number; dz: number }[];
 }
 
 export interface ResolvedPart extends PartPiece {
@@ -139,7 +153,7 @@ export const PART_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "washer", label: "Washer" },
 ];
 
-/** The Fittings group. Brackets wait for their milestone. */
+/** The Fittings group. */
 export const FITTING_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "spacer", label: "Spacer" },
   { id: "shaft", label: "Shaft" },
@@ -153,10 +167,30 @@ export const PULLEY_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "v", label: "V pulley" },
 ];
 
+export const BRACKET_KINDS: readonly { id: PartKind; label: string }[] = [
+  { id: "plate", label: "Plate" },
+  { id: "bracket", label: "L-bracket" },
+];
+
 export const PART_GROUPS: readonly { label: string; kinds: readonly { id: PartKind; label: string }[] }[] = [
   { label: "Fasteners", kinds: PART_KINDS },
   { label: "Fittings", kinds: FITTING_KINDS },
+  { label: "Brackets", kinds: BRACKET_KINDS },
   { label: "Pulleys", kinds: PULLEY_KINDS },
+];
+
+/** ISO 273 medium clearance, section 4.8. The drilled hole is this plus the allowance. */
+export const ISO_273: readonly { nominal: string; hole: number }[] = [
+  { nominal: "M3", hole: 3.4 },
+  { nominal: "M4", hole: 4.5 },
+  { nominal: "M5", hole: 5.5 },
+  { nominal: "M6", hole: 6.6 },
+  { nominal: "M8", hole: 9 },
+  { nominal: "M10", hole: 11 },
+  { nominal: "M12", hole: 13.5 },
+  { nominal: "M16", hole: 17.5 },
+  { nominal: "M20", hole: 22 },
+  { nominal: "M24", hole: 26 },
 ];
 
 /** Choosing a V pulley, or sending one, is refused with this sentence. */
@@ -198,7 +232,7 @@ const TABLES: Record<"nut" | "socket" | "hex" | "washer", string> = {
   washer: "ISO 7089 washer table",
 };
 
-const PART_KIND_IDS: readonly string[] = [...PART_KINDS, ...FITTING_KINDS, ...PULLEY_KINDS].map((entry) => entry.id);
+const PART_KIND_IDS: readonly string[] = [...PART_KINDS, ...FITTING_KINDS, ...BRACKET_KINDS, ...PULLEY_KINDS].map((entry) => entry.id);
 
 export function isPartKind(value: unknown): value is PartKind {
   return typeof value === "string" && PART_KIND_IDS.includes(value);
@@ -222,8 +256,7 @@ export function shaftDiameter(nominal: number, fit: ShaftFit, allowance: number)
   return nominal - SHAFT_CLEARANCE[fit][row]! - allowance;
 }
 
-function mm(value: number): string {
-  const tenths = Math.round(value * 10) / 10;
+function formatTenth(tenths: number): string {
   return Math.abs(tenths - Math.round(tenths)) < 1e-9 ? String(Math.round(tenths)) : tenths.toFixed(1);
 }
 
@@ -235,6 +268,20 @@ function tenthDown(value: number): number {
 /** Outside radius of a GT2 pulley: `(teeth · 2 / π − 0.508) / 2`. */
 function gt2Radius(teeth: number): number {
   return (teeth * 2 / Math.PI - 0.508) / 2;
+}
+
+function mm(value: number): string {
+  return formatTenth(Math.round(value * 10) / 10);
+}
+
+/** A minimum, rounded up to the tenth, so the size the sentence names is one the kernel will build. */
+function mmUp(value: number): string {
+  return formatTenth(Math.ceil(value * 10 - 1e-9) / 10);
+}
+
+/** A maximum, rounded down to the tenth. */
+function mmDown(value: number): string {
+  return formatTenth(Math.floor(value * 10 + 1e-9) / 10);
 }
 
 function inRange(value: number, lo: number, hi: number): boolean {
@@ -341,10 +388,10 @@ function fittingProblem(spec: PartSpec, kind: PartKind): string | null {
     if (headSet(spec.taper)) return "Only a heat-set boss takes a taper.";
     if (!inRange(bore, 3, 25)) return "The bore is from 3 to 25 mm.";
     if (!inRange(od, 6, 40)) return "The outside diameter is from 6 to 40 mm.";
-    if (od < bore + 2) return `The outside diameter must be at least ${mm(bore + 2)} mm, 2 mm above the bore.`;
+    if (od < bore + 2) return `The outside diameter must be at least ${mmUp(bore + 2)} mm, 2 mm above the bore.`;
     if (!inRange(width, 3, 15)) return "The width is from 3 to 15 mm.";
     if (!inRange(screw, 2, 6)) return "The set screw is from 2 to 6 mm.";
-    if (screw > width - 1) return `The set screw must be at most ${mm(width - 1)} mm so 0.5 mm of the collar stays on each side.`;
+    if (screw > width - 1) return `The set screw must be at most ${mmDown(width - 1)} mm so 0.5 mm of the collar stays on each side.`;
     return null;
   }
   const row = heatRow(spec.article);
@@ -361,10 +408,122 @@ function fittingProblem(spec: PartSpec, kind: PartKind): string | null {
   if (!(Number.isFinite(allowance) && allowance >= 0 && allowance <= 1)) return "The allowance is from 0 to 1 mm.";
   if (!(Number.isFinite(taper) && taper >= 0 && taper <= 2)) return "The taper is from 0 to 2 mm.";
   if (!Number.isFinite(boss) || boss > 1000) return "The boss diameter is at most 1000 mm.";
-  if (boss < minOd - 1e-9) return `The boss must be at least ${mm(minOd)} mm across, the insert's outside plus twice the minimum wall.`;
-  if (!(Number.isFinite(height) && height + 1e-9 >= row.l && height <= 40)) return `The height is from ${mm(row.l)} to 40 mm.`;
+  if (boss < minOd - 1e-9) return `The boss must be at least ${mmUp(minOd)} mm across, the insert's outside plus twice the minimum wall.`;
+  if (!(Number.isFinite(height) && height + 1e-9 >= row.l && height <= 40)) return `The height is from ${mmUp(row.l)} to 40 mm.`;
   const top = boss - taper;
-  if (top < minOd - 1e-9) return `A taper of ${mm(taper)} mm needs a boss at least ${mm(minOd + taper)} mm across.`;
+  if (top < minOd - 1e-9) return `A taper of ${mm(taper)} mm needs a boss at least ${mmUp(minOd + taper)} mm across.`;
+  const hole = row.d3 + allowance;
+  if (hole >= top - 1e-9) return `A taper of ${mm(taper)} mm needs a boss at least ${mmUp(hole + taper)} mm across.`;
+  return null;
+}
+
+function axisOr(value: number, fallback: number): number {
+  return value === 0 ? fallback : value;
+}
+
+function holeChoice(spec: PartSpec): string | null {
+  const text = (spec.holeFor ?? "").trim();
+  if (text.length === 0 || text === "M4") return null;
+  if (text === "free" || ISO_273.some((row) => row.nominal === text)) return null;
+  return "Hole for is M3, M4, M5, M6, M8, M10, M12, M16, M20, M24, or free.";
+}
+
+function drilledOf(spec: PartSpec): number | string {
+  const text = (spec.holeFor ?? "").trim();
+  if (text === "free") {
+    if (spec.allowance !== undefined) return "A free diameter has no allowance; it is the hole's size.";
+    const diameter = spec.bore ?? 4.7;
+    if (!inRange(diameter, 2, 30)) return "The free diameter is from 2 to 30 mm.";
+    return diameter;
+  }
+  if (spec.bore !== undefined) return "A screw's hole comes from the clearance table.";
+  const allowance = spec.allowance ?? 0.2;
+  if (!(Number.isFinite(allowance) && allowance >= 0 && allowance <= 1)) return "The allowance is from 0 to 1 mm.";
+  const clearance = ISO_273.find((row) => row.nominal === (text.length === 0 ? "M4" : text))?.hole ?? 4.5;
+  return clearance + allowance;
+}
+
+function plateWalls(n: number, d: number, width: number, depth: number, pitch: number): string | null {
+  if (n <= 0) return null;
+  if (pitch > 0) {
+    const maxP = Math.min(width, depth) - d - 2;
+    if (pitch > maxP + 1e-9) return `The pitch circle is at most ${mmDown(maxP)} mm on this plate.`;
+    if (n >= 2) {
+      const minP = (d + 1) / Math.sin(Math.PI / n);
+      if (pitch + 1e-9 < minP) return `${n} holes of ${mm(d)} mm need a pitch circle of at least ${mmUp(minP)} mm.`;
+    }
+    return null;
+  }
+  const inset = Math.max(8, d);
+  if (n === 1) {
+    if (width + 1e-9 < d + 2) return `A ${mm(d)} mm hole needs a plate at least ${mmUp(d + 2)} mm wide.`;
+    if (depth + 1e-9 < d + 2) return `A ${mm(d)} mm hole needs a plate at least ${mmUp(d + 2)} mm deep.`;
+    return null;
+  }
+  const k = Math.ceil(n / 2);
+  if (k >= 2) {
+    const need = 2 * inset + (k - 1) * (d + 1);
+    if (width + 1e-9 < need) return `${k} holes of ${mm(d)} mm in a row need a plate at least ${mmUp(need)} mm wide.`;
+  } else if (width + 1e-9 < d + 2) {
+    return `A ${mm(d)} mm hole needs a plate at least ${mmUp(d + 2)} mm wide.`;
+  }
+  const deep = 2 * inset + d + 1;
+  if (depth + 1e-9 < deep) return `Two rows of ${mm(d)} mm holes need a plate at least ${mmUp(deep)} mm deep.`;
+  return null;
+}
+
+function bracketProblem(spec: PartSpec, kind: PartKind): string | null {
+  const plate = kind === "plate";
+  const named = plate ? "A plate" : "An L-bracket";
+  const headSet = (value: number | undefined) => value !== undefined && value !== 0;
+  if (spec.length !== undefined) return `${named} has no length.`;
+  if (spec.height !== 0) return `${named} has no height.`;
+  if (textSet(spec.nominal)) return `${named} has no nominal size.`;
+  if (headSet(spec.headDiameter)) return "Only a socket screw takes a head diameter.";
+  if (headSet(spec.headHeight)) return "Only a socket screw takes a head height.";
+  if (headSet(spec.socketDepth)) return "Only a socket screw takes a socket depth.";
+  if (spec.diameter !== undefined) return `${named} has no diameter.`;
+  if (spec.hollow !== undefined) return "Only a spacer is hollow or solid.";
+  if (textSet(spec.fit)) return "Only a shaft takes a fit.";
+  if (textSet(spec.article)) return "Only a heat-set boss takes an article.";
+  if (headSet(spec.taper)) return "Only a heat-set boss takes a taper.";
+  if (spec.setScrew !== undefined) return "Only a collar takes a set screw.";
+  if (!plate && spec.pitchCircle !== undefined) return "Only a plate takes a pitch circle.";
+  const [a, b, c] = spec.size ?? [0, 0, 0];
+  if (plate) {
+    const width = axisOr(a, 80);
+    const depth = axisOr(b, 60);
+    const thickness = axisOr(c, 4);
+    if (!inRange(width, 30, 250)) return "The width is from 30 to 250 mm.";
+    if (!inRange(depth, 20, 200)) return "The depth is from 20 to 200 mm.";
+    if (!inRange(thickness, 2, 15)) return "The thickness is from 2 to 15 mm.";
+    const why = holeChoice(spec);
+    if (why) return why;
+    const holes = spec.holes ?? 4;
+    if (!(Number.isFinite(holes) && holes >= 0 && holes <= 12 && holes === Math.trunc(holes))) return "The hole count is from 0 to 12.";
+    const pitch = spec.pitchCircle ?? 0;
+    if (!inRange(pitch, 0, 200)) return "The pitch circle is from 0 to 200 mm.";
+    const diameter = drilledOf(spec);
+    if (typeof diameter === "string") return diameter;
+    return plateWalls(holes, diameter, width, depth, pitch);
+  }
+  const leg = axisOr(a, 40);
+  const width = axisOr(b, 30);
+  const thickness = axisOr(c, 3);
+  if (!inRange(thickness, 1.5, 10)) return "The thickness is from 1.5 to 10 mm.";
+  if (thickness >= leg) return "The thickness must be less than the leg.";
+  if (!inRange(leg, 15, 120)) return "The leg is from 15 to 120 mm.";
+  if (!inRange(width, 10, 80)) return "The width is from 10 to 80 mm.";
+  const why = holeChoice(spec);
+  if (why) return why;
+  const holes = spec.holes ?? 2;
+  if (!(Number.isFinite(holes) && holes >= 0 && holes <= 4 && holes === Math.trunc(holes))) return "The holes per leg are from 0 to 4.";
+  const diameter = drilledOf(spec);
+  if (typeof diameter === "string") return diameter;
+  if (holes <= 0) return null;
+  const need = holes * (diameter + 2) + thickness;
+  if (leg + 1e-9 < need) return `${holes} holes of ${mm(diameter)} mm need legs of at least ${mmUp(need)} mm.`;
+  if (width + 1e-9 < diameter + 2) return `A ${mm(diameter)} mm hole needs the bracket at least ${mmUp(diameter + 2)} mm wide.`;
   return null;
 }
 
@@ -398,7 +557,7 @@ function gt2Problem(spec: PartSpec): string | null {
 
 /** The sentence a part is refused with, or null when the kernel can build it. */
 export function partProblem(spec: PartSpec): string | null {
-  if (!isPartKind(spec.partKind)) return "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, gt2, or v.";
+  if (!isPartKind(spec.partKind)) return "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, bracket, gt2, or v.";
   const kind = spec.partKind;
   if (kind === "v") return V_PULLEY;
   if (kind !== "gt2" && spec.teeth !== undefined) return "Only a GT2 pulley takes teeth.";
@@ -406,6 +565,10 @@ export function partProblem(spec: PartSpec): string | null {
   if (bore === "thread") return "A modelled thread is not available yet. Use tap drill.";
   if (bore && bore !== "tap") return "The bore is tap, or thread when a modelled thread exists.";
   if (bore === "tap" && kind !== "nut") return "Only a nut takes a bore.";
+  if (kind === "plate" || kind === "bracket") return bracketProblem(spec, kind);
+  if (textSet(spec.holeFor)) return "Only a plate or an L-bracket takes a hole for.";
+  if (spec.holes !== undefined) return "Only a plate or an L-bracket takes a hole count.";
+  if (spec.pitchCircle !== undefined) return "Only a plate takes a pitch circle.";
   if ((kind === "nut" || kind === "washer") && spec.length !== undefined) {
     return kind === "nut" ? "A nut has no length under a head." : "A washer has no length under a head.";
   }
@@ -560,6 +723,28 @@ export function resolvedPart(spec: PartSpec): ResolvedPart | null {
     const hole = (row.d3 + (spec.allowance ?? 0)) / 2;
     return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, height], centreZ: height / 2, rounds: [{ radius: boss / 2, top, z0: 0, z1: height, hole }] };
   }
+  if (kind === "plate" || kind === "bracket") {
+    const [a, b, c] = spec.size ?? [0, 0, 0];
+    if (kind === "plate") {
+      const width = axisOr(a, 80);
+      const depth = axisOr(b, 60);
+      const thickness = axisOr(c, 4);
+      return {
+        kind, nominal: "", min: [-width / 2, -depth / 2, 0], max: [width / 2, depth / 2, thickness], centreZ: thickness / 2, rounds: [],
+        boxes: [{ x: -width / 2, y: -depth / 2, z: 0, dx: width, dy: depth, dz: thickness }],
+      };
+    }
+    const leg = axisOr(a, 40);
+    const width = axisOr(b, 30);
+    const thickness = axisOr(c, 3);
+    return {
+      kind, nominal: "", min: [-leg / 2, -width / 2, 0], max: [leg / 2, width / 2, leg], centreZ: leg / 2, rounds: [],
+      boxes: [
+        { x: -leg / 2, y: -width / 2, z: 0, dx: leg, dy: width, dz: thickness },
+        { x: leg / 2 - thickness, y: -width / 2, z: 0, dx: thickness, dy: width, dz: leg },
+      ],
+    };
+  }
   const row = WASHERS.find((item) => item.nominal === nominal)!;
   const h = (tableHeight(spec.height) as number | undefined) ?? row.h;
   const outer = row.d2 / 2;
@@ -592,6 +777,14 @@ export function partLabel(spec: PartSpec): string {
   if (part.kind === "collar") return `Collar ⌀${formatMm(spec.diameter ?? 14)} / ⌀${formatMm(spec.bore ?? 8)} × ${formatMm(part.max[2])}`;
   if (part.kind === "heat-set") return `Heat-set boss ${(spec.article ?? "").trim() || HEAT_DEFAULT}`;
   if (part.kind === "gt2") return `GT2 pulley ${Math.round(spec.teeth ?? 20)} teeth`;
+  if (part.kind === "plate" || part.kind === "bracket") {
+    const [a, b, c] = spec.size ?? [0, 0, 0];
+    const size = part.kind === "plate" ? [axisOr(a, 80), axisOr(b, 60), axisOr(c, 4)] : [axisOr(a, 40), axisOr(b, 30), axisOr(c, 3)];
+    const screw = (spec.holeFor ?? "").trim() || "M4";
+    const hole = screw === "free" ? `, free ⌀${formatMm(spec.bore ?? 4.7)}` : `, ${screw}`;
+    const name = part.kind === "plate" ? "Plate" : "L-bracket";
+    return `${name} ${formatMm(size[0])} × ${formatMm(size[1])} × ${formatMm(size[2])}${hole}`;
+  }
   if (part.kind === "nut") return `Nut ${part.nominal}${allowance}`;
   if (part.kind === "washer") return `Washer ${part.nominal}${allowance}`;
   const length = formatMm(spec.length ?? (part.kind === "hex" ? 20 : 25));
@@ -599,7 +792,7 @@ export function partLabel(spec: PartSpec): string {
 }
 
 /** The table row, so the card shows the standard sizes without opening More. */
-export function partRowText(kind: string, nominal: string, article?: string): string {
+export function partRowText(kind: string, nominal: string, article?: string, holeFor?: string): string {
   if (kind === "nut") {
     const row = NUTS.find((item) => item.nominal === nominal);
     return row ? `ISO 4032: across flats ${row.s} mm, thick ${row.m} mm, tap drill ${row.drill} mm.` : "";
@@ -625,6 +818,12 @@ export function partRowText(kind: string, nominal: string, article?: string): st
   }
   if (kind === "gt2") return "An approximate GT2 groove. Pitch 2 mm, no flanges.";
   if (kind === "v") return V_PULLEY;
+  if (kind === "plate" || kind === "bracket") {
+    const choice = (holeFor ?? "").trim() || "M4";
+    if (choice === "free") return "Free diameter, 2 to 30 mm. The number is the hole.";
+    const row = ISO_273.find((item) => item.nominal === choice);
+    return row ? `ISO 273 medium: ${choice} drills ${row.hole} mm, plus allowance.` : "";
+  }
   return "";
 }
 
@@ -652,6 +851,12 @@ export function partFrom(input: Record<string, unknown>): { fields: PartFields; 
     taper: num(input.taper),
     setScrew: num(input.setScrew),
     teeth: num(input.teeth),
+    holeFor: typeof input.holeFor === "string" ? input.holeFor : undefined,
+    holes: num(input.holes),
+    pitchCircle: num(input.pitchCircle),
+    size: input.partKind === "plate" || input.partKind === "bracket"
+      ? [num(input.dx) ?? 0, num(input.dy) ?? 0, num(input.dz) ?? 0]
+      : undefined,
     height: num(input.height) ?? 0,
   };
   const why = partProblem(spec);
@@ -659,7 +864,7 @@ export function partFrom(input: Record<string, unknown>): { fields: PartFields; 
   const kind = spec.partKind as PartKind;
   const fields: PartFields = { partKind: kind };
   if (spec.nominal && spec.nominal.trim().length > 0 && (kind === "nut" || kind === "socket" || kind === "hex" || kind === "washer")) fields.nominal = spec.nominal.trim();
-  if (spec.allowance !== undefined && (kind === "shaft" || spec.allowance !== 0)) fields.allowance = spec.allowance;
+  if (spec.allowance !== undefined && (kind === "shaft" || kind === "plate" || kind === "bracket" || spec.allowance !== 0)) fields.allowance = spec.allowance;
   if (spec.length !== undefined) fields.length = spec.length;
   if (spec.headDiameter) fields.headDiameter = spec.headDiameter;
   if (spec.headHeight) fields.headHeight = spec.headHeight;
@@ -673,5 +878,9 @@ export function partFrom(input: Record<string, unknown>): { fields: PartFields; 
   if (spec.taper) fields.taper = spec.taper;
   if (spec.setScrew !== undefined) fields.setScrew = spec.setScrew;
   if (kind === "gt2" && spec.teeth !== undefined) fields.teeth = spec.teeth;
+  if (spec.holeFor && spec.holeFor.trim().length > 0) fields.holeFor = spec.holeFor.trim();
+  if (spec.holes !== undefined) fields.holes = spec.holes;
+  if (spec.pitchCircle !== undefined) fields.pitchCircle = spec.pitchCircle;
+  if (spec.size) fields.size = spec.size;
   return { fields, height: spec.height };
 }

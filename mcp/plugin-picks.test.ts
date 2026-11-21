@@ -186,7 +186,12 @@ check("an outline from a face's outline", fromFace.ok === true && Number((fromFa
 const bad = await call("recipe_run", { source: plate, name: "outline-plate-5", params: { shape: { sketch: 9999, object: base } } });
 check("a sketch step that is not there is one sentence", bad.ok === false && /shape: this part has no step 9999\./.test(String(bad.reason)), bad);
 
-
+// The session's autosave timer can fire after the last call and write into the workspace while it is removed
+// (ENOTEMPTY on CI). Cancel it, write once, and wait for that write before the cleanup.
+if (session.autosaveTimer) clearTimeout(session.autosaveTimer);
+session.autosaveTimer = null;
+session.flushAutosave();
+await session.autosaveSettled();
 rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 rmSync(library, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 if (failed > 0) {
