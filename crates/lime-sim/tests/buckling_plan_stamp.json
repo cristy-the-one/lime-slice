@@ -8,7 +8,8 @@
   "goal_met": true,
   "notes": [
     "This is the ideal buckling load. A curved wall, or one that isn't perfectly flat, can buckle well below it.",
-    "Buckles at 2.5× the load (was 1×)."
+    "Buckles at 2.5× the load (was 1×).",
+    "Loose ends are not extended or closed, and ribs stay at full height."
   ],
   "rib_volume_mm3": 1018.241828,
   "ribbed_compliance": 2.653098,

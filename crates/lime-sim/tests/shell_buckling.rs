@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use lime_sim::shell::planner::{
-    already_enough, buckles_at, plan_ribs, reached_short, Goal, Holds, RibPlanRequest,
+    already_enough, buckles_at, plan_ribs, reached_short, Goal, Holds, RibPlanRequest, AS_TRACED,
     IDEAL_BUCKLING,
 };
 use lime_sim::shell::{
@@ -582,6 +582,7 @@ fn a_capped_rib_stops_short_of_the_factor() {
             IDEAL_BUCKLING.to_string(),
             buckles_at(factor.ribbed, factor.bare),
             reached_short(factor.ribbed, 5.0),
+            AS_TRACED.to_string(),
         ]
     );
 }

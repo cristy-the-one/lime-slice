@@ -178,6 +178,9 @@ export function loadTimes(x: number): string {
 /** Carried on every buckling result. */
 export const IDEAL_BUCKLING = "This is the ideal buckling load. A curved wall, or one that isn't perfectly flat, can buckle well below it.";
 
+/** A buckling plan with ribs, as a frequency plan: each trace stays where it stopped, and nothing is compared. */
+export const AS_TRACED = "Loose ends are not extended or closed, and ribs stay at full height.";
+
 /** A load with no compression along the wall. */
 export const NO_BUCKLING_COMPRESSION = "This load bends the wall but doesn't press along it, so it can't buckle it. Buckling needs a load along the wall, such as a push on its edge.";
 
@@ -209,6 +212,7 @@ export function bucklingNotes(bare: number, ribbed: number, asked: number, ribs:
   else {
     notes.push(bucklesAt(ribbed, bare));
     if (!goalMet) notes.push(reachedShort(ribbed, asked));
+    notes.push(AS_TRACED);
   }
   return notes;
 }
