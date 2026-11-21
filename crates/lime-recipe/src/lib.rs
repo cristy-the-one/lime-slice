@@ -2616,6 +2616,18 @@ pub mod geom2d {
             resolve(&loops, &[], Fill::Positive)
         }
 
+        /// Material in any of the polygons (either direction for each), resolved in one boolean pass.
+        pub fn union_polys(polys: &[Poly]) -> Region {
+            if polys.is_empty() {
+                return Region::empty();
+            }
+            let oriented: Vec<Poly> = polys
+                .iter()
+                .map(|p| if p.area() < 0.0 { p.reversed() } else { p.clone() })
+                .collect();
+            resolve(&oriented, &[], Fill::Positive)
+        }
+
         /// Material in both.
         pub fn intersect(&self, other: &Region) -> Region {
             resolve(&self.loops, &other.loops, Fill::Intersect)
@@ -3008,30 +3020,160 @@ pub mod geom2d {
                 groups[g].edges.push(i);
             }
         }
+        fn bin_of(v: f64, lo: f64, inv: f64, nbins: usize) -> usize {
+            let i = ((v - lo) * inv).floor() as i64;
+            if i <= 0 {
+                0
+            } else if (i as usize) >= nbins {
+                nbins - 1
+            } else {
+                i as usize
+            }
+        }
+        let use_slabs = n >= 32;
+        let nbins = if use_slabs {
+            clamp((n as f64).sqrt().ceil(), 8.0, 256.0) as usize
+        } else {
+            0
+        };
+        let mut min_x = 0.0;
+        let mut min_y = 0.0;
+        let mut inv_x = 0.0;
+        let mut inv_y = 0.0;
+        let mut x_bins: Vec<Vec<usize>> = Vec::new();
+        let mut y_bins: Vec<Vec<usize>> = Vec::new();
+        let mut x_long: Vec<usize> = Vec::new();
+        let mut y_long: Vec<usize> = Vec::new();
+        if use_slabs {
+            min_x = boxes[0][0][0];
+            let mut max_x = boxes[0][1][0];
+            min_y = boxes[0][0][1];
+            let mut max_y = boxes[0][1][1];
+            for b in boxes.iter().skip(1) {
+                if b[0][0] < min_x { min_x = b[0][0]; }
+                if b[1][0] > max_x { max_x = b[1][0]; }
+                if b[0][1] < min_y { min_y = b[0][1]; }
+                if b[1][1] > max_y { max_y = b[1][1]; }
+            }
+            let span_x = max_x - min_x;
+            let span_y = max_y - min_y;
+            if span_x > SNAP {
+                inv_x = nbins as f64 / span_x;
+                x_bins = vec![Vec::new(); nbins];
+            }
+            if span_y > SNAP {
+                inv_y = nbins as f64 / span_y;
+                y_bins = vec![Vec::new(); nbins];
+            }
+            for (k, b) in boxes.iter().enumerate() {
+                if !x_bins.is_empty() {
+                    let lo = bin_of(b[0][0], min_x, inv_x, nbins);
+                    let hi = bin_of(b[1][0], min_x, inv_x, nbins);
+                    if hi - lo > 8 {
+                        x_long.push(k);
+                    } else {
+                        for bin in x_bins[lo..=hi].iter_mut() {
+                            bin.push(k);
+                        }
+                    }
+                } else {
+                    x_long.push(k);
+                }
+                if !y_bins.is_empty() {
+                    let lo = bin_of(b[0][1], min_y, inv_y, nbins);
+                    let hi = bin_of(b[1][1], min_y, inv_y, nbins);
+                    if hi - lo > 8 {
+                        y_long.push(k);
+                    } else {
+                        for bin in y_bins[lo..=hi].iter_mut() {
+                            bin.push(k);
+                        }
+                    }
+                } else {
+                    y_long.push(k);
+                }
+            }
+        }
         let mut kept: Vec<(usize, usize)> = Vec::new();
         for g in groups.iter() {
-            // Winding just left of the piece: a ray from its middle along its left normal, counting the
-            // edges it crosses (half-open, so a ray through a corner counts once). Right = left - net.
+            // Winding just left of the piece: an axis-aligned ray from its middle into its left
+            // half-plane, counting the edges it crosses (half-open, so a ray through a corner counts
+            // once). Right = left - net.
             let (pu, pv) = (pool.pts[g.u], pool.pts[g.v]);
             let m = mul(add(pu, pv), 0.5);
             let d = norm(sub(pv, pu));
-            let n = [-d[1], d[0]];
+            let n_vec = [-d[1], d[0]];
+            let horiz = n_vec[0].abs() >= n_vec[1].abs();
+            let s = if horiz {
+                if n_vec[0] >= 0.0 { 1.0 } else { -1.0 }
+            } else if n_vec[1] >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
             let mut left = [0i32; 2];
-            for (k, e) in edges.iter().enumerate() {
+            let mut test_edge = |k: usize| {
                 if g.edges.contains(&k) {
-                    continue;
+                    return;
                 }
-                let sa = cross(n, sub(e.p, m));
-                let sb = cross(n, sub(e.q, m));
-                let up = sa <= 0.0 && sb > 0.0;
-                let down = sb <= 0.0 && sa > 0.0;
-                if !up && !down {
-                    continue;
+                let e = &edges[k];
+                if horiz {
+                    if (s > 0.0 && boxes[k][1][0] <= m[0]) || (s < 0.0 && boxes[k][0][0] >= m[0]) {
+                        return;
+                    }
+                    let sa = s * (e.p[1] - m[1]);
+                    let sb = s * (e.q[1] - m[1]);
+                    let up = sa <= 0.0 && sb > 0.0;
+                    let down = sb <= 0.0 && sa > 0.0;
+                    if !up && !down {
+                        return;
+                    }
+                    let ta = s * (e.p[0] - m[0]);
+                    let tb = s * (e.q[0] - m[0]);
+                    if ta + (tb - ta) * (-sa / (sb - sa)) > 0.0 {
+                        left[e.side] += if up { 1 } else { -1 };
+                    }
+                } else {
+                    if (s > 0.0 && boxes[k][1][1] <= m[1]) || (s < 0.0 && boxes[k][0][1] >= m[1]) {
+                        return;
+                    }
+                    let sa = -s * (e.p[0] - m[0]);
+                    let sb = -s * (e.q[0] - m[0]);
+                    let up = sa <= 0.0 && sb > 0.0;
+                    let down = sb <= 0.0 && sa > 0.0;
+                    if !up && !down {
+                        return;
+                    }
+                    let ta = s * (e.p[1] - m[1]);
+                    let tb = s * (e.q[1] - m[1]);
+                    if ta + (tb - ta) * (-sa / (sb - sa)) > 0.0 {
+                        left[e.side] += if up { 1 } else { -1 };
+                    }
                 }
-                let ta = dot(n, sub(e.p, m));
-                let tb = dot(n, sub(e.q, m));
-                if ta + (tb - ta) * (-sa / (sb - sa)) > 0.0 {
-                    left[e.side] += if up { 1 } else { -1 };
+            };
+            if !use_slabs {
+                for k in 0..n {
+                    test_edge(k);
+                }
+            } else if horiz {
+                if !y_bins.is_empty() {
+                    let b = bin_of(m[1], min_y, inv_y, nbins);
+                    for &k in y_bins[b].iter() {
+                        test_edge(k);
+                    }
+                }
+                for &k in y_long.iter() {
+                    test_edge(k);
+                }
+            } else {
+                if !x_bins.is_empty() {
+                    let b = bin_of(m[0], min_x, inv_x, nbins);
+                    for &k in x_bins[b].iter() {
+                        test_edge(k);
+                    }
+                }
+                for &k in x_long.iter() {
+                    test_edge(k);
                 }
             }
             let right = [left[0] - g.net[0], left[1] - g.net[1]];
@@ -3051,6 +3193,271 @@ pub mod geom2d {
         let mut cycles: Vec<Vec<usize>> = Vec::new();
         // Where each point sits on the walk being followed, so a walk that comes back to one of its
         // points splits that cycle off: every loop comes out simple, touching others only at points.
+        let mut on_walk: Vec<usize> = vec![usize::MAX; pool.pts.len()];
+        for k0 in 0..kept.len() {
+            if used[k0] {
+                continue;
+            }
+            used[k0] = true;
+            let start = kept[k0].0;
+            let mut ids = vec![start];
+            on_walk[start] = 0;
+            let mut k = k0;
+            loop {
+                let cur = kept[k].1;
+                if on_walk[cur] != usize::MAX {
+                    let j = on_walk[cur];
+                    let cycle: Vec<usize> = ids[j..].to_vec();
+                    for &i in cycle.iter() {
+                        on_walk[i] = usize::MAX;
+                    }
+                    cycles.push(cycle);
+                    ids.truncate(j);
+                    if ids.is_empty() {
+                        break;
+                    }
+                    on_walk[cur] = usize::MAX;
+                }
+                on_walk[cur] = ids.len();
+                ids.push(cur);
+                let din = sub(pool.pts[cur], pool.pts[kept[k].0]);
+                let mut best: Option<usize> = None;
+                let mut best_turn = -10.0;
+                for &c in from[cur].iter() {
+                    if used[c] {
+                        continue;
+                    }
+                    let dout = sub(pool.pts[kept[c].1], pool.pts[cur]);
+                    let t = if kept[c].1 == kept[k].0 { -5.0 } else { atan2(cross(din, dout), dot(din, dout)) };
+                    if t > best_turn {
+                        best_turn = t;
+                        best = Some(c);
+                    }
+                }
+                match best {
+                    Some(c) => {
+                        used[c] = true;
+                        k = c;
+                    }
+                    None => break,
+                }
+            }
+            for &i in ids.iter() {
+                on_walk[i] = usize::MAX;
+            }
+        }
+        let mut found: Vec<Poly> = Vec::new();
+        for ids in cycles.iter() {
+            let mut pts: Vec<Pt> = ids.iter().map(|&i| pool.pts[i]).collect();
+            let mut changed = true;
+            while changed && pts.len() >= 3 {
+                changed = false;
+                let mut i = 0;
+                while i < pts.len() && pts.len() >= 3 {
+                    let m = pts.len();
+                    let a = pts[(i + m - 1) % m];
+                    let c = pts[(i + 1) % m];
+                    let (_, d) = seg_near(pts[i], a, c);
+                    if d <= SNAP {
+                        pts.remove(i);
+                        changed = true;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            let p = Poly { pts };
+            if p.pts.len() >= 3 && p.area().abs() > SNAP * SNAP {
+                found.push(p);
+            }
+        }
+        let mut outers: Vec<Poly> = Vec::new();
+        let mut holes: Vec<Poly> = Vec::new();
+        for p in found {
+            if p.area() > 0.0 {
+                outers.push(p);
+            } else {
+                holes.push(p);
+            }
+        }
+        let outer_areas: Vec<f64> = outers.iter().map(|o| o.area()).collect();
+        let outer_boxes: Vec<[Pt; 2]> = outers.iter().map(|o| o.bbox()).collect();
+        let mut owned: Vec<Vec<Poly>> = vec![Vec::new(); outers.len()];
+        for h in holes {
+            let ha = -h.area();
+            let hb = h.bbox();
+            let mut best: Option<usize> = None;
+            for (i, o) in outers.iter().enumerate() {
+                let oa = outer_areas[i];
+                if oa < ha {
+                    continue;
+                }
+                if let Some(b) = best {
+                    if oa >= outer_areas[b] {
+                        continue;
+                    }
+                }
+                let ob = outer_boxes[i];
+                if hb[0][0] < ob[0][0] - SNAP || hb[1][0] > ob[1][0] + SNAP || hb[0][1] < ob[0][1] - SNAP || hb[1][1] > ob[1][1] + SNAP {
+                    continue;
+                }
+                if !h.pts.iter().all(|p| o.contains(*p)) {
+                    continue;
+                }
+                best = Some(i);
+            }
+            if let Some(b) = best {
+                owned[b].push(h);
+            }
+        }
+        let mut loops: Vec<Poly> = Vec::new();
+        for (o, hs) in outers.into_iter().zip(owned) {
+            loops.push(o);
+            loops.extend(hs);
+        }
+        Region { loops }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolve_local_normal_ray_ref(a: &[Poly], b: &[Poly], kind: &str) -> Region {
+        let fill = match kind {
+            "union" => Fill::Union,
+            "intersect" => Fill::Intersect,
+            "difference" => Fill::Difference,
+            "xor" => Fill::Xor,
+            "nonzero" => Fill::NonZero,
+            "positive" => Fill::Positive,
+            "evenodd" => Fill::EvenOdd,
+            _ => panic!("unknown fill {kind}"),
+        };
+        let mut edges: Vec<Edge> = Vec::new();
+        for (side, set) in [a, b].iter().enumerate() {
+            for l in set.iter() {
+                let n = l.pts.len();
+                if n < 3 {
+                    continue;
+                }
+                for i in 0..n {
+                    let p = l.pts[i];
+                    let q = l.pts[(i + 1) % n];
+                    if dist(p, q) > SNAP {
+                        edges.push(Edge { p, q, side });
+                    }
+                }
+            }
+        }
+        let n = edges.len();
+        let boxes: Vec<[Pt; 2]> = edges.iter().map(|e| bbox_of(&[e.p, e.q])).collect();
+        let mut cuts: Vec<Vec<(f64, Pt)>> = vec![Vec::new(); n];
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|a, b| boxes[*a][0][0].partial_cmp(&boxes[*b][0][0]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(b)));
+        for oi in 0..n {
+            let i = order[oi];
+            for &j in order[oi + 1..].iter() {
+                let (bi, bj) = (boxes[i], boxes[j]);
+                if bj[0][0] > bi[1][0] + SNAP {
+                    break;
+                }
+                if bi[0][0] > bj[1][0] + SNAP || bi[0][1] > bj[1][1] + SNAP || bj[0][1] > bi[1][1] + SNAP {
+                    continue;
+                }
+                let (p, q, r, s) = (edges[i].p, edges[i].q, edges[j].p, edges[j].q);
+                for x in [r, s] {
+                    let (t, d) = seg_near(x, p, q);
+                    if d <= SNAP && dist(x, p) > SNAP && dist(x, q) > SNAP {
+                        cuts[i].push((t, x));
+                    }
+                }
+                for x in [p, q] {
+                    let (t, d) = seg_near(x, r, s);
+                    if d <= SNAP && dist(x, r) > SNAP && dist(x, s) > SNAP {
+                        cuts[j].push((t, x));
+                    }
+                }
+                let d1 = sub(q, p);
+                let d2 = sub(s, r);
+                let den = cross(d1, d2);
+                if den.abs() > 1e-12 * len(d1) * len(d2) {
+                    let t = cross(sub(r, p), d2) / den;
+                    let u = cross(sub(r, p), d1) / den;
+                    if t > 0.0 && t < 1.0 && u > 0.0 && u < 1.0 {
+                        let x = add(p, mul(d1, t));
+                        if dist(x, p) > SNAP && dist(x, q) > SNAP && dist(x, r) > SNAP && dist(x, s) > SNAP {
+                            cuts[i].push((t, x));
+                            cuts[j].push((u, x));
+                        }
+                    }
+                }
+            }
+        }
+        let mut pool = Pool { pts: Vec::new(), grid: HashMap::new() };
+        let mut groups: Vec<Group> = Vec::new();
+        let mut group_of: HashMap<(usize, usize), usize> = HashMap::new();
+        for (i, e) in edges.iter().enumerate() {
+            let mut c = cuts[i].clone();
+            c.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+            let mut ids = vec![pool.id(e.p)];
+            for (_, x) in c.iter() {
+                ids.push(pool.id(*x));
+            }
+            ids.push(pool.id(e.q));
+            for k in 0..ids.len() - 1 {
+                let (u, v) = (ids[k], ids[k + 1]);
+                if u == v {
+                    continue;
+                }
+                let key = (u.min(v), u.max(v));
+                let g = match group_of.get(&key) {
+                    Some(g) => *g,
+                    None => {
+                        groups.push(Group { u: key.0, v: key.1, net: [0, 0], edges: Vec::new() });
+                        group_of.insert(key, groups.len() - 1);
+                        groups.len() - 1
+                    }
+                };
+                groups[g].net[e.side] += if u < v { 1 } else { -1 };
+                groups[g].edges.push(i);
+            }
+        }
+        let mut kept: Vec<(usize, usize)> = Vec::new();
+        for g in groups.iter() {
+            let (pu, pv) = (pool.pts[g.u], pool.pts[g.v]);
+            let m = mul(add(pu, pv), 0.5);
+            let d = norm(sub(pv, pu));
+            let n_vec = [-d[1], d[0]];
+            let mut left = [0i32; 2];
+            for (k, e) in edges.iter().enumerate() {
+                if g.edges.contains(&k) {
+                    continue;
+                }
+                let sa = cross(n_vec, sub(e.p, m));
+                let sb = cross(n_vec, sub(e.q, m));
+                let up = sa <= 0.0 && sb > 0.0;
+                let down = sb <= 0.0 && sa > 0.0;
+                if !up && !down {
+                    continue;
+                }
+                let ta = dot(n_vec, sub(e.p, m));
+                let tb = dot(n_vec, sub(e.q, m));
+                if ta + (tb - ta) * (-sa / (sb - sa)) > 0.0 {
+                    left[e.side] += if up { 1 } else { -1 };
+                }
+            }
+            let right = [left[0] - g.net[0], left[1] - g.net[1]];
+            let l = filled(fill, left[0], left[1]);
+            let r = filled(fill, right[0], right[1]);
+            if l && !r {
+                kept.push((g.u, g.v));
+            } else if r && !l {
+                kept.push((g.v, g.u));
+            }
+        }
+        let mut from: Vec<Vec<usize>> = vec![Vec::new(); pool.pts.len()];
+        for (k, e) in kept.iter().enumerate() {
+            from[e.0].push(k);
+        }
+        let mut used = vec![false; kept.len()];
+        let mut cycles: Vec<Vec<usize>> = Vec::new();
         let mut on_walk: Vec<usize> = vec![usize::MAX; pool.pts.len()];
         for k0 in 0..kept.len() {
             if used[k0] {
@@ -6594,6 +7001,149 @@ mod geom_tests {
         assert!(!merged.contains([6.0, 6.0]));
         assert!(Region::union_all(&[]).is_empty());
         assert!(near(a.difference_all(&[]).area(), a.area(), 1e-8));
+    }
+
+    #[test]
+    fn union_polys_and_slab_winding_match_sequential_union() {
+        assert!(Region::union_polys(&[]).is_empty());
+        // Enough overlapping curved loops (> 32 edges) to exercise the slab-bucketed winding pass
+        // with both horizontal and vertical rays and nested holes.
+        let mut polys = Vec::new();
+        for i in 0..5 {
+            let x = i as f64 * 1.4;
+            let p = circle(1.2, 24).translate(x, (i % 2) as f64 * 0.4);
+            // Flip alternating orientations to verify union_polys normalizes winding.
+            polys.push(if i % 2 == 0 { p } else { p.reversed() });
+        }
+        let batch = Region::union_polys(&polys);
+        let mut folded = Region::empty();
+        for p in &polys {
+            folded = folded.union(&Region::from_poly(p));
+        }
+        assert!(near(batch.area(), folded.area(), 1e-6));
+        let ring = circle(6.0, 48);
+        let inner = circle(3.0, 32);
+        let inner_area = inner.area();
+        let cut = Region::with_holes(&ring, &[inner]);
+        assert!(near(cut.area(), ring.area() - inner_area, 1e-6));
+        assert!(!cut.contains([0.0, 0.0]));
+        assert!(cut.contains([4.5, 0.0]));
+    }
+
+    #[test]
+    fn slab_resolve_matches_reference_on_grid_rectangles_and_slots() {
+        // Canonical loop representation so we compare exact kept polygons (not just areas).
+        fn canon(r: &Region) -> Vec<Vec<[i64; 2]>> {
+            let mut loops: Vec<Vec<[i64; 2]>> = r
+                .loops()
+                .iter()
+                .map(|l| {
+                    let mut pts: Vec<[i64; 2]> = l
+                        .pts
+                        .iter()
+                        .map(|p| [(p[0] * 1e6).round() as i64, (p[1] * 1e6).round() as i64])
+                        .collect();
+                    if let Some((min_i, _)) = pts.iter().enumerate().min_by_key(|(_, p)| *p) {
+                        pts.rotate_left(min_i);
+                    }
+                    pts
+                })
+                .collect();
+            loops.sort();
+            loops
+        }
+
+        // Deterministic PRNG (xorshift64) on a coarse integer/half-integer grid where edges and
+        // vertices deliberately align with horizontal/vertical rays and slab bin boundaries.
+        let mut seed = 0x51a8_beef_cafe_1234u64;
+        let mut next_u64 = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let grid_rect = |rng: &mut dyn FnMut() -> u64| -> Poly {
+            let x = (rng() % 12) as f64 * 0.5;
+            let y = (rng() % 12) as f64 * 0.5;
+            let w = (1 + rng() % 6) as f64 * 0.5;
+            let h = (1 + rng() % 6) as f64 * 0.5;
+            Poly::new(vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
+        };
+        let grid_slot = |rng: &mut dyn FnMut() -> u64| -> Poly {
+            let x = (rng() % 10) as f64 * 0.5;
+            let y = (rng() % 10) as f64 * 0.5;
+            let len_s = (2 + rng() % 6) as f64 * 0.5;
+            let r = (1 + rng() % 3) as f64 * 0.25;
+            let horiz = (rng() & 1) == 0;
+            let n = 8usize;
+            let mut pts = Vec::with_capacity(2 * n + 2);
+            if horiz {
+                for i in 0..=n {
+                    let a = -PI / 2.0 + PI * i as f64 / n as f64;
+                    pts.push([x + len_s + r * a.cos(), y + r * a.sin()]);
+                }
+                for i in 0..=n {
+                    let a = PI / 2.0 + PI * i as f64 / n as f64;
+                    pts.push([x + r * a.cos(), y + r * a.sin()]);
+                }
+            } else {
+                for i in 0..=n {
+                    let a = PI * i as f64 / n as f64;
+                    pts.push([x + r * a.cos(), y + len_s + r * a.sin()]);
+                }
+                for i in 0..=n {
+                    let a = PI + PI * i as f64 / n as f64;
+                    pts.push([x + r * a.cos(), y + r * a.sin()]);
+                }
+            }
+            Poly::new(pts)
+        };
+
+        let mut checked = 0usize;
+        let mut slab_cases = 0usize;
+        // 1,000 cases x 3 ops (union, difference, intersect) = 3,000 boolean checks across
+        // coarse-grid axis-aligned rectangles and rounded slots, including multi-shape sets >= 32 edges.
+        for case in 0..1000usize {
+            let count_a = if case % 3 == 0 { 10 } else { 3 };
+            let count_b = if case % 3 == 0 { 8 } else { 3 };
+            let mut set_a = Vec::with_capacity(count_a);
+            let mut set_b = Vec::with_capacity(count_b);
+            for k in 0..count_a {
+                if (case + k) % 4 == 0 {
+                    set_a.push(grid_slot(&mut next_u64));
+                } else {
+                    set_a.push(grid_rect(&mut next_u64));
+                }
+            }
+            for k in 0..count_b {
+                if (case + k) % 4 == 1 {
+                    set_b.push(grid_slot(&mut next_u64));
+                } else {
+                    set_b.push(grid_rect(&mut next_u64));
+                }
+            }
+            let ra = Region::union_polys(&set_a);
+            let rb = Region::union_polys(&set_b);
+            let edge_count: usize = ra.loops().iter().chain(rb.loops().iter()).map(|l| l.pts.len()).sum();
+            if edge_count >= 32 {
+                slab_cases += 1;
+            }
+            for (kind, actual) in [
+                ("union", ra.union(&rb)),
+                ("difference", ra.difference(&rb)),
+                ("intersect", ra.intersect(&rb)),
+            ] {
+                let expected = resolve_local_normal_ray_ref(ra.loops(), rb.loops(), kind);
+                assert_eq!(
+                    canon(&actual),
+                    canon(&expected),
+                    "case {case} ({kind}, edges={edge_count}) differed"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 3000);
+        assert!(slab_cases > 300, "expected >= 32-edge slab cases, got {slab_cases}");
     }
 
     #[test]

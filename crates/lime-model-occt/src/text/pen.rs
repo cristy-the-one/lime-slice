@@ -768,16 +768,17 @@ impl Glyphs for Pen {
             return Vec::new();
         };
         let r = self.width / 2.0;
-        let mut ink = Region::empty();
+        let mut caps = Vec::new();
         for line in strokes {
             if let [only] = line {
                 // A one-point stroke is a dot of the pen's width.
-                ink = ink.union(&Region::from_poly(&capsule(*only, *only, r)));
+                caps.push(capsule(*only, *only, r));
             }
             for pair in line.windows(2) {
-                ink = ink.union(&Region::from_poly(&capsule(pair[0], pair[1], r)));
+                caps.push(capsule(pair[0], pair[1], r));
             }
         }
+        let ink = Region::union_polys(&caps);
         let mut out = Vec::new();
         for piece in ink.pieces() {
             for ring in piece.loops() {
