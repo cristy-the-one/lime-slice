@@ -40,7 +40,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   layer_action_set: [{ zMm: 4.2, kind: "pause", note: "insert nuts" }, { zMm: 10, kind: "customGcode", gcode: "M117 halfway" }],
   layer_actions_list: [{}],
   layer_action_remove: [{ zMm: 4.2 }],
-  slice_start: [{}, { scope: "plate", cancelRunning: true }],
+  slice_start: [{ wait: true }, { scope: "plate", cancelRunning: true }],
   slice_wait: [{ job: "job_1" }, { job: "job_1", timeoutS: 20 }],
   slice_cancel: [{ job: "job_1" }],
   gcode_summary: [{}, { job: "job_1", lines: true }],

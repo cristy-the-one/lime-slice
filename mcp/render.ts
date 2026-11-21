@@ -150,20 +150,21 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   const basis = cameraBasis(camera);
   if ("reason" in basis) throw new Error(basis.reason);
   const { eye, right, up } = basis;
+  const r0 = right[0], r1 = right[1], r2 = right[2];
+  const u0 = up[0], u1 = up[1], u2 = up[2];
+  const e0 = eye[0], e1 = eye[1], e2 = eye[2];
   const edge = Math.max(32, Math.min(1024, Math.round(longEdge)));
-  const project = (x: number, y: number, z: number): Vec => [
-    x * right[0] + y * right[1] + z * right[2],
-    x * up[0] + y * up[1] + z * up[2],
-    x * eye[0] + y * eye[1] + z * eye[2],
-  ];
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
   const include = (x: number, y: number, z: number) => {
-    const point = project(x, y, z);
-    minX = Math.min(minX, point[0]); minY = Math.min(minY, point[1]);
-    maxX = Math.max(maxX, point[0]); maxY = Math.max(maxY, point[1]);
+    const px = x * r0 + y * r1 + z * r2;
+    const py = x * u0 + y * u1 + z * u2;
+    if (px < minX) minX = px;
+    if (py < minY) minY = py;
+    if (px > maxX) maxX = px;
+    if (py > maxY) maxY = py;
   };
   if (options.fit) {
     for (const x of [options.fit.min[0], options.fit.max[0]])
@@ -182,88 +183,114 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   const crop = options.crop === true && !options.fit;
   const width = crop ? Math.max(32, Math.min(edge, Math.ceil(spanX * scale + margin * 2))) : edge;
   const height = crop ? Math.max(32, Math.min(edge, Math.ceil(spanY * scale + margin * 2))) : edge;
-  const depth = new Float32Array(width * height);
+  const pixels = width * height;
+  const depth = new Float32Array(pixels);
   depth.fill(-Infinity);
-  const color = new Uint8Array(width * height);
+  const color = new Uint8Array(pixels);
   /** 0, or 1 + the tint index; 0xffffffff for the inside of a cut. */
-  const tintAt = new Uint32Array(width * height);
-  const ghostDepth = new Float32Array(width * height);
-  ghostDepth.fill(-Infinity);
-  const ghostShade = new Uint8Array(width * height);
+  const tintAt = new Uint32Array(pixels);
+  const ghostDepth = ghost ? new Float32Array(pixels).fill(-Infinity) : null;
+  const ghostShade = ghost ? new Uint8Array(pixels) : null;
   /** The part's triangle in front at each pixel, or -1: an edge line is drawn only where one of its own triangles shows. */
-  const owner = new Int32Array(width * height).fill(-1);
+  const owner = new Int32Array(pixels).fill(-1);
   const fit = Math.min((width - margin * 2) / spanX, (height - margin * 2) / spanY);
   const midX = (minX + maxX) / 2;
   const midY = (minY + maxY) / 2;
-  const toPixel = (point: Vec): Vec => [
-    (point[0] - midX) * fit + width / 2,
-    height / 2 - (point[1] - midY) * fit,
-    point[2],
-  ];
-  const paint = (a: Vec, b: Vec, c: Vec, shade: number | Vec, zbuf: Float32Array, out: Uint8Array, tint = 0, side?: Vec, id = -1) => {
-    const shades: Vec = typeof shade === "number" ? [shade, shade, shade] : shade;
-    const [x0, y0, z0] = toPixel(a);
-    const [x1, y1, z1] = toPixel(b);
-    const [x2, y2, z2] = toPixel(c);
-    const px = [x0, x1, x2];
-    const py = [y0, y1, y2];
-    const minPx = Math.max(0, Math.floor(Math.min(...px)));
-    const maxPx = Math.min(width - 1, Math.ceil(Math.max(...px)));
-    const minPy = Math.max(0, Math.floor(Math.min(...py)));
-    const maxPy = Math.min(height - 1, Math.ceil(Math.max(...py)));
-    const area = (px[1]! - px[0]!) * (py[2]! - py[0]!) - (px[2]! - px[0]!) * (py[1]! - py[0]!);
-    if (Math.abs(area) < 1e-6) return;
+  const halfW = width / 2;
+  const halfH = height / 2;
+  const paintTri = (
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    sh0: number, sh1: number, sh2: number,
+    zbuf: Float32Array,
+    out: Uint8Array,
+    isPart: boolean,
+    tint: number,
+    hasSide: boolean,
+    sd0: number, sd1: number, sd2: number,
+    id: number,
+  ) => {
+    const x0 = (ax * r0 + ay * r1 + az * r2 - midX) * fit + halfW;
+    const y0 = halfH - (ax * u0 + ay * u1 + az * u2 - midY) * fit;
+    const z0 = ax * e0 + ay * e1 + az * e2;
+    const x1 = (bx * r0 + by * r1 + bz * r2 - midX) * fit + halfW;
+    const y1 = halfH - (bx * u0 + by * u1 + bz * u2 - midY) * fit;
+    const z1 = bx * e0 + by * e1 + bz * e2;
+    const x2 = (cx * r0 + cy * r1 + cz * r2 - midX) * fit + halfW;
+    const y2 = halfH - (cx * u0 + cy * u1 + cz * u2 - midY) * fit;
+    const z2 = cx * e0 + cy * e1 + cz * e2;
+    const area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (area > -1e-6 && area < 1e-6) return;
+    let loX = x0 < x1 ? x0 : x1;
+    if (x2 < loX) loX = x2;
+    let hiX = x0 > x1 ? x0 : x1;
+    if (x2 > hiX) hiX = x2;
+    let loY = y0 < y1 ? y0 : y1;
+    if (y2 < loY) loY = y2;
+    let hiY = y0 > y1 ? y0 : y1;
+    if (y2 > hiY) hiY = y2;
+    const minPx = loX > 0 ? Math.floor(loX) : 0;
+    const maxPx = hiX < width - 1 ? Math.ceil(hiX) : width - 1;
+    const minPy = loY > 0 ? Math.floor(loY) : 0;
+    const maxPy = hiY < height - 1 ? Math.ceil(hiY) : height - 1;
+    if (minPx > maxPx || minPy > maxPy) return;
+    const invArea = 1 / area;
+    const dw0dx = (y1 - y2) * invArea;
+    const dw0dy = (x2 - x1) * invArea;
+    const dw1dx = (y2 - y0) * invArea;
+    const dw1dy = (x0 - x2) * invArea;
+    let w0Row = ((x1 - minPx) * (y2 - minPy) - (x2 - minPx) * (y1 - minPy)) * invArea;
+    let w1Row = ((x2 - minPx) * (y0 - minPy) - (x0 - minPx) * (y2 - minPy)) * invArea;
     for (let y = minPy; y <= maxPy; y += 1) {
+      let w0 = w0Row;
+      let w1 = w1Row;
+      const rowBase = y * width;
       for (let x = minPx; x <= maxPx; x += 1) {
-        const w0 = ((px[1]! - x) * (py[2]! - y) - (px[2]! - x) * (py[1]! - y)) / area;
-        const w1 = ((px[2]! - x) * (py[0]! - y) - (px[0]! - x) * (py[2]! - y)) / area;
         const w2 = 1 - w0 - w1;
-        if (w0 < -0.01 || w1 < -0.01 || w2 < -0.01) continue;
-        const z = w0 * z0 + w1 * z1 + w2 * z2;
-        const at = y * width + x;
-        if (side && w0 * side[0] + w1 * side[1] + w2 * side[2] > 0) continue;
-        if (z > zbuf[at]!) {
-          zbuf[at] = z;
-          out[at] = Math.max(1, Math.round(w0 * shades[0] + w1 * shades[1] + w2 * shades[2]));
-          if (out === color) {
-            tintAt[at] = tint;
-            owner[at] = id;
+        if (w0 >= -0.01 && w1 >= -0.01 && w2 >= -0.01) {
+          if (!hasSide || w0 * sd0 + w1 * sd1 + w2 * sd2 <= 0) {
+            const z = w0 * z0 + w1 * z1 + w2 * z2;
+            const at = rowBase + x;
+            if (z > zbuf[at]!) {
+              zbuf[at] = z;
+              const s = Math.round(w0 * sh0 + w1 * sh1 + w2 * sh2);
+              out[at] = s > 1 ? s : 1;
+              if (isPart) {
+                tintAt[at] = tint;
+                owner[at] = id;
+              }
+            }
           }
         }
+        w0 += dw0dx;
+        w1 += dw1dx;
       }
+      w0Row += dw0dy;
+      w1Row += dw1dy;
     }
   };
   // Light from the upper left and a little in front, a weaker fill from the right, and a sky term: faces that look
   // the same way to the camera still read apart, a top from a side and one slope from the next.
   const toWorld = (r: number, u: number, e: number): Vec => unit([
-    right[0] * r + up[0] * u + eye[0] * e,
-    right[1] * r + up[1] * u + eye[1] * e,
-    right[2] * r + up[2] * u + eye[2] * e,
+    r0 * r + u0 * u + e0 * e,
+    r1 * r + u1 * u + e1 * e,
+    r2 * r + u2 * u + e2 * e,
   ])!;
   const key = toWorld(-0.5, 0.65, 0.6);
   const fill = toWorld(0.7, -0.1, 0.7);
-  const shadeOf = (n: Vec) => {
-    const lit = 0.22 + 0.55 * Math.max(0, dot(n, key)) + 0.18 * Math.max(0, dot(n, fill)) + 0.12 * (0.5 + 0.5 * n[2]);
-    return 50 + Math.round(190 * Math.min(1, lit));
+  const kx = key[0], ky = key[1], kz = key[2];
+  const fx = fill[0], fy = fill[1], fz = fill[2];
+  const shade3 = (nx: number, ny: number, nz: number) => {
+    const dk = nx * kx + ny * ky + nz * kz;
+    const df = nx * fx + ny * fy + nz * fz;
+    const lit = 0.22 + 0.55 * (dk > 0 ? dk : 0) + 0.18 * (df > 0 ? df : 0) + 0.12 * (0.5 + 0.5 * nz);
+    return 50 + Math.round(190 * (lit < 1 ? lit : 1));
   };
-  const normalAt = (mesh: Float32Array, i: number): Vec => {
-    const ux = mesh[i + 3]! - mesh[i]!;
-    const uy = mesh[i + 4]! - mesh[i + 1]!;
-    const uz = mesh[i + 5]! - mesh[i + 2]!;
-    const vx = mesh[i + 6]! - mesh[i]!;
-    const vy = mesh[i + 7]! - mesh[i + 1]!;
-    const vz = mesh[i + 8]! - mesh[i + 2]!;
-    return unit([uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx]) ?? [0, 0, 1];
-  };
-  const draw = (mesh: Float32Array, zbuf: Float32Array, out: Uint8Array) => {
-    for (let i = 0; i + 8 < mesh.length; i += 9) {
-      const shade = shadeOf(normalAt(mesh, i));
-      paint(project(mesh[i]!, mesh[i + 1]!, mesh[i + 2]!), project(mesh[i + 3]!, mesh[i + 4]!, mesh[i + 5]!), project(mesh[i + 6]!, mesh[i + 7]!, mesh[i + 8]!), shade, zbuf, out);
-    }
-  };
-  // The part: each corner shaded by the normals of the facets round it that bend less than SMOOTH_DEG from its own,
-  // so a sweep or a sphere reads round and a box's edge stays sharp.
-  const corners = options.smooth === false ? null : cornerNormals(positions);
+  // Compute welded vertex IDs and facet normals once, shared by smooth shading and CAD edge ink.
+  const triCount = Math.floor(positions.length / 9);
+  const topo = buildMeshTopology(positions, triCount);
+  const corners = options.smooth === false ? null : cornerNormalsFrom(topo, triCount);
   const tints = options.tints ?? [];
   const partTints = options.partTints ?? [];
   const pads = tints.map((box) => Math.max(0.3, 0.06 * Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2])));
@@ -280,11 +307,11 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
     for (let i = 0; i + 8 < positions.length; i += 9) {
       const face = options.faces[i / 9]!;
       const row = area.get(face) ?? new Array(tints.length + 1).fill(0);
-      const e1 = [positions[i + 3]! - positions[i]!, positions[i + 4]! - positions[i + 1]!, positions[i + 5]! - positions[i + 2]!];
-      const e2 = [positions[i + 6]! - positions[i]!, positions[i + 7]! - positions[i + 1]!, positions[i + 8]! - positions[i + 2]!];
-      const a = Math.hypot(e1[1]! * e2[2]! - e1[2]! * e2[1]!, e1[2]! * e2[0]! - e1[0]! * e2[2]!, e1[0]! * e2[1]! - e1[1]! * e2[0]!);
+      const e1x = positions[i + 3]! - positions[i]!, e1y = positions[i + 4]! - positions[i + 1]!, e1z = positions[i + 5]! - positions[i + 2]!;
+      const e2x = positions[i + 6]! - positions[i]!, e2y = positions[i + 7]! - positions[i + 1]!, e2z = positions[i + 8]! - positions[i + 2]!;
+      const a = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
       row[tints.length] += a;
-      tints.forEach((_, b) => { if (inBox(i, b)) row[b] += a; });
+      for (let b = 0; b < tints.length; b += 1) if (inBox(i, b)) row[b] += a;
       area.set(face, row);
     }
     for (const [face, row] of area) {
@@ -293,66 +320,118 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
     }
   }
   const section = options.section ? { point: options.section.point, normal: unit(options.section.normal) ?? ([0, 0, 1] as Vec) } : null;
-  for (let i = 0; i + 8 < positions.length; i += 9) {
-    const own = normalAt(positions, i);
-    const shades = (corners ? [0, 1, 2].map((k) => shadeOf(corners[i / 3 + k]!)) : [shadeOf(own), shadeOf(own), shadeOf(own)]) as Vec;
+  const spx = section ? section.point[0] : 0, spy = section ? section.point[1] : 0, spz = section ? section.point[2] : 0;
+  const snx = section ? section.normal[0] : 0, sny = section ? section.normal[1] : 0, snz = section ? section.normal[2] : 0;
+  const fNormals = topo.facetNormals;
+  for (let t = 0; t < triCount; t += 1) {
+    const i = t * 9;
+    const ax = positions[i]!, ay = positions[i + 1]!, az = positions[i + 2]!;
+    const bx = positions[i + 3]!, by = positions[i + 4]!, bz = positions[i + 5]!;
+    const cx = positions[i + 6]!, cy = positions[i + 7]!, cz = positions[i + 8]!;
+    const nx = fNormals[t * 3]!, ny = fNormals[t * 3 + 1]!, nz = fNormals[t * 3 + 2]!;
+    let sh0: number, sh1: number, sh2: number;
+    if (corners) {
+      const ci = t * 9;
+      sh0 = shade3(corners[ci]!, corners[ci + 1]!, corners[ci + 2]!);
+      sh1 = shade3(corners[ci + 3]!, corners[ci + 4]!, corners[ci + 5]!);
+      sh2 = shade3(corners[ci + 6]!, corners[ci + 7]!, corners[ci + 8]!);
+    } else {
+      sh0 = sh1 = sh2 = shade3(nx, ny, nz);
+    }
     let tint = 0;
     if (tints.length) {
       // All three corners inside, a little padded: a long sliver of a floor that only crosses the box stays as it is,
       // and a smooth curve that bulges past its points' box still takes the colour.
-      if (options.faces) tint = faceTint.get(options.faces[i / 9]!) ?? 0;
+      if (options.faces) tint = faceTint.get(options.faces[t]!) ?? 0;
       else {
-        const hit = tints.findIndex((_, b) => inBox(i, b));
-        if (hit >= 0) tint = Math.min(hit + 1, 254);
+        for (let b = 0; b < tints.length; b += 1) {
+          if (inBox(i, b)) { tint = Math.min(b + 1, 254); break; }
+        }
       }
     }
-    const part = partTints.findIndex((range) => i / 9 >= range.start && i / 9 < range.end);
-    if (part >= 0) tint = tints.length + part + 1;
-    let side: Vec | undefined;
-    if (section) {
-      side = [0, 1, 2].map((k) => (positions[i + 3 * k]! - section.point[0]) * section.normal[0] + (positions[i + 3 * k + 1]! - section.point[1]) * section.normal[1] + (positions[i + 3 * k + 2]! - section.point[2]) * section.normal[2]) as Vec;
-      if (side.every((d) => d > 0)) continue;
-      // A facet facing away from the camera is the part's inside, seen through the cut.
-      if (dot(own, eye) < 0) tint = 0xffffffff;
+    if (partTints.length) {
+      for (let p = 0; p < partTints.length; p += 1) {
+        if (t >= partTints[p]!.start && t < partTints[p]!.end) { tint = tints.length + p + 1; break; }
+      }
     }
-    paint(project(positions[i]!, positions[i + 1]!, positions[i + 2]!), project(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!), project(positions[i + 6]!, positions[i + 7]!, positions[i + 8]!), shades, depth, color, tint, side, i / 9);
+    let sd0 = 0, sd1 = 0, sd2 = 0;
+    if (section) {
+      sd0 = (ax - spx) * snx + (ay - spy) * sny + (az - spz) * snz;
+      sd1 = (bx - spx) * snx + (by - spy) * sny + (bz - spz) * snz;
+      sd2 = (cx - spx) * snx + (cy - spy) * sny + (cz - spz) * snz;
+      if (sd0 > 0 && sd1 > 0 && sd2 > 0) continue;
+      // A facet facing away from the camera is the part's inside, seen through the cut.
+      if (nx * e0 + ny * e1 + nz * e2 < 0) tint = 0xffffffff;
+    }
+    paintTri(ax, ay, az, bx, by, bz, cx, cy, cz, sh0, sh1, sh2, depth, color, true, tint, section !== null, sd0, sd1, sd2, t);
   }
-  if (ghost) draw(ghost, ghostDepth, ghostShade);
-  const ink = edgeInk(positions, project, toPixel, owner, depth, options.faces ?? null, width, height, fit, eye, section);
+  if (ghost && ghostDepth && ghostShade) {
+    for (let i = 0; i + 8 < ghost.length; i += 9) {
+      const ax = ghost[i]!, ay = ghost[i + 1]!, az = ghost[i + 2]!;
+      const bx = ghost[i + 3]!, by = ghost[i + 4]!, bz = ghost[i + 5]!;
+      const cx = ghost[i + 6]!, cy = ghost[i + 7]!, cz = ghost[i + 8]!;
+      const ux = bx - ax, uy = by - ay, uz = bz - az;
+      const vx = cx - ax, vy = cy - ay, vz = cz - az;
+      const cnx = uy * vz - uz * vy, cny = uz * vx - ux * vz, cnz = ux * vy - uy * vx;
+      const clen = Math.hypot(cnx, cny, cnz);
+      const s = clen > 1e-9 ? shade3(cnx / clen, cny / clen, cnz / clen) : shade3(0, 0, 1);
+      paintTri(ax, ay, az, bx, by, bz, cx, cy, cz, s, s, s, ghostDepth, ghostShade, false, 0, false, 0, 0, 0, -1);
+    }
+  }
+  const ink = edgeInk(positions, topo, triCount, r0, r1, r2, u0, u1, u2, e0, e1, e2, midX, midY, fit, halfW, halfH, owner, depth, options.faces ?? null, width, height, section);
   const transparent = options.transparent === true;
   const background = options.background ?? BACKGROUND;
+  const bg0 = background[0], bg1 = background[1], bg2 = background[2];
   const channels = transparent ? 4 : 3;
   const raw = new Uint8Array((width * channels + 1) * height);
-  const rgbPixels = options.pixels ? new Uint8Array(width * height * 3) : undefined;
+  const rgbPixels = options.pixels ? new Uint8Array(pixels * 3) : undefined;
   for (let y = 0; y < height; y += 1) {
     const row = y * (width * channels + 1);
     raw[row] = 0;
+    const rowBase = y * width;
     for (let x = 0; x < width; x += 1) {
       const at = row + 1 + x * channels;
-      const pixel = y * width + x;
-      if (transparent && color[pixel]! === 0 && ghostShade[pixel]! === 0) continue;
+      const pixel = rowBase + x;
       const shade = color[pixel]!;
+      const gTint = ghostShade ? ghostShade[pixel]! : 0;
+      if (transparent && shade === 0 && gTint === 0) continue;
       const dark = 1 - 0.78 * ink[pixel]! / 255;
-      const base: Vec = shade ? [shade, shade, Math.min(255, shade + 8)] : background;
-      let rgb: Vec = [Math.round(base[0] * dark), Math.round(base[1] * dark), Math.round(base[2] * dark)];
-      const tinted = color[pixel] ? tintAt[pixel]! : 0;
+      let rVal: number, gVal: number, bVal: number;
+      const tinted = shade ? tintAt[pixel]! : 0;
       if (tinted) {
         const hue = tinted === 0xffffffff ? CUT : tinted <= tints.length ? tints[tinted - 1]!.rgb : partTints[tinted - tints.length - 1]!.rgb;
         const lit = tinted === 0xffffffff ? 0.85 : Math.min(1.15, shade / 200);
-        rgb = [0, 1, 2].map((k) => Math.round(Math.min(255, hue[k]! * lit) * dark)) as Vec;
+        rVal = Math.round(Math.min(255, hue[0] * lit) * dark);
+        gVal = Math.round(Math.min(255, hue[1] * lit) * dark);
+        bVal = Math.round(Math.min(255, hue[2] * lit) * dark);
+      } else if (shade) {
+        rVal = Math.round(shade * dark);
+        gVal = Math.round(shade * dark);
+        bVal = Math.round(Math.min(255, shade + 8) * dark);
+      } else {
+        rVal = Math.round(bg0 * dark);
+        gVal = Math.round(bg1 * dark);
+        bVal = Math.round(bg2 * dark);
       }
-      const tint = ghostShade[pixel]!;
-      if (tint) {
+      if (gTint && ghostDepth) {
         // The tool shape shows through the part, fainter where the part is in front of it.
-        const hidden = color[pixel]! > 0 && depth[pixel]! > ghostDepth[pixel]!;
+        const hidden = shade > 0 && depth[pixel]! > ghostDepth[pixel]!;
         const alpha = hidden ? 0.35 : 0.7;
-        const lit = tint / 220;
-        rgb = [0, 1, 2].map((k) => Math.round(rgb[k]! * (1 - alpha) + GHOST[k]! * lit * alpha)) as Vec;
+        const invAlpha = 1 - alpha;
+        const litAlpha = (gTint / 220) * alpha;
+        rVal = Math.round(rVal * invAlpha + GHOST[0] * litAlpha);
+        gVal = Math.round(gVal * invAlpha + GHOST[1] * litAlpha);
+        bVal = Math.round(bVal * invAlpha + GHOST[2] * litAlpha);
       }
-      raw[at] = rgb[0];
-      raw[at + 1] = rgb[1];
-      raw[at + 2] = rgb[2];
-      if (rgbPixels) rgbPixels.set(rgb, pixel * 3);
+      raw[at] = rVal;
+      raw[at + 1] = gVal;
+      raw[at + 2] = bVal;
+      if (rgbPixels) {
+        const p3 = pixel * 3;
+        rgbPixels[p3] = rVal;
+        rgbPixels[p3 + 1] = gVal;
+        rgbPixels[p3 + 2] = bVal;
+      }
       if (transparent) raw[at + 3] = 255;
     }
   }
@@ -373,40 +452,127 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   return { png, width, height, ...(rgbPixels ? { rgb: rgbPixels } : {}) };
 }
 
-/** Each triangle corner's normal: the mean of the facets at that point within SMOOTH_DEG of the corner's own facet. */
-function cornerNormals(mesh: Float32Array): Vec[] {
-  const count = Math.floor(mesh.length / 9);
-  const facet: Vec[] = [];
-  for (let t = 0; t < count; t += 1) {
+/** Shared welded vertex topology and facet normals for smooth shading and CAD edge extraction. */
+interface MeshTopology {
+  /** Welded vertex index for each triangle corner (length = triCount * 3). */
+  vertId: Int32Array;
+  /** Number of unique quantized vertices. */
+  uniqueVerts: number;
+  /** Linked list head per unique vertex into corner-triangle list (`triNext`). */
+  vertHead: Int32Array;
+  /** Triangle index for each corner slot (length = triCount * 3). */
+  cornerTri: Int32Array;
+  /** Next corner index in the same unique vertex's list, or -1. */
+  triNext: Int32Array;
+  /** Unit facet normal per triangle (length = triCount * 3), or [0,0,1] for degenerate triangles. */
+  facetNormals: Float32Array;
+  /** 1 if triangle has a valid non-zero normal, 0 if degenerate. */
+  facetValid: Uint8Array;
+}
+
+function buildMeshTopology(mesh: Float32Array, triCount: number): MeshTopology {
+  const cornerCount = triCount * 3;
+  const vertId = new Int32Array(cornerCount);
+  const facetNormals = new Float32Array(cornerCount);
+  const facetValid = new Uint8Array(triCount);
+  const cornerTri = new Int32Array(cornerCount);
+  const triNext = new Int32Array(cornerCount).fill(-1);
+
+  // Open-addressed hash table over quantized integer coordinates (1 µm grid): zero string allocations.
+  let tableSize = 64;
+  while (tableSize < cornerCount * 2) tableSize <<= 1;
+  const mask = tableSize - 1;
+  const slots = new Int32Array(tableSize).fill(-1);
+  const qx = new Int32Array(cornerCount);
+  const qy = new Int32Array(cornerCount);
+  const qz = new Int32Array(cornerCount);
+  const vertHead = new Int32Array(cornerCount).fill(-1);
+  let uniqueVerts = 0;
+
+  for (let t = 0; t < triCount; t += 1) {
     const i = t * 9;
-    const u = [mesh[i + 3]! - mesh[i]!, mesh[i + 4]! - mesh[i + 1]!, mesh[i + 5]! - mesh[i + 2]!];
-    const v = [mesh[i + 6]! - mesh[i]!, mesh[i + 7]! - mesh[i + 1]!, mesh[i + 8]! - mesh[i + 2]!];
-    facet.push(unit([u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!]) ?? [0, 0, 1]);
-  }
-  const at = new Map<string, number[]>();
-  const keyOf = (i: number) => `${Math.round(mesh[i]! * 1000)},${Math.round(mesh[i + 1]! * 1000)},${Math.round(mesh[i + 2]! * 1000)}`;
-  for (let t = 0; t < count; t += 1) {
+    const ax = mesh[i]!, ay = mesh[i + 1]!, az = mesh[i + 2]!;
+    const ux = mesh[i + 3]! - ax, uy = mesh[i + 4]! - ay, uz = mesh[i + 5]! - az;
+    const vx = mesh[i + 6]! - ax, vy = mesh[i + 7]! - ay, vz = mesh[i + 8]! - az;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    const nBase = t * 3;
+    if (len > 1e-9 && Number.isFinite(len)) {
+      facetNormals[nBase] = nx / len;
+      facetNormals[nBase + 1] = ny / len;
+      facetNormals[nBase + 2] = nz / len;
+      facetValid[t] = 1;
+    } else {
+      facetNormals[nBase] = 0;
+      facetNormals[nBase + 1] = 0;
+      facetNormals[nBase + 2] = 1;
+    }
     for (let k = 0; k < 3; k += 1) {
-      const key = keyOf(t * 9 + k * 3);
-      const row = at.get(key);
-      if (row) row.push(t);
-      else at.set(key, [t]);
+      const ci = nBase + k;
+      const p = i + k * 3;
+      const x = Math.round(mesh[p]! * 1000) | 0;
+      const y = Math.round(mesh[p + 1]! * 1000) | 0;
+      const z = Math.round(mesh[p + 2]! * 1000) | 0;
+      let h = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) & mask;
+      let id = -1;
+      for (;;) {
+        const cur = slots[h]!;
+        if (cur === -1) {
+          id = uniqueVerts++;
+          slots[h] = id;
+          qx[id] = x;
+          qy[id] = y;
+          qz[id] = z;
+          break;
+        }
+        if (qx[cur] === x && qy[cur] === y && qz[cur] === z) {
+          id = cur;
+          break;
+        }
+        h = (h + 1) & mask;
+      }
+      vertId[ci] = id;
+      cornerTri[ci] = t;
+      triNext[ci] = vertHead[id]!;
+      vertHead[id] = ci;
     }
   }
+  return { vertId, uniqueVerts, vertHead, cornerTri, triNext, facetNormals, facetValid };
+}
+
+/** Each triangle corner's normal: the mean of the facets at that point within SMOOTH_DEG of the corner's own facet. */
+function cornerNormalsFrom(topo: MeshTopology, triCount: number): Float32Array {
   const limit = Math.cos((SMOOTH_DEG * Math.PI) / 180);
-  const out: Vec[] = new Array(count * 3);
-  for (let t = 0; t < count; t += 1) {
-    const own = facet[t]!;
+  const { vertId, vertHead, cornerTri, triNext, facetNormals } = topo;
+  const out = new Float32Array(triCount * 9);
+  for (let t = 0; t < triCount; t += 1) {
+    const nBase = t * 3;
+    const ox = facetNormals[nBase]!, oy = facetNormals[nBase + 1]!, oz = facetNormals[nBase + 2]!;
     for (let k = 0; k < 3; k += 1) {
-      const sum: Vec = [0, 0, 0];
-      for (const other of at.get(keyOf(t * 9 + k * 3)) ?? [t]) {
-        const n = facet[other]!;
-        if (dot(n, own) < limit) continue;
-        sum[0] += n[0];
-        sum[1] += n[1];
-        sum[2] += n[2];
+      const vid = vertId[nBase + k]!;
+      let sx = 0, sy = 0, sz = 0;
+      for (let node = vertHead[vid]!; node !== -1; node = triNext[node]!) {
+        const other = cornerTri[node]!;
+        const ob = other * 3;
+        const nx = facetNormals[ob]!, ny = facetNormals[ob + 1]!, nz = facetNormals[ob + 2]!;
+        if (nx * ox + ny * oy + nz * oz < limit) continue;
+        sx += nx;
+        sy += ny;
+        sz += nz;
       }
-      out[t * 3 + k] = unit(sum) ?? own;
+      const len = Math.hypot(sx, sy, sz);
+      const o = t * 9 + k * 3;
+      if (len > 1e-9 && Number.isFinite(len)) {
+        out[o] = sx / len;
+        out[o + 1] = sy / len;
+        out[o + 2] = sz / len;
+      } else {
+        out[o] = ox;
+        out[o + 1] = oy;
+        out[o + 2] = oz;
+      }
     }
   }
   return out;
@@ -425,92 +591,117 @@ const CREASE_DEG = 25;
  */
 function edgeInk(
   mesh: Float32Array,
-  project: (x: number, y: number, z: number) => Vec,
-  toPixel: (point: Vec) => Vec,
+  topo: MeshTopology,
+  triCount: number,
+  r0: number, r1: number, r2: number,
+  u0: number, u1: number, u2: number,
+  e0: number, e1: number, e2: number,
+  midX: number, midY: number, fit: number, halfW: number, halfH: number,
   owner: Int32Array,
   depth: Float32Array,
   faces: ArrayLike<number> | null,
   width: number,
   height: number,
-  fit: number,
-  eye: Vec,
   section: { point: Vec; normal: Vec } | null = null,
 ): Uint8Array {
-  const away = (x: number, y: number, z: number) => !!section && (x - section.point[0]) * section.normal[0] + (y - section.point[1]) * section.normal[1] + (z - section.point[2]) * section.normal[2] > 0;
+  const spx = section ? section.point[0] : 0, spy = section ? section.point[1] : 0, spz = section ? section.point[2] : 0;
+  const snx = section ? section.normal[0] : 0, sny = section ? section.normal[1] : 0, snz = section ? section.normal[2] : 0;
+  const away = (x: number, y: number, z: number) => section !== null && (x - spx) * snx + (y - spy) * sny + (z - spz) * snz > 0;
   const ink = new Uint8Array(width * height);
-  const keyOf = (i: number) => `${Math.round(mesh[i]! * 1000)},${Math.round(mesh[i + 1]! * 1000)},${Math.round(mesh[i + 2]! * 1000)}`;
-  const edges = new Map<string, { a: number; b: number; normals: Vec[]; tris: number[] }>();
-  for (let t = 0; t + 8 < mesh.length; t += 9) {
-    const ux = mesh[t + 3]! - mesh[t]!;
-    const uy = mesh[t + 4]! - mesh[t + 1]!;
-    const uz = mesh[t + 5]! - mesh[t + 2]!;
-    const vx = mesh[t + 6]! - mesh[t]!;
-    const vy = mesh[t + 7]! - mesh[t + 1]!;
-    const vz = mesh[t + 8]! - mesh[t + 2]!;
-    const n = unit([uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx]);
-    if (!n) continue;
-    const corners = [t, t + 3, t + 6];
+  const { vertId, uniqueVerts, facetNormals, facetValid } = topo;
+  const stride = Math.max(1, uniqueVerts);
+  const edges = new Map<number, { a: number; b: number; t1: number; t2: number; extra?: number[] }>();
+  for (let t = 0; t < triCount; t += 1) {
+    if (!facetValid[t]) continue;
+    const base = t * 9;
+    const vBase = t * 3;
+    const c0 = base, c1 = base + 3, c2 = base + 6;
+    const v0 = vertId[vBase]!, v1 = vertId[vBase + 1]!, v2 = vertId[vBase + 2]!;
     for (let k = 0; k < 3; k += 1) {
-      const a = corners[k]!;
-      const b = corners[(k + 1) % 3]!;
-      const ka = keyOf(a);
-      const kb = keyOf(b);
-      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const a = k === 0 ? c0 : k === 1 ? c1 : c2;
+      const b = k === 0 ? c1 : k === 1 ? c2 : c0;
+      const va = k === 0 ? v0 : k === 1 ? v1 : v2;
+      const vb = k === 0 ? v1 : k === 1 ? v2 : v0;
+      const key = va < vb ? va * stride + vb : vb * stride + va;
       const row = edges.get(key);
       if (row) {
-        row.normals.push(n);
-        row.tris.push(t / 9);
-      } else edges.set(key, { a, b, normals: [n], tris: [t / 9] });
+        if (row.t2 === -1) row.t2 = t;
+        else (row.extra ??= []).push(t);
+      } else {
+        edges.set(key, { a, b, t1: t, t2: -1 });
+      }
     }
   }
   const crease = Math.cos((CREASE_DEG * Math.PI) / 180);
-  const smoothSeams = seamPartners(mesh, edges, crease);
+  const smoothSeams = seamPartners(mesh, edges, facetNormals, crease);
   const bias = 2.5 / fit;
-  /** Whether the triangle in front at a pixel is one of the edge's own (`exact`), or on one of its faces. */
-  const shows = (at: number, tris: readonly number[], own: readonly number[], exact: boolean) => {
-    const front = owner[at]!;
-    if (front < 0) return false;
-    if (tris.includes(front)) return true;
-    return !exact && faces !== null && own.includes(faces[front]!);
-  };
-  for (const [key, { a, b, normals, tris }] of edges) {
+  for (const [key, { a, b, t1, t2, extra }] of edges) {
     let strength = 0;
-    if (normals.length === 1 && smoothSeams.has(key)) continue;
-    if (normals.length !== 2) strength = 230;
-    else {
-      const [n1, n2] = normals as [Vec, Vec];
-      const f1 = dot(n1, eye);
-      const f2 = dot(n2, eye);
+    if (t2 === -1) {
+      if (smoothSeams.has(key)) continue;
+      strength = 230;
+    } else if (extra !== undefined) {
+      strength = 230;
+    } else {
+      const n1 = t1 * 3, n2 = t2 * 3;
+      const n1x = facetNormals[n1]!, n1y = facetNormals[n1 + 1]!, n1z = facetNormals[n1 + 2]!;
+      const n2x = facetNormals[n2]!, n2y = facetNormals[n2 + 1]!, n2z = facetNormals[n2 + 2]!;
+      const f1 = n1x * e0 + n1y * e1 + n1z * e2;
+      const f2 = n2x * e0 + n2y * e1 + n2z * e2;
       if (f1 * f2 < 0) strength = 230;
-      else if (dot(n1, n2) < crease && (f1 > 0 || f2 > 0)) strength = 170;
+      else if (n1x * n2x + n1y * n2y + n1z * n2z < crease && (f1 > 0 || f2 > 0)) strength = 170;
     }
     if (!strength) continue;
+    const ax = mesh[a]!, ay = mesh[a + 1]!, az = mesh[a + 2]!;
+    const bx = mesh[b]!, by = mesh[b + 1]!, bz = mesh[b + 2]!;
     // A section's cut-away side draws no lines.
-    if (away(mesh[a]!, mesh[a + 1]!, mesh[a + 2]!) || away(mesh[b]!, mesh[b + 1]!, mesh[b + 2]!)) continue;
-    const p = toPixel(project(mesh[a]!, mesh[a + 1]!, mesh[a + 2]!));
-    const q = toPixel(project(mesh[b]!, mesh[b + 1]!, mesh[b + 2]!));
-    const own = faces ? [...new Set(tris.map((tri) => faces[tri]!))] : [];
-    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1])) * 1.5));
+    if (away(ax, ay, az) || away(bx, by, bz)) continue;
+    const px = (ax * r0 + ay * r1 + az * r2 - midX) * fit + halfW;
+    const py = halfH - (ax * u0 + ay * u1 + az * u2 - midY) * fit;
+    const pz = ax * e0 + ay * e1 + az * e2;
+    const qx = (bx * r0 + by * r1 + bz * r2 - midX) * fit + halfW;
+    const qy = halfH - (bx * u0 + by * u1 + bz * u2 - midY) * fit;
+    const qz = bx * e0 + by * e1 + bz * e2;
+    const f1Face = faces ? faces[t1]! : -1;
+    const f2Face = faces && t2 !== -1 ? faces[t2]! : -1;
+    const extraFaces = faces && extra ? extra.map((tri) => faces[tri]!) : null;
+    const shows = (at: number, exact: boolean): boolean => {
+      const front = owner[at]!;
+      if (front < 0) return false;
+      if (front === t1 || front === t2 || (extra !== undefined && extra.includes(front))) return true;
+      if (exact || faces === null) return false;
+      const ff = faces[front]!;
+      return ff === f1Face || ff === f2Face || (extraFaces !== null && extraFaces.includes(ff));
+    };
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(qx - px), Math.abs(qy - py)) * 1.5));
+    const invSteps = 1 / steps;
+    const dpx = qx - px, dpy = qy - py, dpz = qz - pz;
     for (let s = 0; s <= steps; s += 1) {
-      const t = s / steps;
-      const x = Math.round(p[0] + (q[0] - p[0]) * t);
-      const y = Math.round(p[1] + (q[1] - p[1]) * t);
+      const t = s * invSteps;
+      const x = Math.round(px + dpx * t);
+      const y = Math.round(py + dpy * t);
       if (x < 0 || y < 0 || x >= width || y >= height) continue;
       const at = y * width + x;
-      const around = (exact: boolean) => {
-        for (let dy = -1; dy <= 1; dy += 1) {
-          for (let dx = -1; dx <= 1; dx += 1) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx >= 0 && ny >= 0 && nx < width && ny < height && shows(ny * width + nx, tris, own, exact)) return true;
-          }
+      if (strength <= ink[at]!) continue;
+      let hitExact = false;
+      let hitFace = false;
+      const yLo = y > 0 ? y - 1 : 0;
+      const yHi = y + 1 < height ? y + 1 : height - 1;
+      const xLo = x > 0 ? x - 1 : 0;
+      const xHi = x + 1 < width ? x + 1 : width - 1;
+      for (let ny = yLo; ny <= yHi && !hitExact; ny += 1) {
+        const rOff = ny * width;
+        for (let nx = xLo; nx <= xHi; nx += 1) {
+          const nat = rOff + nx;
+          if (shows(nat, true)) { hitExact = true; break; }
+          if (!hitFace && faces !== null && shows(nat, false)) hitFace = true;
         }
-        return false;
-      };
-      const z = p[2] + (q[2] - p[2]) * t;
-      const clear = z + bias >= depth[at]!;
-      if (!around(true) && !(clear && (faces === null || around(false)))) continue;
-      if (strength > ink[at]!) ink[at] = strength;
+      }
+      if (!hitExact) {
+        const z = pz + dpz * t;
+        if (!(z + bias >= depth[at]! && (faces === null || hitFace))) continue;
+      }
+      ink[at] = strength;
     }
   }
   return ink;
@@ -521,13 +712,19 @@ function edgeInk(
  * do not match, so each side's edge has no partner by position. An edge is a smooth seam when an edge of another
  * triangle lies along it (parallel, on the same line, overlapping) and the two triangles meet at less than the crease.
  */
-function seamPartners(mesh: Float32Array, edges: Map<string, { a: number; b: number; normals: Vec[] }>, crease: number): Set<string> {
-  const open: { key: string; p: Vec; q: Vec; n: Vec }[] = [];
+function seamPartners(mesh: Float32Array, edges: Map<number, { a: number; b: number; t1: number; t2: number }>, facetNormals: Float32Array, crease: number): Set<number> {
+  const open: { key: number; p: Vec; q: Vec; n: Vec }[] = [];
   for (const [key, row] of edges) {
-    if (row.normals.length !== 1) continue;
-    open.push({ key, p: [mesh[row.a]!, mesh[row.a + 1]!, mesh[row.a + 2]!], q: [mesh[row.b]!, mesh[row.b + 1]!, mesh[row.b + 2]!], n: row.normals[0]! });
+    if (row.t2 !== -1) continue;
+    const nb = row.t1 * 3;
+    open.push({
+      key,
+      p: [mesh[row.a]!, mesh[row.a + 1]!, mesh[row.a + 2]!],
+      q: [mesh[row.b]!, mesh[row.b + 1]!, mesh[row.b + 2]!],
+      n: [facetNormals[nb]!, facetNormals[nb + 1]!, facetNormals[nb + 2]!],
+    });
   }
-  const smooth = new Set<string>();
+  const smooth = new Set<number>();
   if (open.length < 2) return smooth;
   let longest = 0;
   for (const e of open) longest = Math.max(longest, Math.hypot(e.q[0] - e.p[0], e.q[1] - e.p[1], e.q[2] - e.p[2]));

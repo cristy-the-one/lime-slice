@@ -133,12 +133,77 @@ export function prepareProject(project: LimeProject): PreparedProject {
   return { wire: copy, jobs };
 }
 
+/** Bounded cache of gzip+base64 packed records, so repeated saves and autosaves skip re-compressing unchanged meshes and B-reps. */
+export const PACK_CACHE_MAX_ENTRIES = 24;
+export const PACK_CACHE_MAX_CHARS = 32 * 1024 * 1024;
+type PackCacheEntry = { raw: string; packed: string; chars: number };
+const packCache = new Map<string, PackCacheEntry>();
+let packCacheMaxChars = PACK_CACHE_MAX_CHARS;
+let packCacheChars = 0;
+let packCacheHits = 0;
+let packCacheMisses = 0;
+
+/** Cache stats and reset, for unit tests. */
+export function packCacheStats(): { entries: number; chars: number; maxChars: number; hits: number; misses: number } {
+  return { entries: packCache.size, chars: packCacheChars, maxChars: packCacheMaxChars, hits: packCacheHits, misses: packCacheMisses };
+}
+
+export function resetPackCache(maxChars = PACK_CACHE_MAX_CHARS): void {
+  packCache.clear();
+  packCacheMaxChars = maxChars;
+  packCacheChars = 0;
+  packCacheHits = 0;
+  packCacheMisses = 0;
+}
+
+function packCacheGet(key: string, raw: string): string | null {
+  const hit = packCache.get(key);
+  if (!hit || hit.raw !== raw) {
+    packCacheMisses += 1;
+    return null;
+  }
+  packCacheHits += 1;
+  // Refresh LRU order.
+  packCache.delete(key);
+  packCache.set(key, hit);
+  return hit.packed;
+}
+
+function packCacheSet(key: string, raw: string, packed: string): void {
+  const chars = raw.length + packed.length;
+  if (raw.length > packCacheMaxChars / 2 || chars > packCacheMaxChars) return;
+  const prev = packCache.get(key);
+  if (prev) {
+    packCacheChars -= prev.chars;
+    packCache.delete(key);
+  }
+  packCache.set(key, { raw, packed, chars });
+  packCacheChars += chars;
+  while (packCache.size > PACK_CACHE_MAX_ENTRIES || packCacheChars > packCacheMaxChars) {
+    const oldest = packCache.keys().next().value;
+    if (oldest === undefined) break;
+    const removed = packCache.get(oldest);
+    packCache.delete(oldest);
+    if (removed) packCacheChars -= removed.chars;
+  }
+}
+
 /** The asynchronous half: pack each record, then write the text. */
 export async function finishProject(prepared: PreparedProject): Promise<string> {
   await eachLimited(prepared.jobs, async ({ record, bytesBase64 }) => {
     if (record.encoding === ENCODING_PLAIN) {
       record.data = bytesBase64;
       return;
+    }
+    const cacheKey = typeof record.hash === "string" && record.hash && typeof record.byteLength === "number"
+      ? `${record.hash}:${record.byteLength}`
+      : "";
+    if (cacheKey) {
+      const cached = packCacheGet(cacheKey, bytesBase64);
+      if (cached !== null) {
+        record.data = cached;
+        return;
+      }
     }
     const bytes = base64ToBytes(bytesBase64);
     if (!bytes) {
@@ -147,7 +212,9 @@ export async function finishProject(prepared: PreparedProject): Promise<string> 
       record.data = bytesBase64;
       return;
     }
-    record.data = await bytesToBase64Async(await gzip(bytes));
+    const packed = await bytesToBase64Async(await gzip(bytes));
+    if (cacheKey) packCacheSet(cacheKey, bytesBase64, packed);
+    record.data = packed;
   });
   return JSON.stringify(prepared.wire, null, 2);
 }

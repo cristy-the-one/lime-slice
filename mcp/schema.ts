@@ -1085,13 +1085,13 @@ export const TOOLS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         query: { type: "string", minLength: 1, maxLength: 120, description: "A few words of what you want to do; the reply lists the best matches with the call that reads each." },
-        tool: { type: "string", minLength: 1, maxLength: 64, description: "A tool name, e.g. mesh_import: its full description, fields and example." },
+        tool: { type: "string", minLength: 1, maxLength: 240, description: "A tool name, e.g. mesh_import: its full description, fields and example." },
         schema: { type: "boolean", description: "With tool: add the tool's raw JSON schema." },
         group: { type: "string", minLength: 1, maxLength: 40, description: "An area: core, model, paint, supports, plate, layers, calibration, machines or stress." },
         topic: { type: "string", minLength: 1, maxLength: 40, description: "A guide name, e.g. slice or ops." },
         section: { type: "string", minLength: 1, maxLength: 120, description: "With topic: one section of a long guide, or several as \"a,b\"." },
         full: { type: "boolean", description: "With topic: the whole guide text." },
-        kind: { type: "string", minLength: 1, maxLength: 40, description: "A Model op kind, e.g. fillet, or assembly, place, pose, animation, recipes." },
+        kind: { type: "string", minLength: 1, maxLength: 120, description: "A Model op kind, e.g. fillet, or assembly, place, pose, animation, recipes." },
       },
     },
   },
@@ -1441,13 +1441,15 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_start",
-    description: "Start slicing the selected object, or the whole plate when scope is plate, once it is placed and set; slice_wait returns the result. A second slice needs cancelRunning.",
+    description: "Start slicing the selected object, or the whole plate when scope is plate, once it is placed and set; pass wait: true to wait for the result in one call, or follow with slice_wait. A second slice needs cancelRunning.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         cancelRunning: { type: "boolean" },
         scope: { enum: ["plate", "object"], description: "plate or the selected object." },
+        wait: { type: "boolean", description: "Wait up to waitS (default 20s) and return the finished slice result in this call." },
+        waitS: { type: "number", exclusiveMinimum: 0, maximum: 25, description: "Seconds to wait when waiting in slice_start (max 25)." },
       },
     },
   },

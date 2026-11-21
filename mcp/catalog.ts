@@ -67,12 +67,95 @@ export function words(text: string): string[] {
 }
 
 function stem(word: string): string {
-  if (word.length > 5 && word.endsWith("ing")) return word.slice(0, -3);
+  if (word.length > 5 && word.endsWith("ing")) {
+    const base = word.slice(0, -3);
+    return /(bb|dd|ff|gg|mm|nn|pp|rr|tt)$/.test(base) ? base.slice(0, -1) : base;
+  }
   if (word.length > 4 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
   if (word.length > 4 && word.endsWith("es") && /(ch|sh|x|ss)es$/.test(word)) return word.slice(0, -2);
-  if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
-  if (word.length > 4 && word.endsWith("ed")) return word.slice(0, -2);
-  return word;
+  if (word.length > 4 && word.endsWith("ed")) {
+    const base = word.slice(0, -2);
+    return /(bb|dd|ff|gg|mm|nn|pp|rr|tt)$/.test(base) ? base.slice(0, -1) : base;
+  }
+  const singular = word.length > 3 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word;
+  // Strip trailing silent "e" so "slice"/"slicing", "move"/"moving", "rotate"/"rotating", "place"/"placing" share a stem.
+  if (singular.length > 3 && singular.endsWith("e") && !singular.endsWith("ee") && !singular.endsWith("ie")) return singular.slice(0, -1);
+  return singular;
+}
+
+/**
+ * Everyday CAD and 3D-printing terms mapped to the words Lime Slice's tools use. Expanded only on the query at lower
+ * weight than an exact word match, so exact names always win and first-contact tokens stay unchanged.
+ */
+const QUERY_SYNONYMS: Record<string, readonly string[]> = {
+  rotat: ["turn", "orient"],
+  rotation: ["turn", "orient"],
+  spin: ["turn"],
+  screenshot: ["render", "view", "png"],
+  pictur: ["render", "view", "png"],
+  photo: ["render", "view", "png"],
+  snapshot: ["render", "view", "png"],
+  preview: ["render", "view"],
+  hollow: ["shell", "wall"],
+  round: ["fillet"],
+  corner: ["fillet"],
+  bevel: ["chamfer"],
+  combin: ["join", "boolean", "fus"],
+  union: ["join", "boolean", "fus"],
+  merg: ["join", "boolean", "fus"],
+  subtract: ["boolean", "cut"],
+  differenc: ["boolean", "cut"],
+  carv: ["boolean", "cut", "pocket"],
+  intersect: ["boolean", "common"],
+  drill: ["hol"],
+  bor: ["hol", "counterbor"],
+  infill: ["setting", "schema", "valu"],
+  density: ["setting", "infill", "schema"],
+  perimet: ["wall", "setting"],
+  weight: ["gram", "gcod", "summary", "mass"],
+  duration: ["second", "tim", "gcod", "summary"],
+  estimat: ["gcod", "summary", "slic"],
+  stl: ["mesh", "export", "3mf"],
+  mov: ["plac", "offset"],
+  translat: ["plac", "offset"],
+  delet: ["remov", "drop"],
+  copi: ["duplicat"],
+  copy: ["duplicat"],
+  clon: ["duplicat"],
+};
+
+function expandQuery(asked: readonly string[]): { word: string; weight: number; direct: boolean }[] {
+  const out = new Map<string, { word: string; weight: number; direct: boolean }>();
+  for (const word of asked) out.set(word, { word, weight: 1, direct: true });
+  for (const word of asked) {
+    const syns = QUERY_SYNONYMS[word];
+    if (!syns) continue;
+    for (const raw of syns) {
+      const s = stem(raw);
+      if (!out.has(s)) out.set(s, { word: s, weight: 0.75, direct: false });
+    }
+  }
+  return [...out.values()];
+}
+
+function editDistance(a: string, b: string, cap = 3): number {
+  if (Math.abs(a.length - b.length) > cap) return cap + 1;
+  const prev = new Int16Array(b.length + 1);
+  const curr = new Int16Array(b.length + 1);
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    let best = curr[0]!;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const val = Math.min(prev[j]! + 1, curr[j - 1]! + 1, prev[j - 1]! + cost);
+      curr[j] = val;
+      if (val < best) best = val;
+    }
+    if (best > cap) return cap + 1;
+    prev.set(curr);
+  }
+  return prev[b.length]!;
 }
 
 interface Entry {
@@ -193,27 +276,29 @@ function rarityOf(word: string): number {
  */
 export function search(query: string, limit = 8): Hit[] {
   const asked = [...new Set(words(query))];
+  const terms = expandQuery(asked);
   const plain = query.trim().toLowerCase();
   if (asked.length === 0 && plain === "") return [];
   const hits: Hit[] = [];
   for (const entry of catalogue()) {
     let score = entry.exact !== "" && entry.exact.toLowerCase() === plain ? 100 : 0;
     const fieldScore = new Map<string, number>();
-    for (const word of asked) {
+    let directFound = 0;
+    for (const { word, weight, direct } of terms) {
       let best = entry.name.has(word) ? 3 : entry.text.has(word) ? 1 : 0;
       for (const field of entry.fields) {
         const s = field.name.has(word) ? 3 : field.text.has(word) ? 1 : 0;
-        if (s > 0) fieldScore.set(field.field, (fieldScore.get(field.field) ?? 0) + s);
+        if (s > 0) fieldScore.set(field.field, (fieldScore.get(field.field) ?? 0) + s * weight);
         best = Math.max(best, s);
       }
-      score += best * rarityOf(word);
+      if (direct && best > 0) directFound += 1;
+      score += best * weight * rarityOf(word);
     }
     // Every word of the query found counts more than one word found often.
-    const found = asked.filter((word) => entry.name.has(word) || entry.text.has(word) || entry.fields.some((field) => field.name.has(word) || field.text.has(word))).length;
-    if (found === asked.length && asked.length > 1) score += 2;
+    if (directFound === asked.length && asked.length > 1) score += 2;
     if (META_TOOLS.has(entry.label) && score < 100) continue;
     if (score <= 0) continue;
-    const fields = [...fieldScore.entries()].filter(([, s]) => s >= 3).sort((a, b) => b[1] - a[1]).map(([name]) => name).slice(0, 3);
+    const fields = [...fieldScore.entries()].filter(([, s]) => s >= 2.2).sort((a, b) => b[1] - a[1]).map(([name]) => name).slice(0, 3);
     hits.push({ label: entry.label, read: entry.read, line: entry.line, score, fields });
   }
   // Ties keep catalogue order: tools, then op kinds, then kind texts, then guides.
@@ -232,9 +317,16 @@ export function hitLine(hit: Hit): string {
 /** The nearest tool names to one that is not a tool, for a refusal. */
 export function nearestTools(name: string, limit = 3): string[] {
   const names = new Set(catalogTools().map((tool) => tool.name));
-  const byWords = search(name.replace(/_/g, " "), 20).filter((hit) => names.has(hit.label)).map((hit) => hit.label);
-  const byPrefix = [...names].filter((tool) => tool.startsWith(name.slice(0, 4)) && !byWords.includes(tool));
-  return [...byWords, ...byPrefix].slice(0, limit);
+  const lower = name.trim().toLowerCase();
+  const maxDist = Math.max(2, Math.min(3, Math.floor(lower.length / 4)));
+  const byEdit = [...names]
+    .map((tool) => ({ tool, d: editDistance(lower, tool.toLowerCase(), maxDist) }))
+    .filter((row) => row.d <= maxDist)
+    .sort((a, b) => a.d - b.d)
+    .map((row) => row.tool);
+  const byWords = search(name.replace(/_/g, " "), 20).filter((hit) => names.has(hit.label) && !byEdit.includes(hit.label)).map((hit) => hit.label);
+  const byPrefix = [...names].filter((tool) => tool.startsWith(name.slice(0, 4)) && !byEdit.includes(tool) && !byWords.includes(tool));
+  return [...byEdit, ...byWords, ...byPrefix].slice(0, limit);
 }
 
 /** A field's expected value in a few words. */

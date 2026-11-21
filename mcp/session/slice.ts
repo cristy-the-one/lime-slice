@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { bytesToBase64 } from "../../src/base64.ts";
-import { coverageWarning, fnv1aHex, inAirWarning, meshKeyHex } from "../../src/slice-action.ts";
+import { coverageWarning, fnv1aHex, inAirWarning } from "../../src/slice-action.ts";
 import { filamentGrams, groupFeatures, velocityCapWarning, type VelocityCap } from "../../src/estimate.ts";
 import { humanEngineError } from "../../src/engine-wording.ts";
 import { meshWarningText, type MeshRepair } from "../../src/app/mesh-warning.ts";
@@ -33,11 +33,28 @@ function order(this: Session): PrintOrder {
   return { printOrder: this.printOrder, clearanceMm: this.clearanceMm, gantryMm: this.gantryMm };
 }
 
+/** Cached binary STL encoding for an object's canonical scaled source mesh. */
+function cachedStlBytes(session: Session, source: Float32Array, scale: number, name: string): Uint8Array {
+  let bySpec = session.stlCache.get(source);
+  if (!bySpec) {
+    bySpec = new Map();
+    session.stlCache.set(source, bySpec);
+  }
+  const key = `${scale}|${name}`;
+  let mesh = bySpec.get(key);
+  if (!mesh) {
+    mesh = stlBytes(scaledCanonical(source, scale), name);
+    if (bySpec.size >= 4) bySpec.clear();
+    bySpec.set(key, mesh);
+  }
+  return mesh;
+}
+
 /** The selected object's fields, or every object's when `scope` is `plate`. A missing scope is the selection. */
 function sliceBody(this: Session, obj: PlateObject, scope?: unknown): { body: Record<string, unknown>; mesh: Uint8Array; plate: boolean } {
   const placed = this.placed(obj);
   const name = /\.(3mf|step|stp)$/i.test(obj.fileName) ? obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl") : obj.fileName;
-  const mesh = stlBytes(scaledCanonical(obj.source, obj.scale), name);
+  const mesh = cachedStlBytes(this, obj.source, obj.scale, name);
   const plateScope = scope === "plate";
   const oneObject = !plateScope && !settingsEmpty(obj.objectSettings);
   const listed = plateScope || oneObject;
@@ -141,7 +158,7 @@ function plateFields(this: Session, rows: PlateObject[] = this.objects): Record<
   const objects = fields.objects.map((row) => {
     const spec = specs.find((item) => item.id === row.id);
     if (!spec) return row;
-    const mesh = stlBytes(scaledCanonical(spec.sourcePos, spec.partScale), spec.fileName);
+    const mesh = cachedStlBytes(this, spec.sourcePos, spec.partScale, spec.fileName);
     return { ...row, dataB64: bytesToBase64(mesh) };
   });
   return { ...fields, objects, ...(trees ? { includeSkeleton: true } : {}) };
@@ -155,7 +172,14 @@ function notSliced(this: Session): string[] {
 /** The most colliding pairs a whole-plate slice reply lists. */
 const COLLISION_CAP = 20;
 
-async function sliceStart(this: Session, cancelRunning: boolean, scope?: unknown): Promise<Record<string, unknown>> {
+async function sliceStart(
+  this: Session,
+  cancelRunning: boolean,
+  scope?: unknown,
+  wait?: boolean,
+  waitS?: number,
+  meta?: CallMeta,
+): Promise<Record<string, unknown>> {
   if (this.running && this.running.status === "running") {
     if (!cancelRunning) {
       return refuse("slice-running", `A slice is already running (${this.running.handle}). Cancel it or pass cancelRunning.`, undefined, NEXT.slicewait);
@@ -198,6 +222,18 @@ async function sliceStart(this: Session, cancelRunning: boolean, scope?: unknown
     identity.notSliced = skipped;
     identity.note = identity.note ? `${String(identity.note)} ${skip}` : skip;
   }
+  if (wait === true || typeof waitS === "number") {
+    const waited = await this.sliceWait(job.handle, meta, waitS);
+    const warnings = waited.status === "done" && job.wire ? this.warnings(job.wire) : [];
+    return {
+      ...waited,
+      ...(warnings.length ? { warnings } : {}),
+      ...(skipped.length ? { notSliced: skipped } : {}),
+      collisions,
+      ...(collisionsMore > 0 ? { collisionsMore } : {}),
+      objects: this.objects.map((row) => row.id),
+    };
+  }
   return {
     ok: true,
     job: job.handle,
@@ -237,8 +273,8 @@ function sliceStamp(this: Session): string {
       centered: row.centered,
       offset: row.offset,
       modelPose: row.modelPose,
-      mesh: meshKeyHex(row.bytes),
-      source: meshKeyHex(new Uint8Array(row.source.buffer, row.source.byteOffset, row.source.byteLength)),
+      mesh: this.meshKeyOf(row.bytes),
+      source: this.meshKeyOf(row.source),
       treeCurrent: row.tree?.current ?? null,
       treeCommitted: row.tree?.committed ?? null,
       objectSettings: row.objectSettings,
@@ -270,14 +306,16 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
   const deadline = Date.now() + limitS * 1000;
   let fraction = 0;
   let stage = "";
+  let pollPauseMs = 2;
+  const pollCall = (id: string) => (this.engine.slicePollWire ? this.engine.slicePollWire(id) : this.engine.slicePoll(id));
   while (job.status === "running" && Date.now() < deadline) {
     if (meta?.signal?.aborted) return refuse("cancelled", "The wait was cancelled.", { job: job.handle, status: "cancelled" });
     // The poll is asked of the slicer's process, which answers in turn: behind a calibration, a blend or a stress
-    // study it waits for that call, and a finished slice crosses over whole, G-code included. Neither may hold this
-    // wait past its limit, so the poll races the deadline. A poll still out when the wait ends stays on the job, and the
-    // next wait takes its answer: a finished result is asked for once and never dropped.
+    // study it waits for that call, and a finished slice crosses over whole. Neither may hold this wait past its limit,
+    // so the poll races the deadline. A poll still out when the wait ends stays on the job, and the next wait takes its
+    // answer: a finished result is asked for once and never dropped.
     const asked = (job.polling ??= Promise.resolve()
-      .then(() => this.ask(this.engine.slicePoll(String(job.engineId))))
+      .then(() => this.ask(pollCall(String(job.engineId))))
       .then((text) => ({ text }), (thrown: unknown) => ({ thrown })));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const answered = await Promise.race([
@@ -293,7 +331,7 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
     if (job.polling === asked) job.polling = undefined;
     else if (job.status !== "running") break;
     if ("thrown" in answered) throw answered.thrown;
-    const poll = JSON.parse(answered.text) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
+    const poll = JSON.parse(answered.text) as { status?: string; stage?: string; fraction?: number; wire?: Record<string, unknown>; result?: string; hasParkedGcode?: boolean; error?: string };
     if (typeof poll.fraction === "number") {
       fraction = poll.fraction;
       stage = poll.stage ?? "";
@@ -303,10 +341,11 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
         this.onProgress?.(job.handle, fraction, stage, meta?.progressToken);
       }
     }
-    if (poll.status === "done" && poll.result) {
+    if (poll.status === "done" && (poll.wire || poll.result)) {
       job.status = "done";
-      job.wire = JSON.parse(poll.result) as Record<string, unknown>;
+      job.wire = poll.wire ?? (JSON.parse(poll.result!) as Record<string, unknown>);
       job.gcode = typeof job.wire.gcode === "string" ? job.wire.gcode : undefined;
+      job.hasParkedGcode = poll.hasParkedGcode === true;
       this.keepLatestWire(job);
     } else if (poll.status === "cancelled") {
       job.status = "cancelled";
@@ -314,7 +353,8 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
       job.status = "error";
       job.error = typeof poll.error === "string" ? poll.error : JSON.stringify(poll.error ?? "The slice failed.");
     } else {
-      await this.pause(20, meta?.signal);
+      await this.pause(pollPauseMs, meta?.signal);
+      pollPauseMs = Math.min(20, pollPauseMs * 2);
     }
   }
   if (meta?.signal?.aborted && job.status === "running") {
@@ -331,6 +371,7 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
     return refuse("slice-failed", reason, { job: job.handle, status: "error" });
   }
   const summary = this.summarize(job);
+  const hold = standsOnNothing(job.wire.partHold).standsOnNothing as { unheldMm?: number } | undefined;
   return {
     ok: true,
     job: job.handle,
@@ -342,6 +383,8 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
     seconds: Math.round(summary.seconds),
     grams: roundTo(summary.grams, 2),
     cost: roundTo(summary.cost, 2),
+    ...(summary.warnings.length ? { warningCount: summary.warnings.length } : {}),
+    ...(hold && typeof hold.unheldMm === "number" && hold.unheldMm > 0 ? { unheldMm: hold.unheldMm } : {}),
   };
 }
 
@@ -439,14 +482,41 @@ function finished(this: Session, handle?: string): Job | null {
   return this.latest;
 }
 
+/** Materialize parked lazy G-code on demand the first time a G-code read, summary, or export asks for it. */
+async function ensureGcode(this: Session, job: Job): Promise<{ gcode: string } | { refusal: Record<string, unknown> }> {
+  if (typeof job.gcode === "string") return { gcode: job.gcode };
+  if (!job.hasParkedGcode || !this.engine.sliceGcode) {
+    return { refusal: refuse("not-sliced", "Slice first.", undefined, NEXT.slice) };
+  }
+  try {
+    const reply = JSON.parse(await this.ask(this.engine.sliceGcode(String(job.engineId)))) as { ok?: boolean; gcode?: string };
+    if (reply.ok === true && typeof reply.gcode === "string") {
+      job.gcode = reply.gcode;
+      return { gcode: job.gcode };
+    }
+  } catch {
+    // The slice worker restarted or errored while fetching parked G-code.
+  }
+  return {
+    refusal: refuse(
+      "slice-lost",
+      "The slicer restarted and this slice's G-code went with it. Slice again.",
+      { job: job.handle },
+      NEXT.slice,
+    ),
+  };
+}
+
 /**
  * gcode_summary. The first and last 30 G-code lines were 60% of the reply and are rarely what the caller asked for
  * (gcode_read reads any lines), and the numbers came unrounded. So: seconds whole, grams and cost to 0.01, and no head
  * or tail. `lines: true` gives the reply as it was, lines and raw numbers.
  */
-function gcodeSummary(this: Session, handle?: string, lines = false): Record<string, unknown> {
+async function gcodeSummary(this: Session, handle?: string, lines = false): Promise<Record<string, unknown>> {
   const job = this.finished(handle);
-  if (!job?.gcode || !job.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  if (!job?.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  const gcode = await this.ensureGcode(job);
+  if ("refusal" in gcode) return gcode.refusal;
   const stale = this.staleReason(job);
   if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const summary = this.summarize(job);
@@ -491,9 +561,11 @@ function customBlocks(this: Session): string[] {
   return [printer.startGcode, printer.endGcode, ...actions];
 }
 
-function gcodeExport(this: Session, input: Record<string, unknown>): Record<string, unknown> {
+async function gcodeExport(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const job = this.finished(typeof input.job === "string" ? input.job : undefined);
-  if (!job?.gcode) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  if (!job?.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  const gcode = await this.ensureGcode(job);
+  if ("refusal" in gcode) return gcode.refusal;
   const stale = this.staleReason(job);
   if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const now = typeof input.now === "string" ? new Date(input.now) : new Date();
@@ -605,6 +677,7 @@ export const sliceMethods = {
   summarize,
   warnings,
   finished,
+  ensureGcode,
   gcodeSummary,
   customBlocks,
   gcodeExport,
@@ -615,7 +688,13 @@ export const sliceMethods = {
 };
 
 export const sliceHandlers: Record<string, ToolHandler> = {
-  slice_start: (s, input) => s.sliceStart(input.cancelRunning === true, input.scope),
+  slice_start: (s, input, meta) => s.sliceStart(
+    input.cancelRunning === true,
+    input.scope,
+    input.wait === true,
+    typeof input.waitS === "number" ? input.waitS : undefined,
+    meta,
+  ),
   slice_wait: (s, input, meta) => s.sliceWait(String(input.job), meta, typeof input.timeoutS === "number" ? input.timeoutS : undefined),
   slice_cancel: (s, input) => s.sliceCancel(String(input.job)),
   gcode_summary: (s, input) => s.gcodeSummary(typeof input.job === "string" ? input.job : undefined, input.lines === true),

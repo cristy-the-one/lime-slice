@@ -95,6 +95,10 @@ export interface Engine {
   /** `bytes` is the mesh. The worker inserts `dataB64` before the slicer sees the body. */
   sliceStart(body: string, bytes?: Uint8Array): string | Promise<string>;
   slicePoll(id: string): string | Promise<string>;
+  /** Fast poll returning raw unescaped `wire` JSON and leaving parked G-code lazy. Optional for older addons / stand-ins. */
+  slicePollWire?(id: string): string | Promise<string>;
+  /** Materialize parked G-code for a finished slice on demand. Optional for older addons / stand-ins. */
+  sliceGcode?(id: string): string | Promise<string>;
   sliceCancel(id: string): string | Promise<string>;
   /** A calibration tower. The body is the app's calibrate request plus `kind`. */
   calibrate(body: string): string | Promise<string>;
@@ -125,6 +129,8 @@ type NativeExports = {
   modelTree: (body: string) => string;
   sliceStart: (body: string) => string;
   slicePoll: (id: string) => string;
+  slicePollWire?: (id: string) => string;
+  sliceGcode?: (id: string) => string;
   sliceCancel: (id: string) => string;
   calibrate?: (body: string) => string;
   pareto?: (body: string) => string;
@@ -244,6 +250,8 @@ export function loadNativeEngine(root: string, expectVersion?: string): Engine &
     modelTree: (body) => native.modelTree(body),
     sliceStart: (body, bytes) => native.sliceStart(withMesh(body, bytes)),
     slicePoll: (id) => native.slicePoll(id),
+    ...(native.slicePollWire ? { slicePollWire: (id: string) => native.slicePollWire!(id) } : {}),
+    ...(native.sliceGcode ? { sliceGcode: (id: string) => native.sliceGcode!(id) } : {}),
     sliceCancel: (id) => native.sliceCancel(id),
     calibrate: (body) => native.calibrate?.(body) ?? JSON.stringify({ error: "Rebuild the in-process engine. This one has no calibration." }),
     pareto: (body) => native.pareto?.(body) ?? JSON.stringify({ error: "Rebuild the in-process engine. This one has no blend comparison." }),
@@ -258,8 +266,15 @@ export function loadNativeEngine(root: string, expectVersion?: string): Engine &
 /** Put the mesh into `dataB64`. Used when the caller is already off the stdio thread. */
 export function withMesh(body: string, bytes?: Uint8Array): string {
   if (!bytes) return body;
+  // Fast splice avoids a full JSON.parse + JSON.stringify round-trip on multi-MB requests when dataB64 is absent.
+  const trimmed = body.trimEnd();
+  if (trimmed.endsWith("}") && !trimmed.includes('"dataB64"')) {
+    const b64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+    const empty = trimmed.slice(0, -1).trimEnd().endsWith("{");
+    return `${trimmed.slice(0, -1)}${empty ? "" : ","}"dataB64":"${b64}"}`;
+  }
   const parsed = JSON.parse(body) as Record<string, unknown>;
-  if (typeof parsed.dataB64 !== "string" || parsed.dataB64 === "") parsed.dataB64 = Buffer.from(bytes).toString("base64");
+  if (typeof parsed.dataB64 !== "string" || parsed.dataB64 === "") parsed.dataB64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
   return JSON.stringify(parsed);
 }
 
@@ -301,19 +316,20 @@ function reapOnExit(): void {
  * The child's stdout goes to this process's stderr, because stdout is the protocol.
  */
 class EngineWorker {
-  private child: ChildProcess;
+  private child: ChildProcess | null = null;
   private seq = 0;
   private generation = 0;
   private pending = new Map<number, WorkerCall>();
   private failed: Error | null = null;
   private readonly root: string;
   private readonly role: "slice" | "model" | "preview";
+  private readonly capMb: number;
 
   constructor(root: string, role: "slice" | "model" | "preview") {
     this.root = root;
     this.role = role;
+    this.capMb = engineCapMb(role);
     reapOnExit();
-    this.child = this.spawn();
   }
 
   private spawn(): ChildProcess {
@@ -325,7 +341,7 @@ class EngineWorker {
         ...process.env,
         LIME_MCP_ENGINE_ROOT: this.root,
         LIME_MCP_ENGINE_ROLE: this.role,
-        LIME_MCP_ENGINE_CAP_MB: String(engineCapMb(this.role)),
+        LIME_MCP_ENGINE_CAP_MB: String(this.capMb),
         // An installed app's own Open CASCADE, unless the client chose another.
         ...(occt ? { LIME_OCCT_BRIDGE: occt } : {}),
       },
@@ -364,14 +380,21 @@ class EngineWorker {
       if (generation !== this.generation || this.failed) return;
       // The memory cap's line can still be in the pipe when the exit arrives.
       let told = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const tell = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
         if (told || generation !== this.generation || this.failed) return;
         told = true;
         fail(new EngineStopped(this.role, stopReason(code, signal, memoryMb)));
       };
       if (child.stdout && !child.stdout.readableEnded) {
         child.stdout.once("end", tell);
-        setTimeout(tell, 200).unref();
+        // Keep the loop alive while a caller is awaiting this worker; clear immediately once stdout ends.
+        timer = setTimeout(tell, 200);
+        if (this.pending.size === 0) timer.unref();
       } else tell();
     });
     // An idle engine does not keep the server alive; the stdio loop does.
@@ -381,12 +404,17 @@ class EngineWorker {
   }
 
   call(method: string, arg = "", bytes?: Uint8Array): Promise<unknown> {
-    // A load failure is not kept: the engine may have been built or installed since, so each call starts a fresh process.
-    if (this.failed) this.respawn();
+    // Spawn lazily on first call, and respawn after a load failure so an engine built or installed later is found.
+    if (!this.child) this.child = this.spawn();
+    else if (this.failed) this.respawn();
+    const child = this.child;
     return new Promise((resolve, reject) => {
       const id = this.seq;
       this.seq += 1;
-      if (this.pending.size === 0) this.child.channel?.ref();
+      if (this.pending.size === 0) {
+        child.ref();
+        child.channel?.ref();
+      }
       this.pending.set(id, {
         resolve: (value) => {
           this.settled();
@@ -397,19 +425,24 @@ class EngineWorker {
           reject(err);
         },
       });
-      this.child.send({ id, method, arg, bytes });
+      child.send({ id, method, arg, bytes });
     });
   }
 
   private settled(): void {
-    if (this.pending.size === 0) this.child.channel?.unref();
+    if (this.pending.size === 0) {
+      this.child?.unref();
+      this.child?.channel?.unref();
+    }
   }
 
   private respawn(): void {
     this.generation += 1;
     this.failed = null;
-    children.delete(this.child);
-    this.child.kill("SIGKILL");
+    if (this.child) {
+      children.delete(this.child);
+      this.child.kill("SIGKILL");
+    }
     this.child = this.spawn();
   }
 
@@ -420,9 +453,11 @@ class EngineWorker {
     this.failed = null;
     const stopped = [...this.pending.values()];
     this.pending.clear();
-    previous.kill("SIGKILL");
-    children.delete(previous);
-    this.child = this.spawn();
+    if (previous) {
+      previous.kill("SIGKILL");
+      children.delete(previous);
+      this.child = null;
+    }
     for (const slot of stopped) slot.reject(new ProtocolError("The modeler was restarted."));
   }
 }
@@ -431,7 +466,8 @@ class EngineWorker {
  * The same addon, called from child processes so a long preview or slice
  * poll does not stop the stdio loop answering ping. Mesh preview and model
  * edits each have their own process, so a stuck tessellation can be killed
- * without losing the slicer or the open model trees.
+ * without losing the slicer or the open model trees. Each worker spawns lazily
+ * on its first call so startup stays fast and unused roles cost no memory.
  */
 export function loadEngineWorker(root: string): Engine {
   const slice = new EngineWorker(root, "slice");
@@ -445,6 +481,8 @@ export function loadEngineWorker(root: string): Engine {
     modelTree: (body) => model.call("modelTree", body) as Promise<string>,
     sliceStart: (body, bytes) => slice.call("sliceStart", body, bytes) as Promise<string>,
     slicePoll: (id) => slice.call("slicePoll", id) as Promise<string>,
+    slicePollWire: (id) => slice.call("slicePollWire", id) as Promise<string>,
+    sliceGcode: (id) => slice.call("sliceGcode", id) as Promise<string>,
     sliceCancel: (id) => slice.call("sliceCancel", id) as Promise<string>,
     calibrate: (body) => slice.call("calibrate", body) as Promise<string>,
     pareto: (body) => slice.call("pareto", body) as Promise<string>,
