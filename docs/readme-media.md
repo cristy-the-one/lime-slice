@@ -12,6 +12,8 @@ The pictures and clips in `README.md` are made by `tools/readme-media`, so they 
 | `clip-gear-train.gif` | `pose.media.ts` | three gears built by `mcp-media.ts`, coupled in Pose and turned |
 | `clip-escapement.gif` | `mcp-media.ts` | a Graham escapement run by `motion_run` and drawn by the MCP server |
 | `stress-cantilever.png` | `stress.media.ts` | the Stress worked example, with the engine's recorded reply (`e2e/fixtures/sim-cantilever.json`) |
+| `ribs-buckling.png` | `ribs.media.ts` | a 160 × 100 × 20 mm box, shelled to a 1 mm wall with the top open, then Auto ribs on the inner floor at Resist buckling (the default 3×). The force, 750 N along the 160 mm side, goes through the 100 mm × 1 mm section (7.5 MPa). The card shows "Buckles at 3.1× the load (was 1.3×).", the ideal-load warning, "Loose ends are not extended or closed, and ribs stay at full height.", "2 rib ends stop short of a wall or another rib", and "A thicker wall and an even grid are compared only on a Stiffer plan." |
+| `model-parts.png` | `parts.media.ts` | the Part card with its kind select open on Fasteners, Fittings, Brackets and Pulleys, and three parts the script built: a Nut M6, a GT2 pulley of 20 teeth and an L-bracket 40 × 30 × 3, M4 |
 | `prepare-phone.png`, `preview-phone.png`, `model-phone.png` | `phone.media.ts` | the compact layout at 390 × 844 |
 
 The other files in `docs/screenshots` belong to other documents (`docs/step-modeler.md`, the tutorials and the reviews).
