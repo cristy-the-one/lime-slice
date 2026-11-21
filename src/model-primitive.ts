@@ -297,6 +297,7 @@ function partSpec(spec: PrimitiveSpec): PartSpec {
     article: spec.article,
     taper: spec.taper,
     setScrew: spec.setScrew,
+    teeth: spec.teeth,
     height: spec.height,
   };
 }

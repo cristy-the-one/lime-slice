@@ -1445,13 +1445,24 @@ function syncFields() {
   const thick = document.querySelector<HTMLElement>("#modelPartThick")?.closest("label")?.querySelector("span");
   if (thick) thick.textContent = partKindNow() === "hex" ? "Head height" : "Thickness";
   const partKind = partKindNow();
-  setLabel("#modelPartLengthLabel", "#modelPartLength", partKind === "collar" ? "Width" : partKind === "heat-set" ? "Height" : "Length", partKind === "collar" ? "Collar width, mm" : partKind === "heat-set" ? "Boss height, mm" : "Length, mm");
+  setLabel("#modelPartLengthLabel", "#modelPartLength", partKind === "collar" ? "Width" : partKind === "heat-set" ? "Height" : partKind === "gt2" ? "Belt width" : "Length", partKind === "collar" ? "Collar width, mm" : partKind === "heat-set" ? "Boss height, mm" : partKind === "gt2" ? "Belt width, mm" : "Length, mm");
   setLabel("#modelPartDiameterLabel", "#modelPartDiameter", partKind === "shaft" ? "Nominal ⌀" : partKind === "heat-set" ? "Boss ⌀" : "Outside ⌀");
-  setLabel("#modelPartBoreLabel", "#modelPartBore", partKind === "collar" ? "Bore ⌀" : "Hole ⌀");
+  setLabel("#modelPartBoreLabel", "#modelPartBore", partKind === "collar" || partKind === "gt2" ? "Bore ⌀" : "Hole ⌀");
   const partLength = document.querySelector<HTMLInputElement>("#modelPartLength");
   if (partLength) {
-    partLength.max = partKind === "shaft" ? "300" : partKind === "collar" ? "15" : partKind === "heat-set" ? "40" : "200";
-    partLength.step = partKind === "socket" || partKind === "hex" ? "0.5" : "0.1";
+    partLength.min = partKind === "gt2" ? "4" : "0";
+    partLength.max = partKind === "shaft" ? "300" : partKind === "collar" ? "15" : partKind === "heat-set" ? "40" : partKind === "gt2" ? "15" : "200";
+    partLength.step = partKind === "socket" || partKind === "hex" || partKind === "gt2" ? "0.5" : "0.1";
+  }
+  const partBore = document.querySelector<HTMLInputElement>("#modelPartBore");
+  if (partBore) {
+    if (partKind === "gt2") {
+      partBore.min = "3";
+      partBore.max = "20";
+    } else {
+      partBore.min = "0";
+      partBore.removeAttribute("max");
+    }
   }
   const partAllowance = document.querySelector<HTMLInputElement>("#modelPartAllowance");
   if (partAllowance) partAllowance.max = partKind === "shaft" ? "0.5" : "1";
@@ -1744,7 +1755,7 @@ function partKindNow(): PartKind {
 
 /** Each kind opens on its own defaults. A number the person has typed keeps its value until the kind changes. */
 function onPartKind() {
-  for (const id of ["#modelPartLength", "#modelPartDiameter", "#modelPartBore", "#modelPartAllowance", "#modelPartTaper", "#modelPartScrew"]) {
+  for (const id of ["#modelPartLength", "#modelPartDiameter", "#modelPartBore", "#modelPartAllowance", "#modelPartTaper", "#modelPartScrew", "#modelPartTeeth"]) {
     const field = document.querySelector<HTMLInputElement>(id);
     if (field) delete field.dataset.touched;
   }
@@ -1755,6 +1766,7 @@ function onPartKind() {
   const allowance = document.querySelector<HTMLInputElement>("#modelPartAllowance");
   const screw = document.querySelector<HTMLInputElement>("#modelPartScrew");
   const taper = document.querySelector<HTMLInputElement>("#modelPartTaper");
+  const teeth = document.querySelector<HTMLInputElement>("#modelPartTeeth");
   const hollow = document.querySelector<HTMLInputElement>("#modelPartHollow");
   const fit = document.querySelector<HTMLSelectElement>("#modelShaftFit");
   if (kind === "hex" && length) length.value = "20";
@@ -1774,6 +1786,10 @@ function onPartKind() {
     if (diameter) diameter.value = "14";
     if (length) length.value = "6";
     if (screw) screw.value = "3";
+  } else if (kind === "gt2") {
+    if (teeth) teeth.value = "20";
+    if (length) length.value = "6";
+    if (bore) bore.value = "5";
   } else if (kind === "heat-set") {
     if (taper) taper.value = "0";
     if (allowance) allowance.value = "0";
@@ -1827,6 +1843,11 @@ function partFields(): PartSpec {
     spec.bore = num("#modelPartBore");
     spec.height = num("#modelPartLength");
     spec.setScrew = num("#modelPartScrew");
+  }
+  if (kind === "gt2") {
+    spec.teeth = num("#modelPartTeeth");
+    spec.height = num("#modelPartLength");
+    spec.bore = num("#modelPartBore");
   }
   if (kind === "heat-set") {
     spec.article = document.querySelector<HTMLSelectElement>("#modelPartArticle")?.value || "RX-M3x5,7";

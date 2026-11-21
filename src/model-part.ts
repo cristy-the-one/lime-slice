@@ -6,7 +6,7 @@
  */
 import { formatMm } from "./model-plane.ts";
 
-export type PartKind = "nut" | "socket" | "hex" | "washer" | "spacer" | "shaft" | "collar" | "heat-set";
+export type PartKind = "nut" | "socket" | "hex" | "washer" | "spacer" | "shaft" | "collar" | "heat-set" | "gt2" | "v";
 
 export type ShaftFit = "running" | "sliding" | "press";
 
@@ -26,6 +26,8 @@ export interface PartFields {
   article?: string;
   taper?: number;
   setScrew?: number;
+  /** GT2 tooth count. Absent is 20. */
+  teeth?: number;
 }
 
 /** What the kernel stores on a part, plus `height` (0 is a fastener's table row, or a fitting's default length). */
@@ -45,6 +47,8 @@ export interface PartSpec {
   article?: string;
   taper?: number;
   setScrew?: number;
+  /** GT2 tooth count. Absent is 20. */
+  teeth?: number;
   height: number;
 }
 
@@ -135,7 +139,7 @@ export const PART_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "washer", label: "Washer" },
 ];
 
-/** The Fittings group. Brackets and pulleys wait for their milestones. */
+/** The Fittings group. Brackets wait for their milestone. */
 export const FITTING_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "spacer", label: "Spacer" },
   { id: "shaft", label: "Shaft" },
@@ -143,10 +147,20 @@ export const FITTING_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "heat-set", label: "Heat-set boss" },
 ];
 
+/** The Pulleys group. The V pulley is in the list and refused until the ISO 4183 table is in the plan. */
+export const PULLEY_KINDS: readonly { id: PartKind; label: string }[] = [
+  { id: "gt2", label: "GT2 pulley" },
+  { id: "v", label: "V pulley" },
+];
+
 export const PART_GROUPS: readonly { label: string; kinds: readonly { id: PartKind; label: string }[] }[] = [
   { label: "Fasteners", kinds: PART_KINDS },
   { label: "Fittings", kinds: FITTING_KINDS },
+  { label: "Pulleys", kinds: PULLEY_KINDS },
 ];
+
+/** Choosing a V pulley, or sending one, is refused with this sentence. */
+export const V_PULLEY = "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.";
 
 /** Ruthex RX, the 14.12.2023 Produktdatenblatt (docs/plan-mech-parts.md §4.10). `d2` is the lead-in; the boss is a cone. */
 export interface HeatRow { article: string; thread: string; d1: number; d2: number; l: number; w: number; d3: number }
@@ -184,7 +198,7 @@ const TABLES: Record<"nut" | "socket" | "hex" | "washer", string> = {
   washer: "ISO 7089 washer table",
 };
 
-const PART_KIND_IDS: readonly string[] = [...PART_KINDS, ...FITTING_KINDS].map((entry) => entry.id);
+const PART_KIND_IDS: readonly string[] = [...PART_KINDS, ...FITTING_KINDS, ...PULLEY_KINDS].map((entry) => entry.id);
 
 export function isPartKind(value: unknown): value is PartKind {
   return typeof value === "string" && PART_KIND_IDS.includes(value);
@@ -211,6 +225,16 @@ export function shaftDiameter(nominal: number, fit: ShaftFit, allowance: number)
 function mm(value: number): string {
   const tenths = Math.round(value * 10) / 10;
   return Math.abs(tenths - Math.round(tenths)) < 1e-9 ? String(Math.round(tenths)) : tenths.toFixed(1);
+}
+
+/** A maximum named in a sentence, rounded down to a tenth. A value already on a tenth stays. */
+function tenthDown(value: number): number {
+  return Math.floor(value * 10 + 1e-6) / 10;
+}
+
+/** Outside radius of a GT2 pulley: `(teeth · 2 / π − 0.508) / 2`. */
+function gt2Radius(teeth: number): number {
+  return (teeth * 2 / Math.PI - 0.508) / 2;
 }
 
 function inRange(value: number, lo: number, hi: number): boolean {
@@ -344,10 +368,40 @@ function fittingProblem(spec: PartSpec, kind: PartKind): string | null {
   return null;
 }
 
+/** Stray fields and the GT2 ranges. Teeth, height (belt width) and bore are its own. */
+function gt2Problem(spec: PartSpec): string | null {
+  if (spec.length !== undefined) return "A GT2 pulley's belt width is its height.";
+  if (textSet(spec.nominal)) return "A GT2 pulley has no nominal size.";
+  if (spec.allowance !== undefined) return "A GT2 pulley has no allowance.";
+  const headSet = (value: number | undefined) => value !== undefined && value !== 0;
+  if (headSet(spec.headDiameter)) return "Only a socket screw takes a head diameter.";
+  if (headSet(spec.headHeight)) return "Only a socket screw takes a head height.";
+  if (headSet(spec.socketDepth)) return "Only a socket screw takes a socket depth.";
+  if (spec.diameter !== undefined) return "A GT2 pulley has no diameter.";
+  if (spec.hollow !== undefined) return "Only a spacer is hollow or solid.";
+  if (textSet(spec.fit)) return "Only a shaft takes a fit.";
+  if (textSet(spec.article)) return "Only a heat-set boss takes an article.";
+  if (headSet(spec.taper)) return "Only a heat-set boss takes a taper.";
+  if (spec.setScrew !== undefined) return "Only a collar takes a set screw.";
+  const teeth = spec.teeth ?? 20;
+  if (!Number.isFinite(teeth) || Math.abs(teeth - Math.round(teeth)) > 1e-9) return "The teeth are a whole number from 12 to 60.";
+  const count = Math.round(teeth);
+  if (count < 12 || count > 60) return "A GT2 pulley takes 12 to 60 teeth.";
+  const width = spec.height === 0 ? 6 : spec.height;
+  if (!inRange(width, 4, 15)) return "The belt width is from 4 to 15 mm.";
+  const bore = spec.bore ?? 5;
+  if (!inRange(bore, 3, 20)) return "The bore is from 3 to 20 mm.";
+  const limit = 2 * (gt2Radius(count) - 0.75 - 1);
+  if (bore > limit + 1e-9) return `The bore is at most ${mm(tenthDown(limit))} mm on ${count} teeth, so 1 mm stays inside the grooves.`;
+  return null;
+}
+
 /** The sentence a part is refused with, or null when the kernel can build it. */
 export function partProblem(spec: PartSpec): string | null {
-  if (!isPartKind(spec.partKind)) return "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, or heat-set.";
+  if (!isPartKind(spec.partKind)) return "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, gt2, or v.";
   const kind = spec.partKind;
+  if (kind === "v") return V_PULLEY;
+  if (kind !== "gt2" && spec.teeth !== undefined) return "Only a GT2 pulley takes teeth.";
   const bore = spec.boreKind?.trim();
   if (bore === "thread") return "A modelled thread is not available yet. Use tap drill.";
   if (bore && bore !== "tap") return "The bore is tap, or thread when a modelled thread exists.";
@@ -379,6 +433,7 @@ export function partProblem(spec: PartSpec): string | null {
     if (kind === "hex") return "A hex screw has no bore.";
     return "A washer has no bore.";
   }
+  if (kind === "gt2") return gt2Problem(spec);
   if (!fastenerKind(kind)) return fittingProblem(spec, kind);
   const nominal = nominalOf(spec);
   if (kind === "nut") {
@@ -489,6 +544,13 @@ export function resolvedPart(spec: PartSpec): ResolvedPart | null {
     const inner = (spec.bore ?? 8) / 2;
     return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, width], centreZ: width / 2, rounds: [{ radius, z0: 0, z1: width, hole: inner }] };
   }
+  if (kind === "gt2") {
+    const teeth = Math.round(spec.teeth ?? 20);
+    const width = spec.height === 0 ? 6 : spec.height;
+    const radius = gt2Radius(teeth);
+    const hole = (spec.bore ?? 5) / 2;
+    return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, width], centreZ: width / 2, rounds: [{ radius, z0: 0, z1: width, hole }] };
+  }
   if (kind === "heat-set") {
     const row = heatRow(spec.article)!;
     const boss = spec.diameter ?? row.d1 + 2 * row.w;
@@ -529,6 +591,7 @@ export function partLabel(spec: PartSpec): string {
   }
   if (part.kind === "collar") return `Collar ⌀${formatMm(spec.diameter ?? 14)} / ⌀${formatMm(spec.bore ?? 8)} × ${formatMm(part.max[2])}`;
   if (part.kind === "heat-set") return `Heat-set boss ${(spec.article ?? "").trim() || HEAT_DEFAULT}`;
+  if (part.kind === "gt2") return `GT2 pulley ${Math.round(spec.teeth ?? 20)} teeth`;
   if (part.kind === "nut") return `Nut ${part.nominal}${allowance}`;
   if (part.kind === "washer") return `Washer ${part.nominal}${allowance}`;
   const length = formatMm(spec.length ?? (part.kind === "hex" ? 20 : 25));
@@ -560,6 +623,8 @@ export function partRowText(kind: string, nominal: string, article?: string): st
     const row = heatRow(article);
     return row ? `Ruthex ${row.article}: insert ⌀${row.d1} mm, wall ${row.w} mm, hole ⌀${row.d3} mm, tall ${row.l} mm.` : "";
   }
+  if (kind === "gt2") return "An approximate GT2 groove. Pitch 2 mm, no flanges.";
+  if (kind === "v") return V_PULLEY;
   return "";
 }
 
@@ -586,6 +651,7 @@ export function partFrom(input: Record<string, unknown>): { fields: PartFields; 
     article: typeof input.article === "string" ? input.article : undefined,
     taper: num(input.taper),
     setScrew: num(input.setScrew),
+    teeth: num(input.teeth),
     height: num(input.height) ?? 0,
   };
   const why = partProblem(spec);
@@ -606,5 +672,6 @@ export function partFrom(input: Record<string, unknown>): { fields: PartFields; 
   if (spec.article && spec.article.trim().length > 0) fields.article = spec.article.trim();
   if (spec.taper) fields.taper = spec.taper;
   if (spec.setScrew !== undefined) fields.setScrew = spec.setScrew;
+  if (kind === "gt2" && spec.teeth !== undefined) fields.teeth = spec.teeth;
   return { fields, height: spec.height };
 }

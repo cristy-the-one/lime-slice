@@ -1,6 +1,6 @@
 # Mechanical parts in the Model tab
 
-Status: milestone 1 (fasteners, sections 4.1–4.4) is on main (#780). Milestone 2 (fittings, sections 4.5–4.7 and 4.10) is the Fittings group on the same Part button. The rest of this file is still the spec. The catalogue and the lust fixtures on `study/mech-components` (`docs/studies/mechanical-components.md`, PR #773) stay study material. They are not the product, and they are not copied into the kernel.
+Status: milestone 1 (fasteners, sections 4.1–4.4) is on main (#780). Milestone 2 (fittings, sections 4.5–4.7 and 4.10) is the Fittings group on the same Part button. Milestone 3 (brackets, sections 4.8 and 4.9) is still the spec. Milestone 4 (GT2 pulley, section 5.1, decisions 13–16) is in review. The V pulley stays blocked on the ISO 4183 table. The rest of this file is still the spec. The catalogue and the lust fixtures on `study/mech-components` (`docs/studies/mechanical-components.md`, PR #773) stay study material. They are not the product, and they are not copied into the kernel.
 
 The owner's direction on that PR: each part is a native Model-tab part, built by the modelling kernel the way the gear primitive is (`crates/lime-model-occt/src/tree/gear.rs`, `docs/plan-native-recipes.md` milestone 8).
 
@@ -249,19 +249,20 @@ Geometry: one cone, base radius `bossOd/2`, top radius `(bossOd − taper)/2`, h
 
 Pitch diameter `PD = teeth * 2 / π`. Outside diameter `OD = PD − 0.508`. The 0.508 mm is twice the 0.254 mm pitch-line differential. The review's "about 0.51 mm" is this figure. Sources checked: Misumi's 2GT table as collated against `OD = PD − 0.508` (the xemstudio 2GT sheet, which also cites SDP-SI) and the orinovate GT2 generator. Both give 20 teeth as PD 12.73 mm and OD 12.22 mm.
 
-Parameters: teeth, default 20, range 10 to 60, whole. Belt width, default 6, range 4 to 15. Bore, default 5, range 3 to 20, and at least 1 mm of material inside the root.
+Parameters: teeth, default 20, range 12 to 60, a whole number. Belt width, default 6 (`height` 0 is that default), range 4 to 15. Bore, default 5, range 3 to 20, and at most `2 * (R − 0.75 − 1)` so 1 mm of material stays inside the root. 10 and 11 teeth are not in the range: the 1 mm wall inside the root leaves a bore under the 3 mm minimum, so no 10- or 11-tooth pulley could be built (decision 14).
 
 Geometry:
 
-- Body: cylinder, radius `OD/2`, height = belt width, base on `z = 0`.
-- One groove per tooth. The cut is a box placed by its centre at angle `360° * i / teeth`, radius `OD/2 − depth/2`, `z = width/2`, turned `[0, 0, angle]` so the box's X axis is radial. Radial size `depth + OVERSHOOT_MM` (the extra breaks the outside surface). Tangential size is the groove width below. Axial size `width + 2 * OVERSHOOT_MM`, so the groove crosses the full width and breaks both side faces.
+- Body: a cylinder of radius `R = OD/2`, height = belt width, base on `z = 0`. Round through bore.
+- One groove per tooth. Groove `i` is at angle `360° * i / teeth`, starting on +X. The cut is a box, X radial after the `[0, 0, angle]` turn. Tangential size 1.41. Axial size `width + 2 * OVERSHOOT_MM`, so the groove crosses the full width and breaks both side faces. Radial size `0.75 + OVERSHOOT_MM`. The box's radial centre is `R − 0.75/2 + OVERSHOOT_MM/2`, so it spans `R − 0.75` to `R + 0.2`. A centre at `R − depth/2` would spread the overshoot both ways and cut 0.85 deep (decision 13).
 - Bore: through hole, diameter as given.
+- No flanges, no hub, no set screw.
 
 The groove cross-section in this milestone is a rectangle, depth 0.75 mm and width 1.41 mm. Those two numbers are the orinovate generator's published approximation (it describes the real groove as arcs, about 0.75 mm deep and about 1.41 mm wide at the OD, and it says the shape is not a Gates drawing). Gates does not publish the pulley groove. The part's label and the guide say "approximate GT2 groove". Decided 2026-11-20: this rectangle ships. A later milestone may replace it with the arc profile once the points are copied from a named drawing into the kernel.
 
-Flanges are not in this milestone.
+The analytic box is not `±OD/2` whenever a groove sits on an axis. Tooth 0 is on +X, and with 20 teeth (and 16 and 36) every axis has a groove. Each axis extent is `R` when that direction misses every groove, and otherwise the largest `R · cos(angle from the axis)` over the groove corners at the outside, at angles `φ ± asin(0.705/R)` (decision 15). Default 20 teeth: `x` and `y` `±6.0714` (`sqrt(R² − 0.705²)`, `R = 6.11220`), `z` 0 to 6. The ghost may stay the `±R` box with a circle. The kernel and MCP tests use the computed box.
 
-Default 20-tooth box: `x` and `y` `±(PD − 0.508)/2`, `z` 0 to 6. The test checks that box, and the tooth tests in section 9. Volume is below the plain cylinder of diameter `OD` and above the plain cylinder of diameter `OD − 2 * 0.75`.
+Volume, while the grooves do not overlap: `A = a·sqrt(R² − a²) + R²·asin(a/R) − 2a(R − 0.75)` with `a = 0.705`, and `V = (πR² − teeth·A − π(bore/2)²)·width`. The default is about 461.8 mm³, within 0.5 mm³. Adjacent groove boxes do not overlap from 12 to 60 teeth; 12 is the tightest.
 
 ### 5.2 V-belt pulley
 
@@ -302,7 +303,7 @@ Kind ids and History labels:
 | `heat-set` | Heat-set boss |
 | `plate` | Plate |
 | `bracket` | L-bracket |
-| `gt2` | GT2 pulley |
+| `gt2` | GT2 pulley N teeth |
 | `v` | V pulley |
 
 Fields follow the gear card: the choice and the sizes a person always sets are visible; an override that defaults to "table" sits under More. Scrub steps match the parameter steps above. Changing the nominal, the article or **Hole for** rewrites the table-driven fields that are still on "table". A field the person has typed a number into keeps that number. The heat-set card's article select lists the eleven rows in section 4.10. The plate and the bracket show **Hole for**, the allowance, and the free-diameter field only when the choice is Free.
@@ -353,7 +354,7 @@ Measured against the analytic solid, at the default and at two other nominals (M
 - Volume within 0.5 mm³ of the closed-form volume in sections 4 and 5, where one is given.
 - `model_check` equivalent in the kernel: the solid is closed, 0 open edges, 0 non-manifold edges.
 - The socket test places a point at `(0, 0, k − t/2)` outside the material, and a point at `(0, 0, k + 1)` outside the solid's box. A socket that starts at `z = k` fails the first point.
-- The GT2 test places, for a tooth that is not on an axis (tooth 1 of 20, at 18°), a point at radius `OD/2 − 0.2` on that angle, at `z = width/2` and at `z = 0.2`, outside the material, and a point 12° off that angle at the same radius inside the material. Axis-aligned cuts fail the off-axis tooth. A groove that covers only the middle half of the width fails the `z = 0.2` point.
+- The GT2 test places, for tooth 1 of 20 at 18°, a point at radius `R − 0.2` on that angle, at `z = width/2` and at `z = 0.2`, outside the material, and a point 9° off that angle (27°, the middle of the land) at the same radius inside the material. At that radius a groove covers about ±6.9° and the pitch is 18°, so 6° and 30° both fall in a groove. A point just inside the root (`R − 0.8`) on tooth 1's angle is inside the material, which shows the groove is 0.75 deep, not 0.85 (decision 16). Axis-aligned cuts fail the off-axis tooth. A groove that covers only the middle half of the width fails the `z = 0.2` point.
 - Refusals: unknown nominal, washer allowance that eats the wall, shaft nominal 40 mm, a heat-set boss smaller than `d1 + 2 * W`, V-pulley and `thread` while their sections say they are absent. The default heat-set hole is `d3` of `RX-M3x5,7` (4.0 mm) and its outside diameter is 7.8 mm.
 
 **MCP**, in the existing job "MCP server against real Open CASCADE" (`rust-mcp-occt`). No new job, and the job keeps its name. `solid_new` of each wave's default, then `model_describe` bounds against the same analytic box (0.02 mm) and `model_check` with `edges` `{open: 0, nonManifold: 0}`. One boolean: a washer cut by a nut's prism, or a plate fused with a spacer, still closed.
@@ -383,3 +384,7 @@ Each one is a PR to `main`, after 6.13.0, and each updates this file where the c
 6. **Fastener kind field, height, and the mesh box** (milestone 1). The kernel field is `partKind`, not `kind`. A boolean op is already tagged `kind`, and `Solid` is flattened into that op, so a second `kind` cannot be stored. `solid_new` still accepts `kind` and writes `partKind`. A boolean and a saved solid use `partKind`. `height` of 0 means the table row. The MCP `height` schema rejects 0, so a table size is the field left out; a positive `height` overrides the nut, the washer, the hex head, or the socket head. `model_describe`'s box is the mesh box, so a part is opened at chord 0.01 mm and later steps keep that tolerance. The shank meets the head on the shared face at z = 0. Milestone 1's kind select has only the Fasteners group.
 7. **Collar slit** (milestone 2). The slit is centred on −Y. The set-screw hole stays on +Y, as section 4.7 already placed it; a slit on +Y would be drilled by that hole. The set-screw diameter must leave 0.5 mm of material on each side of the width (`d ≤ width − 1`). A wider screw is refused in one sentence naming that limit. The slit box is 0.6 mm in X, from `bore/2 − 0.2` mm to `od/2 + 0.2` mm, and `width + 0.4` mm in Z so both side faces break.
 8. **Heat-set top wall** (milestone 2). Ruthex's minimum wall `W` applies at the top of the boss as well as the base. A boss whose top diameter `bossOd − taper` is under `d1 + 2 * W` is refused, and the sentence names the boss diameter that taper needs (`d1 + 2 * W + taper`). The default boss is `d1 + 2 * W`, so any taper above 0 is refused until the boss is made wider. A top equal to `d1 + 2 * W` is allowed.
+13. **GT2 groove depth** (milestone 4). The groove box's radial centre is `R − 0.75/2 + OVERSHOOT_MM/2`, so the cut spans `R − 0.75` to `R + 0.2`. The earlier centre, `R − depth/2`, spreads the 0.2 mm overshoot both ways and cuts 0.85 mm deep.
+14. **GT2 teeth start at 12** (milestone 4). Teeth are a whole number from 12 to 60. At 10 and 11 teeth the 1 mm wall inside the root leaves a bore under the 3 mm minimum, so no such pulley could be built. Belt width is 4 to 15 mm. Bore is 3 to 20 mm, and at most `2·(R − 0.75 − 1)`, refused with "The bore is at most B mm on N teeth, so 1 mm stays inside the grooves." A minimum in that sentence rounds up to the tenth; a maximum rounds down. The comparison uses the exact limit.
+15. **GT2 box** (milestone 4). The default box is not `±OD/2` when a groove sits on an axis. Tooth 0 is on +X. With 20, 16 and 36 teeth every axis has a groove, and the extent is `sqrt(R² − 0.705²)`. The test computes each axis: `R` when that direction misses every groove, otherwise the largest `R·cos` of the outside corners at `φ ± asin(0.705/R)`. Default 20 teeth: x and y ±6.0714, z 0 to 6. The ghost may stay the `±R` circle. Kernel and MCP tests use the computed box.
+16. **GT2 point tests** (milestone 4). Tooth 1 of 20 is at 18°. At radius `R − 0.2` the points at `z = width/2` and `z = 0.2` are outside the material. The inside point is 9° off that angle (27°, the middle of the land), not 12°: a groove covers about ±6.9° there and the pitch is 18°, so 6° and 30° both fall in a groove. A point at `R − 0.8` on tooth 1's angle is inside the material, so the groove is 0.75 deep, not 0.85. The History row is "GT2 pulley N teeth".

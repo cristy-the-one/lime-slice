@@ -58,6 +58,12 @@ check(
   guideText.includes("RX-M3x5,7") && guideText.includes("RX-M8x12,7") && guideText.includes("centred on −Y") && guideText.includes("lime_recipe::horology::shaft"),
   guideText.slice(guideText.indexOf("Fittings"), guideText.indexOf("Fittings") + 400),
 );
+const V_PULLEY = "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.";
+check(
+  "guide {topic:ops, section:part} says approximate GT2 groove and names the V pulley",
+  guideText.includes("An approximate GT2 groove") && guideText.includes(V_PULLEY),
+  guideText.slice(guideText.indexOf("GT2"), guideText.indexOf("GT2") + 500),
+);
 
 const hexArea = (s: number) => (Math.sqrt(3) / 2) * s * s;
 const cylinder = (radius: number, height: number) => Math.PI * radius * radius * height;
@@ -156,6 +162,69 @@ const fused = await call("model_apply", {
 const fusedCheck = await call("model_check", { object: plate.object });
 console.log(`plate fused with a spacer: ${show({ ok: fused.ok, edges: fusedCheck.edges, volume: fusedCheck.volumeMm3 })}`);
 check("a plate fused with a spacer stays closed", fused.ok === true && JSON.stringify(fusedCheck.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show({ fused, edges: fusedCheck.edges }));
+
+function gt2Radius(teeth: number): number {
+  return (teeth * 2 / Math.PI - 0.508) / 2;
+}
+
+function angleApart(a: number, b: number): number {
+  let d = (a - b) % (Math.PI * 2);
+  if (d < 0) d += Math.PI * 2;
+  return d > Math.PI ? Math.PI * 2 - d : d;
+}
+
+/** Extent along `beta`: R when that direction misses every groove, else the larger R·cos of the outside corners. */
+function axisExtent(teeth: number, radius: number, beta: number): number {
+  const alpha = Math.asin(0.705 / radius);
+  let hit = false;
+  let best = 0;
+  for (let i = 0; i < teeth; i += 1) {
+    const phi = (Math.PI * 2 * i) / teeth;
+    if (angleApart(phi, beta) < alpha) {
+      hit = true;
+      best = Math.max(best, radius * Math.cos(angleApart(phi - alpha, beta)), radius * Math.cos(angleApart(phi + alpha, beta)));
+    }
+  }
+  return hit ? best : radius;
+}
+
+function gt2Box(teeth: number, width: number): [[number, number, number], [number, number, number]] {
+  const radius = gt2Radius(teeth);
+  return [
+    [-axisExtent(teeth, radius, Math.PI), -axisExtent(teeth, radius, -Math.PI / 2), 0],
+    [axisExtent(teeth, radius, 0), axisExtent(teeth, radius, Math.PI / 2), width],
+  ];
+}
+
+function gt2Volume(teeth: number, bore: number, width: number): number {
+  const radius = gt2Radius(teeth);
+  const a = 0.705;
+  const area = a * Math.sqrt(radius * radius - a * a) + radius * radius * Math.asin(a / radius) - 2 * a * (radius - 0.75);
+  return (Math.PI * radius * radius - teeth * area - Math.PI * (bore / 2) ** 2) * width;
+}
+
+const pulley = await call("solid_new", { primitive: "part", kind: "gt2", name: "gt2" });
+const pulleyObject = String(pulley.object ?? "");
+const pulleyDescribed = pulleyObject ? await call("model_describe", { object: pulleyObject, limit: 0 }) : {};
+const pulleyVolume = Number(pulleyDescribed.volumeMm3);
+const pulleyBounds = pulleyDescribed.bounds as { min?: number[]; max?: number[] } | undefined;
+const pulleyBox = gt2Box(20, 6);
+const pulleyWant = gt2Volume(20, 5, 6);
+console.log(`part gt2: measured volume ${pulleyVolume} mm3, analytic ${pulleyWant} mm3, measured bounds ${show(pulleyBounds)}, analytic bounds ${show(pulleyBox)}`);
+check("solid_new gt2", pulley.ok === true, show(pulley));
+check("gt2 volume within 0.5 mm3", Math.abs(pulleyVolume - pulleyWant) < 0.5, show(pulleyDescribed));
+check("gt2 bounds within 0.02 mm", nearBox(pulleyBounds, pulleyBox), show(pulleyBounds));
+const pulleyChecked = await call("model_check", { object: pulleyObject });
+check("gt2 is closed", JSON.stringify(pulleyChecked.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show(pulleyChecked.edges));
+
+const vPulley = await call("solid_new", { primitive: "part", kind: "v", name: "v" });
+console.log(`part v: refused with ${show({ ok: vPulley.ok, code: vPulley.code, reason: vPulley.reason })}`);
+check("a V pulley is refused with its own code", vPulley.ok === false && vPulley.code === "v-pulley" && vPulley.reason === V_PULLEY, show(vPulley));
+const vCut = pulleyObject
+  ? await call("model_apply", { object: pulleyObject, probe: true, op: { kind: "boolean", op: "cut", primitive: "part", partKind: "v" } })
+  : { ok: false };
+console.log(`part v cut: refused with ${show({ ok: vCut.ok, code: vCut.code, reason: vCut.reason })}`);
+check("a V pulley used as a cut is refused with its own code", vCut.ok === false && vCut.code === "v-pulley" && vCut.reason === V_PULLEY, show(vCut));
 
 if (failed > 0) {
   console.error(`part: ${failed} failed`);

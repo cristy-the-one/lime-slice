@@ -27,7 +27,7 @@ import { assemblyOf, exportParts } from "../../src/assembly.ts";
 import { resolveWrite } from "../workspace.ts";
 import { CHORD, ModelRunaway, type PlateObject, joined, modelSteps, numberNotes, numbered, shownName, stlFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
-import { NEXT, refuse } from "../refusals.ts";
+import { NEXT, refuse, refusePartReason } from "../refusals.ts";
 
 /** The whole table, in order. The first bad row refuses the set and changes nothing. */
 /** A history step from a handle (node_3), its label, or a composite edit's label (its last step). */
@@ -120,7 +120,7 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
   const refusal = editRefusal(tree, node);
   if (refusal) return refuse("step-kept", refusal);
   const baked = this.bake(obj, raw);
-  if ("reason" in baked) return refuse("bad-op", baked.reason);
+  if ("reason" in baked) return refusePartReason(baked.reason, "bad-op");
   // --- K2 feature root. Reopen from the baked extrude, revolve, or loft. A probe on the solid is not a preview of replacing it, so the engine's open is the check. ---
   if (tree.root.kind === "feature") {
     const op = baked.op;
@@ -210,7 +210,7 @@ async function edit(this: Session, obj: PlateObject, node: number | null, raw: u
     if (read.ok !== true) return read;
   } else planned = this.bake(obj, raw);
   const baked = planned;
-  if ("reason" in baked) return refuse("bad-op", baked.reason);
+  if ("reason" in baked) return refusePartReason(baked.reason, "bad-op");
   let probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));
   if (!probed && probe) {
     // The same check model_probe {node} makes, on the parent's solid; a refusal is the probe's own, and nothing changes.

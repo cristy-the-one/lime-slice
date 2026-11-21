@@ -139,7 +139,7 @@ const READS: Record<PrimitiveKind, readonly string[]> = {
   torus: ["radius", "tubeRadius"],
   polygon: ["height", "sides", "across", "flats"],
   gear: ["height", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreShape", "boreFlat", "hubDiameter", "hubHeight", "internal", "rim", "rack", "back"],
-  part: ["height", "partKind", "nominal", "allowance", "length", "headDiameter", "headHeight", "socketDepth", "boreKind", "diameter", "bore", "hollow", "fit", "article", "taper", "setScrew"],
+  part: ["height", "partKind", "nominal", "allowance", "length", "headDiameter", "headHeight", "socketDepth", "boreKind", "diameter", "bore", "hollow", "fit", "article", "taper", "setScrew", "teeth"],
 };
 
 /** An op as a caller reads it back: a primitive keeps only the fields its kind reads. */

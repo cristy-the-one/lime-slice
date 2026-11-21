@@ -544,6 +544,7 @@ function sizeFields(spec: PrimitiveSpec): Record<string, number> {
       if (kind === "spacer") return { modelPartDiameter: spec.diameter ?? 10, modelPartLength: spec.height > 0 ? spec.height : 12, modelPartBore: spec.bore ?? 4.2 };
       if (kind === "shaft") return { modelPartDiameter: spec.diameter ?? 8, modelPartLength: spec.height > 0 ? spec.height : 40, modelPartAllowance: spec.allowance ?? 0.1 };
       if (kind === "collar") return { modelPartBore: spec.bore ?? 8, modelPartDiameter: spec.diameter ?? 14, modelPartLength: spec.height > 0 ? spec.height : 6, modelPartScrew: spec.setScrew ?? 3 };
+      if (kind === "gt2") return { modelPartTeeth: spec.teeth ?? 20, modelPartLength: spec.height > 0 ? spec.height : 6, modelPartBore: spec.bore ?? 5 };
       if (kind === "heat-set") {
         const row = heatRow(spec.article);
         const boss = row ? row.d1 + 2 * row.w : 7.8;
