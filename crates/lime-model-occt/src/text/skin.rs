@@ -138,6 +138,7 @@ enum Fail {
     Lost,
 }
 
+#[derive(Clone, Copy)]
 struct Frame {
     p: V3,
     su: V3,
@@ -200,10 +201,9 @@ impl<'a> Ground<'a> {
         ((g * a - m * b) / det, (e * b - m * a) / det)
     }
 
-    /// One step of `h` mm from `s` along its direction, which is carried along: a midpoint step, halved where the surface bends
-    /// too sharply for it.
-    fn step(&self, s: St, h: f64, depth: u8) -> Result<St, Fail> {
-        let a = self.frame(s.u, s.v)?;
+    /// One step of `h` mm from `(s, a)` along `s.t`, carrying the direction along: a midpoint step, halved where the surface bends
+    /// too sharply for it. Returns the next state and its surface frame so the caller does not re-evaluate `d1`.
+    fn step_from(&self, s: St, a: Frame, h: f64, depth: u8) -> Result<(St, Frame), Fail> {
         let t0 = tangent_of(s.t, a.n);
         let (du, dv) = Self::duv(&a, t0);
         let (um, vm) = (s.u + du * h / 2.0, s.v + dv * h / 2.0);
@@ -215,29 +215,32 @@ impl<'a> Ground<'a> {
         let chord = len(sub(c.p, a.p));
         if (chord - h).abs() > 0.03 * h + 1e-9 {
             if depth < 6 {
-                let half = self.step(s, h / 2.0, depth + 1)?;
-                return self.step(half, h / 2.0, depth + 1);
+                let (half_s, half_f) = self.step_from(s, a, h / 2.0, depth + 1)?;
+                return self.step_from(half_s, half_f, h / 2.0, depth + 1);
             }
             return Err(Fail::Sharp);
         }
-        Ok(St {
-            u: u1,
-            v: v1,
-            t: tangent_of(tm, c.n),
-        })
+        Ok((
+            St {
+                u: u1,
+                v: v1,
+                t: tangent_of(tm, c.n),
+            },
+            c,
+        ))
     }
 
-    /// `s` after walking `dist` mm along its direction.
-    fn walk(&self, mut s: St, dist: f64) -> Result<St, Fail> {
+    /// `(s, f)` after walking `dist` mm along `s.t`, returning the final state and its surface frame.
+    fn walk_from(&self, mut s: St, mut f: Frame, dist: f64) -> Result<(St, Frame), Fail> {
         if dist < 1e-9 {
-            return Ok(s);
+            return Ok((s, f));
         }
         let n = (dist / STEP_MM).ceil().max(1.0) as usize;
         let h = dist / n as f64;
         for _ in 0..n {
-            s = self.step(s, h, 0)?;
+            (s, f) = self.step_from(s, f, h, 0)?;
         }
-        Ok(s)
+        Ok((s, f))
     }
 }
 
@@ -273,9 +276,10 @@ struct Projector {
 pub struct Placer<'a> {
     g: Ground<'a>,
     info: &'a SkinInfo,
-    /// States along the baseline at 0, `STEP_MM`, ... in each direction; each one's direction is the way the walk went.
-    pos: Vec<St>,
-    neg: Vec<St>,
+    anchor: Frame,
+    /// States and surface frames along the baseline at 0, `STEP_MM`, ... in each direction; each one's direction is the way the walk went.
+    pos: Vec<(St, Frame)>,
+    neg: Vec<(St, Frame)>,
     project: Option<Projector>,
     /// Half the way round, mm, when the baseline came back on itself.
     pub half_round: Option<f64>,
@@ -320,20 +324,20 @@ impl<'a> Placer<'a> {
             t: right,
         };
         let mut half_round = None;
-        let mut table = |dir: f64, reach: f64| -> Result<Vec<St>, String> {
+        let mut table = |dir: f64, reach: f64| -> Result<Vec<(St, Frame)>, String> {
             let count = (reach / STEP_MM).ceil().max(0.0) as usize + 2;
             let mut out = Vec::with_capacity(count);
             let mut s = St {
                 t: mul(first.t, dir),
                 ..first
             };
-            out.push(s);
+            let mut f = a;
+            out.push((s, f));
             let mut chords = vec![0.0f64];
             for _ in 1..count {
-                s = g.step(s, STEP_MM, 0).map_err(fail)?;
-                let f = g.frame(s.u, s.v).map_err(fail)?;
+                (s, f) = g.step_from(s, f, STEP_MM, 0).map_err(fail)?;
                 chords.push(len(sub(f.p, a.p)));
-                out.push(s);
+                out.push((s, f));
             }
             // The baseline comes back towards the anchor once it is past half way round: the chord peaks there. The peak, between
             // three samples, by the parabola through them.
@@ -365,6 +369,7 @@ impl<'a> Placer<'a> {
         let placer = Placer {
             g,
             info,
+            anchor: a,
             pos,
             neg,
             project,
@@ -378,7 +383,7 @@ impl<'a> Placer<'a> {
         self.g.surf.d1(uv[0], uv[1]).map(|t| t.0)
     }
 
-    fn fermi(&self, x: f64, y: f64) -> Result<P, Fail> {
+    fn fermi_frame(&self, x: f64, y: f64) -> Result<(P, Frame), Fail> {
         let (table, sign) = if x >= 0.0 {
             (&self.pos, 1.0)
         } else {
@@ -386,26 +391,27 @@ impl<'a> Placer<'a> {
         };
         let ax = x.abs();
         let i = ((ax / STEP_MM).floor() as usize).min(table.len() - 1);
-        let at = self.g.walk(table[i], ax - i as f64 * STEP_MM)?;
+        let (st0, f0) = table[i];
+        let (at, f) = self.g.walk_from(st0, f0, ax - i as f64 * STEP_MM)?;
         if y.abs() < 1e-12 {
-            return Ok([at.u, at.v]);
+            return Ok(([at.u, at.v], f));
         }
-        let f = self.g.frame(at.u, at.v)?;
         // The walk's direction is `sign` times the text's right; up is the normal crossed with right.
         let right = mul(tangent_of(at.t, f.n), sign);
         let up = cross(f.n, right);
-        let end = self.g.walk(
+        let (end, end_f) = self.g.walk_from(
             St {
                 u: at.u,
                 v: at.v,
                 t: mul(up, y.signum()),
             },
+            f,
             y.abs(),
         )?;
-        Ok([end.u, end.v])
+        Ok(([end.u, end.v], end_f))
     }
 
-    fn projected(&self, x: f64, y: f64) -> Result<P, Fail> {
+    fn projected_frame(&self, x: f64, y: f64) -> Result<(P, Frame), Fail> {
         let pr = self.project.as_ref().expect("a projector");
         let target = add(add(pr.origin, mul(pr.right, x)), mul(pr.up, y));
         let [mut u, mut v] = pr.last.get();
@@ -418,7 +424,7 @@ impl<'a> Placer<'a> {
                     return Err(Fail::Steep);
                 }
                 pr.last.set([u, v]);
-                return Ok([u, v]);
+                return Ok(([u, v], f));
             }
             let j = [
                 [dot(f.su, pr.right), dot(f.sv, pr.right)],
@@ -443,8 +449,15 @@ impl<'a> Placer<'a> {
     }
 
     /// The point of the surface at `(u, v)` and the same point moved `lift` along its outward normal (negative goes into the part).
+    #[cfg(test)]
     pub fn base_and_top(&self, u: f64, v: f64, lift: f64) -> Option<(V3, V3)> {
         let f = self.g.frame(u, v).ok()?;
+        Some((f.p, add(f.p, mul(f.n, lift))))
+    }
+
+    /// The point of the surface and its lifted point for layout point `p`, reusing the surface frame from mapping.
+    pub fn place(&self, p: P, lift: f64) -> Option<(V3, V3)> {
+        let (_, f) = self.map_frame(p).ok()?;
         Some((f.p, add(f.p, mul(f.n, lift))))
     }
 
@@ -453,24 +466,26 @@ impl<'a> Placer<'a> {
         self.half_round.map(|half| 2.0 * half)
     }
 
-    /// A layout point `(x, y)` (mm, centred on the anchor) as `(u, v)`.
-    pub fn map(&self, p: P) -> Result<P, String> {
+    fn map_frame(&self, p: P) -> Result<(P, Frame), String> {
         let at = if self.project.is_some() {
-            self.projected(p[0], p[1])
+            self.projected_frame(p[0], p[1])
         } else {
-            self.fermi(p[0], p[1])
+            self.fermi_frame(p[0], p[1])
         };
         at.map_err(|f| sentence(f, &self.info.kind))
+    }
+
+    /// A layout point `(x, y)` (mm, centred on the anchor) as `(u, v)`.
+    pub fn map(&self, p: P) -> Result<P, String> {
+        self.map_frame(p).map(|(uv, _)| uv)
     }
 
     /// How much a line `y` mm from the baseline is stretched along it: the surface's length over the layout's.
     fn stretch(&self, x: f64, y: f64) -> Result<f64, Fail> {
         let delta = 0.25;
-        let a = self.fermi(x - delta, y)?;
-        let b = self.fermi(x + delta, y)?;
-        let pa = self.g.frame(a[0], a[1])?.p;
-        let pb = self.g.frame(b[0], b[1])?.p;
-        Ok(len(sub(pb, pa)) / (2.0 * delta))
+        let (_, fa) = self.fermi_frame(x - delta, y)?;
+        let (_, fb) = self.fermi_frame(x + delta, y)?;
+        Ok(len(sub(fb.p, fa.p)) / (2.0 * delta))
     }
 }
 
@@ -496,30 +511,36 @@ fn map_piece(
     at: P,
     at_uv: P,
     seg: Seg,
+    end_known: Option<P>,
     placer: &Placer,
     depth: u8,
     out: &mut Vec<Seg>,
 ) -> Result<P, String> {
     let map = |p: P| placer.map(p);
-    let mapped = match seg {
-        Seg::Line(p) => Seg::Line(map(p)?),
-        Seg::Quad(c, p) => Seg::Quad(map(c)?, map(p)?),
-        Seg::Cubic(a, b, p) => Seg::Cubic(map(a)?, map(b)?, map(p)?),
+    let end_uv = match end_known {
+        Some(uv) => uv,
+        None => map(match seg {
+            Seg::Line(p) | Seg::Quad(_, p) | Seg::Cubic(_, _, p) => p,
+        })?,
     };
-    let end_uv = match mapped {
-        Seg::Line(p) | Seg::Quad(_, p) | Seg::Cubic(_, _, p) => p,
+    let mapped = match seg {
+        Seg::Line(_) => Seg::Line(end_uv),
+        Seg::Quad(c, _) => Seg::Quad(map(c)?, end_uv),
+        Seg::Cubic(a, b, _) => Seg::Cubic(map(a)?, map(b)?, end_uv),
     };
     if depth < 6 && piece_len(at, &seg) > 0.3 {
-        let exact = map(mid_of(at, &seg))?;
+        let (exact_uv, exact_f) = placer.map_frame(mid_of(at, &seg))?;
         let drawn = mid_of(at_uv, &mapped);
-        let strays = match (placer.point_at(exact), placer.point_at(drawn)) {
-            (Some(a), Some(b)) => len(sub(a, b)) > BEND_MM,
-            _ => true,
+        let strays = match placer.point_at(drawn) {
+            Some(b) => len(sub(exact_f.p, b)) > BEND_MM,
+            None => true,
         };
         if strays {
+            let halves = split(at, seg, 2);
             let mut cur = at_uv;
-            for (from, piece) in split(at, seg, 2) {
-                cur = map_piece(from, cur, piece, placer, depth + 1, out)?;
+            for (idx, (from, piece)) in halves.into_iter().enumerate() {
+                let known = if idx == 0 { Some(exact_uv) } else { Some(end_uv) };
+                cur = map_piece(from, cur, piece, known, placer, depth + 1, out)?;
             }
             return Ok(cur);
         }
@@ -536,11 +557,18 @@ fn map_contour(contour: &super::Contour, placer: &Placer) -> Result<super::Conto
         segs: Vec::new(),
     };
     let (mut at, mut at_uv) = (contour.start, start);
-    for seg in &contour.segs {
-        at_uv = map_piece(at, at_uv, *seg, placer, 0, &mut out.segs)?;
-        at = match *seg {
+    let last_idx = contour.segs.len().saturating_sub(1);
+    for (idx, seg) in contour.segs.iter().enumerate() {
+        let end = match *seg {
             Seg::Line(p) | Seg::Quad(_, p) | Seg::Cubic(_, _, p) => p,
         };
+        let end_known = if idx == last_idx && end == contour.start {
+            Some(start)
+        } else {
+            None
+        };
+        at_uv = map_piece(at, at_uv, *seg, end_known, placer, 0, &mut out.segs)?;
+        at = end;
     }
     // The loop closes on its start exactly.
     if let Some(last) = out.segs.last_mut() {
@@ -714,9 +742,7 @@ pub fn lay_placed<'a>(
     let bounds = bounds_of(&out).ok_or("The text has no letters to build. Spaces leave no ink.")?;
     let ground = &placer.g;
     // The seam is crossed where the ink comes within 0.05 mm of the face's end in a direction that goes all the way round.
-    let a = ground
-        .frame(info.u0, info.v0)
-        .map_err(|f| sentence(f, &info.kind))?;
+    let a = placer.anchor;
     let (mu, mv) = (0.05 / len(a.su), 0.05 / len(a.sv));
     let crosses_u = range(
         bounds[0],

@@ -168,6 +168,14 @@ impl GlyphFace {
         std::iter::once(&self.outer).chain(self.holes.iter())
     }
 
+    fn map(&self, ch: char, f: &impl Fn(P) -> P) -> GlyphFace {
+        GlyphFace {
+            ch,
+            outer: self.outer.map(f),
+            holes: self.holes.iter().map(|h| h.map(f)).collect(),
+        }
+    }
+
     /// The face's ink area, mm².
     pub fn area(&self) -> f64 {
         let ring = |c: &Contour| area(&c.flatten(FLAT_MM)).abs();
@@ -213,6 +221,8 @@ pub const DEFAULT_LINE_SPACING: f64 = 1.3;
 #[derive(Clone, Debug)]
 pub struct Laid {
     pub faces: Vec<GlyphFace>,
+    /// Which unmerged character occurrence each face came from (`None` when merged with another face), parallel to `faces`.
+    pub(crate) groups: Vec<Option<usize>>,
     /// Each line's advance width, mm.
     pub widths: Vec<f64>,
     /// The ink's box: min u, min v, max u, max v. Empty text has none.
@@ -543,17 +553,23 @@ fn union_contours(ch: char, contours: &[Contour]) -> Vec<GlyphFace> {
         .iter()
         .map(|p| area(p))
         .fold(0.0f64, |m, a| if a.abs() > m.abs() { a } else { m });
-    let mut fill = Region::empty();
-    let mut holes = Region::empty();
+    let mut fill_polys: Vec<Poly> = Vec::new();
+    let mut hole_polys: Vec<Poly> = Vec::new();
     for poly in &polys {
-        let region = Region::from_poly(&Poly::new(poly.clone()));
+        let p = Poly::new(poly.clone());
         if (area(poly) > 0.0) == (main > 0.0) {
-            fill = fill.union(&region);
+            fill_polys.push(p);
         } else {
-            holes = holes.union(&region);
+            hole_polys.push(p);
         }
     }
-    faces_of_region(ch, &fill.difference(&holes))
+    let fill = Region::union_polys(&fill_polys);
+    let combined = if hole_polys.is_empty() {
+        fill
+    } else {
+        fill.difference(&Region::union_polys(&hole_polys))
+    };
+    faces_of_region(ch, &combined)
 }
 
 /// How far a refitted loop may stray from the polyline it came from, mm.
@@ -602,7 +618,16 @@ fn faces_of_region(ch: char, region: &Region) -> Vec<GlyphFace> {
 /// Letters that touch or overlap are united in 2D, so the build never sees two outlines crossing. Only the faces that meet
 /// another are rebuilt (as polylines); every other face keeps its curves. Faces keep their order, a united group taking the
 /// place of its first.
+#[cfg(test)]
 pub fn merge_overlaps(faces: Vec<GlyphFace>) -> Vec<GlyphFace> {
+    let groups: Vec<usize> = (0..faces.len()).collect();
+    merge_overlaps_grouped(faces, groups).0
+}
+
+fn merge_overlaps_grouped(
+    faces: Vec<GlyphFace>,
+    groups: Vec<usize>,
+) -> (Vec<GlyphFace>, Vec<Option<usize>>) {
     let n = faces.len();
     let rings: Vec<Vec<Vec<P>>> = faces
         .iter()
@@ -642,6 +667,7 @@ pub fn merge_overlaps(faces: Vec<GlyphFace>) -> Vec<GlyphFace> {
     }
     let roots: Vec<usize> = (0..n).map(|i| find(&mut group, i)).collect();
     let mut out = Vec::with_capacity(n);
+    let mut out_groups = Vec::with_capacity(n);
     for i in 0..n {
         if roots[i] != i {
             continue;
@@ -649,17 +675,23 @@ pub fn merge_overlaps(faces: Vec<GlyphFace>) -> Vec<GlyphFace> {
         let members: Vec<usize> = (0..n).filter(|&k| roots[k] == i).collect();
         if members.len() == 1 {
             out.push(faces[i].clone());
+            out_groups.push(Some(groups[i]));
             continue;
         }
-        let mut region = Region::empty();
-        for &k in &members {
-            let outer = Poly::new(rings[k][0].clone());
-            let holes: Vec<Poly> = rings[k][1..].iter().map(|r| Poly::new(r.clone())).collect();
-            region = region.union(&Region::with_holes(&outer, &holes));
-        }
-        out.extend(faces_of_region(faces[i].ch, &region));
+        let regs: Vec<Region> = members
+            .iter()
+            .map(|&k| {
+                let outer = Poly::new(rings[k][0].clone());
+                let holes: Vec<Poly> = rings[k][1..].iter().map(|r| Poly::new(r.clone())).collect();
+                Region::with_holes(&outer, &holes)
+            })
+            .collect();
+        let region = Region::union_all(&regs);
+        let merged = faces_of_region(faces[i].ch, &region);
+        out_groups.extend(std::iter::repeat_n(None, merged.len()));
+        out.extend(merged);
     }
-    out
+    (out, out_groups)
 }
 
 /// The right gap after `left` before `right`, in font units: the `kern` feature's pair adjustments in `GPOS`, and when there
@@ -827,9 +859,15 @@ pub(crate) fn lay_out_with(
         return Err(glyphs.lacks(&missing));
     }
     let mut faces = Vec::new();
+    let mut groups = Vec::new();
+    let mut next_group = 0usize;
     let mut widths = Vec::with_capacity(lines.len());
-    // Outlines are read once per distinct letter: a glyph's contours do not depend on where it stands.
-    let mut cache: Vec<(u32, Vec<Contour>)> = Vec::new();
+    // Scaled and sheared faces are built once per distinct glyph: translation and rotation are rigid.
+    let mut cache: Vec<(u32, Vec<GlyphFace>)> = Vec::new();
+    let local = |p: P| -> P {
+        let (x, y) = (p[0] * k, p[1] * k);
+        [x + y * shear, y]
+    };
     for (row, line) in lines.iter().enumerate() {
         let mut placed: Vec<(u32, f64, char)> = Vec::new();
         let mut pen = 0.0;
@@ -857,34 +895,39 @@ pub(crate) fn lay_out_with(
         let y0 = -(row as f64) * pitch - block_mid;
         for (gid, at, ch) in placed {
             if !cache.iter().any(|(g, _)| *g == gid) {
-                cache.push((gid, glyphs.outline(gid)));
+                let raw = glyphs.outline(gid);
+                let cleaned: Vec<Contour> = raw
+                    .iter()
+                    .map(|c| clean(&c.map(&local)))
+                    .filter(|c| c.segs.len() >= 2 && area(&c.flatten(FLAT_MM)).abs() > 1e-6)
+                    .collect();
+                let built = if cleaned.is_empty() {
+                    Vec::new()
+                } else if contours_overlap(&cleaned) {
+                    union_contours(ch, &cleaned)
+                } else {
+                    faces_of(ch, &cleaned)
+                };
+                cache.push((gid, built));
             }
-            let contours = &cache.iter().find(|(g, _)| *g == gid).expect("read above").1;
-            if contours.is_empty() {
+            let cached = &cache.iter().find(|(g, _)| *g == gid).expect("read above").1;
+            if cached.is_empty() {
                 continue;
             }
+            let dx = x0 + at;
             let place = |p: P| -> P {
-                let (x, y) = (p[0] * k, p[1] * k);
-                let (x, y) = (x + y * shear, y);
-                let (x, y) = (x0 + at + x, y0 + y);
+                let (x, y) = (dx + p[0], y0 + p[1]);
                 [x * cos - y * sin, x * sin + y * cos]
             };
-            let placed: Vec<Contour> = contours
-                .iter()
-                .map(|c| clean(&c.map(&place)))
-                .filter(|c| c.segs.len() >= 2 && area(&c.flatten(FLAT_MM)).abs() > 1e-6)
-                .collect();
-            if placed.is_empty() {
-                continue;
-            }
-            if contours_overlap(&placed) {
-                faces.extend(union_contours(ch, &placed));
-            } else {
-                faces.extend(faces_of(ch, &placed));
+            let group_id = next_group;
+            next_group += 1;
+            for face in cached {
+                faces.push(face.map(ch, &place));
+                groups.push(group_id);
             }
         }
     }
-    let faces = merge_overlaps(faces);
+    let (faces, groups) = merge_overlaps_grouped(faces, groups);
     let mut bounds: Option<[f64; 4]> = None;
     let mut ink = 0.0;
     for glyph in &faces {
@@ -902,6 +945,7 @@ pub(crate) fn lay_out_with(
     }
     Ok(Laid {
         faces,
+        groups,
         widths,
         bounds,
         ink_mm2: ink,
@@ -926,32 +970,55 @@ pub fn thin_letters(laid: &Laid, line_mm: f64) -> Vec<Thin> {
     }
     let mut seen: Vec<char> = Vec::new();
     let mut out = Vec::new();
-    for glyph in &laid.faces {
+    for (idx, glyph) in laid.faces.iter().enumerate() {
         if seen.contains(&glyph.ch) {
             continue;
         }
         seen.push(glyph.ch);
-        // Every piece of this letter wherever it stands: the ratio is the same for one copy or several.
-        let mut region = Region::empty();
-        for same in laid.faces.iter().filter(|other| other.ch == glyph.ch) {
+        // When no copy of this character was merged with a neighbour, every occurrence is a rigid copy of the first (keeping
+        // multi-piece glyphs like 'i' together), so testing one occurrence gives the exact same ratio. When any copy merged
+        // with another face (tight spacing, overlapping script), fall back to unioning all faces with this character.
+        let any_merged = laid.faces.iter().enumerate().any(|(j, other)| {
+            other.ch == glyph.ch && laid.groups.get(j).copied().flatten().is_none()
+        });
+        let single_group = if any_merged {
+            None
+        } else {
+            laid.groups.get(idx).copied().flatten()
+        };
+        let mut pieces: Vec<Region> = Vec::new();
+        for (j, same) in laid.faces.iter().enumerate() {
+            let matches = match single_group {
+                Some(g) => laid.groups.get(j).copied().flatten() == Some(g) && same.ch == glyph.ch,
+                None => same.ch == glyph.ch,
+            };
+            if !matches {
+                continue;
+            }
             let outer = Poly::new(same.outer.flatten(FLAT_MM));
             let holes: Vec<Poly> = same
                 .holes
                 .iter()
                 .map(|h| Poly::new(h.flatten(FLAT_MM)))
                 .collect();
-            region = region.union(&Region::with_holes(&outer, &holes));
+            pieces.push(Region::with_holes(&outer, &holes));
         }
+        let region = match pieces.len() {
+            0 => Region::empty(),
+            1 => pieces.into_iter().next().expect("one"),
+            _ => Region::union_all(&pieces),
+        };
         let total = region.area();
         if total.is_nan() || total <= 1e-9 {
             continue;
         }
-        let opened = region
-            .offset(-line_mm / 2.0)
-            .to_region(0.005)
-            .offset(line_mm / 2.0)
-            .to_region(0.005);
-        let lost = (total - opened.area()).max(0.0);
+        let shrunk = region.offset(-line_mm / 2.0);
+        let opened_area = if shrunk.paths.is_empty() {
+            0.0
+        } else {
+            shrunk.to_region(0.005).offset(line_mm / 2.0).area()
+        };
+        let lost = (total - opened_area).max(0.0);
         if lost > THIN_SHARE * total {
             out.push(Thin {
                 ch: glyph.ch,
