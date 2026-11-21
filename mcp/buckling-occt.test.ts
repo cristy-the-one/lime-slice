@@ -1,6 +1,6 @@
 /**
  * A buckling goal through ribs_plan, against real Open CASCADE and the engine, on a synthetic shelled box.
- * The reply's load factor before and after, the refusals, a named case, and ribs_apply with and without verify.
+ * The reply's load factor before and after, the refusals, a named case, a wall that already holds, and ribs_apply with and without verify.
  * It runs on the Auto ribs Open CASCADE job: a buckling plan eigen-solves many times.
  * Skips when LIME_OCCT_BRIDGE is unset, and fails in CI when it is unset.
  */
@@ -89,7 +89,22 @@ const [BX, BY, BZ] = [64, 40, 14];
 const object = await shellBox(BX, BY, BZ);
 const floor = faceAt(object, [0, 0, 2], [0, 0, 1]);
 const wall = { faces: [floor] };
-const edge = { kind: "force", faces: [floor], magnitude: 40, direction: [1, 0, 0] };
+const MILD_N = 40;
+const ASKED = 1.5;
+const edgeForce = (magnitude: number) => ({ kind: "force", faces: [floor], magnitude, direction: [1, 0, 0] });
+const edge = edgeForce(MILD_N);
+const casesFor = (magnitude: number) => [
+  { name: "edge", loads: [edgeForce(magnitude)] },
+  { name: "press", loads: [{ kind: "pressure", faces: [floor], magnitude: 0.01, direction: [0, 0, -1] }] },
+];
+
+function factorLine(label: string, reply: Reply): string {
+  const factor = reply.plan?.bucklingFactor;
+  const line = `${label}: plan.bucklingFactor bare ${factor?.bare} ribbed ${factor?.ribbed} ribs ${reply.plan?.ribs?.length} goalMet ${reply.plan?.goalMet}`;
+  console.log(`  ${line}`);
+  report.push(line);
+  return line;
+}
 
 /** A refusal the tool answers, including one the schema throws before the planner runs. */
 async function refusal(args: Reply, message: RegExp) {
@@ -109,43 +124,68 @@ async function refusal(args: Reply, message: RegExp) {
 await refusal({ goal: { buckling: 0.5 } }, /A buckling goal must be 1 or more/);
 await refusal({ goal: { buckling: 3, budgetMm3: 100 } }, /A plan has one goal: buckling and budgetMm3 cannot both be set/);
 await refusal({ goal: { buckling: 3, on: "only" }, loadCases: [{ name: "only", loads: [edge] }] }, /A buckling goal names a load case only when there is more than one/);
-await refusal({ goal: { buckling: 3 }, loadCases: [{ name: "edge", loads: [edge] }, { name: "press", loads: [{ kind: "pressure", faces: [floor], magnitude: 0.01, direction: [0, 0, -1] }] }] }, /A buckling goal needs the load case it is solved against/);
+await refusal({ goal: { buckling: 3 }, loadCases: casesFor(MILD_N) }, /A buckling goal needs the load case it is solved against/);
 
 const pressure = await waitJob(String((await call("ribs_plan", { object, wall, goal: { buckling: 2 }, baselines: false })).job));
 check("even pressure is refused as no compression", pressure.ok === false && /doesn't press along it/.test(String(pressure.reason)), JSON.stringify(pressure).slice(0, 400));
 report.push(`pressure: ${pressure.reason}`);
 
+const enoughAsked = await call("ribs_plan", {
+  object,
+  wall,
+  baselines: false,
+  goal: { buckling: ASKED, on: "edge" },
+  loadCases: casesFor(MILD_N),
+});
+const enough = await waitJob(String(enoughAsked.job));
+const enoughFactor = enough.plan?.bucklingFactor;
+const enoughSentence = String(enough.sentence ?? "");
+check(
+  "a wall already above the factor plans no ribs",
+  enough.ok === true && (enough.plan?.ribs?.length ?? 0) === 0 && enough.plan?.goalMet === true && !!enoughFactor && enoughFactor.bare > ASKED && /The wall already holds /.test(enoughSentence) && /No ribs needed\./.test(enoughSentence),
+  JSON.stringify({ factor: enoughFactor, ribs: enough.plan?.ribs?.length, goalMet: enough.plan?.goalMet, sentence: enough.sentence, reason: enough.reason }).slice(0, 500),
+);
+factorLine("already enough", enough);
+report.push(`already enough sentence: ${enough.sentence}`);
+
+// The load factor scales as 1/load. The mild edge load already holds, so raise it until the bare factor sits near 1.1, under the 1.5× ask.
+const mildBare = Number(enoughFactor?.bare);
+const heavyN = Number.isFinite(mildBare) && mildBare > ASKED ? Math.ceil((MILD_N * mildBare) / 1.1) : MILD_N * 50;
+report.push(`rib load ${heavyN} N, from bare ${mildBare} at ${MILD_N} N`);
+
 const started = await call("ribs_plan", {
   object,
   wall,
   baselines: false,
-  goal: { buckling: 1.5, on: "edge" },
-  loadCases: [
-    { name: "edge", loads: [edge] },
-    { name: "press", loads: [{ kind: "pressure", faces: [floor], magnitude: 0.01, direction: [0, 0, -1] }] },
-  ],
+  goal: { buckling: ASKED, on: "edge" },
+  loadCases: casesFor(heavyN),
 });
 const done = await waitJob(String(started.job));
 const factor = done.plan?.bucklingFactor;
+const ribs = done.plan?.ribs?.length ?? 0;
 check("the reply has bucklingFactor before and after", done.ok === true && factor && factor.ribbed + 1e-9 >= factor.bare && factor.bare > 0, JSON.stringify({ factor, goalMet: done.plan?.goalMet, sentence: done.sentence, reason: done.reason }).slice(0, 500));
+const ready = done.ok === true && ribs > 0 && !!factor && factor.bare < ASKED;
+check("the plan has ribs and the bare factor is below the asked factor", ready, JSON.stringify({ factor, ribs, asked: ASKED, goalMet: done.plan?.goalMet, sentence: done.sentence, reason: done.reason }).slice(0, 500));
 check("the sentence carries the warning", /This is the ideal buckling load/.test(String(done.sentence)), String(done.sentence));
 check("the sentence names the case", /Against case: edge/.test(String(done.sentence)) || ((done.notes ?? []) as string[]).some((line) => line === "Against case: edge"), JSON.stringify({ sentence: done.sentence, notes: done.notes }).slice(0, 500));
-report.push(`plan.bucklingFactor bare ${factor?.bare} ribbed ${factor?.ribbed} ribs ${done.plan?.ribs?.length} goalMet ${done.plan?.goalMet}`);
+factorLine("with ribs", done);
 report.push(`sentence: ${done.sentence}`);
 report.push(`notes: ${JSON.stringify(done.notes)}`);
 
-const withoutGoal = { ...done.plan };
-delete withoutGoal.goal;
-let applied = await call("ribs_apply", { object, plan: withoutGoal });
-if (applied.status === "running") applied = await waitJob(String(applied.job));
-check("a plan applied without its goal does not take the stored buckling note", applied.ok === true && !/buckling load to check/.test(String(applied.note ?? "")), JSON.stringify(applied).slice(0, 400));
-await call("model_undo", { object });
-let verified = await call("ribs_apply", { object, plan: done.plan, verify: true });
-if (verified.status === "running") verified = await waitJob(String(verified.job));
-check("ribs_apply with the plan's goal says a static check has no buckling load", verified.ok === true && /no buckling load to check/.test(String(verified.note ?? "")), JSON.stringify({ note: verified.note, ok: verified.ok }).slice(0, 400));
-check("verify on a buckling plan says the check is static", verified.verify && /no buckling load to check/.test(String(verified.verify.note)), JSON.stringify(verified.verify).slice(0, 400));
-report.push(`apply without goal: note ${JSON.stringify(applied.note ?? null)}`);
-report.push(`apply with verify: note ${JSON.stringify(verified.note)}; verify ${JSON.stringify(verified.verify?.note)}`);
+if (ready) {
+  const withoutGoal = { ...done.plan };
+  delete withoutGoal.goal;
+  let applied = await call("ribs_apply", { object, plan: withoutGoal });
+  if (applied.status === "running") applied = await waitJob(String(applied.job));
+  check("a plan applied without its goal does not take the stored buckling note", applied.ok === true && !/buckling load to check/.test(String(applied.note ?? "")), JSON.stringify(applied).slice(0, 400));
+  await call("model_undo", { object });
+  let verified = await call("ribs_apply", { object, plan: done.plan, verify: true });
+  if (verified.status === "running") verified = await waitJob(String(verified.job));
+  check("ribs_apply with the plan's goal says a static check has no buckling load", verified.ok === true && /no buckling load to check/.test(String(verified.note ?? "")), JSON.stringify({ note: verified.note, ok: verified.ok }).slice(0, 400));
+  check("verify on a buckling plan says the check is static", verified.verify && /no buckling load to check/.test(String(verified.verify.note)), JSON.stringify(verified.verify).slice(0, 400));
+  report.push(`apply without goal: note ${JSON.stringify(applied.note ?? null)}`);
+  report.push(`apply with verify: note ${JSON.stringify(verified.note)}; verify ${JSON.stringify(verified.verify?.note)}`);
+}
 
 const missedObject = await shellBox(BX, BY, BZ);
 const missedFloor = faceAt(missedObject, [0, 0, 2], [0, 0, 1]);
