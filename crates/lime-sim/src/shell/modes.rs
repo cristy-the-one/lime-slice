@@ -268,9 +268,35 @@ pub(crate) fn lowest(
     factor: &Factor,
     count: usize,
 ) -> Result<ModeSet, SimError> {
+    let (found, seconds) = positive_rays(pattern, stiffness, mass, symbolic, factor, count)?;
+    if found.len() < count {
+        return Err(SimError::new(format!(
+            "The shell yielded {} mode(s); {count} were asked for.",
+            found.len()
+        )));
+    }
+    Ok(ModeSet {
+        modes: found,
+        seconds,
+    })
+}
+
+/// Positive Rayleigh quotients vᵀ K v / vᵀ S v, lowest first, at most
+/// `count` of them. `metric` is the S of the pencil (the mass, for a
+/// frequency). An empty list means the pencil has no positive quotient:
+/// a buckling solve reads that as no compression, and does not turn it
+/// into a factor of zero.
+pub(crate) fn positive_rays(
+    pattern: &Pattern,
+    stiffness: &[f64],
+    metric: &[f64],
+    symbolic: &SymbolicCholesky<usize>,
+    factor: &Factor,
+    count: usize,
+) -> Result<(Vec<ShellMode>, f64), SimError> {
     let op = ShiftInv {
         pattern,
-        mass,
+        mass: metric,
         symbolic,
         factor,
     };
@@ -316,32 +342,23 @@ pub(crate) fn lowest(
         }
         let v: Vec<f64> = (0..n).map(|i| vecs[(i, j)].re).collect();
         let kk = sym_dot(pattern, stiffness, &v, &v);
-        let ss = sym_dot(pattern, mass, &v, &v);
+        let ss = sym_dot(pattern, metric, &v, &v);
         if ss.abs() < 1e-30 * kk.abs().max(1.0) {
             continue;
         }
-        let omega2 = kk / ss;
-        if !(omega2.is_finite() && omega2 > 0.0) {
+        let ray = kk / ss;
+        if !(ray.is_finite() && ray > 0.0) {
             continue;
         }
         found.push(ShellMode {
-            omega2,
-            hz: omega2.sqrt() / std::f64::consts::TAU,
+            omega2: ray,
+            hz: ray.sqrt() / std::f64::consts::TAU,
             vector: v,
         });
     }
     found.sort_by(|a, b| a.omega2.total_cmp(&b.omega2));
     found.truncate(count);
-    if found.len() < count {
-        return Err(SimError::new(format!(
-            "The shell yielded {} mode(s); {count} were asked for.",
-            found.len()
-        )));
-    }
-    Ok(ModeSet {
-        modes: found,
-        seconds,
-    })
+    Ok((found, seconds))
 }
 
 #[cfg(test)]

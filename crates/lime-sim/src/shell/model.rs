@@ -241,6 +241,24 @@ pub struct ShellResult {
     pub pivot_ratio: f64,
 }
 
+/// One buckling mode. `lambda` is the factor on the reference load: the
+/// wall buckles at `lambda` times that load. Only positive factors are
+/// returned; the lowest is the answer.
+#[derive(Clone, Debug)]
+pub struct BucklingMode {
+    pub lambda: f64,
+    /// Free dofs, the same order as a frequency mode.
+    pub vector: Vec<f64>,
+}
+
+/// The positive buckling load factors [`ShellModel::buckling_modes`] found,
+/// lowest first.
+#[derive(Clone, Debug)]
+pub struct BucklingSet {
+    pub modes: Vec<BucklingMode>,
+    pub seconds: f64,
+}
+
 /// Seconds spent in each phase, last run of each.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timings {
@@ -365,6 +383,17 @@ fn crease_map(mesh: &ShellMesh, tris: &[Tri]) -> (Vec<bool>, EdgeFaces) {
         }
     }
     (on_crease, edge_faces)
+}
+
+/// The most negative principal membrane force, N/mm. Tension is positive,
+/// so a result below zero is compression. Zero when nothing is compressed.
+fn most_compressive(forces: &[[f64; 3]]) -> f64 {
+    forces.iter().fold(0.0, |acc, f| {
+        let [xx, yy, xy] = *f;
+        let mean = 0.5 * (xx + yy);
+        let r = (0.25 * (xx - yy) * (xx - yy) + xy * xy).sqrt();
+        acc.min(mean - r)
+    })
 }
 
 impl ShellModel {
@@ -1483,6 +1512,162 @@ impl ShellModel {
             factor,
             count,
         )
+    }
+
+    /// Buckling load factors of `case`, lowest positive first.
+    ///
+    /// The static solve supplies the membrane force on each triangle. The
+    /// pencil is K φ = λ S φ with S = −Kg, Kg the plate geometric stiffness
+    /// of those forces (DKT slopes). Membrane Kg is left out: the study
+    /// found it changes no printed digit of this mode. Beam Kg is left out
+    /// too: a rib buckling on its own is not this factor. Each triangle
+    /// uses its own force and its own frame, so a folded wall is the same
+    /// sum. No positive λ is [`crate::error::no_buckling_compression`], not
+    /// a factor of zero.
+    pub fn buckling_modes(
+        &mut self,
+        case: &[ShellLoad],
+        count: usize,
+    ) -> Result<BucklingSet, SimError> {
+        Ok(self.buckling_state(case, count)?.0)
+    }
+
+    /// Vertex displacements of a free-dof vector (a mode). Held vertices
+    /// stay at rest.
+    pub fn vertex_motion(&self, free: &[f64]) -> Result<Vec<[f64; 3]>, SimError> {
+        Ok(self.result_of_free(free)?.displacement)
+    }
+
+    /// Lower generalised eigenvalue of φᵢᵀ ΔK φⱼ against φᵢᵀ S φⱼ, S = −Kg
+    /// of `case`. The rise in the lowest load factor a rib would buy in
+    /// that subspace, with the pre-stress held. A repeated pair uses the
+    /// projected 2×2, so a node-line rib is not scored as if it had raised
+    /// both.
+    pub fn buckling_cluster_shift(
+        &mut self,
+        case: &[ShellLoad],
+        rib: &Rib,
+        vectors: &[Vec<f64>],
+    ) -> Result<f64, SimError> {
+        let (_, metric, _) = self.buckling_state(case, 1.max(vectors.len()))?;
+        let gram = self.mass_gram(vectors, &metric);
+        self.cluster_shift_mass(std::slice::from_ref(rib), vectors, &gram)
+    }
+
+    /// The positive factors, the upper triangle of S = −Kg, and the static
+    /// solution the forces came from.
+    pub(crate) fn buckling_state(
+        &mut self,
+        case: &[ShellLoad],
+        count: usize,
+    ) -> Result<(BucklingSet, Vec<f64>, ShellResult), SimError> {
+        if self.pattern.n == 0 {
+            return Err(SimError::new("The shell has nothing free to buckle."));
+        }
+        if count == 0 {
+            return Err(SimError::new("A buckling solve needs at least one mode."));
+        }
+        let solved = self.solve(case)?;
+        let forces: Vec<[f64; 3]> = solved
+            .elements
+            .iter()
+            .map(|e| e.membrane_force.local)
+            .collect();
+        // A wall with no compression has S = 0. The Krylov–Schur step then
+        // reorthogonalises a zero vector and never returns (faer's Arnoldi
+        // loop treats `0 < ε·0` as false). There is no positive λ in that
+        // pencil, so refuse before the eigenproblem. 1e-9 N/mm is far above
+        // a static solve's roundoff and far below a load anyone would ask
+        // about, in these units (N, mm).
+        if most_compressive(&forces) >= -1e-9 {
+            return Err(crate::error::no_buckling_compression());
+        }
+        let metric = self.geometric_upper(&forces);
+        let stiffness = self.values();
+        self.ensure_factor()?;
+        let factor = self.factor.as_ref().expect("just factored");
+        let (found, seconds) = super::modes::positive_rays(
+            &self.pattern,
+            &stiffness,
+            &metric,
+            &self.symbolic,
+            factor,
+            count,
+        )?;
+        if found.is_empty() {
+            return Err(crate::error::no_buckling_compression());
+        }
+        let modes = found
+            .into_iter()
+            .map(|m| BucklingMode {
+                lambda: m.omega2,
+                vector: m.vector,
+            })
+            .collect();
+        Ok((
+            BucklingSet { modes, seconds },
+            metric,
+            solved,
+        ))
+    }
+
+    /// Upper triangle of S = −Kg. Plate bending dofs only: membrane dofs
+    /// and every rib carry nothing. See [`plate::geometric`].
+    fn geometric_upper(&self, forces: &[[f64; 3]]) -> Vec<f64> {
+        let mut values = vec![0.0; self.pattern.nnz()];
+        let mut lift = vec![0.0; self.pattern.n];
+        for (e, force) in forces.iter().enumerate() {
+            let kg = plate::geometric(&self.tris[e].xy, self.tris[e].area, *force);
+            let mut neg = [[0.0; 9]; 9];
+            for i in 0..9 {
+                for j in 0..9 {
+                    neg[i][j] = -kg[i][j];
+                }
+            }
+            let global = self.bend_global(e, &neg);
+            let t = self.mesh.triangles[e];
+            let mut g = [0usize; 18];
+            for a in 0..3 {
+                for q in 0..6 {
+                    g[6 * a + q] = 6 * t[a] as usize + q;
+                }
+            }
+            self.scatter(&g, &global, &mut values, &mut lift);
+        }
+        values
+    }
+
+    /// A 9×9 bending matrix, in the facet frame, on the 18 global dofs.
+    fn bend_global(&self, e: usize, kb: &K9) -> [[f64; 18]; 18] {
+        let mut kl = [[0.0; 18]; 18];
+        for a in 0..3 {
+            for b in 0..3 {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        kl[6 * a + BENDING[i]][6 * b + BENDING[j]] = kb[3 * a + i][3 * b + j];
+                    }
+                }
+            }
+        }
+        let r = self.tris[e].frame.rows();
+        let mut kg = [[0.0; 18]; 18];
+        for bi in 0..6 {
+            for bj in 0..6 {
+                let mut kr = [[0.0; 3]; 3];
+                for i in 0..3 {
+                    for j in 0..3 {
+                        kr[i][j] = (0..3).map(|q| kl[3 * bi + i][3 * bj + q] * r[q][j]).sum();
+                    }
+                }
+                for i in 0..3 {
+                    for j in 0..3 {
+                        kg[3 * bi + i][3 * bj + j] =
+                            (0..3).map(|q| r[q][i] * kr[q][j]).sum();
+                    }
+                }
+            }
+        }
+        kg
     }
 
     /// A free-dof vector as a shell result, so a mode can feed the same

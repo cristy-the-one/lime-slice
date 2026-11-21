@@ -297,6 +297,7 @@ fn finish(
             ribbed: hz[1],
         }),
         frequency_factor: Some(achieved),
+        buckling_factor: None,
         notes,
     })
 }
@@ -366,6 +367,7 @@ fn empty(
             ribbed: hz,
         }),
         frequency_factor: Some(1.0),
+        buckling_factor: None,
         notes: frequency_notes(None, !req.load_cases.is_empty(), req.vent),
     }
 }

@@ -76,6 +76,76 @@ fn curvature_rows(xy: &[[f64; 2]; 3], a: &[[f64; 9]; 12], l: [f64; 3]) -> [[f64;
     b
 }
 
+/// Quadratic shape functions at area coordinates `l`: corners
+/// `L_i (2 L_i − 1)`, midsides `4 L_i L_j` on edges 0–1, 1–2, 2–0.
+fn shape6(l: [f64; 3]) -> [f64; 6] {
+    let mut n = [0.0; 6];
+    for i in 0..3 {
+        n[i] = l[i] * (2.0 * l[i] - 1.0);
+    }
+    for (m, (i, j)) in EDGES.iter().enumerate() {
+        n[3 + m] = 4.0 * l[*i] * l[*j];
+    }
+    n
+}
+
+/// Dunavant's 7-point rule, exact through degree 5. The integrand
+/// βᵀ N β is degree 4. Weights are fractions of the triangle's area.
+fn dunavant7() -> [([f64; 3], f64); 7] {
+    let s = 15.0_f64.sqrt();
+    let w_a = (155.0 + s) / 1200.0;
+    let w_b = (155.0 - s) / 1200.0;
+    let a2 = (9.0 - 2.0 * s) / 21.0;
+    let b2 = (6.0 + s) / 21.0;
+    let a3 = (9.0 + 2.0 * s) / 21.0;
+    let b3 = (6.0 - s) / 21.0;
+    [
+        ([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], 9.0 / 40.0),
+        ([a2, b2, b2], w_a),
+        ([b2, a2, b2], w_a),
+        ([b2, b2, a2], w_a),
+        ([a3, b3, b3], w_b),
+        ([b3, a3, b3], w_b),
+        ([b3, b3, a3], w_b),
+    ]
+}
+
+/// Plate geometric stiffness ∫ βᵀ N β dA on the nine DKT bending dofs.
+///
+/// β is the same slope interpolation as the element stiffness. N is
+/// `[Nxx, Nyy, Nxy]`, tension-positive, and constant (the CST membrane
+/// force). Compression makes this matrix negative. There is no membrane
+/// geometric stiffness here: the study found it changes no printed digit
+/// of the plate mode. There is no beam geometric stiffness either: a rib
+/// buckling on its own is not this factor.
+pub(crate) fn geometric(xy: &[[f64; 2]; 3], area: f64, force: [f64; 3]) -> K9 {
+    let [nxx, nyy, nxy] = force;
+    let slopes = slopes(xy);
+    let mut k = [[0.0; 9]; 9];
+    for (l, w) in dunavant7() {
+        let n = shape6(l);
+        let mut bx = [0.0; 9];
+        let mut by = [0.0; 9];
+        for node in 0..6 {
+            let s = n[node];
+            for d in 0..9 {
+                bx[d] += s * slopes[2 * node][d];
+                by[d] += s * slopes[2 * node + 1][d];
+            }
+        }
+        let weight = w * area;
+        for i in 0..9 {
+            for j in 0..9 {
+                k[i][j] += weight
+                    * (nxx * bx[i] * bx[j]
+                        + nyy * by[i] * by[j]
+                        + nxy * (bx[i] * by[j] + by[i] * bx[j]));
+            }
+        }
+    }
+    k
+}
+
 /// The DKT bending stiffness of one facet with bending matrix `d`.
 pub(crate) fn stiffness(xy: &[[f64; 2]; 3], area: f64, d: &Mat3) -> K9 {
     let a = slopes(xy);
@@ -153,6 +223,26 @@ mod tests {
             );
             assert!((k[2] - 2.0 * r).abs() < 1e-14, "{k:?}");
         }
+    }
+
+    /// A constant slope is a linear w. ∫ βᵀ N β dA is Nxx βx² times the area.
+    #[test]
+    fn constant_slope_matches_the_closed_integral() {
+        let (beta_x, nxx) = (0.02, -4.0);
+        let mut u = [0.0; 9];
+        for i in 0..3 {
+            u[3 * i] = beta_x * XY[i][0];
+            u[3 * i + 2] = -beta_x;
+        }
+        let k = geometric(&XY, 1.5, [nxx, 1.0, 0.5]);
+        let mut energy = 0.0;
+        for i in 0..9 {
+            for j in 0..9 {
+                energy += u[i] * k[i][j] * u[j];
+            }
+        }
+        let expect = nxx * beta_x * beta_x * 1.5;
+        assert!((energy - expect).abs() < 1e-12 * expect.abs(), "{energy} vs {expect}");
     }
 
     /// Three rigid modes (w, θx, θy) and no other zero mode.
