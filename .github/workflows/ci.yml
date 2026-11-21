@@ -49,8 +49,10 @@ jobs:
           # src/modeling answer with, or the corpus itself. About 15 s in the MCP jobs, which already build lust.
           recipes=false
           while IFS= read -r file; do
+            # tools/readme-media makes the README's pictures by hand (docs/readme-media.md). No job runs it and the
+            # typecheck covers src/ only, so a change there is documentation, like the pictures it writes.
             case "$file" in
-              docs/*|*.md|"") ;;
+              docs/*|*.md|tools/readme-media/*|"") ;;
               *) code=true ;;
             esac
             case "$file" in
