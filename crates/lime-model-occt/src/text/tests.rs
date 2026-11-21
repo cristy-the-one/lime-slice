@@ -512,3 +512,76 @@ fn a_cff_font_reads_as_cubic_curves_with_holes_and_no_slivers() {
         v1 - v0
     );
 }
+
+#[test]
+fn repeated_characters_keep_thin_letters_identical_to_single_occurrences() {
+    let mut single_spec = spec("Lime Sc");
+    single_spec.height = 3.0;
+    let single = lay_out(&single_spec).expect("single layout");
+
+    let mut repeated_spec = spec("Lime Sc Lime Sc Lime Sc Lime Sc");
+    repeated_spec.height = 3.0;
+    let repeated = lay_out(&repeated_spec).expect("repeated layout");
+
+    let expected = thin_letters(&single, 0.4);
+    let actual = thin_letters(&repeated, 0.4);
+    assert_eq!(actual, expected);
+    // Multi-piece 'i' keeps stem and dot grouped together so partial loss stays exact.
+    let i_thin = actual.iter().find(|t| t.ch == 'i').expect("'i' is thin at 3 mm");
+    assert!(
+        i_thin.lost_pct > 50.0 && i_thin.lost_pct < 100.0,
+        "expected partial loss for 'i' (dot survives while stem is thin): {i_thin:?}"
+    );
+}
+
+#[test]
+fn skin_place_matches_map_and_base_and_top() {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+
+    struct Ball(f64);
+    impl skin::Surf for Ball {
+        fn d1(&self, u: f64, v: f64) -> Option<(skin::V3, skin::V3, skin::V3)> {
+            if v.abs() > FRAC_PI_2 + 1e-9 {
+                return None;
+            }
+            let (su, cu) = u.sin_cos();
+            let (sv, cv) = v.sin_cos();
+            let p = [cv * cu * self.0, cv * su * self.0, sv * self.0];
+            let du = [-cv * su * self.0, cv * cu * self.0, 0.0];
+            let dv = [-sv * cu * self.0, -sv * su * self.0, cv * self.0];
+            Some((p, du, dv))
+        }
+    }
+
+    let ball = Ball(30.0);
+    let info = skin::SkinInfo {
+        kind: "sphere".into(),
+        sigma: 1.0,
+        u0: std::f64::consts::PI,
+        v0: 0.0,
+        u_min: 0.0,
+        u_max: TAU,
+        v_min: -FRAC_PI_2,
+        v_max: FRAC_PI_2,
+        u_period: TAU,
+        v_period: 0.0,
+        full_u: true,
+        full_v: false,
+    };
+    for project in [false, true] {
+        let how = skin::SkinHow {
+            project,
+            ..skin::SkinHow::default()
+        };
+        let placer = skin::Placer::new(&ball, &info, how, -10.0, 10.0).expect("placer");
+        for pt in [[0.0, 0.0], [4.2, 2.3], [-5.5, -1.7], [0.0, 3.1]] {
+            let uv = placer.map(pt).expect("map");
+            let expected = placer.base_and_top(uv[0], uv[1], 0.8).expect("base_and_top");
+            let actual = placer.place(pt, 0.8).expect("place");
+            for axis in 0..3 {
+                assert!((actual.0[axis] - expected.0[axis]).abs() < 1e-9);
+                assert!((actual.1[axis] - expected.1[axis]).abs() < 1e-9);
+            }
+        }
+    }
+}

@@ -479,13 +479,13 @@ pub(super) fn curved_reply(
     if !(depth.is_finite() && depth >= MIN_DEPTH_MM) {
         return Err("Text needs a depth above 0, in millimetres.".into());
     }
-    let thin = text::thin_letters(&laid, line_mm);
     let step = step_mm.clamp(0.05, 2.0);
     let lift = if cut { -depth } else { depth };
     match target {
         Under::Round(info) => {
             let how = how_of(along, flip)?;
             let wrapped = wrap::wrap(&laid.faces, &info, how, depth, cut)?;
+            let thin = text::thin_letters(&laid, line_mm);
             let mapper = wrap::Mapper::new(&info, how);
             let faces = preview_faces(&laid, &thin, step, &|p| {
                 let [u, v] = mapper.map(p)?;
@@ -509,10 +509,8 @@ pub(super) fn curved_reply(
             let how = skin_how_of(along, flip, wrap_mode, angle_deg)?;
             let (wrapped, placer) =
                 skin::lay_placed(&laid.faces, &skinned.info, &skinned.face, how, depth, cut)?;
-            let faces = preview_faces(&laid, &thin, step, &|p| {
-                let [u, v] = placer.map(p).ok()?;
-                placer.base_and_top(u, v, lift)
-            });
+            let thin = text::thin_letters(&laid, line_mm);
+            let faces = preview_faces(&laid, &thin, step, &|p| placer.place(p, lift));
             Ok(json!({
                 "ok": true,
                 "font": laid.font,
