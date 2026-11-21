@@ -4,6 +4,7 @@
  * reopens with, and the preview's geometry (the rib under a ray, the boxes drawn).
  */
 import { readFileSync } from "node:fs";
+import { againstCase, alreadyEnough, bucklesAt, loadTimes, reachedShort } from "./auto-ribs-plan.ts";
 import {
   applicable,
   cardFromRibNet,
@@ -362,6 +363,36 @@ eq("a stiffness plan has no frequency aside", frequencyAside(plan), "");
 eq("an unreached frequency says the ratio", goalLine({ kind: "frequency", factor: 2 }, { ...freqPlan, goalMet: false, frequencyFactor: 1.42 }, 1.24), "Reached 1.42× of the 2× asked: no further rib pays enough.");
 eq("stiffness is still the default", newAutoRibsCard().quantity, "stiffness");
 eq("a stored frequency choice comes back", cardFromStored({ ...newAutoRibsCard(), picked: [6], quantity: "frequency" })?.quantity, "frequency");
+
+// --- Resist buckling: the same sentences the solver prints, and the tool's refusals.
+eq("the buckling stops, with ×3 in the middle", [-2, -1, 0, 1, 2].map((stop) => goalOf({ kind: "slider", stop }, 1.24, null, "buckling").kind === "buckling" ? (goalOf({ kind: "slider", stop }, 1.24, null, "buckling") as { factor: number }).factor : 0), [1.5, 2, 3, 4, 5]);
+eq("the middle stop is the default sentence", sliderNote({ kind: "slider", stop: 0 }, null, "buckling"), "Holds 3× the load before it buckles. 1× buckles exactly at the load.");
+eq("a whole tenth prints as a whole number", loadTimes(3), "3");
+eq("a tenth prints", loadTimes(3.14), "3.1");
+eq("the result sentence", bucklesAt(3.1, 0.9), "Buckles at 3.1× the load (was 0.9×).");
+eq("already enough", alreadyEnough(3.2, 2), "The wall already holds 3.2× this load before it buckles, above the 2× asked. No ribs needed.");
+eq("short of the target", reachedShort(1.7, 3), "Reached 1.7× of the 3× asked: no further rib pays enough.");
+eq("against a named case", againstCase("lift"), "Against case: lift");
+eq("a buckling goal is that factor", goalFromTool({ buckling: 3 }, 1.24), { kind: "buckling", factor: 3 });
+eq("a buckling factor below 1 is refused", goalFromTool({ buckling: 0.5 }, 1.24), { reason: "A buckling goal must be 1 or more." });
+eq("a buckling goal with a budget names both", goalFromTool({ buckling: 3, budgetMm3: 4000 }, 1.24), { reason: "A plan has one goal: buckling and budgetMm3 cannot both be set." });
+eq("buckling beside frequency names frequency, which is checked first", goalFromTool({ frequency: 1.3, buckling: 3 }, 1.24), { reason: "A plan has one goal: frequency and buckling cannot both be set." });
+eq("on with one case is refused", goalFromTool({ buckling: 3, on: "edge" }, 1.24, ["edge"]), { reason: "A buckling goal names a load case only when there is more than one." });
+eq("two cases need on", goalFromTool({ buckling: 3 }, 1.24, ["edge", "press"]), { reason: "A buckling goal needs the load case it is solved against." });
+eq("on names the case by its place", goalFromTool({ buckling: 3, on: "press" }, 1.24, ["edge", "press"]), { kind: "buckling", factor: 3, on: 1 });
+eq("an unknown case is refused", goalFromTool({ buckling: 3, on: "side" }, 1.24, ["edge", "press"]), { reason: "A buckling goal names a load case the request does not have." });
+const bucklingCard = ribsPlan({ wall: { faces: [6] }, goal: { buckling: 3, on: "edge" } });
+eq("a buckling goal reopens as Resist buckling", bucklingCard?.quantity, "buckling");
+eq("a buckling goal reopens at that factor", bucklingCard?.amount, { kind: "stiffer", factor: 3 });
+eq("a buckling goal reopens against its case", bucklingCard?.against, "edge");
+eq("a stored buckling choice comes back", cardFromStored({ ...newAutoRibsCard(), picked: [6], quantity: "buckling", against: "edge" })?.against, "edge");
+const bucklePlan = { ...plan, goalMet: true, ribs: plan.ribs, bucklingFactor: { bare: 0.9, ribbed: 3.1 }, notes: ["This is the ideal buckling load. A curved wall, or one that isn't perfectly flat, can buckle well below it.", "Buckles at 3.1× the load (was 0.9×)."] };
+eq("the gain is the buckling sentence", resultNumbers({ ...runDone(startedRun(), { ok: true, plan: bucklePlan }), removed: [] }, 1.24, 200000)?.gain, "Buckles at 3.1× the load (was 0.9×).");
+const editedBucklingGain = resultNumbers({ ...runDone(startedRun(), { ok: true, plan: bucklePlan }), removed: [0] }, 1.24, 200000)?.gain;
+eq("an edited buckling run's gain names the edit", editedBucklingGain, "Before the edit: Buckles at 3.1× the load (was 0.9×).");
+console.log("an edited buckling run's gain names the edit:", editedBucklingGain);
+eq("an edit of a buckling plan does not say stiffness", editedNote({ ...runDone(startedRun(), { ok: true, plan: bucklePlan }), removed: [0] }).includes("the buckling load is the plan's before the edit"), true);
+eq("a reached note is not repeated as the goal line", goalLine({ kind: "buckling", factor: 3 }, { ...bucklePlan, goalMet: false, notes: [...(bucklePlan.notes ?? []), "Reached 1.7× of the 3× asked: no further rib pays enough."] }, 1.24), "");
 
 if (failed) {
   console.error(`auto-ribs: ${failed} failed`);

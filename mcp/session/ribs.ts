@@ -19,6 +19,7 @@ import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "..
 import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wallSpan, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import { mouldedOnly, mouldingReport, nearestWallMm } from "../../src/modeling/moulding.ts";
 import { duplicateCaseName, engineMaterial, fallbackHzNote, frequencyIgnoredLoads, goalFromTool, ignoredLoadNote, loadRequest, type PanelLoadCase } from "../../src/auto-ribs.ts";
+import { againstCase, alreadyEnough, bucklesAt, IDEAL_BUCKLING, reachedShort } from "../../src/auto-ribs-plan.ts";
 import { planOptions } from "../../src/auto-ribs-plan.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
@@ -269,6 +270,15 @@ function frequencySentence(ribs: number, hz: { bare: number; ribbed: number }, f
   return `${ribs} rib${ribs === 1 ? "" : "s"}, lowest frequency ${r(hz.bare, 3)} Hz → ${r(hz.ribbed, 3)} Hz (${r(freqFactor, 3)}×).${reach}${stop} Stiffness ${r(stiff, 2)}×, for information.`;
 }
 
+/** A buckling plan in one sentence: the factor before and after, the case when there is one, and the ideal-load warning. */
+function bucklingSentence(ribs: number, bare: number, ribbed: number, asked: number, goalMet: boolean, stopped: boolean, caseName: string | null): string {
+  const head = ribs === 0 && bare + 1e-9 >= asked ? alreadyEnough(bare, asked) : ribs === 0 ? reachedShort(ribbed, asked) : bucklesAt(ribbed, bare);
+  const short = ribs > 0 && !goalMet ? ` ${reachedShort(ribbed, asked)}` : "";
+  const named = caseName ? ` ${againstCase(caseName)}` : "";
+  const stop = stopped ? " Stopped early: the best plan so far." : "";
+  return `${head}${short}${named}${stop} ${IDEAL_BUCKLING}`;
+}
+
 /** A short plain summary of the plan. */
 function planSentence(ribs: number, factor: number, adds: { mm3: number; grams: number; percent: number }, stopped: boolean, goalMet: boolean, baseline: string): string {
   if (ribs === 0) return stopped ? "Stopped before the first rib: no plan." : "No rib pays on this wall under these rules.";
@@ -310,7 +320,7 @@ export interface PlanRecord {
   joinedFaces: number[];
   /** The solid the plan was made for; null only for a plan given without one, which is refused. */
   fingerprint: Fingerprint | null;
-  /** The engine goal, so apply and a static verify can say a frequency plan has no frequency to check. */
+  /** The engine goal, so apply and a static verify can say a frequency or buckling plan has nothing static to check. */
   goal?: Row;
 }
 
@@ -354,7 +364,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const parsedCases = sentLoads.loadCases ? sentLoads.loadCases.map((c, i) => ({ name: c.name, weight: sentLoads.caseWeights![i]!, loads: c.loads })) : [];
   const filament = this.filament();
   const density = filament.densityGCm3 > 0 ? filament.densityGCm3 : 1.24;
-  const goal = goalFromTool(input.goal, density);
+  const goal = goalFromTool(input.goal, density, parsedCases.map((c) => c.name));
   if ("reason" in goal) return refuse("bad-goal", String(goal.reason));
   const process: RibProcess = input.process === "resin" || input.process === "moulded" ? input.process : "filament";
   const givenAxis = input.buildAxis === undefined ? null : readBuildAxis(input.buildAxis);
@@ -554,6 +564,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     ...(caseRows ? { cases: caseRows } : {}),
     goal,
     ...(goal.kind === "frequency" ? { frequencyHz: { bare: r(num((result.frequencyHz as Row | undefined)?.bare) ?? 0, 6), ribbed: r(num((result.frequencyHz as Row | undefined)?.ribbed) ?? 0, 6) }, frequencyFactor: r(num(result.frequencyFactor) ?? 1, 6) } : {}),
+    ...(goal.kind === "buckling" ? { bucklingFactor: { bare: r(num((result.bucklingFactor as Row | undefined)?.bare) ?? 0, 6), ribbed: r(num((result.bucklingFactor as Row | undefined)?.ribbed) ?? 0, 6) } } : {}),
     goalMet: result.goalMet === true,
     thickening: result.thickening ?? null,
     grid: result.grid ?? null,
@@ -606,14 +617,22 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
       })
     : undefined;
   if (Array.isArray(result.notes)) for (const note of result.notes as unknown[]) if (typeof note === "string" && note) notes.push(note);
+  const bucklingCase = goal.kind === "buckling" && goal.on != null ? parsedCases[goal.on]?.name ?? null : null;
+  if (bucklingCase) {
+    const named = againstCase(bucklingCase);
+    if (!notes.includes(named)) notes.push(named);
+  }
   if (goal.kind === "frequency") {
     const cardNote = fallbackHzNote(material.row.forFilament === false ? { forFilament: false, polymer: String(material.row.polymer ?? ""), id: String(material.row.card ?? "") } : null);
     if (cardNote) notes.push(cardNote);
   }
   const hzRow = result.frequencyHz as Row | undefined;
+  const buckle = result.bucklingFactor as Row | undefined;
   const sentenceCore = goal.kind === "frequency"
     ? frequencySentence(ribs.length, { bare: num(hzRow?.bare) ?? 0, ribbed: num(hzRow?.ribbed) ?? 0 }, num(result.frequencyFactor) ?? 1, goal.factor, num(result.stiffnessFactor) ?? 1, stoppedEarly, result.goalMet === true)
-    : planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result));
+    : goal.kind === "buckling"
+      ? bucklingSentence(ribs.length, num(buckle?.bare) ?? 0, num(buckle?.ribbed) ?? 0, goal.factor, result.goalMet === true, stoppedEarly, bucklingCase)
+      : planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result));
   this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), ...(verifyCases ? { cases: verifyCases } : {}), wallFaces: wall.faces, joinedFaces: joined, fingerprint, goal });
   const reply: Row = {
     ok: true,
@@ -799,7 +818,9 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     undo: "model_undo takes the whole network back as one step.",
   };
   const frequencyPlan = record.goal?.kind === "frequency";
+  const bucklingPlan = record.goal?.kind === "buckling";
   if (frequencyPlan) reply.note = "The ribs are built. A static Stress check has no frequency to check.";
+  if (bucklingPlan) reply.note = `The ribs are built. A static Stress check has no buckling load to check. ${IDEAL_BUCKLING}`;
   if (caseBefore) {
     const reported: Row[] = [];
     for (const [i, c] of caseBefore.entries()) {
@@ -820,7 +841,7 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     reply.verify = {
       cases: reported,
       seconds: r((Date.now() - verifyT0) / 1000, 1),
-      note: `The sliced Stress study of the whole part for each load case, before and after (faces found again on the ribbed part by where they lie). One case is two slices and two solves; each further case adds two more. Material cards are placeholders: the numbers are relative.${frequencyPlan ? " This check is static: it has no frequency to check." : ""}`,
+      note: `The sliced Stress study of the whole part for each load case, before and after (faces found again on the ribbed part by where they lie). One case is two slices and two solves; each further case adds two more. Material cards are placeholders: the numbers are relative.${frequencyPlan ? " This check is static: it has no frequency to check." : bucklingPlan ? " This check is static: it has no buckling load to check." : ""}`,
     };
   } else if (verify && study && studyBefore) {
     stage("verify: slicing and solving the ribbed part", 0.65);
@@ -835,7 +856,7 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
       change: { maxDisplacementMm: diff("maxDisplacementMm"), minSafetyFactor: diff("minSafetyFactor"), slicerSeconds: diff("slicerSeconds"), slicerGrams: diff("slicerGrams") },
       stiffer: typeof a.maxDisplacementMm === "number" && typeof b.maxDisplacementMm === "number" && (a.maxDisplacementMm as number) > 0 ? r((b.maxDisplacementMm as number) / (a.maxDisplacementMm as number), 3) : null,
       setup: { holds: mapped.holds.map((h) => ({ kind: h.kind, faces: h.faces })), loads: mapped.loads.map((l) => ({ kind: l.kind, faces: l.faces, magnitude: l.magnitude })), cellMm: VERIFY_CELL_MM, card: mapped.cardId },
-      note: `The sliced Stress study of the whole part, before and after, with the same holds and loads (faces found again on the ribbed part by where they lie). Material cards are placeholders: the numbers are relative.${frequencyPlan ? " This check is static: it has no frequency to check." : ""}`,
+      note: `The sliced Stress study of the whole part, before and after, with the same holds and loads (faces found again on the ribbed part by where they lie). Material cards are placeholders: the numbers are relative.${frequencyPlan ? " This check is static: it has no frequency to check." : bucklingPlan ? " This check is static: it has no buckling load to check." : ""}`,
     };
   }
   return reply;
