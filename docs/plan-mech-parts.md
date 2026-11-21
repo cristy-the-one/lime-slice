@@ -266,13 +266,43 @@ Volume, while the grooves do not overlap: `A = a·sqrt(R² − a²) + R²·asin(
 
 ### 5.2 V-belt pulley
 
-The study cited ISO 5291. ISO 5291:2011 is grooved pulleys for joined classical V-belts, sections AJ, BJ, CJ and DJ. A single classical or narrow belt uses ISO 4183:2026 (sections Y, Z, A, B, C, D, E and SPZ, SPA, SPB, SPC, datum width).
+The study cited ISO 5291. ISO 5291:2011 is grooved pulleys for joined classical V-belts, sections AJ, BJ, CJ and DJ. A single classical or narrow belt uses ISO 4183 (Belt drives, classical and narrow V-belts, grooved pulleys, system based on datum width; sections Y, Z, A, B, C, D, E and SPZ, SPA, SPB, SPC). The 2026 edition is current.
 
-This part is not built until this section holds the ISO 4183 rows the picker offers: section, datum width, groove angle by datum diameter, and the outside diameter relative to the datum. No groove width is invented here to fill the gap.
+The picker offers the four narrow sections, SPZ, SPA, SPB and SPC. The classical sections are not offered until their rows are copied here from two sources that agree (decision 17).
 
-The geometry, once that table is in, is one revolve about Z. The profile plane is `turn: [90, 0, 0]` (the plane used by the revolve box in `mcp/anchors.test.ts`: profile `[radius, z]`, axis along Z). The profile is the hub, the rim, and one trapezoidal groove of the table's angle and depth. It is not a cone subtracted on the axis.
+**The groove table.** Copied 2026-11-21 from two manufacturer tables that each state they follow ISO 4183 (DIN 2211) and agree on every value used below, except where a row says otherwise:
+- Chiaravalli Group, "V-Belt Pulleys" catalogue 2017, page 3, "Features of the gorge" and "Band width" (https://www.mak.nl/pdfbrochures/Chiaravalli_V_Belt_Pulleys_2017_MAK.pdf);
+- Tyma, "Unbored Solid Hub V-Belt Pulleys" (https://www.tyma.eu/products/pulleys/v-belt/unbored-solid-hub/), groove table `Profile | Dm | α | B1 | Bm | E | F | C | T`.
 
-Parameters beside the table: section choice, datum diameter, bore, number of grooves (default 1).
+| Section | datum width `bw` | above datum `c` | below datum `h` | pitch `e` | edge `f` | angle `α` by datum diameter `dd` | top width at 34° `b1` (check) |
+|---|---:|---:|---:|---:|---:|---|---:|
+| SPZ | 8.5 | 2.0 | 9 | 12 | 8 | 34° for `dd ≤ 80`, 38° above | 9.7 |
+| SPA | 11 | 2.8 | 11 | 15 | 10 | 34° for `dd ≤ 118`, 38° above | 12.7 |
+| SPB | 14 | 3.5 | 14 | 19 | 12.5 | 34° for `dd ≤ 190`, 38° above | 16.3 |
+| SPC | 19 | 4.8 | 19 | 25.5 | 17 | 34° for `dd ≤ 315`, 38° above | 22.0 |
+
+How the two sources line up, and the one place they differ:
+- `h` is Chiaravalli's depth below the datum line. Tyma's `T` (11.0, 13.8, 17.5, 23.8) is the whole depth from the outside, `c + h`, and matches every row.
+- The angle: Chiaravalli and Tyma's Unbored page give 34° below the break and 38° above. Tyma's overview page (https://www.tyma.eu/products/pulleys/v-belt/) prints the pair the other way round, `(38) 34`. Two of three agree, and a smaller angle on a smaller pulley is the usual order, so the table follows them. At the break itself, Tyma prints `≤ 80`, Chiaravalli `< 80`: `dd` equal to the break takes 34°.
+- `f` for SPB: Chiaravalli 12.5, Tyma 12. Chiaravalli's band width for one SPB groove is 25 mm, which is `2 × 12.5`. The table takes 12.5 (decision 18).
+- `b1` is printed at 34° and only checks the table: `bw + 2·c·tan(17°)` gives 9.72, 12.71, 16.14 and 21.94 against 9.7, 12.7, 16.3 and 22.0. The kernel does not read `b1`; the groove comes from `bw`, `c`, `h` and `α`.
+- Tolerances on `e`, `f` and `α` are not copied: the kernel builds the nominal groove.
+
+**Parameters.** Section, default SPZ. Datum diameter `dd`, default 63 for SPZ, 90 for SPA, 140 for SPB, 224 for SPC (the minimum datum diameters the 1980 and 1995 editions of ISO 4183 list, in their published samples at https://cdn.standards.iteh.ai; not yet read from the 2026 edition, so they are defaults and a note, not limits), range up to 400, step 0.5. Tyma sells smaller ones (SPZ from 45 mm). Grooves, default 1, range 1 to 6. Bore, default 8, range 3 to a wall of 2 mm under the groove bottom. The minimum datum diameter is not a refusal (decision 19).
+
+**Geometry.** One revolve about Z. The profile plane is `turn: [90, 0, 0]` (the plane the revolve box in `mcp/anchors.test.ts` uses: profile `[radius, z]`, axis along Z). The profile is one closed outline: the bore, the flat ends of the rim, and `n` trapezoidal grooves. It is not a cone subtracted on the axis.
+- Outside diameter `de = dd + 2·c`. Width `W = 2·f + (n − 1)·e`: SPZ with one groove is 16 mm, with two 28 mm, as Chiaravalli's band-width table lists.
+- Groove `k` (0 to `n − 1`) is centred at `z = f + k·e`. Its width at radius `r` is `bw + 2·(r − dd/2)·tan(α/2)`: `bw` on the datum circle, wider outward, narrower inward. Its flanks run from the outside radius `de/2` down to the bottom radius `dd/2 − h`, and its bottom is flat at that radius. On the 38° side the bottom width `bw − 2·h·tan(19°)` is 2.30, 3.42, 4.36 and 5.92 mm, all positive.
+- The rim between grooves is `e` minus the top width, and the rim at each end is `f` minus half the top width: positive for every row at both angles.
+- The bore is a through hole on the axis. Default SPZ 63 one groove: box `x` and `y` `±33.5`, `z` 0 to 16, bore 8 mm.
+
+**Refusals,** one sentence naming the limit, rounded the decision 12 way:
+- a section not in the table: "The V pulley takes SPZ, SPA, SPB or SPC.";
+- a bore that leaves under 2 mm under the groove bottom: "The bore is at most B mm on this pulley, so 2 mm stays under the grooves." with `B = 2·(dd/2 − h − 2)`;
+- a datum diameter so small the bore cannot be the least 3 mm: "An SPZ pulley needs a datum diameter of at least D mm." with `D = 2·(h + 2 + 1.5)`;
+- grooves out of 1 to 6, a datum diameter over 400.
+
+**Tests** (section 9): bounds within 0.02 mm of `±de/2` and `0..W`; volume within 0.5 mm³ of `π·(de/2)²·W − n·Vg − π·(bore/2)²·W`, where `Vg = 2π·∫ r·(bw + 2·(r − dd/2)·tan(α/2)) dr` from `dd/2 − h` to `de/2` (Pappus, one revolved groove); closed, 0 open edges. At SPZ 63 (34°), SPZ 100 (38°, past the break), SPA 118 (34°, on the break) and SPB 200 with 3 grooves. Point tests: on the datum circle at a groove's centre, inside the groove's width, is outside the material; the same radius at `z = f + e/2` between two grooves is inside; a point at `dd/2 − h − 0.2` on the groove's centre is inside (the groove is not cut deeper than `h`).
 
 ## 6. The Add dialog, History, and MCP
 
@@ -371,7 +401,7 @@ Each one is a PR to `main`, after 6.13.0, and each updates this file where the c
 2. **Fittings.** Section 4.5 to 4.7 and the heat-set boss (4.10). The Ruthex table is in this file, so the boss ships here.
 3. **Brackets.** Section 4.8 and 4.9, including **Hole for** and the ISO 273 medium table.
 4. **GT2 pulley.** Section 5.1, including the off-axis and full-width point tests, with the card and the guide saying "approximate GT2 groove".
-5. **V-belt pulley.** Blocked on the ISO 4183 table in section 5.2.
+5. **V-belt pulley.** Section 5.2: the four narrow sections from the table there, decisions 17 to 19.
 6. **Thread.** Section 8. Adds `thread` beside `tap` on the nut and both screws.
 
 ## 11. Decided 2026-11-20
@@ -392,3 +422,6 @@ Each one is a PR to `main`, after 6.13.0, and each updates this file where the c
 14. **GT2 teeth start at 12** (milestone 4). Teeth are a whole number from 12 to 60. At 10 and 11 teeth the 1 mm wall inside the root leaves a bore under the 3 mm minimum, so no such pulley could be built. Belt width is 4 to 15 mm. Bore is 3 to 20 mm, and at most `2·(R − 0.75 − 1)`, refused with "The bore is at most B mm on N teeth, so 1 mm stays inside the grooves." A minimum in that sentence rounds up to the tenth; a maximum rounds down. The comparison uses the exact limit.
 15. **GT2 box** (milestone 4). The default box is not `±OD/2` when a groove sits on an axis. Tooth 0 is on +X. With 20, 16 and 36 teeth every axis has a groove, and the extent is `sqrt(R² − 0.705²)`. The test computes each axis: `R` when that direction misses every groove, otherwise the largest `R·cos` of the outside corners at `φ ± asin(0.705/R)`. Default 20 teeth: x and y ±6.0714, z 0 to 6. The ghost may stay the `±R` circle. Kernel and MCP tests use the computed box.
 16. **GT2 point tests** (milestone 4). Tooth 1 of 20 is at 18°. At radius `R − 0.2` the points at `z = width/2` and `z = 0.2` are outside the material. The inside point is 9° off that angle (27°, the middle of the land), not 12°: a groove covers about ±6.9° there and the pitch is 18°, so 6° and 30° both fall in a groove. A point at `R − 0.8` on tooth 1's angle is inside the material, so the groove is 0.75 deep, not 0.85. The History row is "GT2 pulley N teeth".
+17. **V pulley sections** (milestone 5). The picker offers SPZ, SPA, SPB and SPC, from the section 5.2 table, which two manufacturer tables following ISO 4183 agree on. The classical sections (Z, A, B, C and the rest) are listed in ISO 4183 too, but no two sources were read for them; they join when their rows are copied the same way. Kind `v` stops being refused for these four.
+18. **SPB edge distance** (milestone 5). `f` is 12.5 mm, as Chiaravalli prints, not Tyma's 12: Chiaravalli's band width for one SPB groove, 25 mm, is `2 × 12.5`, and a wider edge never makes the rim thinner. `f` sets only the rim's width beside the outer grooves.
+19. **Small pulleys** (milestone 5). A datum diameter under the minimum the older ISO 4183 editions list (63, 90, 140, 224 mm) builds, and the card says "Under D mm the belt bends more than its maker allows, and wears sooner." The only refusal is geometric: a bore of at least 3 mm with 2 mm under the grooves. A printed pulley is often small, and those minimums were not read from the 2026 edition.
