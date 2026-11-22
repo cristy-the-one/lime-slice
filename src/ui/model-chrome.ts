@@ -916,6 +916,10 @@ export function openModelTool(): ModelTool | null {
 /** An open sheet keeps Patch and Blend available. A closed solid does not use this. */
 export function setSheetMode(next: boolean) {
   sheetMode = next;
+  // On a solid these two stay in the Features menu, so the rail keeps the height the layout specs measure.
+  for (const id of ["#modelToolPatch", "#modelToolBlend"]) {
+    document.querySelector<HTMLElement>(id)?.toggleAttribute("hidden", !next);
+  }
   refreshTools();
 }
 

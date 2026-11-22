@@ -11723,6 +11723,12 @@ Handle(Geom_BSplineCurve) edge_to_bspline(const TopoDS_Edge& edge, std::string& 
         error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
         return {};
     }
+    // CurveToBSplineCurve can hand back the edge's own curve. Reverse that and the sheet's edge moves.
+    bs = Handle(Geom_BSplineCurve)::DownCast(bs->Copy());
+    if (bs.IsNull()) {
+        error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
+        return {};
+    }
     if (built.Orientation() == TopAbs_REVERSED) bs->Reverse();
     return bs;
 }
@@ -11820,14 +11826,25 @@ int continuity_of(int asked, bool has_face, bool blend, std::string& error) {
 }
 
 GeomAbs_Shape abs_order(int order) {
-    if (order >= 2) return GeomAbs_C2;
-    if (order == 1) return GeomAbs_C1;
+    // Plate constraints are G1 and G2. C1 and C2 are not those orders, and a plate
+    // asked for C1 keeps only the position, so a cap meets a wall at 90°.
+    if (order >= 2) return GeomAbs_G2;
+    if (order == 1) return GeomAbs_G1;
     return GeomAbs_C0;
 }
 
 bool orient_loop(std::vector<Handle(Geom_BSplineCurve)>& curves, std::string& error) {
     if (curves.size() < 2) return true;
     const bool closed = curves.size() >= 3;
+    // The first edge keeps the face's orientation, which may walk the opening backwards.
+    // Point it at the next curve before the rest of the chain follows its end.
+    if (closed) {
+        const gp_Pnt a0 = curves[0]->StartPoint();
+        const gp_Pnt a1 = curves[0]->EndPoint();
+        const double at_end = std::min(a1.Distance(curves[1]->StartPoint()), a1.Distance(curves[1]->EndPoint()));
+        const double at_start = std::min(a0.Distance(curves[1]->StartPoint()), a0.Distance(curves[1]->EndPoint()));
+        if (at_start + 1e-9 < at_end) curves[0]->Reverse();
+    }
     for (size_t i = 1; i < curves.size(); ++i) {
         const gp_Pnt prev = curves[i - 1]->EndPoint();
         const double to_start = prev.Distance(curves[i]->StartPoint());
@@ -11916,7 +11933,8 @@ TopoDS_Face fill_plate(
     std::string& error) {
     const double tol3d = tolerance > 0.0 ? std::clamp(tolerance, 1e-7, 1e-4) : 1e-5;
     try {
-        BRepOffsetAPI_MakeFilling filling(3, 15, 3, Standard_False, 1e-5, tol3d, 0.001, 0.02, 8, 9);
+        // Eight iterations, up to degree 8: a closed G1 or G2 contour does not settle in the default two.
+        BRepOffsetAPI_MakeFilling filling(3, 15, 8, Standard_False, 1e-5, tol3d, 0.001, 0.02, 8, 9);
         for (size_t i = 0; i < sides.size(); ++i) {
             const GeomAbs_Shape order = abs_order(orders[i]);
             for (const TopoDS_Edge& edge : sides[i]) {
@@ -12105,20 +12123,35 @@ TopoDS_Shape build_blend(
     const int order_a = continuity_of(asked_a, !face_a.IsNull(), true, error);
     const int order_b = order_a < 0 ? -2 : continuity_of(asked_b, !face_b.IsNull(), true, error);
     if (order_a < 0 || order_b < 0) return {};
+    // MakeFilling only accepts a bound that is already a continuous wire.
+    const auto orient_chain = [](std::vector<TopoDS_Edge>& edges) {
+        for (size_t i = 1; i < edges.size(); ++i) {
+            gp_Pnt prev_start;
+            gp_Pnt prev_end;
+            gp_Pnt next_start;
+            gp_Pnt next_end;
+            edge_ends(edges[i - 1], prev_start, prev_end);
+            edge_ends(edges[i], next_start, next_end);
+            if (prev_end.Distance(next_end) + 1e-9 < prev_end.Distance(next_start)) edges[i].Reverse();
+        }
+    };
+    const auto chain_ends = [](const std::vector<TopoDS_Edge>& edges, gp_Pnt& start, gp_Pnt& end) {
+        gp_Pnt ignore;
+        edge_ends(edges.front(), start, end);
+        if (edges.size() > 1) edge_ends(edges.back(), ignore, end);
+    };
+    const auto reverse_chain = [](std::vector<TopoDS_Edge>& edges) {
+        std::reverse(edges.begin(), edges.end());
+        for (TopoDS_Edge& edge : edges) edge.Reverse();
+    };
+    orient_chain(side_a);
+    orient_chain(side_b);
     gp_Pnt a0, a1, b0, b1;
-    edge_ends(side_a.front(), a0, a1);
-    edge_ends(side_b.front(), b0, b1);
-    if (side_a.size() > 1) {
-        gp_Pnt ignore;
-        gp_Pnt back;
-        edge_ends(side_a.back(), ignore, back);
-        a1 = back;
-    }
-    if (side_b.size() > 1) {
-        gp_Pnt ignore;
-        gp_Pnt back;
-        edge_ends(side_b.back(), ignore, back);
-        b1 = back;
+    chain_ends(side_a, a0, a1);
+    chain_ends(side_b, b0, b1);
+    if (a1.Distance(b1) + 1e-9 < a1.Distance(b0)) {
+        reverse_chain(side_b);
+        chain_ends(side_b, b0, b1);
     }
     std::vector<TopoDS_Edge> connectors;
     const auto add_connector = [&](const gp_Pnt& from, const gp_Pnt& to) {
@@ -12126,8 +12159,8 @@ TopoDS_Shape build_blend(
         BRepBuilderAPI_MakeEdge edge(from, to);
         if (edge.IsDone() && !edge.Edge().IsNull()) connectors.push_back(edge.Edge());
     };
-    add_connector(a0, b0);
-    add_connector(a1, b1);
+    add_connector(a1, b0);
+    add_connector(b1, a0);
     const gp_Pnt mid_a = edge_midpoint(side_a.front());
     const gp_Pnt mid_b = edge_midpoint(side_b.front());
     const double span = mid_a.Distance(mid_b);
@@ -12135,11 +12168,27 @@ TopoDS_Shape build_blend(
     gp_Pnt pull_b;
     if (!tension_point(face_a, side_a.front(), spec.tension_a, span, pull_a, error)) return {};
     if (!tension_point(face_b, side_b.front(), spec.tension_b, span, pull_b, error)) return {};
-    std::vector<std::vector<TopoDS_Edge>> sides = {side_a, side_b};
-    std::vector<TopoDS_Face> supports = {face_a, face_b};
-    std::vector<int> orders = {order_a, order_b};
-    for (const TopoDS_Edge& connector : connectors) {
-        sides.push_back({connector});
+    // Wire order: chain A, the far connector, chain B, the near connector.
+    std::vector<std::vector<TopoDS_Edge>> sides;
+    std::vector<TopoDS_Face> supports;
+    std::vector<int> orders;
+    for (const TopoDS_Edge& edge : side_a) {
+        sides.push_back({edge});
+        supports.push_back(face_a);
+        orders.push_back(order_a);
+    }
+    if (!connectors.empty()) {
+        sides.push_back({connectors[0]});
+        supports.push_back(TopoDS_Face());
+        orders.push_back(0);
+    }
+    for (const TopoDS_Edge& edge : side_b) {
+        sides.push_back({edge});
+        supports.push_back(face_b);
+        orders.push_back(order_b);
+    }
+    if (connectors.size() > 1) {
+        sides.push_back({connectors[1]});
         supports.push_back(TopoDS_Face());
         orders.push_back(0);
     }

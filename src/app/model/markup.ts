@@ -19,8 +19,8 @@ const RAIL = `
             <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive">New solid</button>
             <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
             <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
-            <button class="model-tool" id="modelToolPatch" type="button" data-tool="patch" aria-pressed="false" data-tip="Patch: fill an opening. Each edge shows G0, G1, or G2.">Patch</button>
-            <button class="model-tool" id="modelToolBlend" type="button" data-tool="blend" aria-pressed="false" data-tip="Blend: bridge two open edges. G1 or G2, with a tension on each side.">Blend</button>
+            <button class="model-tool" id="modelToolPatch" type="button" data-tool="patch" hidden aria-pressed="false" data-tip="Patch: fill an opening. Each edge shows G0, G1, or G2.">Patch</button>
+            <button class="model-tool" id="modelToolBlend" type="button" data-tool="blend" hidden aria-pressed="false" data-tip="Blend: bridge two open edges. G1 or G2, with a tension on each side.">Blend</button>
           </div>
         </div>
         <div class="rail-group" data-group="shape" data-solid-only role="group" aria-label="Shape">

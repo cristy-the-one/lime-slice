@@ -20,8 +20,6 @@ html:not(.layout-compact):not([data-stage="model"]) #modelInspect { display: non
 .tool-rail .model-tool:is(:disabled, .is-disabled) { opacity: 1; }
 #railModel[data-no-solid] [data-solid-only],
 #railModelFoot[data-no-solid] [data-solid-only] { display: none !important; }
-/* Patch and Blend sit on the rail for a sheet. On a solid they live in the Features menu, so the rail stays the height it was. */
-#railModel:not([data-no-solid]) :is(#modelToolPatch, #modelToolBlend) { display: none !important; }
 .tool-rail .rail-group[data-group]:first-child > .rail-caption { margin-top: 0; }
 /* Pocket and its menu opener share one rail row: 24px each, so neither covers the other and the row stays one tool tall. */
 .tool-rail .model-feature {
