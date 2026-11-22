@@ -1406,6 +1406,53 @@ input.mh-plugin-control[readonly], select.mh-plugin-control:disabled {
   color: var(--text-dim);
   font: 500 10px / 1 var(--font-mono);
 }
+.mh-sheet {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--warn) 60%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+  font: 600 10px / 1 var(--font-mono);
+}
+.model-sheet-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface-2));
+}
+.model-sheet-bar[hidden] { display: none; }
+.model-sheet-text {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.model-sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.model-sheet-thick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.model-sheet-thick input {
+  width: 52px;
+  height: 24px;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text);
+  font: 12px / 1 var(--font-mono);
+}
 .mh-more, .mh-edit {
   display: inline-flex;
   align-items: center;

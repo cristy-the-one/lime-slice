@@ -142,6 +142,21 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   refreshModelContext();
   fx.model?.highlight([]);
   setModelEditable(parsed.editable);
+  // --- Organic surfaces S4 (U6): show open-sheet banner with one-click Thicken & Cap & Sew when open.
+  const sheetBar = document.querySelector<HTMLElement>("#modelSheetBar");
+  if (sheetBar) {
+    const isSheet = !parsed.editable && parsed.faces.length > 0 && !view;
+    sheetBar.hidden = !isSheet;
+    if (isSheet) {
+      const n = parsed.nakedEdges?.length ?? 0;
+      const label = document.querySelector<HTMLElement>("#modelSheetText");
+      if (label) {
+        label.textContent = n > 0
+          ? `Open sheet · ${n} open border${n === 1 ? "" : "s"} — thicken or cap & sew to make a printable solid.`
+          : "Open sheet — thicken or cap & sew to make a printable solid.";
+      }
+    }
+  }
   syncModelSolid();
   syncModelChrome([]);
   fx.model?.resize();

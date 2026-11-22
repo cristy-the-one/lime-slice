@@ -10,6 +10,7 @@ import { syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
 import { S } from "./shared";
+import { pushToast } from "../../ui/toasts";
 import { recentSolid } from "./apply";
 import { placePiece } from "./create";
 import { treeOf } from "./edges";
@@ -34,6 +35,11 @@ export function commitModel() {
   if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || S.parked === at.key) return;
   // --- D12. A part cut for an export target stays as the plate had it: `exportedPart` says why, where it matters.
   if (exportCutTo(tree, plan.to)) return;
+  // --- Organic surfaces S4 (U6): refuse silently pushing an unclosed open sheet to Prepare/Slice.
+  if (solid && !solid.editable && solid.faces.length > 0) {
+    pushToast("This part is an open sheet. Thicken or Cap & Sew it into a solid before slicing.", "info");
+    return;
+  }
   const node = tree.nodes.get(plan.to);
   const mesh = solid?.id === plan.to ? node?.mesh ?? meshOf(solid) : held != null ? node?.mesh : null;
   if (!node || !mesh) return;

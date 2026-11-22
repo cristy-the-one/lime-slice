@@ -8,8 +8,15 @@ use super::ffi::{
     lime_tree_extrude_loops_extent,
     lime_tree_loft_loops,
     lime_tree_loft_v2,
+    lime_tree_replace_face,
     lime_tree_revolve_loops,
+    lime_tree_sew,
+    lime_tree_sheet,
+    lime_tree_split_face,
     lime_tree_sweep,
+    lime_tree_thicken,
+    lime_tree_trim_split,
+    RawShape,
 };
 use super::group::extrude_cells;
 use super::ops::{
@@ -21,8 +28,12 @@ use super::ops::{
     Op,
     ProfileLoop,
     ProfileSegment,
+    SheetMode,
+    SheetSpec,
     SweepMode,
     SweepTransition,
+    ThickenDirection,
+    TrimKeep,
 };
 use super::resolve::Resolved;
 use super::shape::Shape;
@@ -127,8 +138,8 @@ pub(super) fn encode_loops(loops: &[ProfileLoop], out: &mut Vec<f64>) {
 /// --- Organic surfaces S2: encode `Curve3D` for `decode_curve3d` in kernel.cpp.
 pub(super) fn encode_curve3d(curve: &Curve3D, resolved_edges: &[c_int], out: &mut Vec<f64>) -> Result<(), String> {
     match curve {
-        Curve3D::Polyline { points } => {
-            out.extend([0.0, 0.0, points.len() as f64]);
+        Curve3D::Polyline { points, closed } => {
+            out.extend([0.0, if *closed { 1.0 } else { 0.0 }, points.len() as f64]);
             for p in points {
                 out.extend_from_slice(p);
             }
@@ -427,6 +438,179 @@ pub(super) fn build_loft_v2_shape(
             if guides_blob.is_empty() { std::ptr::null() } else { guides_blob.as_ptr() },
             guides_blob.len() as c_int,
             guides.len() as c_int,
+            error,
+        )
+    })
+}
+
+fn encode_sheet_spec(spec: &SheetSpec) -> Result<(c_int, [f64; 10], Vec<f64>, c_int), String> {
+    if spec.curves.is_empty() {
+        return Err("A sheet needs at least one 3D curve.".into());
+    }
+    let mode_id: c_int = match spec.mode {
+        SheetMode::Extrude => 0,
+        SheetMode::Revolve => 1,
+        SheetMode::Loft => 2,
+        SheetMode::Planar => 3,
+    };
+    let dir = spec.dir.unwrap_or([0.0, 0.0, 1.0]);
+    let axis_origin = spec.axis_origin.unwrap_or([0.0, 0.0, 0.0]);
+    let params = [
+        dir[0],
+        dir[1],
+        dir[2],
+        spec.distance.unwrap_or(10.0),
+        axis_origin[0],
+        axis_origin[1],
+        axis_origin[2],
+        spec.angle_deg.unwrap_or(360.0),
+        f64::from(u8::from(spec.ruled)),
+        f64::from(u8::from(spec.symmetric)),
+    ];
+    let mut curves_blob = Vec::new();
+    for c in &spec.curves {
+        encode_curve3d(c, &[], &mut curves_blob)?;
+    }
+    Ok((mode_id, params, curves_blob, spec.curves.len() as c_int))
+}
+
+/// --- Organic surfaces S4: build an open surface ("Sheet"), standalone when `from` is None.
+pub(super) fn build_sheet_shape(from: Option<&Shape>, spec: &SheetSpec) -> Result<Shape, String> {
+    let (mode_id, params, curves_blob, curve_count) = encode_sheet_spec(spec)?;
+    let raw_from = from.map_or(std::ptr::null(), Shape::raw);
+    Shape::made(|error| unsafe {
+        lime_tree_sheet(
+            raw_from,
+            mode_id,
+            params.as_ptr(),
+            curves_blob.as_ptr(),
+            curves_blob.len() as c_int,
+            curve_count,
+            error,
+        )
+    })
+}
+
+/// --- Organic surfaces S4: sew open faces/shells and auto-promote to solid when watertight.
+pub(super) fn build_sew_shape(
+    from: &Shape,
+    tolerance: Option<f64>,
+    make_solid: bool,
+    cap_planar: bool,
+) -> Result<(Shape, bool, i32), String> {
+    let mut promoted: c_int = 0;
+    let mut naked: c_int = 0;
+    let shape = Shape::made(|error| unsafe {
+        lime_tree_sew(
+            from.raw(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            tolerance.unwrap_or(1e-3),
+            c_int::from(make_solid),
+            c_int::from(cap_planar),
+            &mut promoted,
+            &mut naked,
+            error,
+        )
+    })?;
+    Ok((shape, promoted != 0, naked))
+}
+
+/// --- Organic surfaces S4: thicken an open sheet into a watertight solid.
+pub(super) fn build_thicken_shape(
+    from: &Shape,
+    thickness: f64,
+    direction: Option<ThickenDirection>,
+    tolerance: Option<f64>,
+) -> Result<Shape, String> {
+    let dir_id: c_int = match direction.unwrap_or(ThickenDirection::Normal) {
+        ThickenDirection::Normal => 0,
+        ThickenDirection::Reverse => 1,
+        ThickenDirection::Both => 2,
+    };
+    Shape::made(|error| unsafe {
+        lime_tree_thicken(from.raw(), thickness, dir_id, tolerance.unwrap_or(1e-3), error)
+    })
+}
+
+/// --- Organic surfaces S4: split a solid or sheet using a sculpted open surface.
+pub(super) fn build_trim_split_shape(
+    from: &Shape,
+    sheet: &SheetSpec,
+    keep: Option<TrimKeep>,
+) -> Result<(Shape, Option<Shape>), String> {
+    let (mode_id, params, curves_blob, curve_count) = encode_sheet_spec(sheet)?;
+    let keep_id: c_int = match keep.unwrap_or(TrimKeep::Above) {
+        TrimKeep::Above => 0,
+        TrimKeep::Below => 1,
+        TrimKeep::Both => 2,
+    };
+    let mut other_raw: *mut RawShape = std::ptr::null_mut();
+    let kept = Shape::made(|error| unsafe {
+        lime_tree_trim_split(
+            from.raw(),
+            std::ptr::null(),
+            std::ptr::null(),
+            mode_id,
+            params.as_ptr(),
+            curves_blob.as_ptr(),
+            curves_blob.len() as c_int,
+            curve_count,
+            keep_id,
+            &mut other_raw,
+            error,
+        )
+    })?;
+    let other = std::ptr::NonNull::new(other_raw).map(Shape);
+    Ok((kept, other))
+}
+
+/// --- Organic surfaces S4: replace a face on a solid with a sculpted surface.
+pub(super) fn build_replace_face_shape(
+    from: &Shape,
+    face_index: c_int,
+    sheet: &SheetSpec,
+) -> Result<Shape, String> {
+    let (mode_id, params, curves_blob, curve_count) = encode_sheet_spec(sheet)?;
+    Shape::made(|error| unsafe {
+        lime_tree_replace_face(
+            from.raw(),
+            face_index,
+            std::ptr::null(),
+            std::ptr::null(),
+            mode_id,
+            params.as_ptr(),
+            curves_blob.as_ptr(),
+            curves_blob.len() as c_int,
+            curve_count,
+            error,
+        )
+    })
+}
+
+/// --- Organic surfaces S4: project/imprint a 3D curve onto selected face(s), splitting them.
+pub(super) fn build_split_face_shape(
+    from: &Shape,
+    face_indexes: &[c_int],
+    curve: &Curve3D,
+    direction: Option<[f64; 3]>,
+) -> Result<Shape, String> {
+    let mut curve_blob = Vec::new();
+    encode_curve3d(curve, &[], &mut curve_blob)?;
+    let (has_dir, dir) = match direction {
+        Some(d) => (1 as c_int, d),
+        None => (0 as c_int, [0.0, 0.0, 1.0]),
+    };
+    Shape::made(|error| unsafe {
+        lime_tree_split_face(
+            from.raw(),
+            face_indexes.as_ptr(),
+            face_indexes.len() as c_int,
+            curve_blob.as_ptr(),
+            curve_blob.len() as c_int,
+            has_dir,
+            dir.as_ptr(),
             error,
         )
     })

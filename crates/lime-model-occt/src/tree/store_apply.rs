@@ -61,8 +61,8 @@ impl Store {
         {
             return Err(Failure::Message("Each piece needs a key of its own".into()));
         }
-        if other_key.is_some() && !matches!(op, Op::Split { .. }) {
-            return Err(Failure::Message("otherKey is only for a split".into()));
+        if other_key.is_some() && !matches!(op, Op::Split { .. } | Op::TrimSplit { .. }) {
+            return Err(Failure::Message("otherKey is only for a split or trimSplit".into()));
         }
         if other_key.as_deref() == Some(key.as_str()) {
             return Err(Failure::Message(
@@ -95,7 +95,9 @@ impl Store {
             let doc = doc_in(&mut self.docs, &key)?;
             let probed = doc.probe.take();
             let from = doc.shape(parent);
-            from.editable().map_err(Failure::Message)?;
+            if !op.allows_sheet() {
+                from.editable().map_err(Failure::Message)?;
+            }
             let op = resolve(from, &op, &steps).map_err(Failure::Message)?;
             match probed {
                 Some(probed) if probed.parent == parent && same_build(&probed.op, &op.op) => {
@@ -515,7 +517,13 @@ impl Store {
         let mut asked = op.clone();
         let result = tool
             .and_then(|tool| steps.map(|found| (tool, found)))
-            .and_then(|(tool, found)| from.editable().map(|()| (tool, found)))
+            .and_then(|(tool, found)| {
+                if op.allows_sheet() {
+                    Ok((tool, found))
+                } else {
+                    from.editable().map(|()| (tool, found))
+                }
+            })
             .map_err(BuildFail::plain)
             .and_then(|(tool, found)| {
                 resolve(from, &op, &found)

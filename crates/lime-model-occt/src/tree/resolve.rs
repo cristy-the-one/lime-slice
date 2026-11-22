@@ -121,6 +121,41 @@ pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolv
             }
             Ok(Resolved { op, picks })
         }
+        Op::ReplaceFace { face, sheet } => {
+            let stored = resolve_one_face(from, *face)?;
+            let index = stored.index;
+            Ok(Resolved {
+                op: Op::ReplaceFace {
+                    face: FacePick::Ref(stored),
+                    sheet: sheet.clone(),
+                },
+                picks: vec![index],
+            })
+        }
+        Op::SplitFace {
+            faces,
+            curve,
+            direction,
+        } => {
+            if faces.is_empty() {
+                return Err("Pick at least one face to split.".into());
+            }
+            let mut refs = Vec::with_capacity(faces.len());
+            let mut picks = Vec::with_capacity(faces.len());
+            for face in faces {
+                let stored = resolve_one_face(from, *face)?;
+                picks.push(stored.index);
+                refs.push(FacePick::Ref(stored));
+            }
+            Ok(Resolved {
+                op: Op::SplitFace {
+                    faces: refs,
+                    curve: curve.clone(),
+                    direction: *direction,
+                },
+                picks,
+            })
+        }
         // K3. A plain extrude has no face to resolve and falls through below.
         Op::Extrude {
             up_to: Some(_), ..

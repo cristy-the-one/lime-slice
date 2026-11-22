@@ -1849,6 +1849,88 @@ pub mod ops {
         Json::obj().set("kind", "loft").set("op", op).set("sections", Json::arr(sections))
     }
 
+    /// S4: Sheet spec extruded from a 3D curve along `dir` by `distance` mm.
+    pub fn sheet_extrude_spec(curve: Json, dir: [f64; 3], distance: f64) -> Json {
+        Json::obj()
+            .set("mode", "extrude")
+            .set("curves", Json::arr(vec![curve]))
+            .set("dir", dir)
+            .set("distance", distance)
+    }
+
+    /// S4: Sheet spec revolved from a 3D curve around `(axis_origin, dir)` by `angle_deg` degrees.
+    pub fn sheet_revolve_spec(curve: Json, axis_origin: [f64; 3], dir: [f64; 3], angle_deg: f64) -> Json {
+        Json::obj()
+            .set("mode", "revolve")
+            .set("curves", Json::arr(vec![curve]))
+            .set("axisOrigin", axis_origin)
+            .set("dir", dir)
+            .set("angleDeg", angle_deg)
+    }
+
+    /// S4: Sheet spec lofted across 3D `curves` (`ruled` for straight rulings).
+    pub fn sheet_loft_spec(curves: Vec<Json>, ruled: bool) -> Json {
+        let mut obj = Json::obj().set("mode", "loft").set("curves", Json::arr(curves));
+        if ruled {
+            obj = obj.set("ruled", true);
+        }
+        obj
+    }
+
+    /// S4: Planar open sheet spec bounded by a closed 3D `curve`.
+    pub fn sheet_planar_spec(curve: Json) -> Json {
+        Json::obj().set("mode", "planar").set("curves", Json::arr(vec![curve]))
+    }
+
+    /// S4: Open sheet op built from a sheet spec (`sheet_extrude_spec`, `sheet_revolve_spec`, `sheet_loft_spec`, or `sheet_planar_spec`).
+    pub fn sheet(spec: Json) -> Json {
+        spec.set("kind", "sheet")
+    }
+
+    /// S4: Sew open faces/shells within tolerance (optional planar capping & solid auto-promotion).
+    pub fn sew(cap_planar: bool, make_solid: bool) -> Json {
+        Json::obj()
+            .set("kind", "sew")
+            .set("capPlanar", cap_planar)
+            .set("makeSolid", make_solid)
+    }
+
+    /// S4: Thicken an open sheet into a watertight solid wall (`direction`: `"normal"`, `"reverse"`, or `"both"`).
+    pub fn thicken(thickness: f64, direction: &str) -> Json {
+        Json::obj()
+            .set("kind", "thicken")
+            .set("thickness", thickness)
+            .set("direction", direction)
+    }
+
+    /// S4: Split a solid or sheet cleanly with a sculpted surface (`keep`: `"above"`, `"below"`, or `"both"`).
+    pub fn trim_split(sheet_spec: Json, keep: &str) -> Json {
+        Json::obj()
+            .set("kind", "trimSplit")
+            .set("sheet", sheet_spec)
+            .set("keep", keep)
+    }
+
+    /// S4: Replace a solid face (`face` index or selector JSON) with a sculpted NURBS surface.
+    pub fn replace_face(face: Json, sheet_spec: Json) -> Json {
+        Json::obj()
+            .set("kind", "replaceFace")
+            .set("face", face)
+            .set("sheet", sheet_spec)
+    }
+
+    /// S4: Project and imprint a 3D `curve` onto `faces` (optional projection `direction`).
+    pub fn split_face(faces: Vec<Json>, curve: Json, direction: Option<[f64; 3]>) -> Json {
+        let mut obj = Json::obj()
+            .set("kind", "splitFace")
+            .set("faces", Json::arr(faces))
+            .set("curve", curve);
+        if let Some(d) = direction {
+            obj = obj.set("direction", d);
+        }
+        obj
+    }
+
     /// The kernel's gear step (API 1.12): a spur gear with true involute flanks, `thickness` mm along its axis, its base
     /// centred on `origin` (part frame), combined by `op` ("fuse", "cut" or "common"). Add `bore`, `boreShape`,
     /// `hubDiameter`, `hubHeight`, `phaseDeg` or `turn` with `.set`; guide {kind:"gear"} lists them.
@@ -7944,5 +8026,32 @@ mod animation_tests {
         assert_eq!(loft.get("kind").and_then(Json::as_str), Some("loft"));
         assert_eq!(loft.get("closed").and_then(Json::as_bool), Some(true));
         assert_eq!(loft.get("smoothing").and_then(Json::as_bool), Some(true));
+    }
+
+    #[test]
+    fn s4_open_sheet_ops_build_expected_json() {
+        use crate::ops;
+        let c = ops::curve3d_nurbs(vec![[0.0, 0.0, 0.0], [10.0, 0.0, 4.0], [20.0, 0.0, 0.0]], None, Some(2), None, None, false);
+        let spec = ops::sheet_extrude_spec(c.clone(), [0.0, 1.0, 0.0], 20.0);
+        let sh = ops::sheet(spec.clone());
+        assert_eq!(sh.get("kind").and_then(Json::as_str), Some("sheet"));
+        assert_eq!(sh.get("mode").and_then(Json::as_str), Some("extrude"));
+        assert_eq!(sh.get("distance").and_then(Json::as_f64), Some(20.0));
+        let sew = ops::sew(true, true);
+        assert_eq!(sew.get("kind").and_then(Json::as_str), Some("sew"));
+        assert_eq!(sew.get("capPlanar").and_then(Json::as_bool), Some(true));
+        let thick = ops::thicken(2.5, "both");
+        assert_eq!(thick.get("kind").and_then(Json::as_str), Some("thicken"));
+        assert_eq!(thick.get("thickness").and_then(Json::as_f64), Some(2.5));
+        assert_eq!(thick.get("direction").and_then(Json::as_str), Some("both"));
+        let ts = ops::trim_split(spec.clone(), "below");
+        assert_eq!(ts.get("kind").and_then(Json::as_str), Some("trimSplit"));
+        assert_eq!(ts.get("keep").and_then(Json::as_str), Some("below"));
+        let rf = ops::replace_face(Json::from(5.0), spec);
+        assert_eq!(rf.get("kind").and_then(Json::as_str), Some("replaceFace"));
+        assert_eq!(rf.get("face").and_then(Json::as_f64), Some(5.0));
+        let sf = ops::split_face(vec![Json::from(5.0)], c, Some([0.0, 0.0, -1.0]));
+        assert_eq!(sf.get("kind").and_then(Json::as_str), Some("splitFace"));
+        assert_eq!(sf.at("direction.2").and_then(Json::as_f64), Some(-1.0));
     }
 }

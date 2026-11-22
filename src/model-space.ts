@@ -11,7 +11,7 @@
 import { eulerOrient, matMul, orientEuler, wrapDeg, type Bounds, type Mat3 } from "./mesh-place.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
 import { partCentreZ } from "./model-part.ts";
-import type { Curve3D, LoftBoundary, ModelOp, Vec3 } from "./model-tree.ts";
+import type { Curve3D, LoftBoundary, ModelOp, SheetSpec, Vec3 } from "./model-tree.ts";
 
 /** `q = m·p + t`. A rigid pose, or a rigid pose times one uniform scale folded into `m`. */
 export interface Affine {
@@ -281,9 +281,30 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
         ...(op.exprs ? { exprs: op.exprs } : {}),
       };
     }
+    case "sheet":
+      return { ...op, ...moveSheetSpec(op, back, point) };
+    case "trimSplit":
+      return { ...op, sheet: moveSheetSpec(op.sheet, back, point) };
+    case "replaceFace":
+      return { ...op, sheet: moveSheetSpec(op.sheet, back, point) };
+    case "splitFace":
+      return {
+        ...op,
+        curve: moveCurve3D(op.curve, point),
+        ...(op.direction ? { direction: turnDir(back, op.direction) } : {}),
+      };
     default:
       return op;
   }
+}
+
+function moveSheetSpec(spec: SheetSpec, back: Affine, point: (p: Vec3) => Vec3): SheetSpec {
+  return {
+    ...spec,
+    curves: spec.curves.map((c) => moveCurve3D(c, point)),
+    ...(spec.dir ? { dir: turnDir(back, spec.dir) } : {}),
+    ...(spec.axisOrigin ? { axisOrigin: point(spec.axisOrigin) } : {}),
+  };
 }
 
 function moveCurve3D(curve: Curve3D, point: (p: Vec3) => Vec3): Curve3D {

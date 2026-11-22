@@ -60,7 +60,9 @@ export interface ViewCtx {
   extent: number;
   mode: "face" | "edge";
   mesh: THREE.Mesh<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.Material | THREE.Material[], THREE.Object3DEventMap> | null;
+  sheetBackMesh: THREE.Mesh<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.Material | THREE.Material[], THREE.Object3DEventMap> | null;
   edgeLines: THREE.LineSegments<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.Material | THREE.Material[], THREE.Object3DEventMap> | null;
+  nakedEdgeLines: THREE.LineSegments<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.Material | THREE.Material[], THREE.Object3DEventMap> | null;
   preview: { shape: ModelSolid; mesh: THREE.Mesh; lines: THREE.LineSegments | null; } | null;
   faceOutline: LineSegments2 | null;
   locatedBoxes: Bounds[];
@@ -158,6 +160,8 @@ export interface ViewCtx {
   surfaceInspect: SurfaceInspectBuffers | null;
   syncSurfaceLook: () => void;
   edgeMaterial: THREE.LineBasicMaterial;
+  nakedEdgeMaterial: THREE.LineBasicMaterial;
+  sheetBackMaterial: THREE.MeshStandardMaterial;
   clearPreview: () => void;
   showPreview: (shape: ModelSolid) => void;
   clearBody: () => void;

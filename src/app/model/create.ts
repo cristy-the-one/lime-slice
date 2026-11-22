@@ -73,7 +73,7 @@ export async function createSolid() {
  */
 export async function createFeatureSolid(op: FeatureOp, pose?: Affine): Promise<boolean> {
   if (S.busy || S.jumping || state.stage !== "model") return false;
-  if (op.op !== "fuse") {
+  if (op.kind !== "sheet" && op.op !== "fuse") {
     const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
     readout(`A new solid is the ${noun} itself. Cut and intersect need a part that is already there.`);
     return false;

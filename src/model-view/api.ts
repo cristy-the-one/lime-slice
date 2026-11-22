@@ -13,7 +13,7 @@ import { treeRaycast } from "./solid-ray";
 import type { ViewCtx } from "./ctx";
 
 export function buildApi(ctx: ViewCtx): ModelView {
-  const { alignLine, bedRef, body, camera, canvas, contextMat, controls, datum, edgeMaterial, handleGroup, projected, raycaster, renderer, sketchGroup, snapLineMat, solidMaterial, targetMat } = ctx;
+  const { alignLine, bedRef, body, camera, canvas, contextMat, controls, datum, edgeMaterial, handleGroup, nakedEdgeMaterial, projected, raycaster, renderer, sheetBackMaterial, sketchGroup, snapLineMat, solidMaterial, targetMat } = ctx;
 
 
   return {
@@ -32,6 +32,8 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.ownBox = null;
       ctx.setPosedMatrix(at);
       if (!next || next.positions.length < 9) {
+        delete canvas.dataset.shapeKind;
+        delete canvas.dataset.nakedEdges;
         ctx.clearGhosts();
         ctx.ghost = null;
         ctx.applyScale();
@@ -40,6 +42,12 @@ export function buildApi(ctx: ViewCtx): ModelView {
         ctx.kick();
         return;
       }
+      const naked = next.nakedEdges ?? [];
+      const isSheet = naked.length > 0;
+      canvas.dataset.shapeKind = isSheet ? "sheet" : "solid";
+      canvas.dataset.nakedEdges = String(naked.length);
+      solidMaterial.side = isSheet ? THREE.FrontSide : THREE.DoubleSide;
+      solidMaterial.needsUpdate = true;
       ctx.boundaries = faceOutlines(next.positions, next.triangles);
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(next.positions, 3));
@@ -60,6 +68,12 @@ export function buildApi(ctx: ViewCtx): ModelView {
       // Every ray at the solid (hover, press, pick, Measure, the hidden-line samples) asks a box tree, not every triangle.
       ctx.mesh.raycast = treeRaycast;
       body.add(ctx.mesh);
+      if (isSheet) {
+        ctx.sheetBackMesh = new THREE.Mesh(geometry, sheetBackMaterial);
+        ctx.sheetBackMesh.raycast = () => undefined;
+        ctx.sheetBackMesh.visible = ctx.look.shading !== "zebra";
+        body.add(ctx.sheetBackMesh);
+      }
       const { segments, drawn } = drawnEdgeSegments(next.edges, next.seams);
       canvas.dataset.edgesDrawn = `${drawn}/${next.edges.length}`;
       if (segments.length > 0) {
@@ -68,6 +82,25 @@ export function buildApi(ctx: ViewCtx): ModelView {
         ctx.edgeLines = new THREE.LineSegments(lines, edgeMaterial);
         ctx.edgeLines.raycast = () => undefined;
         body.add(ctx.edgeLines);
+      }
+      if (isSheet) {
+        const nakedSet = new Set(naked);
+        const nakedSegs: number[] = [];
+        for (const edge of next.edges) {
+          if (!nakedSet.has(edge.id)) continue;
+          const pts = edge.points;
+          for (let i = 0; i + 5 < pts.length; i += 3) {
+            nakedSegs.push(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, pts[i + 4]!, pts[i + 5]!);
+          }
+        }
+        if (nakedSegs.length > 0) {
+          const nakedGeo = new THREE.BufferGeometry();
+          nakedGeo.setAttribute("position", new THREE.Float32BufferAttribute(nakedSegs, 3));
+          ctx.nakedEdgeLines = new THREE.LineSegments(nakedGeo, nakedEdgeMaterial);
+          ctx.nakedEdgeLines.renderOrder = 2;
+          ctx.nakedEdgeLines.raycast = () => undefined;
+          body.add(ctx.nakedEdgeLines);
+        }
       }
       ctx.paintFaces();
       ctx.syncSurfaceLook();
@@ -407,6 +440,12 @@ export function buildApi(ctx: ViewCtx): ModelView {
       edgeMaterial.transparent = on;
       edgeMaterial.opacity = on ? 0.35 : 1;
       edgeMaterial.needsUpdate = true;
+      sheetBackMaterial.transparent = on;
+      sheetBackMaterial.opacity = on ? 0.35 : 1;
+      sheetBackMaterial.needsUpdate = true;
+      nakedEdgeMaterial.transparent = on;
+      nakedEdgeMaterial.opacity = on ? 0.35 : 1;
+      nakedEdgeMaterial.needsUpdate = true;
       canvas.dataset.solidOpacity = String(solidMaterial.opacity);
       ctx.kick();
     },

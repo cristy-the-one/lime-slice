@@ -638,6 +638,74 @@ extern "C" {
         guide_count: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    /// --- Organic surfaces S4: Open Sheets & Surface-to-Solid Workflow.
+    pub(super) fn lime_tree_sheet(
+        from: *const RawShape,
+        mode: c_int,
+        params: *const f64,
+        curves_blob: *const f64,
+        curves_len: c_int,
+        curve_count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_sew(
+        from: *const RawShape,
+        extra_tools: *const *const RawShape,
+        places: *const f64,
+        extra_count: c_int,
+        tolerance: f64,
+        make_solid: c_int,
+        cap_planar: c_int,
+        out_promoted: *mut c_int,
+        out_naked: *mut c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    pub(super) fn lime_tree_thicken(
+        from: *const RawShape,
+        thickness: f64,
+        direction: c_int,
+        tolerance: f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_trim_split(
+        from: *const RawShape,
+        tool_shape: *const RawShape,
+        place: *const f64,
+        sheet_mode: c_int,
+        sheet_params: *const f64,
+        curves_blob: *const f64,
+        curves_len: c_int,
+        curve_count: c_int,
+        keep_mode: c_int,
+        other_out: *mut *mut RawShape,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_replace_face(
+        from: *const RawShape,
+        face_index: c_int,
+        tool_shape: *const RawShape,
+        place: *const f64,
+        sheet_mode: c_int,
+        sheet_params: *const f64,
+        curves_blob: *const f64,
+        curves_len: c_int,
+        curve_count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_split_face(
+        from: *const RawShape,
+        face_indexes: *const c_int,
+        face_count: c_int,
+        curve_blob: *const f64,
+        curve_len: c_int,
+        has_dir: c_int,
+        dir: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     pub(super) fn lime_tree_distance(
         shape: *const RawShape,
         a_kind: *const c_char,

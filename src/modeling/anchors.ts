@@ -274,6 +274,24 @@ export function opBox(op: ModelOp): Box | null {
       for (const step of op.steps) box = unionBox(box, opBox(step));
       return box;
     }
+    case "sheet": {
+      let box: Box | null = null;
+      for (const c of op.curves) {
+        if (c.kind === "polyline") for (const p of c.points) box = grow(box, p);
+        else if (c.kind === "spline") for (const p of c.through) box = grow(box, p);
+        else if (c.kind === "nurbs") for (const p of c.poles) box = grow(box, p);
+        else if (c.kind === "segments") {
+          box = grow(box, c.start);
+          for (const seg of c.segments) {
+            if (seg.kind === "arc") box = grow(box, seg.through);
+            else if (seg.kind === "spline") for (const p of seg.through) box = grow(box, p);
+            else if (seg.kind === "nurbs" && seg.poles) for (const p of seg.poles) box = grow(box, p);
+            box = grow(box, seg.to);
+          }
+        }
+      }
+      return box;
+    }
     default:
       return null;
   }

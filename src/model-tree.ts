@@ -114,7 +114,13 @@ type ModelOpBase =
   | DraftOp
   | PartitionModelOp
   | TransitionOp
-  | LetteringOp;
+  | LetteringOp
+  | SheetOp
+  | SewOp
+  | ThickenOp
+  | TrimSplitOp
+  | ReplaceFaceOp
+  | SplitFaceOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -247,6 +253,70 @@ export interface SweepOp {
   twistDeg?: number;
   /** Stripped before the engine sees the op. */
   drawing?: LoftDrawing;
+}
+
+/** S4: How an open sheet is built from 3D curves. */
+export type SheetMode = "extrude" | "revolve" | "loft" | "planar";
+
+/** S4: Specification of an open B-rep surface ("Sheet"). */
+export interface SheetSpec {
+  mode: SheetMode;
+  curves: Curve3D[];
+  dir?: Vec3;
+  distance?: number;
+  axisOrigin?: Vec3;
+  angleDeg?: number;
+  ruled?: true;
+  symmetric?: true;
+}
+
+/** S4: Build an open B-rep surface ("Sheet"), standalone or compounded onto an existing sheet. */
+export interface SheetOp extends SheetSpec {
+  kind: "sheet";
+}
+
+/** S4: Sew open faces/shells within tolerance; auto-promotes to solid when zero naked edges remain. */
+export interface SewOp {
+  kind: "sew";
+  tolerance?: number;
+  makeSolid?: boolean;
+  capPlanar?: true;
+}
+
+/** S4: Direction for thickening an open sheet into a watertight solid. */
+export type ThickenDirection = "normal" | "reverse" | "both";
+
+/** S4: Thicken an open sheet/shell into a watertight solid. */
+export interface ThickenOp {
+  kind: "thicken";
+  thickness: number;
+  direction?: ThickenDirection;
+  tolerance?: number;
+}
+
+/** S4: Which half `trimSplit` keeps. */
+export type TrimKeep = "above" | "below" | "both";
+
+/** S4: Split a solid or sheet cleanly using an open sculpted surface. */
+export interface TrimSplitOp {
+  kind: "trimSplit";
+  sheet: SheetSpec;
+  keep?: TrimKeep;
+}
+
+/** S4: Replace a face of a solid with a sculpted surface, extending or trimming adjacent walls cleanly. */
+export interface ReplaceFaceOp {
+  kind: "replaceFace";
+  face: number | FaceRef;
+  sheet: SheetSpec;
+}
+
+/** S4: Project and imprint a 3D curve onto selected face(s), splitting them into distinct sub-faces. */
+export interface SplitFaceOp {
+  kind: "splitFace";
+  faces: (number | FaceRef)[];
+  curve: Curve3D;
+  direction?: Vec3;
 }
 
 /** A closed loop on a profile's plane. A loop inside no other is an outline; one inside an outline is its hole. */
@@ -571,11 +641,11 @@ export interface RunMark {
   n: number;
 }
 
-/** An extrude, a revolve, a loft, or a sweep that can start a solid on its own (K2 / S2). */
-export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp | SweepOp;
+/** An extrude, a revolve, a loft, a sweep, or an open sheet that can start a part on its own (K2 / S2 / S4). */
+export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp | SweepOp | SheetOp;
 
 export function isFeatureOp(op: ModelOp): op is FeatureOp {
-  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "sweep";
+  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "sweep" || op.kind === "sheet";
 }
 
 /**
@@ -778,6 +848,8 @@ function canonicalValue(op: ModelOp): unknown {
   if (op.kind === "shell" && op.openFaces) return { ...op, openFaces: op.openFaces.map(index) };
   if (op.kind === "extrude" && op.upTo !== undefined) return { ...op, upTo: index(op.upTo) };
   if (op.kind === "faceExtrude") return { ...op, face: index(op.face), ...(op.upTo !== undefined ? { upTo: index(op.upTo) } : {}) };
+  if (op.kind === "replaceFace") return { ...op, face: index(op.face) };
+  if (op.kind === "splitFace") return { ...op, faces: op.faces.map(index) };
   if (op.kind === "moveFaces") return { ...op, faces: op.faces.map((row) => ({ ...row, face: index(row.face) })) };
   if (op.kind === "draft") {
     const face = (pick: number | FaceRef) => (typeof pick === "number" ? pick : pick.index);
@@ -955,7 +1027,7 @@ function primitiveTitle(spec: PrimitiveSpec): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft", sweep: "Sweep" } as const;
+const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft", sweep: "Sweep", sheet: "Sheet" } as const;
 
 /**
  * --- F1/E1. A group of extrudes that came from one sketch: no composite `source`, so it is not a pocket,
@@ -1115,6 +1187,24 @@ export function opLabel(op: ModelOp, parts?: number): string {
     case "draft": {
       const walls = op.faces.length === 1 ? "1 wall" : `${op.faces.length} walls`;
       return `Draft ${walls} ${n(op.angleDeg)}°`;
+    }
+    case "sheet": {
+      const mode = op.mode === "extrude" ? "extruded" : op.mode === "revolve" ? "revolved" : op.mode === "loft" ? "lofted" : "planar";
+      return `Sheet (${mode})`;
+    }
+    case "sew":
+      return op.capPlanar ? "Cap & sew to solid" : "Sew surfaces";
+    case "thicken": {
+      const side = op.direction === "both" ? " symmetric" : op.direction === "reverse" ? " inward" : "";
+      return `Thicken ${n(op.thickness)} mm${side}`;
+    }
+    case "trimSplit":
+      return op.keep === "both" ? "Split by surface (both)" : `Trim by surface (${op.keep ?? "above"})`;
+    case "replaceFace":
+      return "Replace face with surface";
+    case "splitFace": {
+      const count = op.faces.length === 1 ? "1 face" : `${op.faces.length} faces`;
+      return `Split ${count} by curve`;
     }
   }
 }

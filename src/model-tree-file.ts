@@ -12,7 +12,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type FilletContinuity, type Fingerprint, type JoinTool, type LoftBoundary, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type SweepMode, type SweepTransition, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type FilletContinuity, type Fingerprint, type JoinTool, type LoftBoundary, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type SheetMode, type SheetSpec, type SweepMode, type SweepTransition, type ThickenDirection, type TrimKeep, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project file reads and writes a tree's body without loading the readers here (./saved-tree-body.ts).
 import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
@@ -189,7 +189,7 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   for (const node of nodes) {
     // Parents come first, so a parent always has the smaller id; only the root has none.
     if (ids.has(node.id) || (node.parent === null) !== (node.id === 0) || (node.parent !== null && !ids.has(node.parent))) return null;
-    if ((node.op === null) !== (node.parent === null) || (node.piece !== undefined && node.op?.kind !== "split")) return null;
+    if ((node.op === null) !== (node.parent === null) || (node.piece !== undefined && node.op?.kind !== "split" && node.op?.kind !== "trimSplit")) return null;
     // --- Split to print. `pieces` belongs to a split to print as `piece` does to a split, and to nothing else.
     if ((node.pieces !== undefined || node.pins !== undefined) && node.op?.kind !== "partition") return null;
     // An edited primitive root is built again right under the root, and only there.
@@ -204,7 +204,7 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   if (value.rootFeature != null) {
     if (value.rootPrimitive != null || value.rootStep !== undefined) return null;
     const op = readOp(value.rootFeature);
-    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft" && op.kind !== "sweep")) return null;
+    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft" && op.kind !== "sweep" && op.kind !== "sheet")) return null;
     return { ...body, rootFeature: op };
   }
   if (value.rootPrimitive != null) {
@@ -579,6 +579,60 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(drawing ? { drawing } : {}),
       };
     }
+    case "sheet": {
+      const spec = readSheetSpec(value);
+      return spec ? { kind: "sheet", ...spec } : undefined;
+    }
+    case "sew": {
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      if (value.makeSolid !== undefined && typeof value.makeSolid !== "boolean") return undefined;
+      if (value.capPlanar !== undefined && typeof value.capPlanar !== "boolean") return undefined;
+      return {
+        kind: "sew",
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+        ...(value.makeSolid === false ? { makeSolid: false } : {}),
+        ...(value.capPlanar === true ? { capPlanar: true as const } : {}),
+      };
+    }
+    case "thicken": {
+      if (!finite(value.thickness) || !(value.thickness > 0)) return undefined;
+      const direction = value.direction === undefined ? undefined : value.direction === "normal" || value.direction === "reverse" || value.direction === "both" ? (value.direction as ThickenDirection) : null;
+      if (direction === null) return undefined;
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      return {
+        kind: "thicken",
+        thickness: value.thickness,
+        ...(direction ? { direction } : {}),
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+      };
+    }
+    case "trimSplit": {
+      const sheet = readSheetSpec(value.sheet);
+      if (!sheet) return undefined;
+      const keep = value.keep === undefined ? undefined : value.keep === "above" || value.keep === "below" || value.keep === "both" ? (value.keep as TrimKeep) : null;
+      if (keep === null) return undefined;
+      return { kind: "trimSplit", sheet, ...(keep ? { keep } : {}) };
+    }
+    case "replaceFace": {
+      const face = readFacePick(value.face);
+      const sheet = readSheetSpec(value.sheet);
+      if (face === undefined || !sheet) return undefined;
+      return { kind: "replaceFace", face, sheet };
+    }
+    case "splitFace": {
+      if (!Array.isArray(value.faces) || value.faces.length === 0) return undefined;
+      const faces: (number | FaceRef)[] = [];
+      for (const raw of value.faces) {
+        const f = readFacePick(raw);
+        if (f === undefined) return undefined;
+        faces.push(f);
+      }
+      const curve = readCurve3D(value.curve);
+      if (!curve) return undefined;
+      const direction = value.direction === undefined ? undefined : vec(value.direction);
+      if (value.direction !== undefined && !direction) return undefined;
+      return { kind: "splitFace", faces, curve, ...(direction ? { direction } : {}) };
+    }
     case "shell": {
       if (!finite(value.thickness)) return undefined;
       if (value.openFaces === undefined) return { kind: "shell", thickness: value.thickness };
@@ -877,6 +931,36 @@ function readLoops(value: unknown): ProfileLoop[] | null | undefined {
     loops.push({ start, segments });
   }
   return loops;
+}
+
+function readSheetSpec(value: unknown): SheetSpec | null {
+  if (!isRecord(value)) return null;
+  if (value.mode !== "extrude" && value.mode !== "revolve" && value.mode !== "loft" && value.mode !== "planar") return null;
+  if (!Array.isArray(value.curves) || value.curves.length < 1) return null;
+  const curves: Curve3D[] = [];
+  for (const raw of value.curves) {
+    const curve = readCurve3D(raw);
+    if (!curve) return null;
+    curves.push(curve);
+  }
+  const dir = value.dir === undefined ? undefined : vec(value.dir);
+  if (value.dir !== undefined && !dir) return null;
+  if (value.distance !== undefined && !finite(value.distance)) return null;
+  const axisOrigin = value.axisOrigin === undefined ? undefined : vec(value.axisOrigin);
+  if (value.axisOrigin !== undefined && !axisOrigin) return null;
+  if (value.angleDeg !== undefined && !finite(value.angleDeg)) return null;
+  if (value.ruled !== undefined && typeof value.ruled !== "boolean") return null;
+  if (value.symmetric !== undefined && typeof value.symmetric !== "boolean") return null;
+  return {
+    mode: value.mode as SheetMode,
+    curves,
+    ...(dir ? { dir } : {}),
+    ...(finite(value.distance) ? { distance: value.distance } : {}),
+    ...(axisOrigin ? { axisOrigin } : {}),
+    ...(finite(value.angleDeg) ? { angleDeg: value.angleDeg } : {}),
+    ...(value.ruled === true ? { ruled: true as const } : {}),
+    ...(value.symmetric === true ? { symmetric: true as const } : {}),
+  };
 }
 
 function readLoftBoundary(value: unknown): LoftBoundary | null {

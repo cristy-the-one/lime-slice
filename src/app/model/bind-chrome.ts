@@ -21,7 +21,8 @@ import { livePlate, openMeshPicker, pickAddedMesh } from "../files";
 import { fx } from "../fx";
 import { sketchHistoryButtons, sketchRedo, sketchUndo } from "../sketch";
 import { state } from "../state";
-import { applyTool } from "./apply";
+import { applyOp, applyTool } from "./apply";
+import { sewOp, thickenOp } from "../../model-request";
 import { gearsInTree, type WorldGear } from "../../gear-pair";
 import { modelTrees } from "../model-trees";
 import { newSolidInView, plateBoxes } from "./create";
@@ -56,6 +57,18 @@ export function bindToolbar() {
   document.querySelector("#modelPickFace")?.addEventListener("click", () => setMode("face"));
   document.querySelector("#modelPickEdge")?.addEventListener("click", () => setMode("edge"));
   document.querySelector("#modelApply")?.addEventListener("click", () => void applyTool());
+  document.querySelector("#modelSheetThickenGo")?.addEventListener("click", () => {
+    const input = document.querySelector<HTMLInputElement>("#modelSheetThickenMm");
+    const thickness = Number(input?.value ?? 2);
+    if (!(thickness > 0) || !Number.isFinite(thickness)) {
+      readout("Enter a positive wall thickness in mm to thicken this sheet.");
+      return;
+    }
+    void applyOp(thickenOp(thickness), `Thickening sheet to ${thickness} mm…`);
+  });
+  document.querySelector("#modelSheetSewGo")?.addEventListener("click", () => {
+    void applyOp(sewOp({ capPlanar: true, makeSolid: true }), "Capping & sewing sheet into a solid…");
+  });
   document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
   // While Place is open, Undo and Redo step its moves; the solid's history waits until it closes.
   document.querySelector("#modelUndo")?.addEventListener("click", () => {

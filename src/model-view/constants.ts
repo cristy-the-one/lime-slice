@@ -18,6 +18,9 @@ export const EDGE_PX = 16;
 /** On-screen length of one handle unit. An arrow is about this long. */
 export const HANDLE_PX = 92;
 export const IDLE_EDGE = 0x8d9780;
+/** --- Organic surfaces S4 (U6): bright open-border highlight and subtle cool inside-face tint on open sheets. */
+export const NAKED_EDGE = 0xf97316;
+export const SHEET_BACK_TINT = 0x64748b;
 /** Where an arrow's head is centred, in handle units. */
 export const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 /** Facets of a round primitive's ghost meet at up to 22.5 degrees; its real edges at more. Below this they shade smooth and draw no line. */

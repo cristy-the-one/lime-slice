@@ -15,12 +15,12 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
-import { draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, revolveOp, shellOp, stepEdges, sweepOp, type ProfileShape } from "../model-request.ts";
+import { draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
 import type { BeltSettings } from "../belt.ts";
-import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, FilletContinuity, LoftBoundary, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SweepMode, SweepTransition, Vec2, Vec3 } from "../model-tree.ts";
+import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, FilletContinuity, LoftBoundary, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SheetSpec, SweepMode, SweepTransition, ThickenDirection, TrimKeep, Vec2, Vec3 } from "../model-tree.ts";
 import { drillDown, isGlobalFrame, planePoint, planePrimitive, type Workplane } from "../workplane.ts";
 
 /** A baked op: as stored, as typed with its defaults filled, and any notes. */
@@ -299,6 +299,69 @@ function readCurve3DField(value: unknown, ctx: BakeContext): Curve3D | { reason:
     return { kind: "edges", edges: picked };
   }
   return { reason: "spine.kind must be polyline, spline, nurbs, segments, or edges." };
+}
+
+function readSheetSpecField(value: unknown, ctx: BakeContext): SheetSpec | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "sheet specification must be an object." };
+  const raw = value as Record<string, unknown>;
+  const mode = raw.mode;
+  if (mode !== "extrude" && mode !== "revolve" && mode !== "loft" && mode !== "planar") {
+    return { reason: "sheet mode must be extrude, revolve, loft, or planar." };
+  }
+  if (!Array.isArray(raw.curves) || raw.curves.length < 1 || raw.curves.length > 100) {
+    return { reason: "A sheet needs at least 1 3D curve." };
+  }
+  if (mode === "loft" && raw.curves.length < 2) {
+    return { reason: "A loft sheet needs at least 2 3D curves." };
+  }
+  const curves: Curve3D[] = [];
+  for (const [idx, item] of raw.curves.entries()) {
+    const parsed = readCurve3DField(item, ctx);
+    if ("reason" in parsed) return { reason: `curves[${idx}]: ${parsed.reason}` };
+    curves.push(parsed);
+  }
+  let dir: Vec3 | undefined;
+  if (raw.dir !== undefined) {
+    const v = vec3Of(raw.dir);
+    if (!v || Math.hypot(v[0], v[1], v[2]) < 1e-9) return { reason: "dir must be a non-zero [x, y, z] vector." };
+    dir = v;
+  }
+  let distance: number | undefined;
+  if (raw.distance !== undefined) {
+    if (typeof raw.distance !== "number" || !Number.isFinite(raw.distance) || raw.distance === 0) {
+      return { reason: "distance must be a non-zero finite number." };
+    }
+    distance = raw.distance;
+  }
+  let axisOrigin: Vec3 | undefined;
+  if (raw.axisOrigin !== undefined) {
+    const v = vec3Of(raw.axisOrigin);
+    if (!v) return { reason: "axisOrigin must be [x, y, z]." };
+    axisOrigin = v;
+  }
+  let angleDeg: number | undefined;
+  if (raw.angleDeg !== undefined) {
+    if (typeof raw.angleDeg !== "number" || !Number.isFinite(raw.angleDeg) || raw.angleDeg === 0) {
+      return { reason: "angleDeg must be a non-zero finite number." };
+    }
+    angleDeg = raw.angleDeg;
+  }
+  if (mode === "extrude" && (!dir || distance === undefined)) {
+    return { reason: "An extruded sheet needs dir and distance." };
+  }
+  if (mode === "revolve" && !dir) {
+    return { reason: "A revolved sheet needs axis dir." };
+  }
+  return {
+    mode,
+    curves,
+    ...(dir ? { dir } : {}),
+    ...(distance !== undefined ? { distance } : {}),
+    ...(axisOrigin ? { axisOrigin } : {}),
+    ...(angleDeg !== undefined ? { angleDeg } : {}),
+    ...(raw.ruled === true ? { ruled: true as const } : {}),
+    ...(raw.symmetric === true ? { symmetric: true as const } : {}),
+  };
 }
 
 function readSweepModeField(value: unknown, ctx: BakeContext): SweepMode | { reason: string } {
@@ -795,6 +858,90 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
       }
     }
     const made = draftOp(faces, angle, { ...(defaultPull || !pull ? {} : { pull }), ...(neutral !== undefined ? { neutral } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  // --- Organic surfaces S4: Open surfaces ("Sheets") and surface-to-solid ops. ---
+  if (kind === "sheet") {
+    const built = readSheetSpecField(spec, ctx);
+    if ("reason" in built) return built;
+    const made = sheetOp(built);
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "sew") {
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0)) {
+        return { reason: "Sew tolerance must be above 0 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const makeSolid = spec.makeSolid === undefined ? undefined : spec.makeSolid === true;
+    const capPlanar = spec.capPlanar === true ? true : undefined;
+    const made = sewOp({ ...(tolerance !== undefined ? { tolerance } : {}), ...(makeSolid !== undefined ? { makeSolid } : {}), ...(capPlanar ? { capPlanar } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "thicken") {
+    const thickness = spec.thickness;
+    if (typeof thickness !== "number" || !Number.isFinite(thickness) || !(thickness > 0)) {
+      return { reason: "Thicken needs a positive wall thickness in millimetres." };
+    }
+    let direction: ThickenDirection | undefined;
+    if (spec.direction !== undefined) {
+      if (spec.direction !== "normal" && spec.direction !== "reverse" && spec.direction !== "both") {
+        return { reason: "Thicken direction must be normal, reverse, or both." };
+      }
+      direction = spec.direction;
+    }
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0)) {
+        return { reason: "Thicken tolerance must be above 0 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const made = thickenOp(thickness, { ...(direction ? { direction } : {}), ...(tolerance !== undefined ? { tolerance } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "trimSplit") {
+    const built = readSheetSpecField(spec.sheet, ctx);
+    if ("reason" in built) return built;
+    let keep: TrimKeep | undefined;
+    if (spec.keep !== undefined) {
+      if (spec.keep !== "above" && spec.keep !== "below" && spec.keep !== "both") {
+        return { reason: "trimSplit keep must be above, below, or both." };
+      }
+      keep = spec.keep;
+    }
+    const made = trimSplitOp(built, keep);
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "replaceFace") {
+    const face = bakedFace(spec.face, ctx);
+    if (typeof face !== "number") return face;
+    const built = readSheetSpecField(spec.sheet, ctx);
+    if ("reason" in built) return built;
+    const made = replaceFaceOp(face, built);
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "splitFace") {
+    if (!Array.isArray(spec.faces) || spec.faces.length < 1 || spec.faces.length > 50) {
+      return { reason: "Pick at least one face to split." };
+    }
+    const faces: number[] = [];
+    for (const raw of spec.faces) {
+      const face = bakedFace(raw, ctx);
+      if (typeof face !== "number") return face;
+      if (!faces.includes(face)) faces.push(face);
+    }
+    const curve = readCurve3DField(spec.curve, ctx);
+    if ("reason" in curve) return curve;
+    let direction: Vec3 | undefined;
+    if (spec.direction !== undefined) {
+      const v = vec3Of(spec.direction);
+      if (!v || Math.hypot(v[0], v[1], v[2]) < 1e-9) return { reason: "splitFace direction must be a non-zero [x, y, z] vector." };
+      direction = v;
+    }
+    const made = splitFaceOp(faces, curve, direction);
     return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
   }
   // --- A gear (src/model-gear.ts): a boolean whose tool is the gear primitive, placed as a cylinder is. Fuse by default.

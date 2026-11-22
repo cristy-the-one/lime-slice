@@ -151,8 +151,8 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   if (!obj.probes.has(key)) return refuse("not-probed", "Probe this edit first, or pass probe: true. It was not applied.", undefined, NEXT.probe);
   const [reserved, node] = reserveId(tree);
   obj.tree = reserved;
-  const keep = baked.op.kind === "split" ? this.splitKeep(raw) : "both";
-  const otherKey = baked.op.kind === "split" && keep === "both" ? `mcp-split-${obj.id}-${node}` : undefined;
+  const keep = baked.op.kind === "split" ? this.splitKeep(raw) : baked.op.kind === "trimSplit" ? (baked.op.keep ?? "above") : "both";
+  const otherKey = (baked.op.kind === "split" || baked.op.kind === "trimSplit") && keep === "both" ? `mcp-split-${obj.id}-${node}` : undefined;
   let reply: Record<string, unknown>;
   // A recipe that meshes once at its end asks for no mesh after a plain step (mesh-end.ts).
   // So does a queued group that is not the last of its flush (`unmeshed`: the boxes of its fuse tools, `applyQueued`).

@@ -506,6 +506,8 @@ pub enum Curve3DSegment {
 pub enum Curve3D {
     Polyline {
         points: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
     },
     Spline {
         points: Vec<[f64; 3]>,
@@ -937,6 +939,121 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wrap: Option<String>,
     },
+    // --- Organic surfaces S4: Open Sheets & Surface-to-Solid Workflow ---
+    /// Build an open B-rep surface ("Sheet") from 3D curves (extrude, revolve, loft, or planar cap).
+    /// Can be a feature root or compounded onto an existing sheet for subsequent `Sew`.
+    Sheet {
+        #[serde(flatten)]
+        spec: SheetSpec,
+    },
+    /// Sew touching open faces/shells within `tolerance`. When `capPlanar` is true, planar naked boundary loops are capped.
+    /// When `makeSolid` is true (default) and zero naked edges remain, auto-promotes to a watertight solid.
+    Sew {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        make_solid: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cap_planar: bool,
+    },
+    /// Thicken an open sheet/shell into a watertight solid along its surface normal.
+    Thicken {
+        thickness: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<ThickenDirection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
+    /// Split a solid or sheet cleanly using an open sculpted NURBS surface.
+    TrimSplit {
+        sheet: SheetSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep: Option<TrimKeep>,
+    },
+    /// Replace a face of a solid with a sculpted surface, extending or trimming adjacent walls cleanly.
+    ReplaceFace {
+        face: FacePick,
+        sheet: SheetSpec,
+    },
+    /// Project and imprint a 3D curve onto selected face(s), splitting them into distinct sub-faces.
+    SplitFace {
+        faces: Vec<FacePick>,
+        curve: Curve3D,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<[f64; 3]>,
+    },
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+impl Op {
+    /// S4: Whether this operation can run directly on an open surface ("Sheet") with no closed solid.
+    pub(super) fn allows_sheet(&self) -> bool {
+        matches!(
+            self,
+            Op::Sheet { .. }
+                | Op::Sew { .. }
+                | Op::Thicken { .. }
+                | Op::TrimSplit { .. }
+                | Op::SplitFace { .. }
+                | Op::Scale { .. }
+                | Op::Unify
+        )
+    }
+}
+
+/// S4: How an open sheet is built from 3D curves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SheetMode {
+    Extrude,
+    Revolve,
+    Loft,
+    Planar,
+}
+
+/// S4: Specification of an open B-rep surface ("Sheet").
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetSpec {
+    pub mode: SheetMode,
+    pub curves: Vec<Curve3D>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis_origin: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ruled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub symmetric: bool,
+}
+
+/// S4: Which side of the open sheet `Op::Thicken` adds wall thickness on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThickenDirection {
+    Normal,
+    Reverse,
+    Both,
+}
+
+/// S4: Which half `Op::TrimSplit` keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TrimKeep {
+    Above,
+    Below,
+    Both,
 }
 
 /// One text a project sets in a font, for the pack of the letters it needs.

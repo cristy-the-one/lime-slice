@@ -164,6 +164,13 @@ fn group_step_refusal(step: &Op) -> Option<&'static str> {
         Op::Transition { .. } => Some("A group cannot contain a print transition."),
         // --- Text with real fonts.
         Op::Lettering { .. } => None,
+        // --- Organic surfaces S4: open sheet & surface-to-solid steps stay top-level history rows.
+        Op::Sheet { .. } => Some("A group cannot contain a sheet."),
+        Op::Sew { .. } => Some("A group cannot contain a sew step."),
+        Op::Thicken { .. } => Some("A group cannot contain a thicken step."),
+        Op::TrimSplit { .. } => Some("A group cannot contain a trim/split step."),
+        Op::ReplaceFace { .. } => Some("A group cannot contain a replace-face step."),
+        Op::SplitFace { .. } => Some("A group cannot contain a split-face step."),
     }
 }
 

@@ -545,6 +545,15 @@ const DOCK = `
           </section>
           <!-- --- S2 sketch --- -->
           <div class="sketch-cards" id="sketchCards" hidden></div>
+          <!-- --- Organic surfaces S4 (U6): open-sheet notice with one-click Thicken & Cap & Sew to solid. --- -->
+          <div class="model-sheet-bar" id="modelSheetBar" role="status" hidden>
+            <p class="model-sheet-text" id="modelSheetText">Open sheet — thicken or cap &amp; sew to make a printable solid.</p>
+            <div class="model-sheet-actions">
+              <label class="model-sheet-thick"><span>Wall</span><input id="modelSheetThickenMm" type="number" step="0.2" min="0.1" max="100" value="2" aria-label="Sheet wall thickness, millimetres"><span>mm</span></label>
+              <button class="btn primary" id="modelSheetThickenGo" type="button" data-tip="Thicken this open sheet into a watertight printable solid">Thicken</button>
+              <button class="btn" id="modelSheetSewGo" type="button" data-tip="Cap planar open borders and sew this sheet into a watertight solid">Cap &amp; Sew</button>
+            </div>
+          </div>
           <section class="model-history" id="modelHistory" aria-label="History" hidden>
             <button class="model-history-toggle" id="modelHistoryToggle" type="button" data-pane-head aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
             <div class="mh-position" id="modelPosition" role="group" aria-label="Position">

@@ -1,7 +1,7 @@
 /** The open solid's meshes: building, disposing and painting its faces, edges, outlines and check marks. */
 import * as THREE from "three";
 import type { Bounds } from "../mesh-place";
-import { IDLE_EDGE, STRESS_LOAD } from "./constants";
+import { IDLE_EDGE, NAKED_EDGE, SHEET_BACK_TINT, STRESS_LOAD } from "./constants";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
@@ -69,12 +69,25 @@ export function installMesh(ctx: ViewCtx): void {
   canvas.dataset.solidOpacity = "1";
   const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
   ctx.edgeMaterial = edgeMaterial;
+  const nakedEdgeMaterial = new THREE.LineBasicMaterial({ color: NAKED_EDGE });
+  ctx.nakedEdgeMaterial = nakedEdgeMaterial;
+  const sheetBackMaterial = new THREE.MeshStandardMaterial({
+    color: SHEET_BACK_TINT,
+    roughness: 0.7,
+    metalness: 0.05,
+    side: THREE.BackSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 2,
+    polygonOffsetUnits: 2,
+  });
+  ctx.sheetBackMaterial = sheetBackMaterial;
 
   /** --- Organic surfaces S1: switch active solid material (Standard vs Zebra) and UV isoparm overlay. */
   function syncSurfaceLook() {
     syncZebraMaterial(zebraMaterial, ctx.look, ctx.solidDimmed);
     const activeMat: THREE.Material = ctx.look.shading === "zebra" ? zebraMaterial : solidMaterial;
     if (ctx.mesh && ctx.mesh.material !== activeMat) ctx.mesh.material = activeMat;
+    if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = !ctx.preview && ctx.look.shading !== "zebra";
     if (ctx.preview && ctx.preview.mesh.material !== activeMat) ctx.preview.mesh.material = activeMat;
     canvas.dataset.shading = ctx.look.shading;
     canvas.dataset.isoparms = ctx.look.isoparms ? "1" : "0";
@@ -105,7 +118,9 @@ export function installMesh(ctx: ViewCtx): void {
     }
     ctx.preview = null;
     if (ctx.mesh) ctx.mesh.visible = true;
+    if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = ctx.look.shading !== "zebra";
     if (ctx.edgeLines) ctx.edgeLines.visible = true;
+    if (ctx.nakedEdgeLines) ctx.nakedEdgeLines.visible = true;
     delete canvas.dataset.preview;
     paintFaces();
     ctx.rebuildCap();
@@ -144,7 +159,9 @@ export function installMesh(ctx: ViewCtx): void {
       body.add(lines);
     }
     if (ctx.mesh) ctx.mesh.visible = false;
+    if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = false;
     if (ctx.edgeLines) ctx.edgeLines.visible = false;
+    if (ctx.nakedEdgeLines) ctx.nakedEdgeLines.visible = false;
     ctx.preview = { shape, mesh: shaded, lines };
     canvas.dataset.preview = String(shape.volumeMm3.toFixed(2));
     ctx.rebuildCap();
@@ -153,7 +170,12 @@ export function installMesh(ctx: ViewCtx): void {
   function clearBody() {
     clearPreview();
     ctx.clearSectionCap();
-    for (const object of [ctx.mesh, ctx.edgeLines, ctx.isoLines]) {
+    if (ctx.sheetBackMesh) {
+      // Shares geometry with ctx.mesh; remove before ctx.mesh disposes it.
+      body.remove(ctx.sheetBackMesh);
+      ctx.sheetBackMesh = null;
+    }
+    for (const object of [ctx.mesh, ctx.edgeLines, ctx.nakedEdgeLines, ctx.isoLines]) {
       if (!object) continue;
       body.remove(object);
       object.geometry.dispose();
@@ -165,6 +187,7 @@ export function installMesh(ctx: ViewCtx): void {
     }
     ctx.mesh = null;
     ctx.edgeLines = null;
+    ctx.nakedEdgeLines = null;
     ctx.isoLines = null;
     ctx.surfaceInspect = null;
     ctx.faceOutline = null;

@@ -31,6 +31,8 @@ export interface ModelSolid {
   edges: { id: number; lengthMm: number; points: Float32Array }[];
   /** Edges (by index) that are a seam or a pole: listed and pickable as ever, but not drawn as a line. */
   seams?: number[];
+  /** --- Organic surfaces S4: open-border (naked) edges on an open sheet, highlighted bright in the viewport. */
+  nakedEdges?: number[];
   /** The history node that made each face. Null is a preview face with no step yet. */
   stepFaces?: (number | null)[];
 }

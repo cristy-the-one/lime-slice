@@ -816,6 +816,101 @@ const draftOp = {
   },
 };
 (op.oneOf as unknown[]).splice(5 + sketchOps.length + faceOps.length, 0, draftOp);
+// --- Organic surfaces S4: Open surfaces ("Sheets") and surface-to-solid operations. ---
+const sheetSpecFields = {
+  mode: { enum: ["extrude", "revolve", "loft", "planar"], description: "Sheet builder: extrude, revolve, loft, or planar." },
+  curves: { type: "array", minItems: 1, maxItems: 100, items: curve3dField, description: "3D boundary or section curves." },
+  dir: { ...vec3, description: "Extrude direction or revolve axis direction." },
+  distance: { type: "number", minimum: -1000, maximum: 1000, description: "Extrude distance, mm." },
+  axisOrigin: { ...vec3, description: "Revolve axis origin point." },
+  angleDeg: { type: "number", minimum: -360, maximum: 360, description: "Revolve sweep angle, degrees." },
+  ruled: { type: "boolean", description: "Ruled surface between loft curves." },
+  symmetric: { type: "boolean", description: "Extrude equally to both sides." },
+};
+const sheetSpecField = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode", "curves"],
+  description: "Open surface sheet specification.",
+  properties: sheetSpecFields,
+};
+const sheetOps = [
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "mode", "curves"],
+    properties: {
+      kind: { const: "sheet", description: "Open surface sheet." },
+      ...sheetSpecFields,
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind"],
+    properties: {
+      kind: { const: "sew", description: "Sew open faces into a shell or watertight solid." },
+      tolerance: { type: "number", exclusiveMinimum: 0, maximum: 10, description: "Sewing tolerance, mm." },
+      makeSolid: { type: "boolean", description: "Auto-promote a watertight closed shell to a solid (default true)." },
+      capPlanar: { type: "boolean", description: "Cap planar open borders before sewing." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "thickness"],
+    properties: {
+      kind: { const: "thicken", description: "Thicken an open sheet into a watertight solid wall." },
+      thickness: { type: "number", exclusiveMinimum: 0, maximum: 200, description: "Wall thickness, mm." },
+      direction: { enum: ["normal", "reverse", "both"], description: "Offset side: normal (default), reverse, or both." },
+      tolerance: { type: "number", exclusiveMinimum: 0, maximum: 1, description: "Offset tolerance, mm." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "sheet"],
+    properties: {
+      kind: { const: "trimSplit", description: "Split a solid or sheet cleanly with a sculpted surface." },
+      sheet: sheetSpecField,
+      keep: { enum: ["above", "below", "both"], description: "Which side to keep: above (default), below, or both." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "face", "sheet"],
+    properties: {
+      kind: { const: "replaceFace", description: "Replace a solid face with a sculpted surface." },
+      face: { description: "Target face: an index, or {normal, nearPoint}." },
+      sheet: sheetSpecField,
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "faces", "curve"],
+    properties: {
+      kind: { const: "splitFace", description: "Project and imprint a 3D curve onto faces to split them." },
+      faces: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        description: "Faces to split: indexes, or {normal, nearPoint} selectors.",
+        items: { description: "Face index or selector." },
+      },
+      curve: curve3dField,
+      direction: { ...vec3, description: "Optional projection direction (default normal projection)." },
+      label,
+    },
+  },
+];
+(op.oneOf as unknown[]).splice(5 + sketchOps.length + faceOps.length + 1, 0, ...sheetOps);
 const regionField = {
   type: "object",
   additionalProperties: false,
@@ -1111,6 +1206,12 @@ export const OP_SUMMARY: Record<string, string> = {
   faceExtrude: "faceExtrude {face, distance}: a prism on a face.",
   moveFaces: "moveFaces {faces:[{face, distance}]}: push or pull faces.",
   draft: "draft {faces, angleDeg, pull, neutral}: tilt walls so the part releases. Positive opens them toward pull.",
+  sheet: "sheet {mode:extrude|revolve|loft|planar, curves, dir, distance, axisOrigin, angleDeg}: build or add an open surface sheet.",
+  sew: "sew {tolerance, capPlanar, makeSolid}: sew open sheets into a shell or watertight solid.",
+  thicken: "thicken {thickness, direction:normal|reverse|both}: thicken an open sheet into a printable solid wall.",
+  trimSplit: "trimSplit {sheet, keep:above|below|both}: cut a solid or sheet with a sculpted surface.",
+  replaceFace: "replaceFace {face, sheet}: replace a solid face with a sculpted NURBS surface.",
+  splitFace: "splitFace {faces, curve, direction}: imprint a 3D curve onto faces to split them.",
   boolean: "boolean {op:cut|fuse|common, primitive, dx, dy, dz | radius, height, origin | centre, turn}.",
   root: "root {primitive, sizes}: a new base solid.",
   join: "join {toolObject, op}: another object's solid as the tool.",

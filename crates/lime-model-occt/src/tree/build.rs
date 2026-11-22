@@ -27,7 +27,11 @@ use super::ffi::{
 };
 use super::group::{build_combined, build_group};
 use super::joints::{joined_of, keep_built, stored_joints, Joined};
-use super::k1::{build_k1_loops, build_loft_v2_shape, build_sweep_shape, k1_has_loops, loft_needs_v2, push_shape};
+use super::k1::{
+    build_k1_loops, build_loft_v2_shape, build_replace_face_shape, build_sew_shape,
+    build_sheet_shape, build_split_face_shape, build_sweep_shape, build_thicken_shape,
+    build_trim_split_shape, k1_has_loops, loft_needs_v2, push_shape,
+};
 use super::ops::{FacePick, FilletContinuity, Neutral, Op, Primitive};
 use super::outcome::Failure;
 use super::partition::{
@@ -693,6 +697,32 @@ pub(super) fn build(
                 )
             })
         }
+        // --- Organic surfaces S4: Open Sheets & Surface-to-Solid Workflow.
+        Op::Sheet { spec } => build_sheet_shape(Some(from), spec),
+        Op::Sew {
+            tolerance,
+            make_solid,
+            cap_planar,
+        } => build_sew_shape(from, *tolerance, *make_solid, *cap_planar).map(|(shape, _, _)| shape),
+        Op::Thicken {
+            thickness,
+            direction,
+            tolerance,
+        } => build_thicken_shape(from, *thickness, *direction, *tolerance),
+        Op::TrimSplit { sheet, keep } => match build_trim_split_shape(from, sheet, *keep) {
+            Ok((kept_shape, extra)) => {
+                other = extra;
+                Ok(kept_shape)
+            }
+            Err(err) => Err(err),
+        },
+        Op::ReplaceFace { sheet, .. } => {
+            let face = picks.first().copied().unwrap_or(-1);
+            build_replace_face_shape(from, face, sheet)
+        }
+        Op::SplitFace {
+            curve, direction, ..
+        } => build_split_face_shape(from, &picks, curve, *direction),
     };
     match kept {
         Ok(kept) => Ok(Built {

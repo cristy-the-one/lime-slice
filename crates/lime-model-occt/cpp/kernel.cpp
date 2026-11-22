@@ -45,7 +45,13 @@
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepFill.hxx>
+#include <BRepLib.hxx>
+#include <BRepOffsetAPI_NormalProjection.hxx>
+#include <BRepProj_Projection.hxx>
+#include <ShapeAnalysis_FreeBounds.hxx>
 #include <ShapeAnalysis_Surface.hxx>
+#include <TopTools_HSequenceOfShape.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <gp_GTrsf.hxx>
@@ -950,12 +956,16 @@ std::string describe(Held& held) {
     TopTools_IndexedDataMapOfShapeListOfShape ancestors;
     TopExp::MapShapesAndAncestors(held.shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
     std::string seams;
+    std::string naked;
     for (int i = 1; i <= edges; ++i) {
         const TopoDS_Edge edge = TopoDS::Edge(held.edges(i));
         bool seam = BRep_Tool::Degenerated(edge);
         const int at = ancestors.FindIndex(edge);
+        int face_count = 0;
         if (!seam && at > 0) {
-            for (const TopoDS_Shape& face : ancestors.FindFromIndex(at)) {
+            const TopTools_ListOfShape& flist = ancestors.FindFromIndex(at);
+            face_count = flist.Extent();
+            for (const TopoDS_Shape& face : flist) {
                 if (BRep_Tool::IsClosed(edge, TopoDS::Face(face))) {
                     seam = true;
                     break;
@@ -965,10 +975,16 @@ std::string describe(Held& held) {
         if (seam) {
             seams += seams.empty() ? "" : ",";
             seams += std::to_string(i - 1);
+        } else if (face_count < 2) {
+            naked += naked.empty() ? "" : ",";
+            naked += std::to_string(i - 1);
         }
     }
     if (!seams.empty()) {
         out += ",\"edgeSeams\":[" + seams + "]";
+    }
+    if (!naked.empty()) {
+        out += ",\"nakedEdges\":[" + naked + "]";
     }
     out += "}";
     return out;
@@ -10602,6 +10618,826 @@ TopoDS_Shape build_loft_v2(
         return tool;
     }
     return combine_profile_tools(current, before, which, {tool}, "loft", volume, error);
+}
+
+// =================================================================================================
+// Organic surfaces S4: Open Sheets & Surface-to-Solid Workflow
+// (`Sheet`, `Sew`, `Thicken`, `TrimSplit`, `ReplaceFace`, `SplitFace`)
+// =================================================================================================
+
+namespace {
+
+int count_naked_edges(const TopoDS_Shape& shape) {
+    if (shape.IsNull()) return 0;
+    TopTools_IndexedDataMapOfShapeListOfShape ancestors;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+    int naked = 0;
+    for (int i = 1; i <= ancestors.Extent(); ++i) {
+        const TopoDS_Edge edge = TopoDS::Edge(ancestors.FindKey(i));
+        if (BRep_Tool::Degenerated(edge)) continue;
+        const TopTools_ListOfShape& flist = ancestors.FindFromIndex(i);
+        bool closed_on_face = false;
+        for (const TopoDS_Shape& f : flist) {
+            if (BRep_Tool::IsClosed(edge, TopoDS::Face(f))) {
+                closed_on_face = true;
+                break;
+            }
+        }
+        if (!closed_on_face && flist.Extent() < 2) {
+            ++naked;
+        }
+    }
+    return naked;
+}
+
+gp_Vec average_shape_normal(const TopoDS_Shape& shape) {
+    gp_Vec sum(0, 0, 0);
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+        const TopoDS_Face face = TopoDS::Face(ex.Current());
+        Standard_Real u1 = 0, u2 = 0, v1 = 0, v2 = 0;
+        BRepTools::UVBounds(face, u1, u2, v1, v2);
+        const Standard_Real u = 0.5 * (u1 + u2);
+        const Standard_Real v = 0.5 * (v1 + v2);
+        BRepAdaptor_Surface surf(face, Standard_True);
+        BRepLProp_SLProps props(surf, u, v, 1, 1e-7);
+        if (props.IsNormalDefined()) {
+            gp_Dir n = props.Normal();
+            if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+            GProp_GProps gp;
+            BRepGProp::SurfaceProperties(face, gp);
+            sum += gp_Vec(n) * std::max(gp.Mass(), 1e-3);
+        }
+    }
+    if (sum.Magnitude() <= 1e-9) return gp_Vec(0, 0, 1);
+    sum.Normalize();
+    return sum;
+}
+
+gp_Pnt shape_centroid(const TopoDS_Shape& shape) {
+    GProp_GProps props;
+    if (has_solid(shape)) {
+        BRepGProp::VolumeProperties(shape, props);
+    } else {
+        BRepGProp::SurfaceProperties(shape, props);
+    }
+    return props.CentreOfMass();
+}
+
+TopoDS_Shape promote_shell_to_solid(const TopoDS_Shape& sewn, double& volume) {
+    volume = 0.0;
+    TopoDS_Shell shell;
+    for (TopExp_Explorer ex(sewn, TopAbs_SHELL); ex.More(); ex.Next()) {
+        shell = TopoDS::Shell(ex.Current());
+        break;
+    }
+    if (shell.IsNull()) {
+        BRep_Builder bb;
+        bb.MakeShell(shell);
+        int faces = 0;
+        for (TopExp_Explorer ex(sewn, TopAbs_FACE); ex.More(); ex.Next()) {
+            bb.Add(shell, ex.Current());
+            ++faces;
+        }
+        if (faces == 0) return {};
+        shell.Closed(Standard_True);
+    }
+    {
+        ShapeFix_Shape sf(shell);
+        sf.Perform();
+        const TopoDS_Shape fixed_sh = sf.Shape();
+        for (TopExp_Explorer ex(fixed_sh, TopAbs_SHELL); ex.More(); ex.Next()) {
+            shell = TopoDS::Shell(ex.Current());
+            break;
+        }
+    }
+    shell.Closed(Standard_True);
+    ShapeFix_Solid fix_from_shell;
+    TopoDS_Solid solid = fix_from_shell.SolidFromShell(shell);
+    if (solid.IsNull()) {
+        BRepBuilderAPI_MakeSolid ms(shell);
+        if (!ms.IsDone() || ms.Solid().IsNull()) return {};
+        solid = ms.Solid();
+    }
+    BRepLib::OrientClosedSolid(solid);
+    GProp_GProps props;
+    integrate(solid, props);
+    if (props.Mass() < 0.0) {
+        solid.Reverse();
+        integrate(solid, props);
+    }
+    if (std::abs(props.Mass()) <= 1e-6) return {};
+    if (!BRepCheck_Analyzer(solid).IsValid()) {
+        ShapeFix_Solid fix;
+        fix.Init(solid);
+        fix.Perform();
+        if (!fix.Solid().IsNull() && has_solid(fix.Solid())) {
+            solid = TopoDS::Solid(as_solid(fix.Solid()));
+            BRepLib::OrientClosedSolid(solid);
+            integrate(solid, props);
+            if (props.Mass() < 0.0) {
+                solid.Reverse();
+                integrate(solid, props);
+            }
+        }
+    }
+    if (!BRepCheck_Analyzer(solid).IsValid()) return {};
+    volume = std::abs(props.Mass());
+    return solid;
+}
+
+TopoDS_Shape build_sheet_only(const SheetSpec& spec, const Held* held_for_edges, std::string& error) {
+    if (spec.curves.empty()) {
+        error = "A sheet needs at least one 3D curve.";
+        return {};
+    }
+    try {
+        if (spec.mode == 0) {
+            // Extrude an open 3D curve along dir * distance -> exact open sheet.
+            const gp_Vec raw_dir(spec.dir[0], spec.dir[1], spec.dir[2]);
+            if (raw_dir.Magnitude() <= 1e-9 || !std::isfinite(spec.distance) || std::abs(spec.distance) <= 1e-6) {
+                error = "Sheet extrude needs a non-zero direction and distance.";
+                return {};
+            }
+            gp_Vec vec = raw_dir.Normalized() * spec.distance;
+            TopoDS_Wire w = curve3d_wire(spec.curves[0], held_for_edges, error);
+            if (w.IsNull()) return {};
+            if (spec.symmetric) {
+                gp_Trsf shift;
+                shift.SetTranslation(vec * -0.5);
+                w = TopoDS::Wire(BRepBuilderAPI_Transform(w, shift, Standard_True).Shape());
+            }
+            BRepPrimAPI_MakePrism prism(w, vec, Standard_True);
+            prism.Build();
+            if (!prism.IsDone() || prism.Shape().IsNull() || count_of(prism.Shape(), TopAbs_FACE) == 0) {
+                error = "Open CASCADE could not extrude this curve into a sheet.";
+                return {};
+            }
+            return prism.Shape();
+        }
+        if (spec.mode == 1) {
+            // Revolve an open 3D curve about axis -> exact open revolved sheet.
+            const gp_Vec raw_dir(spec.dir[0], spec.dir[1], spec.dir[2]);
+            if (raw_dir.Magnitude() <= 1e-9 || !std::isfinite(spec.angle_deg) || std::abs(spec.angle_deg) <= 1e-6 || std::abs(spec.angle_deg) > 360.0 + 1e-6) {
+                error = "Sheet revolve needs a non-zero axis direction and angle (up to 360°).";
+                return {};
+            }
+            TopoDS_Wire w = curve3d_wire(spec.curves[0], held_for_edges, error);
+            if (w.IsNull()) return {};
+            const gp_Ax1 axis(gp_Pnt(spec.axis_origin[0], spec.axis_origin[1], spec.axis_origin[2]), gp_Dir(raw_dir));
+            const double angle = spec.angle_deg * (kPi / 180.0);
+            BRepPrimAPI_MakeRevol rev(w, axis, angle, Standard_True);
+            rev.Build();
+            if (!rev.IsDone() || rev.Shape().IsNull() || count_of(rev.Shape(), TopAbs_FACE) == 0) {
+                error = "Open CASCADE could not revolve this curve into a sheet.";
+                return {};
+            }
+            return rev.Shape();
+        }
+        if (spec.mode == 2) {
+            // Loft through 2+ open (or closed) 3D curves -> exact smooth/ruled open NURBS sheet.
+            if (spec.curves.size() < 2) {
+                error = "Sheet loft needs at least two 3D curves.";
+                return {};
+            }
+            BRepOffsetAPI_ThruSections loft(Standard_False, spec.ruled ? Standard_True : Standard_False, 1e-6);
+            loft.CheckCompatibility(Standard_True);
+            if (!spec.ruled) {
+                loft.SetSmoothing(Standard_True);
+                loft.SetContinuity(GeomAbs_C2);
+                loft.SetParType(Approx_Centripetal);
+            }
+            for (const Curve3DSpec& c : spec.curves) {
+                TopoDS_Wire w = curve3d_wire(c, held_for_edges, error);
+                if (w.IsNull()) return {};
+                loft.AddWire(w);
+            }
+            loft.Build();
+            if (!loft.IsDone() || loft.Shape().IsNull() || count_of(loft.Shape(), TopAbs_FACE) == 0) {
+                error = "Open CASCADE could not loft these curves into a sheet.";
+                return {};
+            }
+            return loft.Shape();
+        }
+        if (spec.mode == 3) {
+            // Planar face bounded by a closed 3D curve.
+            TopoDS_Wire w = curve3d_wire(spec.curves[0], held_for_edges, error);
+            if (w.IsNull()) return {};
+            BRepBuilderAPI_MakeFace mf(w, Standard_True);
+            if (!mf.IsDone() || mf.Face().IsNull()) {
+                error = "The boundary curve is not a closed planar loop.";
+                return {};
+            }
+            return mf.Face();
+        }
+        error = "Unknown sheet mode.";
+        return {};
+    } catch (const Standard_Failure& f) {
+        error = f.GetMessageString() ? f.GetMessageString() : "Open CASCADE could not build this sheet.";
+        return {};
+    }
+}
+
+TopoDS_Shape transform_placed(const TopoDS_Shape& shape, const std::array<double, 12>& place) {
+    gp_Trsf trsf;
+    trsf.SetValues(
+        place[0], place[1], place[2], place[9],
+        place[3], place[4], place[5], place[10],
+        place[6], place[7], place[8], place[11]);
+    return BRepBuilderAPI_Transform(shape, trsf, Standard_True).Shape();
+}
+
+/// Build an offset copy of a single face or shell without thickening, used as fallback skin builder.
+TopoDS_Shape build_offset_skin(const TopoDS_Shape& base, double dist, double tol) {
+    if (std::abs(dist) <= 1e-9) {
+        return BRepBuilderAPI_Copy(base).Shape();
+    }
+    try {
+        BRepOffset_MakeOffset off;
+        off.Initialize(base, dist, tol, BRepOffset_Skin, Standard_False, Standard_False, GeomAbs_Arc, Standard_False);
+        off.MakeOffsetShape();
+        if (off.IsDone() && !off.Shape().IsNull() && count_of(off.Shape(), TopAbs_FACE) > 0) {
+            return off.Shape();
+        }
+    } catch (...) {
+    }
+    // Simple translational shift along average normal as last-resort skin for planar/gently curved sheets.
+    const gp_Vec n = average_shape_normal(base);
+    gp_Trsf tr;
+    tr.SetTranslation(n * dist);
+    return BRepBuilderAPI_Transform(base, tr, Standard_True).Shape();
+}
+
+}  // namespace
+
+TopoDS_Shape build_sheet(
+    const TopoDS_Shape& current,
+    const Held* held_for_edges,
+    const SheetSpec& spec,
+    std::string& error) {
+    TopoDS_Shape sheet = build_sheet_only(spec, held_for_edges, error);
+    if (sheet.IsNull()) return {};
+    if (current.IsNull()) {
+        return sheet;
+    }
+    TopoDS_Compound comp;
+    BRep_Builder bb;
+    bb.MakeCompound(comp);
+    for (TopExp_Explorer ex(current, TopAbs_FACE); ex.More(); ex.Next()) {
+        bb.Add(comp, ex.Current());
+    }
+    for (TopExp_Explorer ex(sheet, TopAbs_FACE); ex.More(); ex.Next()) {
+        bb.Add(comp, ex.Current());
+    }
+    return comp;
+}
+
+TopoDS_Shape build_sew(
+    const TopoDS_Shape& current,
+    const std::vector<const TopoDS_Shape*>& extra_tools,
+    const std::vector<std::array<double, 12>>& tool_places,
+    double tolerance,
+    bool make_solid,
+    bool cap_planar,
+    double& volume,
+    bool& promoted_to_solid,
+    int& naked_after,
+    std::string& error) {
+    volume = 0.0;
+    promoted_to_solid = false;
+    naked_after = 0;
+    const double tol = std::clamp(tolerance > 0.0 ? tolerance : 1e-3, 1e-6, 1.0);
+    try {
+        BRepBuilderAPI_Sewing sew(tol);
+        sew.SetNonManifoldMode(Standard_False);
+        for (TopExp_Explorer ex(current, TopAbs_FACE); ex.More(); ex.Next()) {
+            sew.Add(ex.Current());
+        }
+        for (size_t i = 0; i < extra_tools.size(); ++i) {
+            if (extra_tools[i] == nullptr || extra_tools[i]->IsNull()) continue;
+            TopoDS_Shape ts = i < tool_places.size()
+                ? transform_placed(*extra_tools[i], tool_places[i])
+                : *extra_tools[i];
+            for (TopExp_Explorer ex(ts, TopAbs_FACE); ex.More(); ex.Next()) {
+                sew.Add(ex.Current());
+            }
+        }
+        sew.Perform();
+        TopoDS_Shape sewn = sew.SewedShape();
+        if (sewn.IsNull() || count_of(sewn, TopAbs_FACE) == 0) {
+            error = "Sewing produced no faces.";
+            return {};
+        }
+        if (cap_planar && count_naked_edges(sewn) > 0) {
+            Handle(TopTools_HSequenceOfShape) free_edges = new TopTools_HSequenceOfShape();
+            TopTools_IndexedDataMapOfShapeListOfShape anc;
+            TopExp::MapShapesAndAncestors(sewn, TopAbs_EDGE, TopAbs_FACE, anc);
+            for (int i = 1; i <= anc.Extent(); ++i) {
+                const TopoDS_Edge e = TopoDS::Edge(anc.FindKey(i));
+                if (BRep_Tool::Degenerated(e)) continue;
+                if (anc.FindFromIndex(i).Extent() < 2) {
+                    free_edges->Append(e);
+                }
+            }
+            Handle(TopTools_HSequenceOfShape) wires;
+            ShapeAnalysis_FreeBounds::ConnectEdgesToWires(free_edges, tol * 10.0, Standard_False, wires);
+            if (!wires.IsNull() && wires->Length() > 0) {
+                BRepBuilderAPI_Sewing sew2(tol);
+                sew2.Add(sewn);
+                int caps_added = 0;
+                for (int w = 1; w <= wires->Length(); ++w) {
+                    const TopoDS_Wire wire = TopoDS::Wire(wires->Value(w));
+                    if (!wire.Closed() && !BRep_Tool::IsClosed(wire)) continue;
+                    BRepBuilderAPI_MakeFace cap(wire, Standard_True);
+                    if (cap.IsDone() && !cap.Face().IsNull()) {
+                        sew2.Add(cap.Face());
+                        ++caps_added;
+                    }
+                }
+                if (caps_added > 0) {
+                    sew2.Perform();
+                    if (!sew2.SewedShape().IsNull()) {
+                        sewn = sew2.SewedShape();
+                    }
+                }
+            }
+        }
+
+        naked_after = count_naked_edges(sewn);
+        if (make_solid && naked_after == 0) {
+            double solid_vol = 0.0;
+            TopoDS_Shape solid = promote_shell_to_solid(sewn, solid_vol);
+            if (!solid.IsNull()) {
+                volume = solid_vol;
+                promoted_to_solid = true;
+                return solid;
+            }
+        }
+        if (has_solid(sewn)) {
+            GProp_GProps props;
+            integrate(sewn, props);
+            volume = std::abs(props.Mass());
+            promoted_to_solid = true;
+        }
+        return sewn;
+    } catch (const Standard_Failure& f) {
+        error = f.GetMessageString() ? f.GetMessageString() : "Open CASCADE could not sew these surfaces.";
+        return {};
+    }
+}
+
+TopoDS_Shape build_thicken(
+    const TopoDS_Shape& current,
+    double thickness,
+    int direction,
+    double tolerance,
+    double& volume,
+    std::string& error) {
+    volume = 0.0;
+    if (!std::isfinite(thickness) || !(thickness > 1e-4)) {
+        error = "Thicken needs a thickness above 0 mm.";
+        return {};
+    }
+    if (count_of(current, TopAbs_FACE) == 0) {
+        error = "Thicken needs a surface or shell with at least one face.";
+        return {};
+    }
+    const double tol = std::clamp(tolerance > 0.0 ? tolerance : 1e-3, 1e-5, 0.1);
+    try {
+        // Pre-sew touching faces in a compound so OCCT sees one connected shell.
+        TopoDS_Shape base = current;
+        if (count_of(current, TopAbs_FACE) > 1) {
+            BRepBuilderAPI_Sewing pre(tol);
+            pre.Add(current);
+            pre.Perform();
+            if (!pre.SewedShape().IsNull() && count_of(pre.SewedShape(), TopAbs_FACE) > 0) {
+                base = pre.SewedShape();
+            }
+        }
+
+        const double d_lo = direction == 2 ? -0.5 * thickness : (direction == 1 ? -thickness : 0.0);
+        const double d_hi = direction == 2 ? 0.5 * thickness : (direction == 1 ? 0.0 : thickness);
+
+        // Path 1: Native OCCT BRepOffset_MakeOffset with Thickening = true.
+        try {
+            TopoDS_Shape start_skin = std::abs(d_lo) > 1e-9 ? build_offset_skin(base, d_lo, tol) : base;
+            const double signed_t = d_hi - d_lo;
+            if (!start_skin.IsNull()) {
+                BRepOffset_MakeOffset off;
+                off.Initialize(start_skin, signed_t, tol, BRepOffset_Skin, Standard_False, Standard_False, GeomAbs_Arc, Standard_True);
+                off.MakeOffsetShape();
+                if (off.IsDone() && !off.Shape().IsNull()) {
+                    TopoDS_Shape cand = off.Shape();
+                    if (!has_solid(cand) && count_naked_edges(cand) == 0) {
+                        double sv = 0.0;
+                        TopoDS_Shape prom = promote_shell_to_solid(cand, sv);
+                        if (!prom.IsNull()) cand = prom;
+                    }
+                    if (has_solid(cand)) {
+                        cand = as_solid(cand);
+                        BRepLib::OrientClosedSolid(TopoDS::Solid(cand));
+                        GProp_GProps props;
+                        integrate(cand, props);
+                        if (props.Mass() < 0.0) {
+                            cand.Reverse();
+                            integrate(cand, props);
+                        }
+                        if (std::abs(props.Mass()) > 1e-6 && count_naked_edges(cand) == 0 && BRepCheck_Analyzer(cand).IsValid()) {
+                            volume = std::abs(props.Mass());
+                            return cand;
+                        }
+                    }
+                }
+            }
+        } catch (...) {
+        }
+
+        // Path 2: Explicit two-skin offset + ruled side-wall ribbon + sewing + solid promotion.
+        TopoDS_Shape skin_a = build_offset_skin(base, d_lo, tol);
+        TopoDS_Shape skin_b = build_offset_skin(base, d_hi, tol);
+        if (skin_a.IsNull() || skin_b.IsNull()) {
+            error = "Open CASCADE could not offset this surface by the requested thickness.";
+            return {};
+        }
+        // Collect ordered naked edges on skin_a and skin_b and pair them by nearest midpoint.
+        auto naked_edges_of = [](const TopoDS_Shape& s) -> std::vector<TopoDS_Edge> {
+            std::vector<TopoDS_Edge> out;
+            TopTools_IndexedDataMapOfShapeListOfShape anc;
+            TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, anc);
+            for (int i = 1; i <= anc.Extent(); ++i) {
+                const TopoDS_Edge e = TopoDS::Edge(anc.FindKey(i));
+                if (BRep_Tool::Degenerated(e)) continue;
+                if (anc.FindFromIndex(i).Extent() < 2) out.push_back(e);
+            }
+            return out;
+        };
+        auto edge_mid = [](const TopoDS_Edge& e) -> gp_Pnt {
+            BRepAdaptor_Curve c(e);
+            return c.Value(0.5 * (c.FirstParameter() + c.LastParameter()));
+        };
+        const std::vector<TopoDS_Edge> ea = naked_edges_of(skin_a);
+        const std::vector<TopoDS_Edge> eb = naked_edges_of(skin_b);
+        if (ea.size() != eb.size() || ea.empty()) {
+            error = "Open CASCADE could not close the thickened side walls of this surface.";
+            return {};
+        }
+        std::vector<bool> used(eb.size(), false);
+        BRepBuilderAPI_Sewing sew(tol * 2.0);
+        sew.Add(skin_a);
+        sew.Add(skin_b);
+        for (const TopoDS_Edge& e1 : ea) {
+            const gp_Pnt m1 = edge_mid(e1);
+            size_t best = eb.size();
+            double best_d = 1e30;
+            for (size_t j = 0; j < eb.size(); ++j) {
+                if (used[j]) continue;
+                const double d = m1.Distance(edge_mid(eb[j]));
+                if (d < best_d) {
+                    best_d = d;
+                    best = j;
+                }
+            }
+            if (best == eb.size()) continue;
+            used[best] = true;
+            TopoDS_Edge e2 = eb[best];
+            BRepAdaptor_Curve c1(e1), c2(e2);
+            const gp_Pnt p1s = c1.Value(c1.FirstParameter());
+            const gp_Pnt p2s = c2.Value(c2.FirstParameter());
+            const gp_Pnt p2e = c2.Value(c2.LastParameter());
+            if (p1s.Distance(p2e) < p1s.Distance(p2s)) {
+                e2.Reverse();
+            }
+            TopoDS_Face wall = BRepFill::Face(e1, e2);
+            if (!wall.IsNull()) sew.Add(wall);
+        }
+        sew.Perform();
+        TopoDS_Shape sewn = sew.SewedShape();
+        double sv = 0.0;
+        TopoDS_Shape solid = promote_shell_to_solid(sewn, sv);
+        if (solid.IsNull() || count_naked_edges(solid) != 0) {
+            error = "Thickening did not produce a watertight solid. Try a smaller thickness.";
+            return {};
+        }
+        volume = sv;
+        return solid;
+    } catch (const Standard_Failure& f) {
+        error = f.GetMessageString() ? f.GetMessageString() : "Open CASCADE could not thicken this surface.";
+        return {};
+    }
+}
+
+TopoDS_Shape build_trim_split(
+    const TopoDS_Shape& current,
+    const TopoDS_Shape& cutter,
+    int keep_mode,
+    TopoDS_Shape* other_out,
+    double& volume,
+    std::string& error) {
+    volume = 0.0;
+    if (other_out != nullptr) *other_out = TopoDS_Shape();
+    if (current.IsNull() || cutter.IsNull()) {
+        error = "Trim/Split needs both a target shape and a cutting surface.";
+        return {};
+    }
+    try {
+        BRepAlgoAPI_Splitter splitter;
+        TopTools_ListOfShape args, tools;
+        args.Append(current);
+        tools.Append(cutter);
+        splitter.SetArguments(args);
+        splitter.SetTools(tools);
+        splitter.SetNonDestructive(Standard_True);
+        splitter.Build();
+        if (!splitter.IsDone() || splitter.Shape().IsNull()) {
+            error = "Open CASCADE could not split this shape with the cutting surface.";
+            return {};
+        }
+
+        const bool is_solid = has_solid(current);
+        std::vector<TopoDS_Shape> pieces;
+        if (is_solid) {
+            for (TopExp_Explorer ex(splitter.Shape(), TopAbs_SOLID); ex.More(); ex.Next()) {
+                TopoDS_Shape s = ex.Current();
+                GProp_GProps gp;
+                integrate(s, gp);
+                if (std::abs(gp.Mass()) > 1e-6) {
+                    if (gp.Mass() < 0.0) s.Reverse();
+                    pieces.push_back(s);
+                }
+            }
+        } else {
+            for (TopExp_Explorer ex(splitter.Shape(), TopAbs_FACE); ex.More(); ex.Next()) {
+                TopoDS_Shape f = ex.Current();
+                GProp_GProps gp;
+                BRepGProp::SurfaceProperties(f, gp);
+                if (gp.Mass() > 1e-6) pieces.push_back(f);
+            }
+        }
+        if (pieces.size() < 2) {
+            error = "The surface does not split the shape into two pieces. Extend the surface past its edges.";
+            return {};
+        }
+
+        const gp_Vec n = average_shape_normal(cutter);
+        const gp_Pnt origin = shape_centroid(cutter);
+        auto score = [&](const TopoDS_Shape& s) -> double {
+            const gp_Pnt c = shape_centroid(s);
+            return gp_Vec(origin, c).Dot(n);
+        };
+        std::sort(pieces.begin(), pieces.end(), [&](const TopoDS_Shape& a, const TopoDS_Shape& b) {
+            return score(a) > score(b);
+        });
+
+        // pieces.front() is the "above" (+normal) side; pieces.back() is the "below" (-normal) side.
+        TopoDS_Shape above = pieces.front();
+        TopoDS_Shape below = pieces.back();
+        // If splitter produced >2 fragments (e.g. a curved wave cutting multiple lobes), group by sign of score.
+        if (pieces.size() > 2) {
+            TopoDS_Compound above_c, below_c;
+            BRep_Builder bb;
+            bb.MakeCompound(above_c);
+            bb.MakeCompound(below_c);
+            int na = 0, nb = 0;
+            for (const TopoDS_Shape& p : pieces) {
+                if (score(p) >= 0.0) {
+                    bb.Add(above_c, p);
+                    ++na;
+                } else {
+                    bb.Add(below_c, p);
+                    ++nb;
+                }
+            }
+            if (na > 0 && nb > 0) {
+                above = na == 1 ? pieces.front() : TopoDS_Shape(above_c);
+                below = nb == 1 ? pieces.back() : TopoDS_Shape(below_c);
+            }
+        }
+
+        TopoDS_Shape kept = (keep_mode == 1) ? below : above;
+        TopoDS_Shape other = (keep_mode == 1) ? above : below;
+        if (keep_mode == 2 && other_out != nullptr) {
+            *other_out = other;
+        }
+        if (is_solid) {
+            GProp_GProps gp;
+            integrate(kept, gp);
+            volume = std::abs(gp.Mass());
+        }
+        return kept;
+    } catch (const Standard_Failure& f) {
+        error = f.GetMessageString() ? f.GetMessageString() : "Open CASCADE could not trim/split with this surface.";
+        return {};
+    }
+}
+
+TopoDS_Shape build_replace_face(
+    const TopoDS_Shape& current,
+    const TopoDS_Face& target_face,
+    const TopoDS_Shape& replacement,
+    double& volume,
+    std::string& error) {
+    volume = 0.0;
+    if (current.IsNull() || !has_solid(current) || target_face.IsNull() || replacement.IsNull()) {
+        error = "ReplaceFace needs a solid, a target face, and a replacement surface.";
+        return {};
+    }
+    try {
+        // Compute target face outward normal and centroid, plus bounding boxes.
+        const gp_Vec target_n = average_shape_normal(target_face);
+        const gp_Pnt target_c = shape_centroid(target_face);
+        const gp_Pnt solid_c = shape_centroid(current);
+
+        // Determine if replacement extends past target_face along +target_n; if so, extend the face outward first
+        // so the replacement surface cleanly slices the extended solid body.
+        Bnd_Box solid_box, rep_box;
+        BRepBndLib::Add(current, solid_box);
+        BRepBndLib::Add(replacement, rep_box);
+        Standard_Real sx1, sy1, sz1, sx2, sy2, sz2;
+        Standard_Real rx1, ry1, rz1, rx2, ry2, rz2;
+        solid_box.Get(sx1, sy1, sz1, sx2, sy2, sz2);
+        rep_box.Get(rx1, ry1, rz1, rx2, ry2, rz2);
+
+        double max_proj = 0.0;
+        const double rxs[2] = {rx1, rx2}, rys[2] = {ry1, ry2}, rzs[2] = {rz1, rz2};
+        for (double x : rxs) for (double y : rys) for (double z : rzs) {
+            max_proj = std::max(max_proj, gp_Vec(target_c, gp_Pnt(x, y, z)).Dot(target_n));
+        }
+
+        TopoDS_Shape working = current;
+        if (max_proj > 1e-4) {
+            const double pad = max_proj + 5.0;
+            BRepPrimAPI_MakePrism ext(target_face, target_n * pad, Standard_True);
+            ext.Build();
+            if (ext.IsDone() && !ext.Shape().IsNull() && has_solid(ext.Shape())) {
+                double fused_vol = 0.0;
+                std::string fuse_err;
+                TopoDS_Shape fused = combine(current, "fuse", ext.Shape(), fused_vol, fuse_err);
+                if (!fused.IsNull() && has_solid(fused)) {
+                    working = fused;
+                }
+            }
+        }
+
+        BRepAlgoAPI_Splitter splitter;
+        TopTools_ListOfShape args, tools;
+        args.Append(working);
+        tools.Append(replacement);
+        splitter.SetArguments(args);
+        splitter.SetTools(tools);
+        splitter.SetNonDestructive(Standard_True);
+        splitter.Build();
+        if (!splitter.IsDone() || splitter.Shape().IsNull()) {
+            error = "Open CASCADE could not replace this face with the given surface.";
+            return {};
+        }
+
+        std::vector<TopoDS_Shape> pieces;
+        for (TopExp_Explorer ex(splitter.Shape(), TopAbs_SOLID); ex.More(); ex.Next()) {
+            TopoDS_Shape s = ex.Current();
+            GProp_GProps gp;
+            integrate(s, gp);
+            if (std::abs(gp.Mass()) > 1e-6) {
+                if (gp.Mass() < 0.0) s.Reverse();
+                pieces.push_back(s);
+            }
+        }
+        if (pieces.size() < 2) {
+            error = "The replacement surface does not span across the face's adjacent walls. Extend the surface slightly past the face.";
+            return {};
+        }
+
+        // Keep the solid piece on the interior (-target_n) side of the target face (closest to the solid's body).
+        TopoDS_Shape kept = pieces[0];
+        double best_score = 1e30;
+        for (const TopoDS_Shape& p : pieces) {
+            const gp_Pnt pc = shape_centroid(p);
+            // Prefer the piece whose centroid is furthest in the -target_n direction (the solid interior) and closest to solid_c.
+            const double s = gp_Vec(solid_c, pc).Dot(target_n);
+            if (s < best_score) {
+                best_score = s;
+                kept = p;
+            }
+        }
+        if (!BRepCheck_Analyzer(kept).IsValid()) {
+            ShapeFix_Solid fix;
+            fix.Init(TopoDS::Solid(as_solid(kept)));
+            fix.Perform();
+            if (!fix.Solid().IsNull() && has_solid(fix.Solid())) kept = fix.Solid();
+        }
+        GProp_GProps gp;
+        integrate(kept, gp);
+        volume = std::abs(gp.Mass());
+        return kept;
+    } catch (const Standard_Failure& f) {
+        error = f.GetMessageString() ? f.GetMessageString() : "Open CASCADE could not replace this face.";
+        return {};
+    }
+}
+
+TopoDS_Shape build_split_face(
+    const TopoDS_Shape& current,
+    const Held* held_for_edges,
+    const std::vector<TopoDS_Face>& target_faces,
+    const Curve3DSpec& curve,
+    bool has_dir,
+    const double dir[3],
+    double& volume,
+    std::string& error) {
+    volume = 0.0;
+    if (current.IsNull() || target_faces.empty()) {
+        error = "SplitFace needs a shape and at least one target face.";
+        return {};
+    }
+    TopoDS_Wire cw = curve3d_wire(curve, held_for_edges, error);
+    if (cw.IsNull()) return {};
+
+    try {
+        const int faces_before = count_of(current, TopAbs_FACE);
+        TopTools_ListOfShape projected_tools;
+        for (const TopoDS_Face& face : target_faces) {
+            int added = 0;
+            if (has_dir) {
+                const gp_Vec dv(dir[0], dir[1], dir[2]);
+                if (dv.Magnitude() <= 1e-9) {
+                    error = "SplitFace projection direction cannot be zero.";
+                    return {};
+                }
+                const gp_Dir pd(dv);
+                for (int sign : {1, -1}) {
+                    BRepProj_Projection proj(cw, face, sign > 0 ? pd : pd.Reversed());
+                    for (; proj.More(); proj.Next()) {
+                        const TopoDS_Wire pw = proj.Current();
+                        if (!pw.IsNull()) {
+                            projected_tools.Append(pw);
+                            ++added;
+                        }
+                    }
+                    if (added > 0) break;
+                }
+            } else {
+                try {
+                    BRepOffsetAPI_NormalProjection np(face);
+                    np.Add(cw);
+                    np.Build();
+                    if (np.IsDone() && !np.Shape().IsNull() && count_of(np.Shape(), TopAbs_EDGE) > 0) {
+                        projected_tools.Append(np.Shape());
+                        ++added;
+                    }
+                } catch (...) {
+                }
+                if (added == 0) {
+                    const gp_Vec fn = average_shape_normal(face);
+                    const gp_Dir pd(fn);
+                    for (int sign : {1, -1}) {
+                        BRepProj_Projection proj(cw, face, sign > 0 ? pd : pd.Reversed());
+                        for (; proj.More(); proj.Next()) {
+                            const TopoDS_Wire pw = proj.Current();
+                            if (!pw.IsNull()) {
+                                projected_tools.Append(pw);
+                                ++added;
+                            }
+                        }
+                        if (added > 0) break;
+                    }
+                }
+            }
+        }
+        if (projected_tools.IsEmpty()) {
+            error = "The curve did not project onto the selected face(s).";
+            return {};
+        }
+
+        BRepAlgoAPI_Splitter splitter;
+        TopTools_ListOfShape args;
+        args.Append(current);
+        splitter.SetArguments(args);
+        splitter.SetTools(projected_tools);
+        splitter.SetNonDestructive(Standard_True);
+        splitter.Build();
+        if (!splitter.IsDone() || splitter.Shape().IsNull()) {
+            error = "Open CASCADE could not split the face along the projected curve.";
+            return {};
+        }
+        TopoDS_Shape out = splitter.Shape();
+        const int faces_after = count_of(out, TopAbs_FACE);
+        if (faces_after <= faces_before) {
+            error = "The projected curve did not divide any face. Make sure the curve crosses from edge to edge or forms a closed loop on the face.";
+            return {};
+        }
+        if (has_solid(current)) {
+            if (!has_solid(out)) {
+                error = "Splitting the face broke the solid.";
+                return {};
+            }
+            out = as_solid(out);
+            GProp_GProps gp;
+            integrate(out, gp);
+            volume = std::abs(gp.Mass());
+        }
+        return out;
+    } catch (const Standard_Failure& f) {
+        error = f.GetMessageString() ? f.GetMessageString() : "Open CASCADE could not split this face.";
+        return {};
+    }
 }
 
 }  // namespace lime_occt

@@ -14,7 +14,7 @@ use super::ffi::{
     lime_tree_primitive,
 };
 use super::group::extrude_cells;
-use super::k1::{build_loft_v2_shape, build_sweep_shape, encode_loops, extent_flags, k1_has_loops, loft_needs_v2, push_shape};
+use super::k1::{build_loft_v2_shape, build_sheet_shape, build_sweep_shape, encode_loops, extent_flags, k1_has_loops, loft_needs_v2, push_shape};
 use super::gear::build_gear;
 use super::part::build_part;
 use super::ops::{Op, Primitive, Solid};
@@ -223,7 +223,8 @@ impl Shape {
                 aux_spine.as_deref(),
                 &[],
             ),
-            _ => Err("A new solid starts from an extrude, a revolve, or a loft.".into()),
+            Op::Sheet { spec } => build_sheet_shape(None, spec),
+            _ => Err("A new solid starts from an extrude, a revolve, a loft, a sweep, or a sheet.".into()),
         }
     }
 

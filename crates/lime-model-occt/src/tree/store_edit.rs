@@ -249,7 +249,9 @@ impl Store {
             let doc = doc_in(&mut self.docs, key)?;
             let probed = doc.probe.take();
             let from = doc.shape(parent);
-            from.editable().map_err(Failure::Message)?;
+            if !op.allows_sheet() {
+                from.editable().map_err(Failure::Message)?;
+            }
             let op = resolve(from, op, &steps).map_err(Failure::Message)?;
             match probed {
                 Some(probed) if probed.parent == parent && same_build(&probed.op, &op.op) => {

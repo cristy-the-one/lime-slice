@@ -7,7 +7,7 @@ import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
 import { partitionNumbers } from "./modeling/partition.ts";
-import { savedNodes, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftBoundary, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type SweepMode, type SweepOp, type SweepTransition, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftBoundary, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type ReplaceFaceOp, type RevolveOp, type SewOp, type SheetOp, type SheetSpec, type ShellOp, type SplitFaceOp, type SweepMode, type SweepOp, type SweepTransition, type ThickenDirection, type ThickenOp, type TrimKeep, type TrimSplitOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project names its solids without loading these requests (./brep-file.ts).
 export { isBrep, solidFileName } from "./brep-file.ts";
@@ -283,6 +283,68 @@ export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonl
     ...(axis.dir ? { axisDir: [...axis.dir] as Vec2 } : {}),
     ...(axis.angleDeg != null ? { angleDeg: axis.angleDeg } : {}),
     ...(copied ? {} : shapeFields(shape)),
+  };
+}
+
+function copySheetSpec(spec: SheetSpec): SheetSpec {
+  return {
+    mode: spec.mode,
+    curves: spec.curves.map(copyCurve3D),
+    ...(spec.dir ? { dir: [...spec.dir] as Vec3 } : {}),
+    ...(spec.distance !== undefined ? { distance: spec.distance } : {}),
+    ...(spec.axisOrigin ? { axisOrigin: [...spec.axisOrigin] as Vec3 } : {}),
+    ...(spec.angleDeg !== undefined ? { angleDeg: spec.angleDeg } : {}),
+    ...(spec.ruled ? { ruled: true as const } : {}),
+    ...(spec.symmetric ? { symmetric: true as const } : {}),
+  };
+}
+
+/** S4: Open B-rep surface ("Sheet") from 3D curves. */
+export function sheetOp(spec: SheetSpec): SheetOp {
+  return { kind: "sheet", ...copySheetSpec(spec) };
+}
+
+/** S4: Sew open faces/shells within tolerance (optional planar capping & auto-promotion to solid). */
+export function sewOp(options: { tolerance?: number; makeSolid?: boolean; capPlanar?: boolean } = {}): SewOp {
+  return {
+    kind: "sew",
+    ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
+    ...(options.makeSolid === false ? { makeSolid: false } : {}),
+    ...(options.capPlanar ? { capPlanar: true as const } : {}),
+  };
+}
+
+/** S4: Thicken an open sheet into a watertight solid. */
+export function thickenOp(thickness: number, options: { direction?: ThickenDirection; tolerance?: number } = {}): ThickenOp {
+  return {
+    kind: "thicken",
+    thickness,
+    ...(options.direction && options.direction !== "normal" ? { direction: options.direction } : {}),
+    ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
+  };
+}
+
+/** S4: Split a solid or sheet cleanly by an open sculpted surface. */
+export function trimSplitOp(sheet: SheetSpec, keep?: TrimKeep): TrimSplitOp {
+  return { kind: "trimSplit", sheet: copySheetSpec(sheet), ...(keep && keep !== "above" ? { keep } : {}) };
+}
+
+/** S4: Replace a face of a solid with a sculpted surface. */
+export function replaceFaceOp(face: number | FaceRef, sheet: SheetSpec): ReplaceFaceOp {
+  return {
+    kind: "replaceFace",
+    face: typeof face === "number" ? face : { ...face, mid: [...face.mid] },
+    sheet: copySheetSpec(sheet),
+  };
+}
+
+/** S4: Project/imprint a 3D curve onto selected face(s), splitting them into distinct sub-faces. */
+export function splitFaceOp(faces: readonly (number | FaceRef)[], curve: Curve3D, direction?: Vec3): SplitFaceOp {
+  return {
+    kind: "splitFace",
+    faces: faces.map((f) => (typeof f === "number" ? f : { ...f, mid: [...f.mid] })),
+    curve: copyCurve3D(curve),
+    ...(direction ? { direction: [...direction] as Vec3 } : {}),
   };
 }
 

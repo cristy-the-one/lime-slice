@@ -61,6 +61,8 @@ export interface SolidArrays {
   faces: FaceRow[];
   edges: { lengthMm: number; points: ArrayLike<number> }[];
   seams?: number[];
+  /** --- Organic surfaces S4: open-border (naked) edge indices on open sheets. */
+  nakedEdges?: number[];
   solid?: boolean;
   /** The node that made each face, or null for a face the step being previewed has not applied yet. */
   stepFaces?: (number | null)[];
@@ -167,6 +169,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
   if (offsets[edgeLengths.length]! * 3 !== points.length) return DAMAGED;
   const stepFaces = readStepFaces(body.stepFaces, faces.length);
   const seams = Array.isArray(body.edgeSeams) ? body.edgeSeams.filter((edge): edge is number => Number.isInteger(edge) && edge >= 0 && edge < edges.length) : [];
+  const nakedEdges = Array.isArray(body.nakedEdges) ? body.nakedEdges.filter((edge): edge is number => Number.isInteger(edge) && edge >= 0 && edge < edges.length) : [];
   return {
     id: typeof body.id === "number" ? body.id : 0,
     volumeMm3: body.volumeMm3,
@@ -178,6 +181,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
     fingerprint: readFingerprint(body.fingerprint),
     editable: body.solid !== false,
     ...(seams.length > 0 ? { seams } : {}),
+    ...(nakedEdges.length > 0 ? { nakedEdges } : {}),
     ...(stepFaces ? { stepFaces } : {}),
   };
 }
@@ -199,6 +203,7 @@ export type SolidWire = {
   faces: FaceRow[];
   edgeLengths: number[];
   edgeSeams?: number[];
+  nakedEdges?: number[];
   positions: string;
   normals?: string;
   triangles: string;
@@ -228,6 +233,7 @@ export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (numb
     }),
     edgeLengths: solid.edges.map((edge) => edge.lengthMm),
     ...(solid.seams && solid.seams.length > 0 ? { edgeSeams: solid.seams } : {}),
+    ...(solid.nakedEdges && solid.nakedEdges.length > 0 ? { nakedEdges: solid.nakedEdges } : {}),
     positions: wordsBase64(Float32Array.from(solid.positions)),
     ...(solid.normals && solid.normals.length === solid.positions.length ? { normals: wordsBase64(Float32Array.from(solid.normals)) } : {}),
     triangles: wordsBase64(Uint32Array.from(solid.triangles)),

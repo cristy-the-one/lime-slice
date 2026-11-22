@@ -972,6 +972,78 @@ TopoDS_Shape build_lettering_skin(
     std::string& note,
     std::string& error);
 
+/// S4: Specification for building an open B-rep surface ("Sheet") from 3D curves.
+/// `mode`: 0 = extrude, 1 = revolve, 2 = loft, 3 = planar.
+struct SheetSpec {
+    int mode = 0;
+    std::vector<Curve3DSpec> curves;
+    double dir[3] = {0, 0, 1};
+    double distance = 10.0;
+    double axis_origin[3] = {0, 0, 0};
+    double angle_deg = 360.0;
+    bool ruled = false;
+    bool symmetric = false;
+};
+
+/// S4: Build an open surface ("Sheet"), standalone when `current` is null or compounded with `current`.
+TopoDS_Shape build_sheet(
+    const TopoDS_Shape& current,
+    const Held* held_for_edges,
+    const SheetSpec& spec,
+    std::string& error);
+
+/// S4: Sew faces/shells (plus optional extra placed shapes) within `tolerance`.
+/// When `cap_planar` is true, planar naked boundary loops are capped before sewing.
+/// When `make_solid` is true and zero naked edges remain, auto-promotes to a watertight solid.
+TopoDS_Shape build_sew(
+    const TopoDS_Shape& current,
+    const std::vector<const TopoDS_Shape*>& extra_tools,
+    const std::vector<std::array<double, 12>>& tool_places,
+    double tolerance,
+    bool make_solid,
+    bool cap_planar,
+    double& volume,
+    bool& promoted_to_solid,
+    int& naked_after,
+    std::string& error);
+
+/// S4: Thicken an open surface/shell into a watertight solid (`direction`: 0 = normal, 1 = reverse, 2 = both).
+TopoDS_Shape build_thicken(
+    const TopoDS_Shape& current,
+    double thickness,
+    int direction,
+    double tolerance,
+    double& volume,
+    std::string& error);
+
+/// S4: Split a solid or sheet by an open surface (`cutter`). `keep_mode`: 0 = above, 1 = below, 2 = both.
+TopoDS_Shape build_trim_split(
+    const TopoDS_Shape& current,
+    const TopoDS_Shape& cutter,
+    int keep_mode,
+    TopoDS_Shape* other_out,
+    double& volume,
+    std::string& error);
+
+/// S4: Replace `target_face` on a solid with `replacement` sculpted surface, extending/trimming side walls cleanly.
+TopoDS_Shape build_replace_face(
+    const TopoDS_Shape& current,
+    const TopoDS_Face& target_face,
+    const TopoDS_Shape& replacement,
+    double& volume,
+    std::string& error);
+
+/// S4: Project/imprint a 3D curve onto `target_faces` of a solid or sheet, splitting those faces cleanly.
+TopoDS_Shape build_split_face(
+    const TopoDS_Shape& current,
+    const Held* held_for_edges,
+    const std::vector<TopoDS_Face>& target_faces,
+    const Curve3DSpec& curve,
+    bool has_dir,
+    const double dir[3],
+    double& volume,
+    std::string& error);
+
 #ifdef LIME_OCCT_TEST_HOOKS
 /// Debug builds only, for tests: the cheap checks of a text build next to the exact calls they stand in for, on the face nearest
 /// `point`, as JSON.

@@ -76,6 +76,8 @@ export interface HistoryRow {
   blocked: boolean;
   /** The plate holds this step while the view shows another. */
   plate: boolean;
+  /** --- Organic surfaces S4 (U6): open surface (sheet) with no enclosed solid volume. */
+  sheet?: boolean;
   /** The step this row was built on. The root has none. */
   parent: NodeId | null;
   /** --- Plugin steps (D8). The recipe run this step is part of, and on its first step what ran. */
@@ -239,6 +241,10 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
     const feature = node.op ?? (node.id === ROOT && tree.root.kind === "feature" ? tree.root.op : null);
     return { label: node.name?.trim() || historyCaption(feature, node.label), opLabel: node.name?.trim() ? node.label : null, broken: node.broken ?? null };
   };
+  const isSheet = (ofTree: ModelTree, node: ModelNode): boolean =>
+    node.op?.kind === "sheet"
+    || (node.id === ROOT && ofTree.root.kind === "feature" && ofTree.root.op.kind === "sheet")
+    || (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0);
 
   /**
    * The lane of the tool the join `join` takes, drawn before the join's row: its steps from the root to the one the join
@@ -281,6 +287,7 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
         ...text(node),
         blocked,
         plate: false,
+        ...(isSheet(tool.tree, node) ? { sheet: true } : {}),
         parent: node.parent,
       });
       owns.push(key);
@@ -333,6 +340,7 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
       ...text(node),
       blocked: brokenAbove.has(id),
       plate: id === tree.committed && key !== shownKey,
+      ...(isSheet(tree, node) ? { sheet: true } : {}),
       parent: node.parent,
       ...(node.run ? { run: node.run } : {}),
       ...(node.plugin ? { plugin: node.plugin } : {}),
@@ -643,6 +651,7 @@ function collapsedFold(rows: readonly HistoryRow[], fold: HistoryFold): HistoryR
     broken: broken?.broken ?? null,
     blocked: first.blocked,
     plate: members.some((row) => row.plate),
+    ...(last.sheet ? { sheet: true } : {}),
     toolStart: false,
     fold: { id: fold.id, head: true, expanded: false, keys: fold.keys, lastKey: last.key, shownLabel: shown?.label },
   };

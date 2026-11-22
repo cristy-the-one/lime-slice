@@ -136,6 +136,36 @@ pub(super) fn same_request(stored: &Op, incoming: &Op) -> bool {
                     _ => false,
                 }
         }
+        (
+            Op::ReplaceFace {
+                face: a_face,
+                sheet: a_sheet,
+            },
+            Op::ReplaceFace {
+                face: b_face,
+                sheet: b_sheet,
+            },
+        ) => return a_sheet == b_sheet && same_face_pick(a_face, b_face),
+        (
+            Op::SplitFace {
+                faces: a_faces,
+                curve: a_curve,
+                direction: a_dir,
+            },
+            Op::SplitFace {
+                faces: b_faces,
+                curve: b_curve,
+                direction: b_dir,
+            },
+        ) => {
+            return a_curve == b_curve
+                && a_dir == b_dir
+                && a_faces.len() == b_faces.len()
+                && a_faces
+                    .iter()
+                    .zip(b_faces)
+                    .all(|(a, b)| same_face_pick(a, b));
+        }
         (Op::MoveFaces { faces: stored }, Op::MoveFaces { faces: incoming }) => {
             return stored.len() == incoming.len()
                 && stored.iter().zip(incoming).all(|(stored, incoming)| {
