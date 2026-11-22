@@ -16,7 +16,7 @@ import { bindSplitPrint, exportedPart, exportSplitNote } from "./model/split-pri
 import { bindTransition, keepStale, requestReaim, transitionStaleNote } from "./model/transition";
 import { bindAutoRibs } from "./model/auto-ribs";
 import { bindInspect, bindLook, refreshModelContext } from "./model/view";
-export { commonVolume, exportAssemblyStep } from "./model/assembly";
+export { commonVolume, exportAssemblyStep, tessellateSolidAtChord } from "./model/assembly";
 export { captureOpenSolid, commitModel } from "./model/commit";
 export { createFeatureSolid } from "./model/create";
 export { warmHeldPieces } from "./model/engine";

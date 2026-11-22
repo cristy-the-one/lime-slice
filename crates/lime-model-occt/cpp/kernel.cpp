@@ -173,11 +173,15 @@
 #include <TCollection_ExtendedString.hxx>
 #include <TDF_Label.hxx>
 #include <TDF_LabelSequence.hxx>
+#include <TDF_Tool.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDocStd_Document.hxx>
 #include <XCAFApp_Application.hxx>
+#include <XCAFDoc_ColorTool.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
+#include <Quantity_Color.hxx>
+#include <DESTEP_Parameters.hxx>
 #endif
 
 /// OCCT's default messenger prints STEP transfer statistics on std::cout.
@@ -2714,6 +2718,401 @@ bool write_step_named(
 #endif
 }
 
+#ifdef LIME_OCCT_STEP
+namespace {
+
+std::string label_name_of(const TDF_Label& label) {
+    Handle(TDataStd_Name) name;
+    if (label.FindAttribute(TDataStd_Name::GetID(), name)) {
+        return TCollection_AsciiString(name->Get()).ToCString();
+    }
+    return {};
+}
+
+std::string escape_json_str(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 2);
+    out.push_back('"');
+    for (unsigned char ch : text) {
+        if (ch == '"') out += "\\\"";
+        else if (ch == '\\') out += "\\\\";
+        else if (ch == '\n') out += "\\n";
+        else if (ch == '\r') out += "\\r";
+        else if (ch == '\t') out += "\\t";
+        else if (ch < 0x20) {
+            char buf[8];
+            std::snprintf(buf, sizeof(buf), "\\u%04x", ch);
+            out += buf;
+        } else {
+            out.push_back(static_cast<char>(ch));
+        }
+    }
+    out.push_back('"');
+    return out;
+}
+
+gp_Trsf rigid_trsf_from(const double* p, double& out_scale) {
+    out_scale = std::sqrt(p[0] * p[0] + p[3] * p[3] + p[6] * p[6]);
+    gp_Quaternion turn(gp_Mat(
+        p[0] / out_scale, p[1] / out_scale, p[2] / out_scale,
+        p[3] / out_scale, p[4] / out_scale, p[5] / out_scale,
+        p[6] / out_scale, p[7] / out_scale, p[8] / out_scale));
+    turn.Normalize();
+    gp_Trsf trsf;
+    trsf.SetRotation(turn);
+    trsf.SetTranslationPart(gp_Vec(p[9], p[10], p[11]));
+    return trsf;
+}
+
+void collect_named_assembly_solids(
+    const Handle(XCAFDoc_ShapeTool)& shapes,
+    const TDF_Label& label,
+    const TopLoc_Location& parent_loc,
+    std::vector<std::pair<std::string, TopoDS_Shape>>& out) {
+    TDF_LabelSequence comps;
+    shapes->GetComponents(label, comps);
+    for (Standard_Integer i = 1; i <= comps.Length(); ++i) {
+        const TDF_Label comp = comps.Value(i);
+        const TopLoc_Location loc = parent_loc * shapes->GetLocation(comp);
+        TDF_Label ref;
+        if (!shapes->GetReferredShape(comp, ref)) {
+            ref = comp;
+        }
+        if (shapes->IsAssembly(ref)) {
+            collect_named_assembly_solids(shapes, ref, loc, out);
+        } else {
+            std::string name = label_name_of(comp);
+            if (name.empty()) {
+                name = label_name_of(ref);
+            }
+            TopoDS_Shape solid = XCAFDoc_ShapeTool::GetShape(ref);
+            if (!loc.IsIdentity()) {
+                solid = solid.Moved(loc);
+            }
+            out.emplace_back("S" + name, solid);
+        }
+    }
+}
+
+}  // namespace
+#endif
+
+bool write_step_assembly(
+    const std::string& assembly_name,
+    const std::vector<TopoDS_Shape>& parts,
+    const std::vector<std::string>& part_names,
+    const std::vector<StepAssemblyMember>& members,
+    const char* path,
+    std::string& error) {
+#ifndef LIME_OCCT_STEP
+    (void)assembly_name;
+    (void)parts;
+    (void)part_names;
+    (void)members;
+    (void)path;
+    error = "STEP writer is not linked";
+    return false;
+#else
+    route_occt_log();
+    if (path == nullptr || path[0] == '\0') {
+        error = "STEP path is empty";
+        return false;
+    }
+    if (parts.empty() || parts.size() != part_names.size() || members.empty()) {
+        error = "An assembly STEP export needs parts and members";
+        return false;
+    }
+    std::lock_guard<std::mutex> step_lock(step_mutex());
+    XcafDocument held;
+    if (held.document.IsNull()) {
+        error = "Open CASCADE did not write this assembly";
+        return false;
+    }
+    const Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(held.document->Main());
+    const Handle(XCAFDoc_ColorTool) colors = XCAFDoc_DocumentTool::ColorTool(held.document->Main());
+
+    // Add each distinct part once (D3: two members of one part share one product).
+    std::vector<TDF_Label> part_labels(parts.size());
+    std::vector<bool> part_colored(parts.size(), false);
+    std::vector<std::array<double, 3>> part_color(parts.size(), {0.0, 0.0, 0.0});
+    for (size_t p = 0; p < parts.size(); ++p) {
+        part_labels[p] = shapes->AddShape(parts[p], Standard_False);
+        TDataStd_Name::Set(part_labels[p], TCollection_ExtendedString(part_names[p].c_str(), Standard_True));
+    }
+
+    // Check whether all members of a part share one colour; if so, colour the product directly.
+    for (size_t p = 0; p < parts.size(); ++p) {
+        bool any = false;
+        bool same = true;
+        std::array<double, 3> c = {0.0, 0.0, 0.0};
+        for (const auto& m : members) {
+            if (m.part_index != static_cast<int>(p)) continue;
+            if (!m.has_color) {
+                same = false;
+                break;
+            }
+            if (!any) {
+                c = {m.color[0], m.color[1], m.color[2]};
+                any = true;
+            } else if (std::abs(c[0] - m.color[0]) > 1e-4 || std::abs(c[1] - m.color[1]) > 1e-4 || std::abs(c[2] - m.color[2]) > 1e-4) {
+                same = false;
+                break;
+            }
+        }
+        if (any && same) {
+            part_colored[p] = true;
+            part_color[p] = c;
+            colors->SetColor(part_labels[p], Quantity_Color(c[0], c[1], c[2], Quantity_TOC_sRGB), XCAFDoc_ColorSurf);
+        }
+    }
+
+    const size_t n = members.size();
+    std::vector<gp_Trsf> worlds(n);
+    std::vector<TDF_Label> proto_for_member(n);
+    std::vector<std::vector<int>> children(n);
+    std::vector<int> roots;
+
+    for (size_t i = 0; i < n; ++i) {
+        const auto& m = members[i];
+        if (m.part_index < 0 || static_cast<size_t>(m.part_index) >= parts.size()) {
+            error = "Assembly member references an invalid part";
+            return false;
+        }
+        double scale = 1.0;
+        worlds[i] = rigid_trsf_from(m.place, scale);
+        if (std::abs(scale - 1.0) > 1e-6) {
+            gp_Trsf s_trsf;
+            s_trsf.SetScaleFactor(scale);
+            BRepBuilderAPI_Transform scaled(parts[m.part_index], s_trsf, Standard_True);
+            if (!scaled.IsDone() || scaled.Shape().IsNull()) {
+                error = "Open CASCADE did not scale a part";
+                return false;
+            }
+            TDF_Label scaled_label = shapes->AddShape(scaled.Shape(), Standard_False);
+            TDataStd_Name::Set(scaled_label, TCollection_ExtendedString(m.name.c_str(), Standard_True));
+            if (m.has_color) {
+                colors->SetColor(scaled_label, Quantity_Color(m.color[0], m.color[1], m.color[2], Quantity_TOC_sRGB), XCAFDoc_ColorSurf);
+            }
+            proto_for_member[i] = scaled_label;
+        } else {
+            proto_for_member[i] = part_labels[m.part_index];
+        }
+        if (m.parent >= 0 && static_cast<size_t>(m.parent) < n && m.parent != static_cast<int>(i)) {
+            children[m.parent].push_back(static_cast<int>(i));
+        } else {
+            roots.push_back(static_cast<int>(i));
+        }
+    }
+
+    const TDF_Label root_asm = shapes->NewShape();
+    TDataStd_Name::Set(root_asm, TCollection_ExtendedString(assembly_name.c_str(), Standard_True));
+
+    auto color_instance = [&](const TDF_Label& inst, size_t i) {
+        const auto& m = members[i];
+        if (!m.has_color) return;
+        if (proto_for_member[i] == part_labels[m.part_index] && part_colored[m.part_index]) return;
+        colors->SetColor(inst, Quantity_Color(m.color[0], m.color[1], m.color[2], Quantity_TOC_sRGB), XCAFDoc_ColorSurf);
+    };
+
+    std::function<void(int, const TDF_Label&, const gp_Trsf&)> add_node =
+        [&](int idx, const TDF_Label& parent_asm, const gp_Trsf& parent_world) {
+            const gp_Trsf local_trsf = parent_world.Inverted() * worlds[idx];
+            const TopLoc_Location local_loc(local_trsf);
+            if (children[idx].empty()) {
+                const TDF_Label inst = shapes->AddComponent(parent_asm, proto_for_member[idx], local_loc);
+                TDataStd_Name::Set(inst, TCollection_ExtendedString(members[idx].name.c_str(), Standard_True));
+                color_instance(inst, static_cast<size_t>(idx));
+            } else {
+                const TDF_Label sub_asm = shapes->NewShape();
+                TDataStd_Name::Set(sub_asm, TCollection_ExtendedString(members[idx].name.c_str(), Standard_True));
+                const TDF_Label self_inst = shapes->AddComponent(sub_asm, proto_for_member[idx], TopLoc_Location());
+                TDataStd_Name::Set(self_inst, TCollection_ExtendedString(members[idx].name.c_str(), Standard_True));
+                color_instance(self_inst, static_cast<size_t>(idx));
+                for (int child : children[idx]) {
+                    add_node(child, sub_asm, worlds[idx]);
+                }
+                const TDF_Label sub_comp = shapes->AddComponent(parent_asm, sub_asm, local_loc);
+                TDataStd_Name::Set(sub_comp, TCollection_ExtendedString(members[idx].name.c_str(), Standard_True));
+            }
+        };
+
+    const gp_Trsf identity;
+    for (int root : roots) {
+        add_node(root, root_asm, identity);
+    }
+    shapes->UpdateAssemblies();
+
+    STEPCAFControl_Writer writer;
+    writer.SetNameMode(Standard_True);
+    writer.SetColorMode(Standard_True);
+    DESTEP_Parameters params;
+    params.WriteSchema = DESTEP_Parameters::WriteMode_StepSchema_AP242DIS;
+    params.WriteAssembly = DESTEP_Parameters::WriteMode_Assembly_On;
+    params.WriteUnit = UnitsMethods_LengthUnit_Millimeter;
+    params.WriteSurfaceCurMode = false;
+    params.WriteName = true;
+    params.WriteColor = true;
+    if (!writer.Transfer(held.document, params, STEPControl_AsIs) ||
+        writer.Write(path) != IFSelect_RetDone) {
+        error = "Open CASCADE did not write this assembly";
+        return false;
+    }
+    return true;
+#endif
+}
+
+std::string read_step_assembly_json(const char* path, std::string& error) {
+#ifndef LIME_OCCT_STEP
+    (void)path;
+    error = "STEP reader is not linked";
+    return {};
+#else
+    route_occt_log();
+    if (path == nullptr || path[0] == '\0') {
+        error = "STEP path is empty";
+        return {};
+    }
+    std::lock_guard<std::mutex> step_lock(step_mutex());
+    XcafDocument held;
+    STEPCAFControl_Reader reader;
+    reader.SetNameMode(Standard_True);
+    reader.SetColorMode(Standard_True);
+    if (held.document.IsNull() || reader.ReadFile(path) != IFSelect_RetDone ||
+        !reader.Transfer(held.document)) {
+        error = "Open CASCADE could not read this STEP file";
+        return {};
+    }
+    const Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(held.document->Main());
+    const Handle(XCAFDoc_ColorTool) colors = XCAFDoc_DocumentTool::ColorTool(held.document->Main());
+
+    struct ProductInfo { std::string id; std::string name; };
+    struct InstanceInfo {
+        std::string name;
+        std::string parent;
+        std::string product_id;
+        double pose[12];
+        bool has_color = false;
+        double color[3] = {0, 0, 0};
+    };
+    std::map<std::string, size_t> product_map;
+    std::vector<ProductInfo> products;
+    std::vector<InstanceInfo> instances;
+
+    auto entry_of = [](const TDF_Label& label) -> std::string {
+        TCollection_AsciiString entry;
+        TDF_Tool::Entry(label, entry);
+        return entry.ToCString();
+    };
+    auto find_color = [&](const TDF_Label& inst, const TDF_Label& ref, double out_rgb[3]) -> bool {
+        Quantity_Color qc;
+        if (colors->GetColor(inst, XCAFDoc_ColorSurf, qc) ||
+            colors->GetColor(inst, XCAFDoc_ColorGen, qc) ||
+            colors->GetColor(ref, XCAFDoc_ColorSurf, qc) ||
+            colors->GetColor(ref, XCAFDoc_ColorGen, qc)) {
+            Standard_Real r = 0, g = 0, b = 0;
+            qc.Values(r, g, b, Quantity_TOC_sRGB);
+            out_rgb[0] = r;
+            out_rgb[1] = g;
+            out_rgb[2] = b;
+            return true;
+        }
+        return false;
+    };
+
+    std::function<void(const TDF_Label&, const TopLoc_Location&, const std::string&)> walk =
+        [&](const TDF_Label& asm_label, const TopLoc_Location& parent_loc, const std::string& parent_name) {
+            TDF_LabelSequence comps;
+            shapes->GetComponents(asm_label, comps);
+            for (Standard_Integer i = 1; i <= comps.Length(); ++i) {
+                const TDF_Label comp = comps.Value(i);
+                const TopLoc_Location loc = parent_loc * shapes->GetLocation(comp);
+                TDF_Label ref;
+                if (!shapes->GetReferredShape(comp, ref)) ref = comp;
+                std::string comp_name = label_name_of(comp);
+                if (comp_name.empty()) comp_name = label_name_of(ref);
+                if (shapes->IsAssembly(ref)) {
+                    walk(ref, loc, comp_name);
+                } else {
+                    const std::string pid = entry_of(ref);
+                    if (product_map.find(pid) == product_map.end()) {
+                        product_map[pid] = products.size();
+                        products.push_back({pid, label_name_of(ref)});
+                    }
+                    const gp_Trsf trsf = loc.Transformation();
+                    InstanceInfo info;
+                    info.name = comp_name;
+                    info.parent = parent_name;
+                    info.product_id = pid;
+                    for (int row = 1; row <= 3; ++row) {
+                        for (int col = 1; col <= 3; ++col) {
+                            info.pose[(row - 1) * 3 + (col - 1)] = trsf.Value(row, col);
+                        }
+                    }
+                    const gp_XYZ t = trsf.TranslationPart();
+                    info.pose[9] = t.X();
+                    info.pose[10] = t.Y();
+                    info.pose[11] = t.Z();
+                    info.has_color = find_color(comp, ref, info.color);
+                    instances.push_back(std::move(info));
+                }
+            }
+        };
+
+    TDF_LabelSequence free;
+    shapes->GetFreeShapes(free);
+    std::string root_name;
+    for (Standard_Integer i = 1; i <= free.Length(); ++i) {
+        const TDF_Label label = free.Value(i);
+        if (shapes->IsAssembly(label)) {
+            if (root_name.empty()) root_name = label_name_of(label);
+            walk(label, TopLoc_Location(), label_name_of(label));
+        } else {
+            const std::string pid = entry_of(label);
+            if (product_map.find(pid) == product_map.end()) {
+                product_map[pid] = products.size();
+                products.push_back({pid, label_name_of(label)});
+            }
+            InstanceInfo info;
+            info.name = label_name_of(label);
+            info.parent = "";
+            info.product_id = pid;
+            double id[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+            std::memcpy(info.pose, id, sizeof(id));
+            info.has_color = find_color(label, label, info.color);
+            instances.push_back(std::move(info));
+        }
+    }
+
+    std::ostringstream js;
+    js.imbue(std::locale::classic());
+    js.precision(12);
+    js << "{\"assemblyName\":" << escape_json_str(root_name) << ",\"products\":[";
+    for (size_t i = 0; i < products.size(); ++i) {
+        if (i > 0) js << ',';
+        js << "{\"id\":" << escape_json_str(products[i].id) << ",\"name\":" << escape_json_str(products[i].name) << '}';
+    }
+    js << "],\"instances\":[";
+    for (size_t i = 0; i < instances.size(); ++i) {
+        if (i > 0) js << ',';
+        const auto& inst = instances[i];
+        js << "{\"name\":" << escape_json_str(inst.name)
+           << ",\"parent\":" << escape_json_str(inst.parent)
+           << ",\"productId\":" << escape_json_str(inst.product_id)
+           << ",\"pose\":{\"m\":["
+           << inst.pose[0] << ',' << inst.pose[1] << ',' << inst.pose[2] << ','
+           << inst.pose[3] << ',' << inst.pose[4] << ',' << inst.pose[5] << ','
+           << inst.pose[6] << ',' << inst.pose[7] << ',' << inst.pose[8]
+           << "],\"t\":[" << inst.pose[9] << ',' << inst.pose[10] << ',' << inst.pose[11] << "]}";
+        if (inst.has_color) {
+            js << ",\"color\":[" << inst.color[0] << ',' << inst.color[1] << ',' << inst.color[2] << ']';
+        }
+        js << '}';
+    }
+    js << "]}";
+    return js.str();
+#endif
+}
+
 bool read_step_named(
     const char* path,
     std::vector<std::pair<std::string, TopoDS_Shape>>& out,
@@ -2742,14 +3141,12 @@ bool read_step_named(
     TDF_LabelSequence free;
     shapes->GetFreeShapes(free);
     for (Standard_Integer index = 1; index <= free.Length(); ++index) {
-        Handle(TDataStd_Name) name;
-        std::string text;
-        if (free.Value(index).FindAttribute(TDataStd_Name::GetID(), name)) {
-            text = TCollection_AsciiString(name->Get()).ToCString();
+        const TDF_Label label = free.Value(index);
+        if (shapes->IsAssembly(label)) {
+            collect_named_assembly_solids(shapes, label, TopLoc_Location(), out);
+        } else {
+            out.emplace_back("S" + label_name_of(label), XCAFDoc_ShapeTool::GetShape(label));
         }
-        // The first character says what the free shape is: A for an assembly of components, S for a simple shape (one solid,
-        // or a compound of them such as a split to print's pins).
-        out.emplace_back((shapes->IsAssembly(free.Value(index)) ? "A" : "S") + text, XCAFDoc_ShapeTool::GetShape(free.Value(index)));
     }
     return true;
 #endif

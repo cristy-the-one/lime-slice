@@ -1,5 +1,3 @@
-import { V_PULLEY } from "../src/model-part.ts";
-
 /**
  * Refusals. Every tool that cannot do what it was asked answers `{ ok: false, reason, code }`: `reason` is the sentence
  * a person reads, `code` is a short stable kebab-case string from this registry that an agent can branch on, and
@@ -53,7 +51,6 @@ export const REFUSAL_CODES = {
   "bad-anchor": "An anchor label or reference does not resolve.",
   "not-probed": "The edit was not probed first; probe it, or pass probe: true.",
   "kernel-refused": "The modeling kernel refused the op; the reason is its plain-language error.",
-  "v-pulley": "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.",
   "does-not-fit": "The op does not fit the solid (a check failed).",
   "face-not-found": "The face is not on this solid.",
   "curved-face": "The face is curved, so it has no plane to use.",
@@ -176,9 +173,8 @@ export type Refusal = { ok: false; code: RefusalCode; reason: string; next?: str
  * `refuse(code, reason, extra?, next?)`. `extra` carries the call's own fields (`object`, `failedStep`, ...) beside
  * the refusal. It never overrides `ok`, `code`, `reason` or `next`.
  */
-/** A part the kernel will not build. The V pulley has its own code; every other sentence stays a bad argument or a bad op. */
+/** A part the kernel will not build: a bad argument or a bad op. */
 export function refusePartReason(reason: string, code: "bad-argument" | "bad-op"): Refusal {
-  if (reason === V_PULLEY) return refuse("v-pulley", reason);
   return refuse(code, reason);
 }
 

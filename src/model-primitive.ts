@@ -96,6 +96,8 @@ export interface PrimitiveSpec {
   holeFor?: string;
   holes?: number;
   pitchCircle?: number;
+  section?: string;
+  grooves?: number;
 }
 
 /** A gear spec's gear numbers, or null for any other kind. */
@@ -304,6 +306,8 @@ function partSpec(spec: PrimitiveSpec): PartSpec {
     holeFor: spec.holeFor,
     holes: spec.holes,
     pitchCircle: spec.pitchCircle,
+    section: spec.section,
+    grooves: spec.grooves,
     size: spec.partKind === "plate" || spec.partKind === "bracket" ? spec.size : undefined,
     height: spec.height,
   };

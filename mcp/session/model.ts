@@ -38,7 +38,6 @@ import { modelMass } from "./mass.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, PLACE_KEYS, type PlateObject, posedPositions, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse, refusePartReason, type Refusal } from "../refusals.ts";
-import { V_PULLEY } from "../../src/model-part.ts";
 
 const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_describe: (s, obj, input) => s.describe(obj, input),
@@ -79,7 +78,7 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_commit: (s, obj) => s.commit(obj),
   model_export_step: (s, obj, input) => {
     if (input.pieces === true && input.assembly === true) return refuse("conflicting-arguments", "Export the pieces or the assembly, not both.");
-    if (input.assembly === true) return s.exportAssemblyStep(obj, String(input.name));
+    if (input.assembly === true) return s.exportAssemblyStep(obj, String(input.name), input.flat === true);
     return input.pieces === true ? s.exportPieceStep(obj, String(input.name)) : s.exportStep(obj, String(input.name));
   },
   measure: (s, obj, input) => s.measure(obj, input),
@@ -936,7 +935,6 @@ async function solidNew(this: Session, input: Record<string, unknown>): Promise<
   if (gear && input.primitive !== undefined) return refuse("bad-argument", "Give a primitive or a gear, not both.");
   const prepared = fastenerArgs(input);
   if (!prepared.ok) return prepared;
-  if (prepared.args.partKind === "v") return refuse("v-pulley", V_PULLEY);
   const typed = gear ? primitiveFrom({ ...gear, primitive: "gear", origin: [0, 0, 0], turn: [0, 0, 0] }, "gear") : primitiveFrom(prepared.args);
   if ("reason" in typed) return refusePartReason(typed.reason, "bad-argument");
   const gearWhy = gear ? gearRefusal(gearOf(typed)!, typed.height) : null;

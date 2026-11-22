@@ -1007,13 +1007,170 @@ fn gt2_and_the_v_pulley_name_the_limit_they_refuse() {
         &format!("The bore is at most {shown} mm on 20 teeth, so 1 mm stays inside the grooves."),
     );
     refused(
-        "gt2-v",
-        json!({ "primitive": "part", "partKind": "v", "origin": [0.0, 0.0, 0.0] }),
-        "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.",
-    );
-    refused(
         "gt2-nominal",
         json!({ "primitive": "part", "partKind": "gt2", "nominal": "M6", "origin": [0.0, 0.0, 0.0] }),
         "A GT2 pulley has no nominal size.",
     );
+    refused(
+        "v-section",
+        json!({ "primitive": "part", "partKind": "v", "section": "A", "origin": [0.0, 0.0, 0.0] }),
+        "The V pulley takes SPZ, SPA, SPB or SPC.",
+    );
+    refused(
+        "v-grooves-0",
+        json!({ "primitive": "part", "partKind": "v", "grooves": 0, "origin": [0.0, 0.0, 0.0] }),
+        "A V pulley takes 1 to 6 grooves.",
+    );
+    refused(
+        "v-grooves-7",
+        json!({ "primitive": "part", "partKind": "v", "grooves": 7, "origin": [0.0, 0.0, 0.0] }),
+        "A V pulley takes 1 to 6 grooves.",
+    );
+    refused(
+        "v-grooves-half",
+        json!({ "primitive": "part", "partKind": "v", "grooves": 1.5, "origin": [0.0, 0.0, 0.0] }),
+        "The grooves are a whole number from 1 to 6.",
+    );
+    refused(
+        "v-dd-big",
+        json!({ "primitive": "part", "partKind": "v", "diameter": 401.0, "origin": [0.0, 0.0, 0.0] }),
+        "The datum diameter is at most 400 mm.",
+    );
+    refused(
+        "v-dd-small",
+        json!({ "primitive": "part", "partKind": "v", "section": "SPZ", "diameter": 24.0, "origin": [0.0, 0.0, 0.0] }),
+        "An SPZ pulley needs a datum diameter of at least 25 mm.",
+    );
+    refused(
+        "v-bore-small",
+        json!({ "primitive": "part", "partKind": "v", "bore": 2.5, "origin": [0.0, 0.0, 0.0] }),
+        "The bore is at least 3 mm.",
+    );
+    refused(
+        "v-bore-big",
+        json!({ "primitive": "part", "partKind": "v", "section": "SPZ", "diameter": 63.0, "bore": 42.0, "origin": [0.0, 0.0, 0.0] }),
+        "The bore is at most 41 mm on this pulley, so 2 mm stays under the grooves.",
+    );
+    refused(
+        "v-height",
+        json!({ "primitive": "part", "partKind": "v", "height": 20.0, "origin": [0.0, 0.0, 0.0] }),
+        "A V pulley's width comes from its section and grooves.",
+    );
+    refused(
+        "gt2-section",
+        json!({ "primitive": "part", "partKind": "gt2", "section": "SPZ", "origin": [0.0, 0.0, 0.0] }),
+        "Only a V pulley takes a section.",
+    );
+}
+
+struct VPulleyCase {
+    key: &'static str,
+    section: &'static str,
+    bw: f64,
+    c: f64,
+    h: f64,
+    e: f64,
+    f: f64,
+    dd_break: f64,
+    dd: f64,
+    grooves: i32,
+    bore: f64,
+}
+
+/// Closed-form Pappus volume of an ISO 4183 V-belt pulley (docs/plan-mech-parts.md §5.2).
+fn v_pulley_volume(case: &VPulleyCase) -> f64 {
+    let alpha = if case.dd <= case.dd_break { 34.0_f64 } else { 38.0_f64 };
+    let t = (alpha * 0.5).to_radians().tan();
+    let rd = case.dd * 0.5;
+    let re = rd + case.c;
+    let rb = rd - case.h;
+    let w = 2.0 * case.f + f64::from(case.grooves - 1) * case.e;
+    let vg = 2.0
+        * std::f64::consts::PI
+        * (0.5 * (case.bw - 2.0 * rd * t) * (re * re - rb * rb)
+            + (2.0 * t / 3.0) * (re.powi(3) - rb.powi(3)));
+    std::f64::consts::PI * re * re * w
+        - f64::from(case.grooves) * vg
+        - std::f64::consts::PI * (case.bore * 0.5).powi(2) * w
+}
+
+#[test]
+fn v_pulleys_match_the_iso_4183_table_and_point_probes() {
+    if !kernel() {
+        return;
+    }
+    let cases = [
+        VPulleyCase { key: "v-spz-63", section: "SPZ", bw: 8.5, c: 2.0, h: 9.0, e: 12.0, f: 8.0, dd_break: 80.0, dd: 63.0, grooves: 1, bore: 8.0 },
+        VPulleyCase { key: "v-spz-100", section: "SPZ", bw: 8.5, c: 2.0, h: 9.0, e: 12.0, f: 8.0, dd_break: 80.0, dd: 100.0, grooves: 1, bore: 12.0 },
+        VPulleyCase { key: "v-spa-118", section: "SPA", bw: 11.0, c: 2.8, h: 11.0, e: 15.0, f: 10.0, dd_break: 118.0, dd: 118.0, grooves: 1, bore: 16.0 },
+        VPulleyCase { key: "v-spb-200-3", section: "SPB", bw: 14.0, c: 3.5, h: 14.0, e: 19.0, f: 12.5, dd_break: 190.0, dd: 200.0, grooves: 3, bore: 25.0 },
+        // Decision 19: small pulley under older ISO minimum (63 mm) still builds.
+        VPulleyCase { key: "v-spz-45", section: "SPZ", bw: 8.5, c: 2.0, h: 9.0, e: 12.0, f: 8.0, dd_break: 80.0, dd: 45.0, grooves: 1, bore: 8.0 },
+    ];
+    for case in &cases {
+        let VPulleyCase { key, section, c, h, e, f, dd, grooves, bore, .. } = *case;
+        let solid = json!({
+            "primitive": "part",
+            "partKind": "v",
+            "section": section,
+            "diameter": dd,
+            "grooves": grooves,
+            "bore": bore,
+            "origin": [0.0, 0.0, 0.0]
+        });
+        let opened = ok(json!({ "call": "open", "key": key, "primitive": solid, "chordMm": 0.01 }));
+        let got = volume(&opened);
+        let box_ = bounds(&opened);
+        let re = dd * 0.5 + c;
+        let w = 2.0 * f + f64::from(grooves - 1) * e;
+        let want = [[-re, -re, 0.0], [re, re, w]];
+        let want_volume = v_pulley_volume(case);
+        let (open, shared) = mesh_edges(&opened);
+        println!(
+            "part {key}: measured volume {got} mm3, analytic {want_volume} mm3, measured bounds {box_:?}, analytic bounds {want:?}, open edges {open}, non-manifold edges {shared}"
+        );
+        assert!(
+            (got - want_volume).abs() < 0.5,
+            "{key}: volume {got} vs {want_volume}"
+        );
+        near_box(box_, want);
+        assert_eq!(open, 0, "{key}: {open} open edges");
+        assert_eq!(shared, 0, "{key}: {shared} non-manifold edges");
+        let piece = step_check(key, 0);
+        assert!(piece.valid && piece.closed && piece.solids == 1, "{key}: {piece:?}");
+
+        // Point probes on the groove geometry (§5.2):
+        // 1. On the datum circle at groove 0's centre -> outside the material.
+        assert!(
+            probe_removed(key, [dd * 0.5, 0.0, f], 0.12, got) < 1e-4,
+            "{key}: datum point at groove centre should be outside material"
+        );
+        // 2. Just below the groove bottom on groove 0's centre -> inside the material (not cut deeper than h).
+        assert!(
+            probe_removed(key, [dd * 0.5 - h - 0.2, 0.0, f], 0.08, got) > 1e-5,
+            "{key}: point 0.2 mm under groove bottom should be inside material"
+        );
+        // 3. Between two grooves at the datum circle -> inside the material.
+        if grooves >= 2 {
+            assert!(
+                probe_removed(key, [dd * 0.5, 0.0, f + e * 0.5], 0.12, got) > 1e-3,
+                "{key}: datum point between grooves should be inside material"
+            );
+        }
+    }
+    // Turned V pulley: turning 90° about X puts its axis along -Y and swaps Y/Z extents around centre.
+    let turned = ok(json!({
+        "call": "open",
+        "key": "v-spz-turned",
+        "primitive": {
+            "primitive": "part",
+            "partKind": "v",
+            "section": "SPZ",
+            "origin": [0.0, 0.0, 0.0],
+            "turn": [90.0, 0.0, 0.0]
+        },
+        "chordMm": 0.01
+    }));
+    let tbox = bounds(&turned);
+    near_box(tbox, [[-33.5, -8.0, 8.0 - 33.5], [33.5, 8.0, 8.0 + 33.5]]);
 }

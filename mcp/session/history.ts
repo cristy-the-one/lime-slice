@@ -545,26 +545,77 @@ function withKernelMeshes(this: Session, doc: LimeProject): LimeProject {
 }
 
 /**
- * --- Assemblies M9. model_export_step with assembly: true. One STEP file of the part's assembly, each member a solid
- * named after its part at its assembled pose (`modelPose`), root first. The print layout is not read.
+ * --- Assemblies M9 / Pose export E1. model_export_step with assembly: true. One STEP file of the part's assembly:
+ * by default an AP242 assembly tree (one product per distinct part, nested sub-assemblies following the joint tree,
+ * placements, names and colours); with `flat: true`, the 7.0 flat file of named solids. The print layout is not read.
  */
-async function exportAssemblyStep(this: Session, obj: PlateObject, name: string): Promise<Record<string, unknown>> {
-  const assembly = assemblyOf(this.liveAssemblies(), obj.id);
+async function exportAssemblyStep(
+  this: Session,
+  obj: PlateObject,
+  name: string,
+  flat = false,
+  overrides?: {
+    assembly?: import("../../src/assembly.ts").Assembly;
+    poses?: ReadonlyMap<string, import("../../src/model-space.ts").Affine>;
+    colors?: ReadonlyMap<string, string>;
+  },
+): Promise<Record<string, unknown>> {
+  const assembly = overrides?.assembly ?? assemblyOf(this.liveAssemblies(), obj.id);
   if (!assembly) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
   const parts = exportParts(assembly, (id) => partStem(this.find(id)?.name ?? ""));
-  const held: { part: PlateObject; name: string; key: string; node: NodeId }[] = [];
+  const memberById = new Map(assembly.members.map((m) => [m.object, m]));
+  const held: { part: PlateObject; name: string; key: string; node: NodeId; partKey: string }[] = [];
   for (const row of parts) {
     const part = this.find(row.object);
     if (!part) continue;
     const tree = await this.opened(part);
     if ("reason" in tree) return refuse("model-unavailable", `${shownName(part.name)}: ${tree.reason} A STEP assembly holds solids only.`);
-    held.push({ part, name: row.name, key: tree.key, node: tree.current });
+    const partKey = part.bytes.byteLength > 0
+      ? this.meshHashOf(part.bytes)
+      : part.solid && part.solid.positions.length >= 9
+        ? this.meshKeyOf(part.solid.positions)
+        : `${tree.key}:${tree.current}`;
+    held.push({ part, name: row.name, key: tree.key, node: tree.current, partKey });
   }
   const [first, ...rest] = held;
   if (!first) return refuse("no-assembly", "This assembly has no part on the plate.", undefined, NEXT.assembly);
+  const poses = held.map((row) => overrides?.poses?.get(row.part.id) ?? row.part.modelPose ?? IDENTITY_POSE);
+  let assemblySpec: import("../../src/model-request.ts").StepAssemblyExport | undefined;
+  let distinctParts = held.length;
+  if (!flat) {
+    const indexByObject = new Map(held.map((row, idx) => [row.part.id, idx]));
+    const parents = held.map((row) => {
+      const parentId = memberById.get(row.part.id)?.parent ?? null;
+      return parentId !== null ? (indexByObject.get(parentId) ?? -1) : -1;
+    });
+    const partIdByKey = new Map<string, number>();
+    const partNames: string[] = [];
+    const partIds: number[] = [];
+    for (const row of held) {
+      let pid = partIdByKey.get(row.partKey);
+      if (pid === undefined) {
+        pid = partNames.length;
+        partIdByKey.set(row.partKey, pid);
+        partNames.push(row.name);
+      }
+      partIds.push(pid);
+    }
+    distinctParts = partNames.length;
+    const palette = ["#78a0d8", "#d88a68", "#78b88a", "#c898d8", "#d8be68", "#68b8c8", "#d87898", "#a0b868"];
+    assemblySpec = {
+      name: assembly.name,
+      parents,
+      partIds,
+      partNames,
+      colors: held.map((row, idx) => overrides?.colors?.get(row.part.id) ?? palette[idx % palette.length]!),
+    };
+  }
   let reply: Record<string, unknown>;
   try {
-    reply = await this.treeCall(exportRequest(first.key, first.node, "step", rest, held.map((row) => row.name), held.map((row) => row.part.modelPose ?? IDENTITY_POSE)), "export");
+    reply = await this.treeCall(
+      exportRequest(first.key, first.node, "step", rest, held.map((row) => row.name), poses, assemblySpec),
+      "export",
+    );
   } catch (err) {
     const lost = this.lostReply(err);
     if (lost) return lost;
@@ -579,12 +630,16 @@ async function exportAssemblyStep(this: Session, obj: PlateObject, name: string)
     path,
     bytes: step.byteLength,
     assembly: assembly.name,
-    solids: typeof reply.solids === "number" ? reply.solids : held.length,
+    solids: held.length,
+    distinctParts,
+    step: flat ? "flat" : "tree",
     parts: held.map((row) => {
       const box = this.assembledBox(row.part);
       return { object: row.part.id, name: row.name, ...(row.part.solid ? { volumeMm3: row.part.solid.volumeMm3 } : {}), ...(box ? { assembledMm: box } : {}) };
     }),
-    note: "Each part is a named solid at its assembled pose, the root first. The print layout is unchanged.",
+    note: flat
+      ? "Each part is a named solid at its assembled pose, the root first. The print layout is unchanged."
+      : `STEP AP242 assembly tree (${held.length} members, ${distinctParts} distinct ${distinctParts === 1 ? "part" : "parts"}), root first. The print layout is unchanged.`,
   };
 }
 

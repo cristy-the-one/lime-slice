@@ -9,9 +9,11 @@ use super::ffi::{
     lime_model_occt_string_free,
     lime_tree_read_brep,
     lime_tree_read_step,
+    lime_tree_read_step_assembly,
     lime_tree_read_step_named,
     lime_tree_write_brep,
     lime_tree_write_step,
+    lime_tree_write_step_assembly,
     lime_tree_write_step_many,
     RawShape,
 };
@@ -64,6 +66,99 @@ impl Shape {
         };
         let _ = std::fs::remove_file(&path);
         bytes
+    }
+
+    /// --- Pose export E1. Writes a STEP AP242 assembly tree via XCAF: one product per distinct part, located
+    /// instances nested as the joint tree, names and optional sRGB colours.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn step_assembly_bytes_of(
+        assembly_name: &str,
+        parts: &[*const RawShape],
+        part_names: &[String],
+        member_names: &[String],
+        parents: &[i32],
+        part_ids: &[i32],
+        places: &[f64],
+        colors: &[Option<[f64; 3]>],
+    ) -> Result<Vec<u8>, String> {
+        let m = member_names.len();
+        if parts.is_empty() || parts.len() != part_names.len() {
+            return Err("Each distinct part needs a solid and a name".into());
+        }
+        if m == 0 || parents.len() != m || part_ids.len() != m || places.len() != 12 * m {
+            return Err("Each assembly member needs a name, parent, part id, and pose".into());
+        }
+        let path = temp_step("export-asm");
+        let c = c_path(&path)?;
+        let c_asm = CString::new(assembly_name).map_err(|_| "Assembly name is not a C string".to_string())?;
+        let c_part_names = part_names
+            .iter()
+            .map(|name| CString::new(name.as_str()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "A part name is not a C string".to_string())?;
+        let part_ptrs: Vec<*const c_char> = c_part_names.iter().map(|s| s.as_ptr()).collect();
+        let c_member_names = member_names
+            .iter()
+            .map(|name| CString::new(name.as_str()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "A member name is not a C string".to_string())?;
+        let member_ptrs: Vec<*const c_char> = c_member_names.iter().map(|s| s.as_ptr()).collect();
+        let c_parents: Vec<c_int> = parents.iter().map(|&p| p as c_int).collect();
+        let c_part_ids: Vec<c_int> = part_ids.iter().map(|&p| p as c_int).collect();
+        let mut has_colors = Vec::with_capacity(m);
+        let mut color_vals = Vec::with_capacity(3 * m);
+        for i in 0..m {
+            if let Some(Some([r, g, b])) = colors.get(i) {
+                has_colors.push(1 as c_int);
+                color_vals.extend_from_slice(&[*r, *g, *b]);
+            } else {
+                has_colors.push(0 as c_int);
+                color_vals.extend_from_slice(&[0.0, 0.0, 0.0]);
+            }
+        }
+        let part_count = c_int::try_from(parts.len()).map_err(|_| "Too many parts".to_string())?;
+        let member_count = c_int::try_from(m).map_err(|_| "Too many members".to_string())?;
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let ok = unsafe {
+            lime_tree_write_step_assembly(
+                c_asm.as_ptr(),
+                parts.as_ptr(),
+                part_ptrs.as_ptr(),
+                part_count,
+                member_ptrs.as_ptr(),
+                c_parents.as_ptr(),
+                c_part_ids.as_ptr(),
+                places.as_ptr(),
+                has_colors.as_ptr(),
+                color_vals.as_ptr(),
+                member_count,
+                c.as_ptr(),
+                &mut error,
+            )
+        };
+        let message = take_text(error);
+        let bytes = if ok == 0 {
+            Err(message.unwrap_or_else(|| "Open CASCADE did not write this assembly".into()))
+        } else {
+            std::fs::read(&path).map_err(|err| err.to_string())
+        };
+        let _ = std::fs::remove_file(&path);
+        bytes
+    }
+
+    /// --- Pose export E1. Reads back an XCAF STEP assembly structure as JSON.
+    pub(super) fn read_step_assembly(step: &[u8]) -> Result<String, String> {
+        let path = temp_step("read-asm");
+        std::fs::write(&path, step).map_err(|err| err.to_string())?;
+        let c = c_path(&path)?;
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let raw = unsafe { lime_tree_read_step_assembly(c.as_ptr(), &mut error) };
+        let _ = std::fs::remove_file(&path);
+        let message = take_text(error);
+        match take_text(raw) {
+            Some(json) => Ok(json),
+            None => Err(message.unwrap_or_else(|| "Open CASCADE could not read this STEP file".into())),
+        }
     }
 
     /// --- Split to print (D12). The free shapes of a STEP file with their product names, in the file's order, at most

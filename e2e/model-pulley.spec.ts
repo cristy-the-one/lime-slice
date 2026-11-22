@@ -19,7 +19,6 @@ function built(_request: Body, parent: MockSolid): Built {
 const readout = (page: Page) => page.locator("#modelReadout");
 const rows = (page: Page) => page.locator("#modelHistoryTree [role=treeitem]");
 const apply = (page: Page) => page.locator("#modelApply");
-const V_PULLEY = "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.";
 
 const shots = path.resolve("test-results/model-pulley");
 
@@ -39,7 +38,7 @@ async function start(page: Page): Promise<TreeMock> {
   return tree;
 }
 
-test("the Part card makes a GT2 pulley, scrubs the teeth, refuses a V pulley, saves, and uses it as a boolean tool", async ({ page }) => {
+test("the Part card makes a GT2 pulley and a V pulley, scrubs parameters, saves, and uses them as boolean tools", async ({ page }) => {
   fs.mkdirSync(shots, { recursive: true });
   const tree = await start(page);
   const dupes = await page.evaluate(() => {
@@ -50,6 +49,8 @@ test("the Part card makes a GT2 pulley, scrubs the teeth, refuses a V pulley, sa
   expect(dupes, "an element id is used twice").toEqual([]);
   await expect(page.locator("#modelPartTeeth")).toHaveCount(1);
   await expect(page.locator("#modelGearTeeth")).toHaveCount(1);
+  await expect(page.locator("#modelPartSection")).toHaveCount(1);
+  await expect(page.locator("#modelPartGrooves")).toHaveCount(1);
 
   await page.locator("#modelToolNew").click();
   await page.locator('#modelPrim [data-kind="part"]').click();
@@ -60,16 +61,49 @@ test("the Part card makes a GT2 pulley, scrubs the teeth, refuses a V pulley, sa
   await page.screenshot({ path: path.join(shots, "part-gt2.png") });
 
   await page.locator("#modelPartKind").selectOption("v");
-  await expect(page.locator("#modelNote")).toHaveText(V_PULLEY);
-  await expect(apply(page)).toBeDisabled();
-  await page.screenshot({ path: path.join(shots, "part-v-refused.png") });
+  await expect(page.locator("#modelPartSection")).toHaveValue("SPZ");
+  await expect(page.locator("#modelPartRow")).toContainText("ISO 4183 SPZ: outside ⌀67 mm, width 16 mm, angle 34°.");
+  await expect(page.locator("#model")).toHaveAttribute("data-ghost", "0.00 0.00 8.00 67.00 67.00 16.00");
+  await expect(apply(page)).toBeEnabled();
 
+  // Small pulley under older ISO minimum (63 mm) still builds, with a note shown once in the row.
+  await page.locator("#modelPartDiameter").fill("45");
+  await expect(page.locator("#modelPartRow")).toContainText("Under 63 mm the belt bends more than its maker allows, and wears sooner.");
+  await expect(page.locator("#modelNote")).not.toContainText("Under 63 mm");
+  await expect(apply(page)).toBeEnabled();
+
+  // Bore past the groove wall is refused in the note only, disabling Create.
+  await page.locator("#modelPartBore").fill("30");
+  await expect(page.locator("#modelNote")).toContainText("The bore is at most 23 mm on this pulley, so 2 mm stays under the grooves.");
+  await expect(page.locator("#modelPartRow")).not.toContainText("The bore is at most");
+  await expect(apply(page)).toBeDisabled();
+
+  // Switch section to SPB, 3 grooves, datum 200, bore 25 and create it.
+  await page.locator("#modelPartKind").selectOption("gt2");
+  await page.locator("#modelPartKind").selectOption("v");
+  await page.locator("#modelPartSection").selectOption("SPB");
+  await expect(page.locator("#modelPartDiameter")).toHaveValue("140");
+  await page.locator("#modelPartDiameter").fill("200");
+  await page.locator("#modelPartGrooves").fill("3");
+  await page.locator("#modelPartBore").fill("25");
+  await expect(page.locator("#modelPartRow")).toContainText("ISO 4183 SPB: outside ⌀207 mm, width 63 mm, angle 38°.");
+  await expect(page.locator("#model")).toHaveAttribute("data-ghost", "0.00 0.00 31.50 207.00 207.00 63.00");
+  await expect(apply(page)).toBeEnabled();
+  await page.screenshot({ path: path.join(shots, "part-v.png") });
+  await apply(page).click();
+  await expect(rows(page).first()).toContainText("V pulley SPB ⌀200, 3 grooves");
+  const vSent = tree.of("open").at(-1)!.primitive as Record<string, unknown>;
+  expect(vSent).toMatchObject({ primitive: "part", partKind: "v", section: "SPB", diameter: 200, grooves: 3, bore: 25 });
+
+  await page.locator("#modelToolNew").click();
+  await page.locator('#modelPrim [data-kind="part"]').click();
   await page.locator("#modelPartKind").selectOption("gt2");
   await page.locator("#modelPartTeeth").fill("36");
-  await expect(page.locator("#model")).toHaveAttribute("data-ghost", "0.00 0.00 3.00 22.41 22.41 6.00");
+  // The V pulley already occupies the origin, so the new GT2 pulley parks clear along +X with exact Z and bounds.
+  await expect(page.locator("#model")).toHaveAttribute("data-ghost", /^-?\d+\.\d{2} 0\.00 3\.00 22\.41 22\.41 6\.00$/);
   await expect(apply(page)).toBeEnabled();
   await apply(page).click();
-  await expect(readout(page)).toContainText("Part 1.");
+  await expect(readout(page)).toContainText("Part 2.");
   await expect(rows(page).first()).toContainText("GT2 pulley 36 teeth");
   const sent = tree.of("open").at(-1)!.primitive as Record<string, unknown>;
   expect(sent).toMatchObject({ primitive: "part", partKind: "gt2", teeth: 36, height: 6, bore: 5 });
@@ -78,9 +112,15 @@ test("the Part card makes a GT2 pulley, scrubs the teeth, refuses a V pulley, sa
   const saved = fs.readFileSync((await download.path())!).toString("utf8");
   expect(saved).toContain('"partKind": "gt2"');
   expect(saved).toContain('"teeth": 36');
+  expect(saved).toContain('"partKind": "v"');
+  expect(saved).toContain('"section": "SPB"');
   await page.reload();
   await page.locator("#projectFile").setInputFiles({ name: "pulley.lime", mimeType: "application/json", buffer: Buffer.from(saved) });
-  await expect(page.locator("#left [data-plate-select]")).toHaveCount(1);
+  await expect(page.locator("#left [data-plate-select]")).toHaveCount(2);
+  await page.locator("#tabModel").click();
+  await expect(rows(page).filter({ hasText: "V pulley SPB ⌀200, 3 grooves" })).toHaveCount(1);
+  await page.locator("#tabPrepare").click();
+  await page.locator("#left [data-plate-select]").nth(1).click();
   await page.locator("#tabModel").click();
   await expect(rows(page).filter({ hasText: "GT2 pulley 36 teeth" })).toHaveCount(1);
   await page.screenshot({ path: path.join(shots, "part-gt2-history.png") });
@@ -89,7 +129,6 @@ test("the Part card makes a GT2 pulley, scrubs the teeth, refuses a V pulley, sa
   if ((await page.locator("#modelCut").getAttribute("aria-pressed")) !== "true") await page.locator("#modelCut").click();
   await page.locator('#modelPrim [data-kind="part"]').click();
   await page.locator("#modelPartKind").selectOption("gt2");
-  await page.locator("#modelX").fill("0");
   await apply(page).click();
   await expect(rows(page).last()).toContainText("Cut GT2 pulley 20 teeth");
   const cut = tree.of("apply").at(-1)!.op as Record<string, unknown>;

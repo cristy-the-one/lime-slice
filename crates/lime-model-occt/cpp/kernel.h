@@ -140,6 +140,26 @@ bool write_step_named(
     const std::vector<std::string>& names,
     const char* path,
     std::string& error);
+/// One member of a STEP AP242 assembly export (docs/plan-pose-export.md E1).
+struct StepAssemblyMember {
+    std::string name;
+    int parent = -1;
+    int part_index = 0;
+    double place[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    bool has_color = false;
+    double color[3] = {0, 0, 0};
+};
+/// Writes a STEP AP242 assembly tree via XCAF: one product per distinct part, nested sub-assemblies following the
+/// joint tree, located instances with names and optional sRGB colours.
+bool write_step_assembly(
+    const std::string& assembly_name,
+    const std::vector<TopoDS_Shape>& parts,
+    const std::vector<std::string>& part_names,
+    const std::vector<StepAssemblyMember>& members,
+    const char* path,
+    std::string& error);
+/// Reads back an XCAF STEP assembly structure as JSON (`{assemblyName, products, instances}`) for round-trip tests.
+std::string read_step_assembly_json(const char* path, std::string& error);
 /// The free shapes of a STEP file with their product names, in the file's order (the XCAF document reader). Each name
 /// starts with A when the shape is an assembly of components, or S when it is a simple shape.
 bool read_step_named(

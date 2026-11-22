@@ -161,7 +161,7 @@ export const IMPORT_BUILD_LIMIT_MS = 30_000;
 export const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
   "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
-  "sim_run", "sim_sweep", "model_params", "recipe_run", "pose_animate", "motion_run", "model_check", "model_place",
+  "sim_run", "sim_sweep", "model_params", "recipe_run", "pose_animate", "pose_export", "motion_run", "model_check", "model_place",
   "ribs_plan", "ribs_apply",
 ]);
 
@@ -173,7 +173,7 @@ export const WHILE_BUSY = new Set([
 ]);
 
 /** Detachable calls that change no part: a cancelled one is simply left to finish. */
-export const CHANGES_NOTHING = new Set(["model_probe", "project_save", "app_open", "export_3mf", "model_export_step", "model_check"]);
+export const CHANGES_NOTHING = new Set(["model_probe", "project_save", "app_open", "export_3mf", "model_export_step", "pose_export", "model_check"]);
 
 /** Seconds a detachable call runs before it answers with a job instead: under a 60 s client timeout. */
 export function replySeconds(): number {
