@@ -117,7 +117,8 @@ const bedBefore = before.map((r) => r.bboxMm);
 const stepTree = await call("pose_export", { assembly: "Robot Arm", format: "step" });
 check("pose_export step writes AP242 assembly with 4 members and 3 distinct parts", stepTree.ok === true && stepTree.members === 4 && stepTree.parts === 3 && stepTree.step === "tree" && String(stepTree.path).endsWith("robot-arm-pose.step"), show(stepTree));
 const stepText = readFileSync(String(stepTree.path), "utf8");
-check("STEP tree carries AP242 schema", stepText.includes("AP242") || stepText.includes("MANAGED_MODEL_BASED_3D_ENGINEERING"), stepText.slice(0, 400));
+const schemaMatch = /FILE_SCHEMA\s*\([^;]*\)/.exec(stepText);
+check("STEP tree FILE_SCHEMA header is AP242", !!schemaMatch && schemaMatch[0].includes("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING"), schemaMatch?.[0] ?? stepText.slice(0, 400));
 
 // 2. STEP flat option via pose_export and model_export_step
 const stepFlat = await call("pose_export", { assembly: "Robot Arm", format: "step", step: "flat", path: "flat.step" });
@@ -198,6 +199,18 @@ fn main() {
 }
 
 check("Print layout did not move", show((await plate()).map((r) => r.bboxMm)) === show(bedBefore));
+
+// 9. Mirrored member pose is refused across formats (consistent with STEP).
+{
+  const clipObj = session.find(clip)!;
+  const savedPose = structuredClone(clipObj.modelPose);
+  clipObj.modelPose = { m: [-1, 0, 0, 0, 1, 0, 0, 0, 1], t: [...savedPose.t] };
+  const mirroredGlb = await call("pose_export", { assembly: "Robot Arm", format: "glb", path: "mirrored.glb" });
+  const mirrored3mf = await call("pose_export", { assembly: "Robot Arm", format: "3mf", path: "mirrored.3mf" });
+  clipObj.modelPose = savedPose;
+  check("mirrored member pose is refused for glb", mirroredGlb.ok === false && String(mirroredGlb.reason ?? "").includes("no shear or mirror"), show(mirroredGlb));
+  check("mirrored member pose is refused for 3mf", mirrored3mf.ok === false && String(mirrored3mf.reason ?? "").includes("no shear or mirror"), show(mirrored3mf));
+}
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -36,6 +36,7 @@ import {
   encodePoseSheet,
   encodePoseStl,
   orderExportMembers,
+  orderedPoseProblem,
   orderedPosedBounds,
   poseExportFileName,
   type OrderedPoseExport,
@@ -373,6 +374,29 @@ function parseGlb(bytes: Uint8Array) {
   const restTip = applyPose(restPoses.get("tip1")!, [0, 0, 4]);
   const frameTip = applyPose(lastFrame.poses.get("tip1")!, [0, 0, 4]);
   check("exported frame pose differs from rest pose", Math.hypot(restTip[0] - frameTip[0], restTip[1] - frameTip[1], restTip[2] - frameTip[2]) > 5);
+}
+
+// --- 7. Mirrored or sheared member poses are refused consistently with STEP ---
+{
+  check("valid rigid assembly has no pose problem", orderedPoseProblem(ordered, { name: "Wave", sampled }) === null);
+  const mirroredOrdered = orderExportMembers(
+    assembly,
+    (id) => names[id]!,
+    (id) => partKeys[id]!,
+    (id) => meshes[id]!,
+    (id) => (id === "tip1" ? { m: [-1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] } : lastFrame.poses.get(id)),
+  );
+  const mirrorErr = orderedPoseProblem(mirroredOrdered);
+  check("mirrored member pose is refused", typeof mirrorErr === "string" && mirrorErr.includes("no shear or mirror"), String(mirrorErr));
+  const shearedOrdered = orderExportMembers(
+    assembly,
+    (id) => names[id]!,
+    (id) => partKeys[id]!,
+    (id) => meshes[id]!,
+    (id) => (id === "arm" ? { m: [1, 0.5, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] } : lastFrame.poses.get(id)),
+  );
+  const shearErr = orderedPoseProblem(shearedOrdered);
+  check("sheared member pose is refused", typeof shearErr === "string" && shearErr.includes("no shear or mirror"), String(shearErr));
 }
 
 if (failed > 0) {

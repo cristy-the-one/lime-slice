@@ -21,6 +21,7 @@ import {
   encodePoseSheet,
   encodePoseStl,
   orderExportMembers,
+  orderedPoseProblem,
   poseExportFileName,
   type PoseExportConfig,
   type PoseExportFormat,
@@ -300,6 +301,9 @@ async function poseExport(this: Session, input: Record<string, unknown>, meta?: 
   );
   if (!ordered.members.length) return refuse("no-assembly", "This assembly has no part on the plate.", undefined, NEXT.assembly);
 
+  const poseProblem = orderedPoseProblem(ordered);
+  if (poseProblem) return refuse("bad-placement", poseProblem);
+
   if (format === "pose") {
     const bytes = encodePoseSheet(ordered, config);
     writeFileSync(outPath, bytes);
@@ -329,6 +333,10 @@ async function poseExport(this: Session, input: Record<string, unknown>, meta?: 
         const { sampled, title } = ran as { sampled: AnimationResult; title: string };
         glbAnimSpec = { name: title, sampled };
       }
+    }
+    if (glbAnimSpec) {
+      const animPoseProblem = orderedPoseProblem(ordered, glbAnimSpec);
+      if (animPoseProblem) return refuse("bad-placement", animPoseProblem);
     }
     const bytes = encodePoseGlb(ordered, glbAnimSpec);
     writeFileSync(outPath, bytes);

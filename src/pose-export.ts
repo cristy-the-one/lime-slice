@@ -164,6 +164,63 @@ export function transformSoup(positions: Float32Array, pose: Affine): Float32Arr
   return out;
 }
 
+/**
+ * Checks whether `pose` is a valid rigid transform plus positive uniform scale (no shear, no mirror/reflection),
+ * matching the kernel's STEP placement rule (`crates/lime-model-occt/src/tree/ops.rs`).
+ */
+export function poseTransformProblem(pose: Affine): string | null {
+  const { m, t } = pose;
+  for (let i = 0; i < 9; i++) if (!Number.isFinite(m[i])) return "A part's pose must be a turn and a move, with no shear or mirror.";
+  for (let i = 0; i < 3; i++) if (!Number.isFinite(t[i])) return "A part's pose must be a turn and a move, with no shear or mirror.";
+  const c0 = Math.hypot(m[0], m[3], m[6]);
+  const c1 = Math.hypot(m[1], m[4], m[7]);
+  const c2 = Math.hypot(m[2], m[5], m[8]);
+  if (!(c0 > 1e-9 && c1 > 1e-9 && c2 > 1e-9)) {
+    return "A part's pose must be a turn and a move, with no shear or mirror.";
+  }
+  const tol = 1e-3 * c0;
+  if (Math.abs(c1 - c0) > tol || Math.abs(c2 - c0) > tol) {
+    return "A part's pose must be a turn and a move, with no shear or mirror.";
+  }
+  const inv = 1 / c0;
+  const r00 = m[0] * inv, r01 = m[1] * inv, r02 = m[2] * inv;
+  const r10 = m[3] * inv, r11 = m[4] * inv, r12 = m[5] * inv;
+  const r20 = m[6] * inv, r21 = m[7] * inv, r22 = m[8] * inv;
+  const d01 = r00 * r01 + r10 * r11 + r20 * r21;
+  const d02 = r00 * r02 + r10 * r12 + r20 * r22;
+  const d12 = r01 * r02 + r11 * r12 + r21 * r22;
+  if (Math.abs(d01) > 1e-3 || Math.abs(d02) > 1e-3 || Math.abs(d12) > 1e-3) {
+    return "A part's pose must be a turn and a move, with no shear or mirror.";
+  }
+  const det =
+    r00 * (r11 * r22 - r12 * r21) -
+    r01 * (r10 * r22 - r12 * r20) +
+    r02 * (r10 * r21 - r11 * r20);
+  if (det <= 0) {
+    return "A part's pose must be a turn and a move, with no shear or mirror.";
+  }
+  return null;
+}
+
+/** Validates every member's pose (and every sampled animation frame when given) before export. */
+export function orderedPoseProblem(ordered: OrderedPoseExport, animation?: GlbAnimationInput): string | null {
+  for (const row of ordered.members) {
+    const problem = poseTransformProblem(row.pose);
+    if (problem) return `${row.name}: ${problem}`;
+  }
+  if (animation) {
+    for (const frame of animation.sampled.frames) {
+      for (const row of ordered.members) {
+        const pose = frame.poses.get(row.object);
+        if (!pose) continue;
+        const problem = poseTransformProblem(pose);
+        if (problem) return `${row.name}: ${problem}`;
+      }
+    }
+  }
+  return null;
+}
+
 /** Decomposes an `Affine` (rigid + optional uniform scale) into glTF TRS. */
 export function affineToTrs(pose: Affine): { translation: [number, number, number]; rotation: [number, number, number, number]; scale: number } {
   const s = poseScale(pose);

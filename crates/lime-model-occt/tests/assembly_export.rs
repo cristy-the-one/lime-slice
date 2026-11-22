@@ -229,17 +229,21 @@ fn an_assembly_exports_as_named_solids_at_their_poses() {
     assert_eq!(tree_exported["solids"], 4, "{tree_exported}");
     assert_eq!(tree_exported["parts"], 3, "{tree_exported}");
 
-    // Verify AP242 header in the written STEP text.
+    // Verify strict AP242 FILE_SCHEMA header in the written STEP text.
     let step_bytes = base64::engine::general_purpose::STANDARD
         .decode(tree_exported["bytesBase64"].as_str().unwrap())
         .unwrap();
     let step_text = String::from_utf8_lossy(&step_bytes);
+    let schema_section = step_text
+        .find("FILE_SCHEMA")
+        .and_then(|start| step_text[start..].find(';').map(|end| &step_text[start..start + end]))
+        .unwrap_or("");
     assert!(
-        step_text.contains("AP242") || step_text.contains("NEXT_ASSEMBLY_USAGE_OCCURRENCE"),
-        "expected AP242 assembly structure in STEP file"
+        schema_section.contains("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING"),
+        "expected AP242 FILE_SCHEMA in STEP header, got: {schema_section}"
     );
 
-    // Read back with XCAF: one instance per member, placements within 1e-6 mm, names, and shared product for clip & clip-2.
+    // Read back with XCAF: one instance per member, nested joint tree, placements within 1e-6 mm, names, and shared product for clip & clip-2.
     let asm_read = ok(json!({ "call": "stepAssembly", "dataB64": tree_exported["bytesBase64"] }));
     assert_eq!(asm_read["assemblyName"].as_str(), Some("LED cover"), "{asm_read}");
     let instances = asm_read["instances"].as_array().expect("instances");
@@ -251,9 +255,16 @@ fn an_assembly_exports_as_named_solids_at_their_poses() {
         "clip and clip-2 must share the same productId: {asm_read}"
     );
     assert_ne!(instances[0]["productId"], instances[1]["productId"]);
+    // Assert joint-tree nesting: body under root assembly, hook under body, both clips under hook.
+    let expected_parents = ["LED cover", "body", "hook", "hook"];
     for (idx, ((m, t), expected_name)) in tree_poses.iter().zip(tree_names.iter()).enumerate() {
         let inst = &instances[idx];
         assert_eq!(inst["name"].as_str(), Some(*expected_name), "{inst}");
+        assert_eq!(
+            inst["parent"].as_str(),
+            Some(expected_parents[idx]),
+            "instance {idx} ({expected_name}) parent mismatch: {asm_read}"
+        );
         let got_m: Vec<f64> = inst["pose"]["m"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         let got_t: Vec<f64> = inst["pose"]["t"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         for k in 0..9 {

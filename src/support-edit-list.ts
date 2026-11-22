@@ -1,6 +1,6 @@
 /** The user's support edit list and how to describe it. Pure: no three.js, no DOM. */
 import type { CoverageGap, EditOutcome, GrowEdit, PruneEdit, RegrowEdit, SupportEditRequest } from "./support-edits.ts";
-import type { PickScope } from "./support-pick.ts";
+import { regrowFor, type PickScope } from "./support-pick.ts";
 
 /** One edit the user made, plus what the UI needs to describe it. `id` is unique within a session. */
 export type EditEntry =
@@ -90,7 +90,12 @@ export function outcomeText(entry: EditEntry, outcome: EditOutcome): string {
     return `Grew ${branches(grown)} on the tree.${rest}${held}`;
   }
   if (!("scope" in entry)) {
-    if (outcome.status === "stale") return "Nothing unheld to regrow here.";
+    if (outcome.status === "stale") {
+      const left = outcome.floating.reduce((sum, gap) => sum + gap.areaMm2, 0);
+      // A region that is already held has nothing left in it. A stale regrow that still
+      // leaves the patch is one no tree could reach.
+      return left > NOISE_MM2 ? "No support can reach this patch." : "Nothing unheld to regrow here.";
+    }
     return outcome.newlyFloatingMm2 < -NOISE_MM2 ? `Regrew supports. ${mm2(-outcome.newlyFloatingMm2)} of overhang held again.` : "";
   }
   const n = entry.edit.sites.length;
@@ -121,6 +126,39 @@ export function gapsToShow(coverage: readonly CoverageGap[] | undefined, sent: r
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
+  });
+}
+
+/** The Unheld row, e.g. "Z 19.23–19.80 · 1.2 mm²". On a belt the z is the layers' belt positions. */
+export function unheldLine(gap: CoverageGap): string {
+  return `${zRange(gapZ(gap))} · ${mm2(gap.areaMm2)}`;
+}
+
+/**
+ * One line per gap. When two would read the same, each gains its place, "X 41 Y 12",
+ * the gap's min corner rounded to whole millimetres.
+ */
+export function unheldLines(gaps: readonly CoverageGap[]): string[] {
+  const base = gaps.map(unheldLine);
+  const count = new Map<string, number>();
+  for (const line of base) count.set(line, (count.get(line) ?? 0) + 1);
+  return gaps.map((gap, i) => {
+    if ((count.get(base[i]) ?? 0) < 2) return base[i];
+    return `${base[i]} · X ${Math.round(gap.min[0])} Y ${Math.round(gap.min[1])}`;
+  });
+}
+
+/** True when `list` already holds a regrow of `gap`: the same region and the same z. */
+export function regrowListed(list: readonly EditEntry[], gap: CoverageGap): boolean {
+  const want = regrowFor(gap);
+  return list.some((entry) => entry.edit.kind === "regrow" && sameRegrow(entry.edit, want));
+}
+
+function sameRegrow(edit: RegrowEdit, want: RegrowEdit): boolean {
+  if (edit.z[0] !== want.z[0] || edit.z[1] !== want.z[1] || edit.region.length !== want.region.length) return false;
+  return edit.region.every((loop, i) => {
+    const other = want.region[i];
+    return loop.length === other.length && loop.every((p, j) => p[0] === other[j][0] && p[1] === other[j][1]);
   });
 }
 

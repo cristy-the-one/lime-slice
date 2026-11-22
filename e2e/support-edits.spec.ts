@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
+import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
 import { expectSupports, setSupports } from "./supports";
 
@@ -210,4 +211,70 @@ test("Supports off prints no support, and on lets trees be edited", async ({ pag
   await page.keyboard.press("e");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#supportReadout")).toBeEmpty();
+});
+
+test("regrow of a patch no tree can reach is one stale edit and the button stays off", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  const hull = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/hull-speed.json"), "utf8"));
+  const gap = {
+    z: [14, 22] as [number, number],
+    areaMm2: 18.4,
+    min: [-10, -6] as [number, number],
+    max: [10, 6] as [number, number],
+    outline: [[[-10, -6], [10, -6], [10, 6], [-10, 6]]],
+  };
+  const skeleton = {
+    id: [1, 2], tree: [1, 1], into: [0, 1], live: [1, 1],
+    siteX: [80, 80], siteY: [80, 80], siteZ: [20, 12], start: [0, 2, 4],
+    xs: [80, 80, 80, 80], ys: [80, 80, 80, 80], zs: [20, 0, 12, 4], rs: [2.4, 3, 1.2, 1.6],
+  };
+  const stale = { status: "stale", missed: 1, changedLayers: 0, newlyFloatingMm2: 0, floating: [gap] };
+  const requests: { kind: string }[][] = [];
+  await page.route("**/api/slice", async (route) => {
+    const edits = (route.request().postDataJSON()?.supportEdits ?? []) as { kind: string }[];
+    requests.push(edits);
+    const body = structuredClone(hull);
+    body.skeleton = skeleton;
+    body.coverage = [gap];
+    body.supportEdits = edits.some((edit) => edit.kind === "regrow") ? edits.map(() => stale) : [];
+    await route.fulfill({ json: body });
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="lime_hull.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await setSupports(page, "auto");
+  await page.locator("#slice").click();
+  await expect.poll(() => requests.length).toBe(1);
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await page.keyboard.press("e");
+
+  const row = page.locator("#supportEdits li.se-gap");
+  await expect(row).toHaveCount(1);
+  const regrow = row.getByRole("button", { name: "Regrow" });
+  await expect(regrow).toBeEnabled();
+  await regrow.click();
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests[1]).toHaveLength(1);
+  expect(requests[1][0].kind).toBe("regrow");
+
+  const edit = page.locator("#supportEdits li[data-edit]");
+  await expect(edit).toHaveCount(1);
+  await expect(edit).toContainText("No support can reach this patch.");
+  await expect(page.locator("#toasts")).toContainText("No support can reach this patch.");
+  await expect(edit.locator(".se-badge")).toHaveAttribute("data-badge", "stale");
+  await expect(regrow).toBeDisabled();
+  await expect(regrow).toHaveAttribute("title", "Already in the edits");
+
+  await regrow.click({ force: true });
+  await expect.poll(() => requests.length).toBe(2);
+  await expect(edit).toHaveCount(1);
+
+  await edit.locator('[data-action="remove"]').click();
+  await expect(regrow).toBeEnabled();
+  await expect(regrow).not.toHaveAttribute("title");
 });

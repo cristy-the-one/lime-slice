@@ -691,3 +691,76 @@ test("a belt printer's second copy shows the gap a prune left and regrows it", a
   const [x1, y1] = gap.max;
   expect(edits[1]).toEqual({ kind: "regrow", region: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]], z: gap.z });
 });
+
+test("regrow of a patch no tree can reach is one stale edit and the button stays off", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const gap = beltLedgePruned.supportEdits[0].floating[0];
+  const stale = {
+    status: "stale",
+    missed: 1,
+    changedLayers: 0,
+    newlyFloatingMm2: 0,
+    floating: [gap],
+  };
+  const open = { ...beltLedgePruned, coverage: [gap], supportEdits: [] };
+  const requests: { kind: string }[][] = [];
+  await page.route("**/api/slice", async (route) => {
+    const edits = (route.request().postDataJSON()?.supportEdits ?? []) as { kind: string }[];
+    requests.push(edits);
+    const body = edits.some((edit) => edit.kind === "regrow")
+      ? { ...open, coverage: [gap], supportEdits: edits.map(() => stale) }
+      : open;
+    await route.fulfill({ json: body });
+  });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#machineKind").selectOption("belt");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await setSupports(page, "auto");
+  await page.locator("#slice").click();
+  await expect.poll(() => requests.length).toBe(1);
+  await page.locator("#tabPreview").click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await page.keyboard.press("e");
+
+  const row = page.locator("#supportEdits li.se-gap");
+  await expect(row).toHaveCount(1);
+  const regrow = row.getByRole("button", { name: "Regrow" });
+  await expect(regrow).toBeEnabled();
+  await regrow.click();
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests[1]).toHaveLength(1);
+  expect(requests[1][0].kind).toBe("regrow");
+
+  const edit = page.locator("#supportEdits li[data-edit]");
+  await expect(edit).toHaveCount(1);
+  await expect(edit).toContainText("No support can reach this patch.");
+  await expect(page.locator("#toasts")).toContainText("No support can reach this patch.");
+  await expect(edit.locator(".se-badge")).toHaveAttribute("data-badge", "stale");
+  await expect(regrow).toBeDisabled();
+  await expect(regrow).toHaveAttribute("title", "Already in the edits");
+
+  await regrow.click({ force: true });
+  await expect.poll(() => requests.length).toBe(2);
+  await expect(edit).toHaveCount(1);
+
+  const found = await sweep(page, "Unheld");
+  expect(found, "the patch under the pointer").not.toBeNull();
+  await page.mouse.click(found!.x, found!.y);
+  const here = page.getByRole("button", { name: "Regrow here" });
+  await expect(here).toBeDisabled();
+  await expect(here).toHaveAttribute("title", "Already in the edits");
+  await here.click({ force: true });
+  await expect.poll(() => requests.length).toBe(2);
+  await expect(edit).toHaveCount(1);
+
+  fs.mkdirSync("/opt/cursor/artifacts/regrow-stale", { recursive: true });
+  await page.locator("#supportEdits").screenshot({ path: "/opt/cursor/artifacts/regrow-stale/stale-regrow.png" });
+
+  await edit.locator('[data-action="remove"]').click();
+  await expect(regrow).toBeEnabled();
+  await expect(regrow).not.toHaveAttribute("title");
+});

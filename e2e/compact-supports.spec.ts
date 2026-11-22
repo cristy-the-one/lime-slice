@@ -188,4 +188,80 @@ test.describe("compact support editing", () => {
     await page.waitForTimeout(200);
     await page.screenshot({ path: path.join(out, "13-support-regrow.png") });
   });
+
+  test("a regrow no tree can reach disables the chip and a second tap adds nothing", async ({ page }) => {
+    const requests: { kind: string }[][] = [];
+    const stale = {
+      status: "stale",
+      missed: 1,
+      changedLayers: 0,
+      newlyFloatingMm2: 0,
+      floating: [gap],
+    };
+    await page.addInitScript(() => {
+      localStorage.setItem("lime-slice-theme", "dark");
+      localStorage.setItem("lime-slice-settings-level", "simple");
+    });
+    await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+    await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+    await page.route("**/api/slice", async (route) => {
+      const edits = (route.request().postDataJSON()?.supportEdits ?? []) as { kind: string }[];
+      requests.push(edits);
+      const body = structuredClone(hull);
+      body.skeleton = { ...skeleton, siteX: [80, 80], siteY: [80, 80], xs: [80, 80, 80, 80], ys: [80, 80, 80, 80] };
+      body.coverage = [gap];
+      body.supportEdits = edits.some((edit) => edit.kind === "regrow") ? edits.map(() => stale) : [];
+      await route.fulfill({ json: body });
+    });
+    await page.goto("/?layout=compact");
+    await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="lime_hull.stl"]')?.click());
+    await expect(page.locator("#compactFile")).toContainText("lime_hull");
+    await page.locator("#supportMode-auto").evaluate((el: HTMLInputElement) => {
+      el.checked = true;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page.locator("#compactTabs [data-tab=preview]").click();
+    await page.locator("#slice").click();
+    await expect.poll(async () => page.locator("#rangeHigh").evaluate((el: HTMLInputElement) => Number(el.max))).toBeGreaterThan(0);
+    await page.locator("#rangeHigh").evaluate((el: HTMLInputElement) => {
+      el.value = el.max;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page.locator("#compactSupportEdit").click();
+    await expect(page.locator("html")).toHaveAttribute("data-support-edit", "1");
+
+    const canvas = page.locator("#view3d");
+    const pickUnheld = () => page.evaluate(() => {
+      const view = document.querySelector<HTMLCanvasElement>("#view3d")!;
+      const text = document.querySelector("#supportReadout")!;
+      const box = view.getBoundingClientRect();
+      for (let y = box.top + 2; y < box.bottom; y += 4) {
+        for (let x = box.left + 2; x < box.right; x += 4) {
+          view.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, buttons: 0, bubbles: true }));
+          if (text.textContent?.startsWith("Unheld")) return { x: x - box.left, y: y - box.top };
+        }
+      }
+      return null;
+    });
+    const at = await pickUnheld();
+    expect(at, "the patch under the pointer").not.toBeNull();
+    await canvas.click({ position: at! });
+    const chip = page.locator("#compactSupportChipAction");
+    await expect(chip).toBeVisible();
+    await expect(chip).toHaveText("Regrow");
+    await expect(chip).toBeEnabled();
+    // The long Unheld label shifts this button under the Slice control, so a pointer click hits Slice.
+    await chip.evaluate((el: HTMLButtonElement) => el.click());
+    await expect.poll(() => requests.length).toBeGreaterThan(1);
+    const after = requests.length;
+
+    const again = await pickUnheld();
+    expect(again, "the patch under the pointer after the stale regrow").not.toBeNull();
+    await canvas.click({ position: again! });
+    await expect(chip).toBeDisabled();
+    await expect(chip).toHaveAttribute("title", "Already in the edits");
+    await expect(page.locator("#toasts")).toContainText("No support can reach this patch.");
+    await chip.evaluate((el: HTMLButtonElement) => el.click());
+    await expect.poll(() => requests.length).toBe(after);
+  });
 });

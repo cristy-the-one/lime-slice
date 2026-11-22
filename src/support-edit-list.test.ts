@@ -1,4 +1,5 @@
-import { alignOutcomes, appendEdit, badgeOf, clearEdits, editRequestFields, editTitle, gapsToShow, gapZ, outcomeText, removeEdit, undoLast, type EditEntry } from "./support-edit-list.ts";
+import { alignOutcomes, appendEdit, badgeOf, clearEdits, editRequestFields, editTitle, gapsToShow, gapZ, outcomeText, regrowListed, removeEdit, unheldLines, undoLast, type EditEntry } from "./support-edit-list.ts";
+import { regrowFor } from "./support-pick.ts";
 import { recipeKey } from "./slice-action.ts";
 import type { CoverageGap, EditOutcome } from "./support-edits.ts";
 
@@ -78,11 +79,41 @@ eq("stale prune, all missed", outcomeText(tree, outcome({ status: "stale", misse
 eq("stale prune, nothing changed", outcomeText(tree, outcome({ status: "stale", missed: 1, changedLayers: 0 })), "Nothing matched: the supports changed since this edit.");
 eq("regrow that holds", outcomeText(regrow, held), "Regrew supports. 59.9 mm² of overhang held again.");
 eq("stale regrow", outcomeText(regrow, outcome({ status: "stale", missed: 1 })), "Nothing unheld to regrow here.");
+eq("stale regrow nothing can reach", outcomeText(regrow, outcome({ status: "stale", missed: 1, floating: [gapA] })), "No support can reach this patch.");
 
 eq("prune gaps plus coverage, deduplicated", gapsToShow([gapA, gapB], [tree], [applied]), [gapA, gapB]);
 eq("a regrow replaces the gaps in its region", gapsToShow([gapB], [tree, regrow], [applied, held]), [gapB]);
 eq("a regrow keeps what it still leaves", gapsToShow([], [tree, regrow], [applied, outcome({ status: "applied", floating: [gapA] })]), [gapA]);
 eq("no result", gapsToShow(undefined, [], undefined), []);
+
+const listed: EditEntry = { id: 9, edit: regrowFor(gapA), areaMm2: gapA.areaMm2 };
+const moved: EditEntry = { id: 9, edit: { kind: "regrow", region: regrowFor(gapA).region, z: [1, 2] }, areaMm2: gapA.areaMm2 };
+eq("a listed regrow covers its gap", regrowListed([listed], gapA), true);
+eq("a different z does not cover the gap", regrowListed([moved], gapA), false);
+eq("a prune does not cover the gap", regrowListed([tree], gapA), false);
+eq("removing the regrow turns it back on", regrowListed(removeEdit([listed], 9), gapA), false);
+
+const twin: CoverageGap = { ...gapA, min: [41.2, 11.6], max: [42.2, 12.6] };
+const other: CoverageGap = { ...gapA, areaMm2: 3.3, min: [2.4, 3.2], max: [3.4, 4.2] };
+eq("a unique unheld row stays as it is", unheldLines([gapA]), ["Z 4.20–6.40 · 59.9 mm²"]);
+eq("twins gain their place", unheldLines([gapA, twin]), ["Z 4.20–6.40 · 59.9 mm² · X 1 Y 1", "Z 4.20–6.40 · 59.9 mm² · X 41 Y 12"]);
+eq("only the matching rows gain a place", unheldLines([gapA, other, twin]), [
+  "Z 4.20–6.40 · 59.9 mm² · X 1 Y 1",
+  "Z 4.20–6.40 · 3.3 mm²",
+  "Z 4.20–6.40 · 59.9 mm² · X 41 Y 12",
+]);
+const beltTwin = (min: [number, number]): CoverageGap => ({
+  z: [19.4, 19.8],
+  areaMm2: 1.2,
+  min,
+  max: [min[0] + 1, min[1] + 1],
+  outline: [],
+  tilted: { ls: [19.23, 19.8], outline: [] },
+});
+eq("belt twins are told apart by place, at the belt z", unheldLines([beltTwin([41.2, 11.6]), beltTwin([8.4, 2.2])]), [
+  "Z 19.23–19.80 · 1.2 mm² · X 41 Y 12",
+  "Z 19.23–19.80 · 1.2 mm² · X 8 Y 2",
+]);
 
 if (failed) {
   console.error(`${failed} failed`);

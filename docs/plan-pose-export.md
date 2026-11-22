@@ -1,6 +1,6 @@
 # Plan: export a pose for other programs
 
-Status: E1, E2 and E3 implemented (STEP AP242 assembly tree + flat, Pose sheet JSON, glTF 2.0 binary with optional animation, 3MF assembly, STL one/each, OBJ + MTL, Pose Export dialog, and MCP `pose_export` + `model_export_step {assembly: true, flat?: true}`). The owner's three decisions are in section 9.
+Status: E1, E2 and E3 implemented in #803 (STEP AP242 assembly tree + flat, Pose sheet JSON, glTF 2.0 binary with optional animation, 3MF assembly, STL one/each, OBJ + MTL, Pose Export dialog, and MCP `pose_export` + `model_export_step {assembly: true, flat?: true}`). The owner's three decisions are in section 9.
 
 The owner's request on 2026-11-21: "an option to export the exact configuration from the Pose as a STEP and other formats that are used by external programs".
 

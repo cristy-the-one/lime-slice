@@ -17,6 +17,7 @@ import {
   encodePoseSheet,
   encodePoseStl,
   orderExportMembers,
+  orderedPoseProblem,
   poseExportFileName,
   type PoseExportConfig,
   type PoseExportFormat,
@@ -376,6 +377,12 @@ export function showPoseExport(context: PoseExportContext): void {
         );
         if (!ordered.members.length) {
           status.textContent = "This assembly has no parts on the plate.";
+          return;
+        }
+        const glbAnim = fmt === "glb" && includeAnimInput.checked ? matchingAnimation() : null;
+        const poseProblem = orderedPoseProblem(ordered, glbAnim ? { name: glbAnim.title, sampled: glbAnim.anim.result } : undefined);
+        if (poseProblem) {
+          status.textContent = poseProblem;
           return;
         }
 

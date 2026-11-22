@@ -3019,19 +3019,20 @@ std::string read_step_assembly_json(const char* path, std::string& error) {
         return false;
     };
 
-    std::function<void(const TDF_Label&, const TopLoc_Location&, const std::string&)> walk =
-        [&](const TDF_Label& asm_label, const TopLoc_Location& parent_loc, const std::string& parent_name) {
+    std::function<void(const TDF_Label&, const TopLoc_Location&, const std::string&, const std::string&)> walk =
+        [&](const TDF_Label& asm_label, const TopLoc_Location& parent_loc, const std::string& asm_name, const std::string& asm_parent) {
             TDF_LabelSequence comps;
             shapes->GetComponents(asm_label, comps);
             for (Standard_Integer i = 1; i <= comps.Length(); ++i) {
                 const TDF_Label comp = comps.Value(i);
-                const TopLoc_Location loc = parent_loc * shapes->GetLocation(comp);
+                const TopLoc_Location rel_loc = shapes->GetLocation(comp);
+                const TopLoc_Location loc = parent_loc * rel_loc;
                 TDF_Label ref;
                 if (!shapes->GetReferredShape(comp, ref)) ref = comp;
                 std::string comp_name = label_name_of(comp);
                 if (comp_name.empty()) comp_name = label_name_of(ref);
                 if (shapes->IsAssembly(ref)) {
-                    walk(ref, loc, comp_name);
+                    walk(ref, loc, comp_name, asm_name);
                 } else {
                     const std::string pid = entry_of(ref);
                     if (product_map.find(pid) == product_map.end()) {
@@ -3041,7 +3042,20 @@ std::string read_step_assembly_json(const char* path, std::string& error) {
                     const gp_Trsf trsf = loc.Transformation();
                     InstanceInfo info;
                     info.name = comp_name;
-                    info.parent = parent_name;
+                    const gp_Trsf rel_trsf = rel_loc.Transformation();
+                    auto is_identity_trsf = [](const gp_Trsf& tr) {
+                        if (tr.Form() == gp_Identity) return true;
+                        if (tr.TranslationPart().Modulus() > 1e-6) return false;
+                        for (int r = 1; r <= 3; ++r) {
+                            for (int c = 1; c <= 3; ++c) {
+                                if (std::abs(tr.Value(r, c) - (r == c ? 1.0 : 0.0)) > 1e-6) return false;
+                            }
+                        }
+                        return true;
+                    };
+                    // A member with children is wrapped in a sub-assembly of the same name holding its own solid
+                    // at identity; report its enclosing assembly/member as its parent in the joint tree.
+                    info.parent = (!asm_parent.empty() && comp_name == asm_name && is_identity_trsf(rel_trsf)) ? asm_parent : asm_name;
                     info.product_id = pid;
                     for (int row = 1; row <= 3; ++row) {
                         for (int col = 1; col <= 3; ++col) {
@@ -3065,7 +3079,7 @@ std::string read_step_assembly_json(const char* path, std::string& error) {
         const TDF_Label label = free.Value(i);
         if (shapes->IsAssembly(label)) {
             if (root_name.empty()) root_name = label_name_of(label);
-            walk(label, TopLoc_Location(), label_name_of(label));
+            walk(label, TopLoc_Location(), label_name_of(label), "");
         } else {
             const std::string pid = entry_of(label);
             if (product_map.find(pid) == product_map.end()) {
