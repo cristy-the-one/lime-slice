@@ -108,8 +108,8 @@ pub enum EditStatus {
     /// `REBOUND_MM` across, or born on another layer.
     Rebound { moved_mm: f64 },
     /// `missed` of the edit's targets matched nothing: sites that matched
-    /// no limb, or a regrow's region with no unheld demand in it. The rest
-    /// still applied.
+    /// no limb, a regrow's region with no unheld demand in it, or a regrow
+    /// that added no limb and did not hold its region. The rest still applied.
     Stale { missed: usize },
 }
 
@@ -142,7 +142,7 @@ impl Supports {
             let by = self.edits;
             self.edits += 1;
             let first = self.forest.limbs.len();
-            let (status, dirty) = match edit {
+            let (mut status, dirty) = match edit {
                 SupportEdit::Prune { sites } => self.prune(sites, bands, by),
                 SupportEdit::Regrow { region, z } => self.regrow(region, *z, bands, contours, by),
                 SupportEdit::Grow {
@@ -157,6 +157,19 @@ impl Supports {
             } else {
                 self.coverage_from(bands, contours, 0.0)
             };
+            // A regrow that adds no limb, and does not hold its region by
+            // more than the unheld-piece noise, reached nothing. `regrow`
+            // cannot say so itself: the unheld area is only known once the
+            // layers have been stood again. A regrow after a prune that
+            // puts the limbs back still added limbs, so it stays applied.
+            if let SupportEdit::Regrow { region, z } = edit {
+                let added = self.forest.limbs.len() > first;
+                let before_mm2 = area(&gaps_in(&before, region, *z));
+                let after_mm2 = area(&gaps_in(&after, region, *z));
+                if !added && before_mm2 - after_mm2 <= UNHELD_PIECE_MM2 {
+                    status = EditStatus::Stale { missed: 1 };
+                }
+            }
             outcomes.push(EditOutcome {
                 status,
                 changed,
@@ -226,7 +239,9 @@ impl Supports {
     /// Grow new limbs for the demand in `region` on the layers within `z`
     /// that the layers do not print, walking among the kept limbs as fixed
     /// knots, and restore the interface over that demand. Returns `Stale`
-    /// when there is none, and per layer whether the edit touched it.
+    /// when there is none. A walk that adds no limb still returns `Applied`
+    /// here; `apply` marks it `Stale` when the rebuild also fails to hold
+    /// the region. Per layer, whether the edit touched it.
     fn regrow(
         &mut self,
         region: &[Loop],
@@ -310,6 +325,8 @@ impl Supports {
         for limb in &self.forest.limbs[first..] {
             dirty[limb.bottom()..=limb.top].fill(true);
         }
+        // No limb past `first` means nothing reached the patch. Whether the
+        // unheld area fell is decided in `apply`, after the rebuild.
         (EditStatus::Applied, dirty)
     }
 
@@ -1278,7 +1295,7 @@ mod tests {
     use super::super::tests::{
         band, layers, pad_over_flank, plate, plate_opts, rect, unfooted_interface,
     };
-    use super::super::{FloorPlane, Forest, SupportOpts, SupportStyle};
+    use super::super::{FloorPlane, Forest, SupportLayer, SupportOpts, SupportStyle};
     use super::*;
     use crate::poly::in_solid;
 
@@ -2026,6 +2043,95 @@ mod tests {
         let again = s.apply(&[regrow, whole], &bands, &contours);
         assert_eq!(again, vec![stale.clone(), stale]);
         assert_eq!((s.layers.clone(), limb_bits(&s)), (layers, limbs));
+    }
+
+    /// Two islands on one layer, each under the belt's 1 mm² tip, both
+    /// overlapping a smaller island on the layer below. Together they are
+    /// one visible patch, and no component is big enough for a belt walk
+    /// to bear a tip.
+    fn speck_islands() -> (Vec<LayerBand>, Vec<Vec<Loop>>, Supports) {
+        let bands = layers(41);
+        let n = bands.len();
+        let contours = vec![Vec::new(); n];
+        let mut demanded = vec![Vec::new(); n];
+        // 0.84 mm², under the tip. The islands above both overlap it.
+        demanded[39] = vec![rect(0.4, 0.15, 1.8, 0.75)];
+        // 0.81 mm² each, a gap between them so they stay two components.
+        demanded[40] = vec![rect(0.0, 0.0, 0.9, 0.9), rect(1.3, 0.0, 2.2, 0.9)];
+        let empty = SupportLayer {
+            sparse: Vec::new(),
+            interface: Vec::new(),
+            disks: Vec::new(),
+            walls: Vec::new(),
+        };
+        let opts = SupportOpts {
+            floor: Some(FloorPlane::new(1.0, 0.0, 0.0)),
+            ..plate_opts()
+        };
+        let mut s = Supports {
+            forest: Forest {
+                limbs: Vec::new(),
+                at: vec![Vec::new(); n],
+            },
+            layers: vec![empty.clone(); n],
+            demanded,
+            born: vec![Vec::new(); n],
+            stood: vec![empty; n],
+            restored: vec![Vec::new(); n],
+            edits: 0,
+            regrown: Vec::new(),
+            grafted: Vec::new(),
+            enforce: Vec::new(),
+            opts,
+        };
+        let mut layers: Vec<SupportLayer> = (0..n)
+            .map(|i| s.fresh(i, &bands, &contours))
+            .collect();
+        super::super::project(
+            &mut layers,
+            1,
+            &bands,
+            &contours,
+            super::super::lean_of(&s.opts),
+            s.opts.floor,
+            super::super::bridge_of(&s.opts),
+            super::super::foot_taper(&s.opts),
+            &crate::progress::Watch::idle(),
+            s.opts.job,
+        );
+        s.stood = layers.clone();
+        super::super::clip_printed(&mut layers, &bands, s.opts.floor);
+        s.layers = layers;
+        (bands, contours, s)
+    }
+
+    #[test]
+    fn regrowing_a_patch_no_tree_can_reach_is_stale_and_leaves_it_unheld() {
+        let (bands, contours, mut s) = speck_islands();
+        // The warning's own cutoff: one patch, large enough to list.
+        let shown = s.coverage(&bands, &contours);
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(
+            shown[0].area_mm2 >= 1.0,
+            "the islands should read as one patch, {:?}",
+            shown[0].area_mm2
+        );
+        let before = gap_area(&s.coverage_from(&bands, &contours, 0.0));
+        let limbs = s.forest.limbs.len();
+        let out = s.apply(&[SupportEdit::over_gaps(&shown)], &bands, &contours);
+        assert_eq!(out[0].status, EditStatus::Stale { missed: 1 }, "{out:?}");
+        assert_eq!(s.forest.limbs.len(), limbs, "a tree reached the patch");
+        let after = gap_area(&s.coverage_from(&bands, &contours, 0.0));
+        assert!(
+            (before - after).abs() <= super::UNHELD_PIECE_MM2,
+            "{before} mm² before, {after} after"
+        );
+        assert!(
+            gap_area(&out[0].floating) > super::UNHELD_PIECE_MM2,
+            "the patch left the edit's own gaps: {:?}",
+            out[0].floating
+        );
+        assert!(out[0].newly_floating_mm2 > -super::UNHELD_PIECE_MM2);
     }
 
     #[test]

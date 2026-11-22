@@ -281,6 +281,7 @@ fn tower_with_arm() -> String {
 #[test]
 fn a_belt_skeleton_is_in_the_reply_frame_and_its_prunes_apply() {
     keep_support_bases(true);
+    regrow_of_a_patch_no_tree_can_reach_is_stale();
 
     // A flat bed's skeleton has no layer column: its bytes are what they were.
     let level = slice(&flat(json!({"includeSkeleton": true})));
@@ -641,6 +642,96 @@ fn regrow_a_gap_on_a_belt() {
     let flat_regrown = slice(&flat(json!({"supportEdits": [flat_prune, flat_regrow]})));
     assert_eq!(flat_regrown.support_edits[1].status, EditStatus::Applied);
     assert!(flat_regrown.support_edits[1].changed_layers > 0);
+}
+
+/// One box, wound like `tests/slice_cube.rs`.
+fn stl_box(min: [f64; 3], max: [f64; 3]) -> String {
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    let f = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        format!(
+            "facet normal 0 0 0\nouter loop\nvertex {xa} {ya} {za}\nvertex {xb} {yb} {zb}\nvertex {xc} {yc} {zc}\nendloop\nendfacet\n",
+            xa = a[0], ya = a[1], za = a[2],
+            xb = b[0], yb = b[1], zb = b[2],
+            xc = c[0], yc = c[1], zc = c[2],
+        )
+    };
+    let p = |x, y, z| [x, y, z];
+    [
+        f(p(x0, y0, z0), p(x1, y0, z0), p(x1, y1, z0)),
+        f(p(x0, y0, z0), p(x1, y1, z0), p(x0, y1, z0)),
+        f(p(x0, y0, z1), p(x1, y1, z1), p(x1, y0, z1)),
+        f(p(x0, y0, z1), p(x0, y1, z1), p(x1, y1, z1)),
+        f(p(x0, y0, z0), p(x1, y0, z1), p(x1, y0, z0)),
+        f(p(x0, y0, z0), p(x0, y0, z1), p(x1, y0, z1)),
+        f(p(x0, y1, z0), p(x1, y1, z0), p(x1, y1, z1)),
+        f(p(x0, y1, z0), p(x1, y1, z1), p(x0, y1, z1)),
+        f(p(x0, y0, z0), p(x0, y1, z0), p(x0, y1, z1)),
+        f(p(x0, y0, z0), p(x0, y1, z1), p(x0, y0, z1)),
+        f(p(x1, y0, z0), p(x1, y1, z1), p(x1, y1, z0)),
+        f(p(x1, y0, z0), p(x1, y0, z1), p(x1, y1, z1)),
+    ]
+    .concat()
+}
+
+fn mesh_of(name: &str, boxes: &[([f64; 3], [f64; 3])]) -> String {
+    let mut out = format!("solid {name}\n");
+    for (min, max) in boxes {
+        out.push_str(&stl_box(*min, *max));
+    }
+    out.push_str(&format!("endsolid {name}\n"));
+    out
+}
+
+/// Two islands and the speck they share, each under 1 mm², beside a block.
+fn islands_stl() -> String {
+    mesh_of(
+        "islands",
+        &[
+            ([12.0, 0.0, 0.0], [22.0, 8.0, 4.0]),
+            ([0.4, 0.15, 2.0], [1.8, 0.75, 6.0]),
+            ([0.0, 0.0, 6.0], [0.9, 0.9, 8.0]),
+            ([1.3, 0.0, 6.0], [2.2, 0.9, 8.0]),
+        ],
+    )
+}
+
+/// Specks under a square millimetre, sharing a lower speck so a belt walk
+/// bears no tip. Regrow of their box adds no limb and is stale, and the
+/// slice does not list them as a patch a second click could pile up.
+fn regrow_of_a_patch_no_tree_can_reach_is_stale() {
+    let mut req = belt(json!({"includeSkeleton": true}));
+    req["filename"] = json!("islands.stl");
+    req["dataB64"] = json!(base64::engine::general_purpose::STANDARD.encode(islands_stl().as_bytes()));
+    let base = slice(&req);
+    assert!(base.sanity.ok, "{:?}", base.sanity.notes);
+    assert!(
+        base.coverage.iter().all(|gap| gap.area_mm2 < 1.0),
+        "the specks were listed: {:?}",
+        base.coverage.iter().map(|g| g.area_mm2).collect::<Vec<_>>()
+    );
+    let limbs = base.skeleton.as_ref().map(|s| s.id.len()).unwrap_or(0);
+    req["supportEdits"] = json!([{
+        "kind": "regrow",
+        "region": [[[-2.0, -2.0], [8.0, -2.0], [8.0, 8.0], [-2.0, 8.0]]],
+        "z": [0.0, 40.0]
+    }]);
+    let out = slice(&req);
+    let edit = &out.support_edits[0];
+    assert_eq!(edit.status, EditStatus::Stale { missed: 1 }, "{edit:?}");
+    assert!(edit.newly_floating_mm2 > -0.05, "{}", edit.newly_floating_mm2);
+    assert!(gap_mm2(&edit.floating) <= 0.05, "{:?}", edit.floating);
+    let after = out.skeleton.as_ref().map(|s| s.id.len()).unwrap_or(0);
+    assert_eq!(after, limbs, "a belt tree reached the specks");
+    // A second regrow is the same stale edit. Nothing is added.
+    let regrow = req["supportEdits"][0].clone();
+    req["supportEdits"] = json!([regrow.clone(), regrow]);
+    let twice = slice(&req);
+    assert_eq!(twice.support_edits[1].status, EditStatus::Stale { missed: 1 });
+    assert_eq!(
+        twice.skeleton.as_ref().map(|s| s.id.len()).unwrap_or(0),
+        limbs
+    );
 }
 
 /// A belt's copies are one planned part, emitted again with a belt shift. The

@@ -1,6 +1,6 @@
 import { createElement, TreeDeciduous, X } from "lucide";
 import type { BeltCopies, CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
-import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, gapZ, GROW_DEFAULT, outcomeText, removeEdit, undoLast, type EditEntry } from "../support-edit-list";
+import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, gapZ, GROW_DEFAULT, outcomeText, regrowListed, removeEdit, unheldLines, undoLast, type EditEntry } from "../support-edit-list";
 import { replyFrameEdit } from "../bed-offset";
 import { capsulesOf, copyOffsets, growFor, indexSkeleton, limbsWithIds, pickGap, pickLimb, placedGap, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
 import type { PickEvent, SliceView3d } from "../view3d";
@@ -208,11 +208,13 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     for (const button of scopeButtons) button.setAttribute("aria-pressed", button.dataset.scope === scope ? "true" : "false");
     readout.textContent = describe(selected ?? hover);
     const onGap = selected?.kind === "gap";
+    const covered = selected?.kind === "gap" && regrowListed(v.edits, selected.gap);
     deleteButton.hidden = onGap;
     regrowButton.hidden = !onGap;
     deleteButton.firstElementChild!.textContent = selected?.kind === "grown" ? "Delete new" : `Delete ${selected?.kind === "limb" ? selected.scope : scope}`;
     deleteButton.disabled = locked || (selected?.kind !== "limb" && selected?.kind !== "grown");
-    regrowButton.disabled = locked;
+    regrowButton.disabled = locked || covered;
+    regrowButton.title = covered ? "Already in the edits" : "";
     growGroup.hidden = onGap;
     const canGrow = selected?.kind === "limb" && !locked;
     growButton.disabled = !canGrow;
@@ -249,11 +251,16 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       }).join("");
       body += v.edits.length ? `<ol class="se-rows">${rows}</ol>` : "";
       if (editing && gaps.length) {
-        const locked = v.busy || !v.treeSupports ? " disabled" : "";
-        const items = gaps.map((gap, i) => `<li class="se-gap" data-gap="${i}"${hotGap() === i ? ' data-hot="true"' : ""}>
-          <span>Z ${gapZ(gap)[0].toFixed(2)}–${gapZ(gap)[1].toFixed(2)} · ${gap.areaMm2.toFixed(1)} mm²</span>
-          <button class="btn" type="button" data-action="regrow" data-gap="${i}"${locked}>Regrow</button>
-        </li>`).join("");
+        const lines = unheldLines(gaps);
+        const items = gaps.map((gap, i) => {
+          const covered = regrowListed(v.edits, gap);
+          const off = v.busy || !v.treeSupports || covered;
+          const title = covered ? ` title="Already in the edits"` : "";
+          return `<li class="se-gap" data-gap="${i}"${hotGap() === i ? ' data-hot="true"' : ""}>
+          <span>${lines[i]}</span>
+          <button class="btn" type="button" data-action="regrow" data-gap="${i}"${off ? " disabled" : ""}${title}>Regrow</button>
+        </li>`;
+        }).join("");
         body += `<h3 class="se-sub">Unheld</h3><ul class="se-gaps">${items}</ul>`;
       }
       if (!v.treeSupports) body += `<p class="se-note">Tree supports are off.</p>`;
@@ -371,7 +378,9 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       compactChip.dataset.action = action;
       chipLabel.textContent = selectionLabel(selection);
       chipButton.textContent = action === "prune" ? "Prune" : "Regrow";
-      chipButton.disabled = v.busy || !v.treeSupports;
+      const covered = action === "regrow" && selected?.kind === "gap" && regrowListed(v.edits, selected.gap);
+      chipButton.disabled = v.busy || !v.treeSupports || covered;
+      chipButton.title = covered ? "Already in the edits" : "";
     }
     const peek = document.querySelector<HTMLElement>("#compactSupportPeek");
     if (peek) {
@@ -459,7 +468,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
 
   function regrow(gap: CoverageGap) {
     const v = hooks.view();
-    if (v.busy || !v.treeSupports) return;
+    if (v.busy || !v.treeSupports || regrowListed(v.edits, gap)) return;
     commit(appendEdit(v.edits, { id: nextId++, edit: replyFrameEdit(regrowFor(gap)), areaMm2: gap.areaMm2 }), "append");
   }
 
