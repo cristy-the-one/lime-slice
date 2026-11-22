@@ -83,8 +83,10 @@
 #include <Law_Interpol.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <TColgp_Array1OfPnt2d.hxx>
+#include <TColgp_Array2OfPnt.hxx>
 #include <TColStd_Array1OfReal.hxx>
 #include <TColStd_Array1OfInteger.hxx>
+#include <TColStd_Array2OfReal.hxx>
 #include <TColgp_HArray1OfPnt.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Circ.hxx>
@@ -6070,9 +6072,8 @@ void reverse_pairs(std::vector<double>& through) {
     through.swap(rev);
 }
 
-/// --- Organic surfaces S2: build an exact OCCT `Geom_BSplineCurve` edge from poles, optional rational weights,
-/// degree (default min(3, N-1)), and optional explicit knots/mults. Knot generation matches `src/modeling/nurbs-eval.ts`.
-TopoDS_Edge nurbs_edge(
+/// The `Geom_BSplineCurve` an edge is built from. Knot generation matches `src/modeling/nurbs-eval.ts`.
+Handle(Geom_BSplineCurve) bspline_curve(
     const std::vector<gp_Pnt>& poles,
     const std::vector<double>& weights,
     int requested_degree,
@@ -6150,9 +6151,31 @@ TopoDS_Edge nurbs_edge(
     }
 
     try {
-        Handle(Geom_BSplineCurve) curve = has_weights
+        return has_weights
             ? new Geom_BSplineCurve(p_arr, w_arr, k_arr, m_arr, deg, periodic ? Standard_True : Standard_False)
             : new Geom_BSplineCurve(p_arr, k_arr, m_arr, deg, periodic ? Standard_True : Standard_False);
+    } catch (const Standard_Failure& failure) {
+        const char* msg = failure.GetMessageString();
+        error = (msg != nullptr && msg[0] != '\0') ? std::string("NURBS curve failed: ") + msg : "Open CASCADE did not build the NURBS curve.";
+        return {};
+    }
+}
+
+/// --- Organic surfaces S2: build an exact OCCT `Geom_BSplineCurve` edge from poles, optional rational weights,
+/// degree (default min(3, N-1)), and optional explicit knots/mults. Knot generation matches `src/modeling/nurbs-eval.ts`.
+TopoDS_Edge nurbs_edge(
+    const std::vector<gp_Pnt>& poles,
+    const std::vector<double>& weights,
+    int requested_degree,
+    const std::vector<double>& in_knots,
+    const std::vector<int>& in_mults,
+    bool periodic,
+    std::string& error) {
+    const Handle(Geom_BSplineCurve) curve = bspline_curve(poles, weights, requested_degree, in_knots, in_mults, periodic, error);
+    if (curve.IsNull()) {
+        return {};
+    }
+    try {
         BRepBuilderAPI_MakeEdge edge(curve);
         if (!edge.IsDone()) {
             error = "Open CASCADE did not build the NURBS curve edge.";
@@ -6779,6 +6802,208 @@ TopoDS_Shape loft_wires(const std::vector<TopoDS_Wire>& wires, bool ruled, std::
 }
 
 }  // namespace
+
+#ifdef LIME_OCCT_TEST_HOOKS
+
+namespace {
+
+/// Clamped open-uniform knots, the same sequence `clampedKnots` builds in `src/modeling/nurbs-eval.ts`.
+bool fill_clamped_knots(int count, int degree, std::vector<double>& knots, std::vector<int>& mults) {
+    const int spans = count - degree;
+    if (spans < 1) {
+        return false;
+    }
+    knots.resize(static_cast<size_t>(spans + 1));
+    mults.resize(static_cast<size_t>(spans + 1));
+    for (int i = 0; i <= spans; ++i) {
+        knots[static_cast<size_t>(i)] = static_cast<double>(i) / static_cast<double>(spans);
+        mults[static_cast<size_t>(i)] = (i == 0 || i == spans) ? (degree + 1) : 1;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool eval_nurbs_curve(
+    const double* poles_xyz,
+    int npoles,
+    const double* weights,
+    int degree,
+    const double* knots,
+    const int* mults,
+    int nknots,
+    bool periodic,
+    const double* params,
+    int nparams,
+    double* out_xyz,
+    std::string& error) {
+    if (poles_xyz == nullptr || npoles < 2 || params == nullptr || nparams < 1 || out_xyz == nullptr) {
+        error = "A NURBS evaluation needs poles and parameters.";
+        return false;
+    }
+    std::vector<gp_Pnt> poles;
+    poles.reserve(static_cast<size_t>(npoles));
+    for (int i = 0; i < npoles; ++i) {
+        const double x = poles_xyz[i * 3];
+        const double y = poles_xyz[i * 3 + 1];
+        const double z = poles_xyz[i * 3 + 2];
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+            error = "A NURBS pole is not a number.";
+            return false;
+        }
+        poles.emplace_back(x, y, z);
+    }
+    std::vector<double> weight_vec;
+    if (weights != nullptr) {
+        weight_vec.assign(weights, weights + npoles);
+    }
+    std::vector<double> knot_vec;
+    std::vector<int> mult_vec;
+    if (nknots > 0) {
+        if (knots == nullptr || mults == nullptr) {
+            error = "NURBS knots and multiplicities must be given together.";
+            return false;
+        }
+        knot_vec.assign(knots, knots + nknots);
+        mult_vec.assign(mults, mults + nknots);
+    }
+    const Handle(Geom_BSplineCurve) curve = bspline_curve(poles, weight_vec, degree, knot_vec, mult_vec, periodic, error);
+    if (curve.IsNull()) {
+        return false;
+    }
+    for (int i = 0; i < nparams; ++i) {
+        const double u = params[i];
+        if (!std::isfinite(u)) {
+            error = "A NURBS parameter is not a number.";
+            return false;
+        }
+        gp_Pnt point;
+        curve->D0(u, point);
+        out_xyz[i * 3] = point.X();
+        out_xyz[i * 3 + 1] = point.Y();
+        out_xyz[i * 3 + 2] = point.Z();
+    }
+    return true;
+}
+
+bool eval_nurbs_surface(
+    const double* poles_xyz,
+    int nu,
+    int nv,
+    const double* weights,
+    int degree_u,
+    int degree_v,
+    const double* knots_u,
+    const int* mults_u,
+    int nknots_u,
+    const double* knots_v,
+    const int* mults_v,
+    int nknots_v,
+    const double* params_uv,
+    int nparams,
+    double* out_xyz,
+    std::string& error) {
+    if (poles_xyz == nullptr || nu < 2 || nv < 2 || params_uv == nullptr || nparams < 1 || out_xyz == nullptr) {
+        error = "A NURBS surface evaluation needs a pole grid and parameters.";
+        return false;
+    }
+    const int deg_u = std::clamp(degree_u > 0 ? degree_u : 3, 1, nu - 1);
+    const int deg_v = std::clamp(degree_v > 0 ? degree_v : 3, 1, nv - 1);
+    std::vector<double> ku;
+    std::vector<int> mu;
+    std::vector<double> kv;
+    std::vector<int> mv;
+    if (nknots_u > 0) {
+        if (knots_u == nullptr || mults_u == nullptr) {
+            error = "NURBS U knots and multiplicities must be given together.";
+            return false;
+        }
+        ku.assign(knots_u, knots_u + nknots_u);
+        mu.assign(mults_u, mults_u + nknots_u);
+    } else if (!fill_clamped_knots(nu, deg_u, ku, mu)) {
+        error = "A NURBS surface could not build its U knots.";
+        return false;
+    }
+    if (nknots_v > 0) {
+        if (knots_v == nullptr || mults_v == nullptr) {
+            error = "NURBS V knots and multiplicities must be given together.";
+            return false;
+        }
+        kv.assign(knots_v, knots_v + nknots_v);
+        mv.assign(mults_v, mults_v + nknots_v);
+    } else if (!fill_clamped_knots(nv, deg_v, kv, mv)) {
+        error = "A NURBS surface could not build its V knots.";
+        return false;
+    }
+    TColgp_Array2OfPnt poles(1, nu, 1, nv);
+    for (int iu = 0; iu < nu; ++iu) {
+        for (int iv = 0; iv < nv; ++iv) {
+            const int at = (iu * nv + iv) * 3;
+            const double x = poles_xyz[at];
+            const double y = poles_xyz[at + 1];
+            const double z = poles_xyz[at + 2];
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+                error = "A NURBS surface pole is not a number.";
+                return false;
+            }
+            poles.SetValue(iu + 1, iv + 1, gp_Pnt(x, y, z));
+        }
+    }
+    const bool has_weights = weights != nullptr;
+    TColStd_Array2OfReal w_arr(1, nu, 1, nv);
+    if (has_weights) {
+        for (int iu = 0; iu < nu; ++iu) {
+            for (int iv = 0; iv < nv; ++iv) {
+                const double w = weights[iu * nv + iv];
+                if (!std::isfinite(w) || !(w > 1e-9)) {
+                    error = "Every NURBS weight must be a positive number.";
+                    return false;
+                }
+                w_arr.SetValue(iu + 1, iv + 1, w);
+            }
+        }
+    }
+    const int nku = static_cast<int>(ku.size());
+    const int nkv = static_cast<int>(kv.size());
+    TColStd_Array1OfReal uk(1, nku);
+    TColStd_Array1OfInteger um(1, nku);
+    TColStd_Array1OfReal vk(1, nkv);
+    TColStd_Array1OfInteger vm(1, nkv);
+    for (int i = 0; i < nku; ++i) {
+        uk.SetValue(i + 1, ku[static_cast<size_t>(i)]);
+        um.SetValue(i + 1, mu[static_cast<size_t>(i)]);
+    }
+    for (int i = 0; i < nkv; ++i) {
+        vk.SetValue(i + 1, kv[static_cast<size_t>(i)]);
+        vm.SetValue(i + 1, mv[static_cast<size_t>(i)]);
+    }
+    Handle(Geom_BSplineSurface) surface;
+    try {
+        surface = has_weights
+            ? new Geom_BSplineSurface(poles, w_arr, uk, vk, um, vm, deg_u, deg_v, Standard_False, Standard_False)
+            : new Geom_BSplineSurface(poles, uk, vk, um, vm, deg_u, deg_v, Standard_False, Standard_False);
+    } catch (const Standard_Failure& failure) {
+        const char* msg = failure.GetMessageString();
+        error = (msg != nullptr && msg[0] != '\0') ? std::string("NURBS surface failed: ") + msg : "Open CASCADE did not build the NURBS surface.";
+        return false;
+    }
+    for (int i = 0; i < nparams; ++i) {
+        const double u = params_uv[i * 2];
+        const double v = params_uv[i * 2 + 1];
+        if (!std::isfinite(u) || !std::isfinite(v)) {
+            error = "A NURBS surface parameter is not a number.";
+            return false;
+        }
+        gp_Pnt point;
+        surface->D0(u, v, point);
+        out_xyz[i * 3] = point.X();
+        out_xyz[i * 3 + 1] = point.Y();
+        out_xyz[i * 3 + 2] = point.Z();
+    }
+    return true;
+}
+
+#endif
 
 bool decode_profile_loops(const double* data, int count, std::vector<ProfileLoop>& loops, int& used, std::string& error) {
     used = 0;

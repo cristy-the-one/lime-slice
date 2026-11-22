@@ -178,13 +178,17 @@ export function basisFunsDerivs(span: number, u: number, p: number, U: readonly 
   const right = new Array<number>(p + 1).fill(0);
   ndu[0]![0] = 1.0;
 
+  // A repeated knot makes a denominator zero. That basis is identically zero; dividing by a
+  // tiny stand-in (the old `|| 1e-30`) moves a crease off the OCCT point by more than 1e-6 mm.
+  const quot = (num: number, den: number) => (den === 0 ? 0 : num / den);
+
   for (let j = 1; j <= p; j += 1) {
     left[j] = u - U[span + 1 - j]!;
     right[j] = U[span + j]! - u;
     let saved = 0.0;
     for (let r = 0; r < j; r += 1) {
       ndu[j]![r] = right[r + 1]! + left[j - r]!;
-      const temp = ndu[r]![j - 1]! / (ndu[j]![r]! || 1e-30);
+      const temp = quot(ndu[r]![j - 1]!, ndu[j]![r]!);
       ndu[r]![j] = saved + right[r + 1]! * temp;
       saved = left[j - r]! * temp;
     }
@@ -204,17 +208,17 @@ export function basisFunsDerivs(span: number, u: number, p: number, U: readonly 
       const rk = r - k;
       const pk = p - k;
       if (r >= k) {
-        a[s2]![0] = a[s1]![0]! / (ndu[pk + 1]![rk]! || 1e-30);
+        a[s2]![0] = quot(a[s1]![0]!, ndu[pk + 1]![rk]!);
         d = a[s2]![0]! * ndu[rk]![pk]!;
       }
       const j1 = rk >= -1 ? 1 : -rk;
       const j2 = r - 1 <= pk ? k - 1 : p - r;
       for (let j = j1; j <= j2; j += 1) {
-        a[s2]![j] = (a[s1]![j]! - a[s1]![j - 1]!) / (ndu[pk + 1]![rk + j]! || 1e-30);
+        a[s2]![j] = quot(a[s1]![j]! - a[s1]![j - 1]!, ndu[pk + 1]![rk + j]!);
         d += a[s2]![j]! * ndu[rk + j]![pk]!;
       }
       if (r <= pk) {
-        a[s2]![k] = -a[s1]![k - 1]! / (ndu[pk + 1]![r]! || 1e-30);
+        a[s2]![k] = -quot(a[s1]![k - 1]!, ndu[pk + 1]![r]!);
         d += a[s2]![k]! * ndu[r]![pk]!;
       }
       ders[k]![r] = d;

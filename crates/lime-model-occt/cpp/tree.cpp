@@ -3979,6 +3979,89 @@ char* lime_tree_test_text(const LimeShape* shape, const double* point, char** er
     }
 }
 
+/// Debug builds only. `Geom_BSplineCurve::D0` at each parameter of the curve a profile NURBS edge is built from.
+int lime_tree_eval_nurbs_curve(
+    const double* poles,
+    int npoles,
+    const double* weights,
+    int degree,
+    const double* knots,
+    const int* mults,
+    int nknots,
+    int periodic,
+    const double* params,
+    int nparams,
+    double* out,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        if (!lime_occt::eval_nurbs_curve(
+                poles, npoles, weights, degree, knots, mults, nknots, periodic != 0, params, nparams, out, message)) {
+            set_error(error, message.empty() ? "Open CASCADE did not evaluate the NURBS curve." : message);
+            return 0;
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+
+/// Debug builds only. `Geom_BSplineSurface::D0` at each (u, v).
+int lime_tree_eval_nurbs_surface(
+    const double* poles,
+    int nu,
+    int nv,
+    const double* weights,
+    int degree_u,
+    int degree_v,
+    const double* knots_u,
+    const int* mults_u,
+    int nknots_u,
+    const double* knots_v,
+    const int* mults_v,
+    int nknots_v,
+    const double* params,
+    int nparams,
+    double* out,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        if (!lime_occt::eval_nurbs_surface(
+                poles,
+                nu,
+                nv,
+                weights,
+                degree_u,
+                degree_v,
+                knots_u,
+                mults_u,
+                nknots_u,
+                knots_v,
+                mults_v,
+                nknots_v,
+                params,
+                nparams,
+                out,
+                message)) {
+            set_error(error, message.empty() ? "Open CASCADE did not evaluate the NURBS surface." : message);
+            return 0;
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+
 /// Debug builds only, for tests: a curve read off a null edge on the shape's first face. That is the access violation
 /// inside TKBRep (BRep_Tool::CurveOnSurface) a wall push beside raised lettering hit, so a test can prove the guard.
 int lime_tree_test_fault(const LimeShape* shape, char** error) {

@@ -457,16 +457,17 @@ export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null 
       closed,
     };
     const steps = Math.max(24, poles.length * 16);
-    // A closed control-point spline is a periodic NURBS. Sampling it as a clamped open curve
-    // ends on the last pole, so the loop has no area and Extrude stays blocked.
-    const periodic = closed && !(entity.knots && entity.knots.length > 0);
+    // A closed control-point spline is the kernel's periodic NURBS, custom knots included.
+    // Sampling those knots as a clamped open curve ends on the last pole and leaves a seam
+    // the kernel's Geom_BSplineCurve does not have.
+    const periodic = closed;
     const samples = sampleNurbsCurve2D(
       {
         poles,
         ...(weights ? { weights } : {}),
         ...(nurbs.degree !== undefined ? { degree: nurbs.degree } : {}),
-        ...(!periodic && nurbs.knots ? { knots: nurbs.knots } : {}),
-        ...(!periodic && nurbs.mults ? { mults: nurbs.mults } : {}),
+        ...(nurbs.knots && nurbs.knots.length > 0 ? { knots: nurbs.knots } : {}),
+        ...(nurbs.mults && nurbs.mults.length > 0 ? { mults: nurbs.mults } : {}),
         ...(periodic ? { periodic: true } : {}),
       },
       steps,

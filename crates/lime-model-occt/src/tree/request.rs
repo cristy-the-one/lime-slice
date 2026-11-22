@@ -378,6 +378,15 @@ pub(super) enum Request {
         node: NodeId,
         point: [f64; 3],
     },
+    /// Debug builds only. Evaluate a `Geom_BSplineCurve` or `Geom_BSplineSurface` at the given parameters.
+    /// The curve is the one a profile NURBS edge is built from. Not an MCP tool.
+    #[cfg(lime_occt_test_hooks)]
+    EvalNurbs {
+        #[serde(default)]
+        curve: Option<EvalNurbsCurve>,
+        #[serde(default)]
+        surface: Option<EvalNurbsSurface>,
+    },
     /// `format` is `step` (the default, for a file to hand on) or `brep` (the binary a project keeps).
     Export {
         key: String,
@@ -496,6 +505,48 @@ fn default_chord() -> f64 {
 
 fn default_iso_count() -> i32 {
     6
+}
+
+/// Debug builds only. One `Geom_BSplineCurve` and the parameters to evaluate. Empty knots use the standard vector.
+#[cfg(lime_occt_test_hooks)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EvalNurbsCurve {
+    pub(super) poles: Vec<[f64; 3]>,
+    #[serde(default)]
+    pub(super) weights: Vec<f64>,
+    #[serde(default)]
+    pub(super) degree: i32,
+    #[serde(default)]
+    pub(super) knots: Vec<f64>,
+    #[serde(default)]
+    pub(super) mults: Vec<i32>,
+    #[serde(default)]
+    pub(super) periodic: bool,
+    pub(super) params: Vec<f64>,
+}
+
+/// Debug builds only. One `Geom_BSplineSurface` (`poles[u][v]`) and the `(u, v)` parameters to evaluate.
+#[cfg(lime_occt_test_hooks)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EvalNurbsSurface {
+    pub(super) poles: Vec<Vec<[f64; 3]>>,
+    #[serde(default)]
+    pub(super) weights: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub(super) degree_u: i32,
+    #[serde(default)]
+    pub(super) degree_v: i32,
+    #[serde(default)]
+    pub(super) knots_u: Vec<f64>,
+    #[serde(default)]
+    pub(super) mults_u: Vec<i32>,
+    #[serde(default)]
+    pub(super) knots_v: Vec<f64>,
+    #[serde(default)]
+    pub(super) mults_v: Vec<i32>,
+    pub(super) params: Vec<[f64; 2]>,
 }
 
 /// I5–I6: how closely an outline's curves are sampled into points, unless the request says.
