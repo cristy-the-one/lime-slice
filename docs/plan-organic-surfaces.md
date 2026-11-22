@@ -1,6 +1,6 @@
 # Plan: Organic & Freeform Smooth Surfaces
 
-Status: plan (locked architecture decisions; UX details to be refined via `/grill-me`). Written 2026-11-22 against `main` at `e6625f97` (v7.1.0).
+Status: ready for implementation (all architectural & UX decisions locked via `/grill-me`). Written 2026-11-22 against `main` at `e6625f97` (v7.1.0).
 Integration branch: `feature/organic-surfaces` (branched from `origin/main` so beta releases can ship independently without interfering with `main` until the full plan is ready to merge).
 
 ---
@@ -161,13 +161,18 @@ OCCT TopoDS_Shape
 
 ---
 
-## 8. Hand-Held `/grill-me` Topic Guide
+## 8. Locked UX & Beta Decisions (from `/grill-me`)
 
-When running `/grill-me` on this plan, we will walk through each UX & product decision **one small plain-English step at a time** (with concrete visual examples and a recommended default for every question):
+All 8 UX and delivery decisions are resolved and binding for implementation across S1–S6:
 
-1. **Inspection tools (S1):** Where Zebra stripes, Curvature colors, and Isoparms should live in the viewport UI, and what defaults feel clean without cluttering everyday CAD work.
-2. **Drawing organic curves (S2):** How a user chooses between "click points the curve passes through" vs. "drag magnets (control points)", and when to show advanced controls (weights, creases, curvature combs) vs. keeping them tucked behind an Advanced toggle.
-3. **Sweeps, Lofts & $G^2$ Fillets (S2–S3):** Default continuity behavior (e.g. should "Smooth Fillet" default to classic circular $G^1$ with a one-click **$G^2$ Smooth** switch, or make $G^2$ a first-class preset?) and how variable-radius handles should feel in the 3D view.
-4. **Working with Open Surfaces / Sheets (S4):** How open skins should look in the viewport and History list so it's always obvious "this is a thin skin, not printable yet", and how the Print handoff should guide the user to Thicken/Sew.
-5. **Filling Holes & Sculpting Surfaces (S5–S6):** How simple vs. power-user the Patch edge-continuity picker and 3D control-point sculpting gizmo should be (e.g. beginner "pull & smooth" mode vs. pro "weights & knots" mode).
-6. **Beta cadence:** Which milestones should cut public/internal beta installers (e.g., `beta.1` after S1+S2, `beta.2` after S3+S4, `beta.3` after S5+S6).
+- **U1 — Surface Inspection Placement (S1):** Zebra, Curvature, and Surface Grid (Isoparms) live inside Model's existing **Look** menu (`src/model-look.ts`) alongside Section & Colour by step: one clean **Shading** selector (`Normal` / `Colour by step` / `Zebra` / `Curvature`) plus an independent **Surface grid (Isoparms)** checkbox, keyboard shortcuts, and an optional auto-show mode while editing curves/surfaces.
+- **U2 — Practical Curvature Default (S1):** Curvature view defaults to **Bend tightness (Radius in mm)** with a configurable red warning threshold (e.g. bends tighter than target wall thickness) to predict Shell/Thicken/Fillet self-intersection before running them. **Gaussian** and **Mean** curvature remain available as optional sub-modes.
+- **U3 — 2D Exact NURBS Sketch Ergonomics (S2):** The Sketch curve tool offers both **Control-point NURBS** and **Through-point** modes via a toolbar toggle (defaulting to Control-point NURBS, both backed by exact Cox–de Boor math matching OCCT), with a simple **Curvature comb** toggle and per-point **Weight / Sharp crease / Insert knot** actions in a right-click menu or inspector pill when a point is selected.
+- **U4 — 3D Paths & Guide Rails (S2–S3 → S6):** Start in S2–S3 with predictable derived 3D curves (existing solid edges, 2D-to-face projection, and **Combine two 2D sketches** side + top → exact 3D NURBS curve). Add direct 3D triad CV dragging alongside S6's 3D NURBS surface sculpting gizmo (reusing one unified 3D CV gizmo). *(MCP and `lime-recipe` accept arbitrary 3D `Curve3D` NURBS directly from S2 onward.)*
+- **U5 — Fillet Smoothness & Variable Radius (S3):** **Fillet** defaults to **Circular ($G^1$)** for mechanical predictability, adds a **Profile** selector (`Circular G1` / `Smooth G2` / `Conic`), and adds a **Variable radius** toggle that places draggable start/end/middle radius dots directly on the picked edge.
+- **U6 — Open Sheets Visual Identity & Print Handoff (S4):** Open sheets show a subtle inside-face tint, bright open-border (naked-edge) highlights, and a `Sheet` badge in History. Sewing all open borders shut **auto-promotes** the node to a watertight Solid. Sending an open Sheet toward Print/Prepare shows a friendly one-click prompt offering **Thicken wall (mm)** or **Cap / Sew to solid**.
+- **U7 — Patch & 3D NURBS Sculpting Balance (S5–S6):** Guided defaults up front with full exact NURBS one click away: **Patch** auto-selects `Smooth (G1)` on edges touching existing faces and shows clickable `G0` / `G1` / `G2` badges directly on each edge; **NURBS Sculpt** opens with clean normal/axis drag + **Symmetry mirror** + **Soft-falloff radius**, and exposes **Weights / Degree / Knot insertion & creases** in an expandable **Exact NURBS** drawer.
+- **U8 — Beta Release Cadence on `feature/organic-surfaces`:** Cut **3 milestone-paired GitHub Pre-releases** (`v*-beta.*` via `.github/workflows/release.yml` updated to match `*-beta.*`):
+  1. **`beta.1` after S1 + S2:** Fast analytic OCCT normals, Zebra/Curvature/Isoparms, exact 2D/3D NURBS curves, and real kernel `Sweep`.
+  2. **`beta.2` after S3 + S4:** Guided/$G^2$ Lofts, Variable-radius & $G^2$ Fillets, Open Sheets, and Sew/Thicken/TrimSplit/ReplaceFace/SplitFace.
+  3. **`beta.3` after S5 + S6:** Coons/Gordon/$N$-sided `Patch`, `BlendSurface`, and Direct `NurbsSurface` + 60 fps CV sculpting — ready for final review & merge to `main`.
