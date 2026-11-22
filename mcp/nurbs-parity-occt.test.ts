@@ -219,3 +219,5 @@ if (failed) {
   process.exit(1);
 }
 console.log("nurbs-parity-occt: ok");
+// The engine workers are child processes. Without this the test stays up and the OCCT job hits its 25 minute limit.
+process.exit(0);
