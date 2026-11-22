@@ -78,7 +78,19 @@ export function sketchMesh(editor: SketchEditor, frame: SketchFrame | null, grid
         const poly = curve.nurbs.closed ? [...curve.nurbs.poles, curve.nurbs.poles[0]!] : curve.nurbs.poles;
         if (poly.length >= 2) strokes.push({ xyz: flat(frame, poly), role: "hint" });
         if (editor.showCurvatureComb) {
-          const comb = curvatureComb2D(curve.nurbs, { samplesPerSpan: 12 });
+          const meta = curve.nurbs;
+          const periodic = meta.closed && !meta.knots?.length;
+          const comb = curvatureComb2D(
+            {
+              poles: meta.poles,
+              ...(meta.weights ? { weights: meta.weights } : {}),
+              ...(meta.degree !== undefined ? { degree: meta.degree } : {}),
+              ...(!periodic && meta.knots ? { knots: meta.knots } : {}),
+              ...(!periodic && meta.mults ? { mults: meta.mults } : {}),
+              ...(periodic ? { periodic: true } : {}),
+            },
+            { samplesPerSpan: 12 },
+          );
           for (const [base, tip] of comb.needles) {
             if (Math.hypot(tip[0] - base[0], tip[1] - base[1]) > 1e-4) {
               strokes.push({ xyz: seg(frame, base, tip), role: "axis" });
