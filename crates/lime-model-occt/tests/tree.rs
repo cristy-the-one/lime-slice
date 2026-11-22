@@ -463,7 +463,7 @@ fn split_keeps_both_pieces() {
         json!({ "call": "apply", "key": "split", "parent": 0, "node": 3,
         "op": { "kind": "scale", "factor": 2.0 }, "otherKey": "piece" }),
     );
-    assert_eq!(crossed, json!({ "error": "otherKey is only for a split" }));
+    assert_eq!(crossed, json!({ "error": "otherKey is only for a split or trimSplit" }));
 
     let split = ok(
         json!({ "call": "apply", "key": "split", "parent": 0, "node": 1,
