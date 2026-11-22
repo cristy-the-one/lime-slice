@@ -14,7 +14,7 @@ use super::ffi::{
     lime_tree_primitive,
 };
 use super::group::extrude_cells;
-use super::k1::{build_sweep_shape, encode_loops, extent_flags, k1_has_loops, push_shape};
+use super::k1::{build_loft_v2_shape, build_sweep_shape, encode_loops, extent_flags, k1_has_loops, loft_needs_v2, push_shape};
 use super::gear::build_gear;
 use super::part::build_part;
 use super::ops::{Op, Primitive, Solid};
@@ -148,30 +148,59 @@ impl Shape {
                 op: which,
                 sections,
                 ruled,
+                guides,
+                start_condition,
+                end_condition,
+                closed,
+                smoothing,
+                max_degree,
             } => {
-                let mut head = Vec::with_capacity(sections.len() * 11);
-                let mut data = Vec::new();
-                for section in sections {
-                    head.extend_from_slice(&section.origin);
-                    head.extend_from_slice(&section.turn);
-                    head.push(section.radius.unwrap_or(0.0));
-                    head.push(section.radius_v.unwrap_or(0.0));
-                    head.push(f64::from(u8::from(section.smooth)));
-                    head.push(section.profile.len() as f64);
-                    head.push(section.corners.len() as f64);
-                    data.extend(section.profile.iter().flatten().copied());
-                    data.extend(section.corners.iter().map(|&c| f64::from(c)));
-                }
-                Shape::made(|error| unsafe {
-                    lime_tree_feature_loft(
-                        which.name().as_ptr(),
-                        head.as_ptr(),
-                        sections.len() as c_int,
-                        data.as_ptr(),
-                        c_int::from(*ruled),
-                        error,
+                if loft_needs_v2(
+                    sections,
+                    guides,
+                    start_condition.as_ref(),
+                    end_condition.as_ref(),
+                    *closed,
+                    *smoothing,
+                    *max_degree,
+                ) {
+                    build_loft_v2_shape(
+                        None,
+                        *which,
+                        sections,
+                        *ruled,
+                        guides,
+                        start_condition.as_ref(),
+                        end_condition.as_ref(),
+                        *closed,
+                        *smoothing,
+                        *max_degree,
                     )
-                })
+                } else {
+                    let mut head = Vec::with_capacity(sections.len() * 11);
+                    let mut data = Vec::new();
+                    for section in sections {
+                        head.extend_from_slice(&section.origin);
+                        head.extend_from_slice(&section.turn);
+                        head.push(section.radius.unwrap_or(0.0));
+                        head.push(section.radius_v.unwrap_or(0.0));
+                        head.push(f64::from(u8::from(section.smooth)));
+                        head.push(section.profile.len() as f64);
+                        head.push(section.corners.len() as f64);
+                        data.extend(section.profile.iter().flatten().copied());
+                        data.extend(section.corners.iter().map(|&c| f64::from(c)));
+                    }
+                    Shape::made(|error| unsafe {
+                        lime_tree_feature_loft(
+                            which.name().as_ptr(),
+                            head.as_ptr(),
+                            sections.len() as c_int,
+                            data.as_ptr(),
+                            c_int::from(*ruled),
+                            error,
+                        )
+                    })
+                }
             }
             Op::Sweep {
                 op: which,
@@ -314,6 +343,7 @@ impl Shape {
                 op: which,
                 sections,
                 ruled,
+                ..
             } => {
                 let mut head = Vec::with_capacity(sections.len() * 11);
                 let mut data = Vec::new();

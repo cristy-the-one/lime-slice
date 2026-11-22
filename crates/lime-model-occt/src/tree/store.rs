@@ -177,6 +177,9 @@ impl Store {
                 filter: Some(filter),
             })],
             size: 1.0,
+            continuity: None,
+            rho: None,
+            variable: Vec::new(),
         };
         let steps = self.step_edges(&key, current, &op)?;
         self.ensure(&key, current)?;

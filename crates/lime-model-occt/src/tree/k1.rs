@@ -7,6 +7,7 @@ use super::ffi::{
     lime_tree_extrude_loops,
     lime_tree_extrude_loops_extent,
     lime_tree_loft_loops,
+    lime_tree_loft_v2,
     lime_tree_revolve_loops,
     lime_tree_sweep,
 };
@@ -15,6 +16,7 @@ use super::ops::{
     BooleanOp,
     Curve3D,
     Curve3DSegment,
+    LoftBoundary,
     LoftSection,
     Op,
     ProfileLoop,
@@ -25,11 +27,49 @@ use super::ops::{
 use super::resolve::Resolved;
 use super::shape::Shape;
 
-/// K1. True when an extrude, revolve, or any loft section carries loops.
+/// S3: true when a Loft op uses any Loft v2 control (apex, guides, boundary continuity, closed periodic, smoothing, max degree).
+pub(super) fn loft_needs_v2(
+    sections: &[LoftSection],
+    guides: &[Curve3D],
+    start_condition: Option<&LoftBoundary>,
+    end_condition: Option<&LoftBoundary>,
+    closed: bool,
+    smoothing: bool,
+    max_degree: Option<u8>,
+) -> bool {
+    sections.iter().any(|s| s.apex.is_some())
+        || !guides.is_empty()
+        || start_condition.is_some()
+        || end_condition.is_some()
+        || closed
+        || smoothing
+        || max_degree.is_some()
+}
+
+/// K1. True when an extrude, revolve, or any plain loft section carries loops (Loft v2 handles its own loops).
 pub(super) fn k1_has_loops(op: &Op) -> bool {
     match op {
         Op::Extrude { loops, .. } | Op::Revolve { loops, .. } => !loops.is_empty(),
-        Op::Loft { sections, .. } => sections.iter().any(|section| !section.loops.is_empty()),
+        Op::Loft {
+            sections,
+            guides,
+            start_condition,
+            end_condition,
+            closed,
+            smoothing,
+            max_degree,
+            ..
+        } => {
+            !loft_needs_v2(
+                sections,
+                guides,
+                start_condition.as_ref(),
+                end_condition.as_ref(),
+                *closed,
+                *smoothing,
+                *max_degree,
+            ) && sections.iter().any(|section| !section.loops.is_empty())
+        }
         _ => false,
     }
 }
@@ -273,6 +313,125 @@ pub(super) fn build_sweep_shape(
     })
 }
 
+fn encode_loft_boundary(cond: Option<&LoftBoundary>, out: &mut [f64; 6]) {
+    *out = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
+    match cond {
+        None | Some(LoftBoundary::Free) => {}
+        Some(LoftBoundary::Normal { tension }) => {
+            out[0] = 1.0;
+            out[5] = tension.unwrap_or(1.0);
+        }
+        Some(LoftBoundary::Tangent { dir, tension }) => {
+            out[0] = 2.0;
+            out[1] = 1.0;
+            out[2] = dir[0];
+            out[3] = dir[1];
+            out[4] = dir[2];
+            out[5] = tension.unwrap_or(1.0);
+        }
+        Some(LoftBoundary::Curvature { dir, tension }) => {
+            out[0] = 3.0;
+            if let Some(d) = dir {
+                out[1] = 1.0;
+                out[2] = d[0];
+                out[3] = d[1];
+                out[4] = d[2];
+            }
+            out[5] = tension.unwrap_or(1.0);
+        }
+    }
+}
+
+/// --- Organic surfaces S3: controlled Loft v2 (apex caps, guide rails, boundary tangency/curvature, closed periodic, degree cap).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_loft_v2_shape(
+    from: Option<&Shape>,
+    which: BooleanOp,
+    sections: &[LoftSection],
+    ruled: bool,
+    guides: &[Curve3D],
+    start_condition: Option<&LoftBoundary>,
+    end_condition: Option<&LoftBoundary>,
+    closed: bool,
+    smoothing: bool,
+    max_degree: Option<u8>,
+) -> Result<Shape, String> {
+    let mut head = Vec::with_capacity(sections.len() * 11);
+    let mut data = Vec::new();
+    let mut blob = Vec::new();
+    let mut loop_at = Vec::with_capacity(sections.len());
+    let mut apex_flags = Vec::with_capacity(sections.len());
+    for (index, section) in sections.iter().enumerate() {
+        if let Some(apex) = section.apex {
+            head.extend_from_slice(&apex);
+            head.extend_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+            loop_at.push(-1);
+            apex_flags.push(1);
+            continue;
+        }
+        let has_radius = section.radius.unwrap_or(0.0) > 0.0;
+        let has_profile = !section.profile.is_empty();
+        let has_loops = !section.loops.is_empty();
+        let kinds = usize::from(has_radius) + usize::from(has_profile) + usize::from(has_loops);
+        if kinds != 1 {
+            return Err(format!(
+                "Section {index}: A section needs exactly one of radius, profile, loops, or apex."
+            ));
+        }
+        head.extend_from_slice(&section.origin);
+        head.extend_from_slice(&section.turn);
+        head.push(section.radius.unwrap_or(0.0));
+        head.push(section.radius_v.unwrap_or(0.0));
+        head.push(f64::from(u8::from(section.smooth)));
+        head.push(section.profile.len() as f64);
+        head.push(section.corners.len() as f64);
+        data.extend(section.profile.iter().flatten().copied());
+        data.extend(section.corners.iter().map(|&c| f64::from(c)));
+        if has_loops {
+            loop_at.push(blob.len() as c_int);
+            encode_loops(&section.loops, &mut blob);
+        } else {
+            loop_at.push(-1);
+        }
+        apex_flags.push(0);
+    }
+    let mut guides_blob = Vec::new();
+    for g in guides {
+        encode_curve3d(g, &[], &mut guides_blob)?;
+    }
+    let mut s_cond = [0.0; 6];
+    let mut e_cond = [0.0; 6];
+    encode_loft_boundary(start_condition, &mut s_cond);
+    encode_loft_boundary(end_condition, &mut e_cond);
+    let conds = [
+        s_cond[0], s_cond[1], s_cond[2], s_cond[3], s_cond[4], s_cond[5],
+        e_cond[0], e_cond[1], e_cond[2], e_cond[3], e_cond[4], e_cond[5],
+    ];
+    let raw_from = from.map_or(std::ptr::null(), Shape::raw);
+    Shape::made(|error| unsafe {
+        lime_tree_loft_v2(
+            raw_from,
+            which.name().as_ptr(),
+            head.as_ptr(),
+            sections.len() as c_int,
+            if data.is_empty() { std::ptr::null() } else { data.as_ptr() },
+            if blob.is_empty() { std::ptr::null() } else { blob.as_ptr() },
+            blob.len() as c_int,
+            loop_at.as_ptr(),
+            apex_flags.as_ptr(),
+            c_int::from(ruled),
+            c_int::from(closed),
+            c_int::from(smoothing),
+            c_int::from(max_degree.unwrap_or(0)),
+            conds.as_ptr(),
+            if guides_blob.is_empty() { std::ptr::null() } else { guides_blob.as_ptr() },
+            guides_blob.len() as c_int,
+            guides.len() as c_int,
+            error,
+        )
+    })
+}
+
 /// K3 bits for the C side: bit 0 a second depth, bit 1 a draft, bit 2 a face to stop at. 0 is a plain extrude.
 pub(super) fn extent_flags<T>(depth2: Option<f64>, draft_deg: Option<f64>, up_to: Option<T>) -> c_int {
     c_int::from(depth2.is_some()) | (c_int::from(draft_deg.is_some()) << 1) | (c_int::from(up_to.is_some()) << 2)
@@ -411,6 +570,7 @@ pub(super) fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, 
             op: which,
             sections,
             ruled,
+            ..
         } => {
             let mut head = Vec::with_capacity(sections.len() * 11);
             let mut data = Vec::new();

@@ -12,7 +12,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type SweepMode, type SweepTransition, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type FilletContinuity, type Fingerprint, type JoinTool, type LoftBoundary, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type SweepMode, type SweepTransition, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project file reads and writes a tree's body without loading the readers here (./saved-tree-body.ts).
 import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
@@ -394,7 +394,26 @@ function readOpBody(value: unknown): SavedOp | undefined {
         if (sig === null) return undefined;
         edges.push({ index: raw.index, mid, lengthMm: raw.lengthMm, ...(sig ? { sig } : {}) });
       }
-      if (value.kind === "fillet") return { kind: "fillet", edges, size: value.size };
+      if (value.kind === "fillet") {
+        const continuity = value.continuity === undefined ? undefined : value.continuity === "g1" || value.continuity === "g2" || value.continuity === "conic" ? (value.continuity as FilletContinuity) : null;
+        if (continuity === null) return undefined;
+        if (value.rho !== undefined && (!finite(value.rho) || value.rho < 0.05 || value.rho > 0.95)) return undefined;
+        let variable: [number, number][] | undefined;
+        if (value.variable !== undefined) {
+          if (!Array.isArray(value.variable) || value.variable.length < 2) return undefined;
+          const parsed = value.variable.map(pair);
+          if (parsed.some((p) => !p || p[0] < 0 || p[0] > 1 || !(p[1] > 0))) return undefined;
+          variable = parsed as [number, number][];
+        }
+        return {
+          kind: "fillet",
+          edges,
+          size: value.size,
+          ...(continuity && continuity !== "g1" ? { continuity } : {}),
+          ...(finite(value.rho) ? { rho: value.rho } : {}),
+          ...(variable ? { variable } : {}),
+        };
+      }
       // A chamfer by two sizes: the second distance or the angle, and which face takes the first. Absent when equal.
       const { size2, angleDeg, flip } = value;
       if ((size2 !== undefined && !finite(size2)) || (angleDeg !== undefined && !finite(angleDeg)) || (flip !== undefined && typeof flip !== "boolean")) return undefined;
@@ -484,51 +503,45 @@ function readOpBody(value: unknown): SavedOp | undefined {
     case "loft": {
       if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
       if (!Array.isArray(value.sections) || value.sections.length < 2 || (value.ruled !== undefined && typeof value.ruled !== "boolean")) return undefined;
+      if (value.closed !== undefined && typeof value.closed !== "boolean") return undefined;
+      if (value.smoothing !== undefined && typeof value.smoothing !== "boolean") return undefined;
+      if (value.maxDegree !== undefined && (!isId(value.maxDegree) || value.maxDegree < 2 || value.maxDegree > 12)) return undefined;
       const sections: LoftSection[] = [];
       for (const raw of value.sections) {
-        if (!isRecord(raw)) return undefined;
-        const at = vec(raw.origin);
-        const turn = raw.turn === undefined ? ([0, 0, 0] as Vec3) : vec(raw.turn);
-        if (!at || !turn) return undefined;
-        const loops = readLoops(raw.loops);
-        if (loops === null) return undefined;
-        if (!loops && finite(raw.radius)) {
-          if (raw.radiusV !== undefined && !finite(raw.radiusV)) return undefined;
-          sections.push({ origin: at, turn, radius: raw.radius, ...(finite(raw.radiusV) ? { radiusV: raw.radiusV } : {}) });
-          continue;
-        }
-        if (!loops) {
-          const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
-          if (!profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
-          const shape = readProfileShape(raw, profile.length);
-          if (!shape) return undefined;
-          sections.push({ origin: at, turn, profile: profile as Vec2[], ...shape });
-          continue;
-        }
-        const section: LoftSection = { origin: at, turn };
-        if (finite(raw.radius)) {
-          if (raw.radiusV !== undefined && !finite(raw.radiusV)) return undefined;
-          section.radius = raw.radius;
-          if (finite(raw.radiusV)) section.radiusV = raw.radiusV;
-        }
-        if (raw.profile !== undefined) {
-          const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
-          if (!profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
-          const shape = readProfileShape(raw, profile.length);
-          if (!shape) return undefined;
-          section.profile = profile as Vec2[];
-          Object.assign(section, shape);
-        } else if (raw.smooth !== undefined || raw.corners !== undefined) {
-          const shape = readProfileShape(raw, 200);
-          if (!shape) return undefined;
-          Object.assign(section, shape);
-        }
-        section.loops = loops;
+        const section = readSectionItem(raw);
+        if (!section) return undefined;
         sections.push(section);
       }
+      let guides: Curve3D[] | undefined;
+      if (value.guides !== undefined) {
+        if (!Array.isArray(value.guides)) return undefined;
+        guides = [];
+        for (const g of value.guides) {
+          const curve = readCurve3D(g);
+          if (!curve) return undefined;
+          guides.push(curve);
+        }
+        if (guides.length === 0) guides = undefined;
+      }
+      const startCondition = value.startCondition === undefined ? undefined : readLoftBoundary(value.startCondition);
+      if (value.startCondition !== undefined && !startCondition) return undefined;
+      const endCondition = value.endCondition === undefined ? undefined : readLoftBoundary(value.endCondition);
+      if (value.endCondition !== undefined && !endCondition) return undefined;
       // --- F3. `drawing` is optional. A bad drawing is dropped and the loft still opens. ---
       const drawing = value.drawing === undefined ? undefined : readLoftDrawing(value.drawing);
-      return { kind: "loft", op: value.op, sections, ...(value.ruled === true ? { ruled: true as const } : {}), ...(drawing ? { drawing } : {}) };
+      return {
+        kind: "loft",
+        op: value.op,
+        sections,
+        ...(value.ruled === true ? { ruled: true as const } : {}),
+        ...(guides ? { guides } : {}),
+        ...(startCondition ? { startCondition } : {}),
+        ...(endCondition ? { endCondition } : {}),
+        ...(value.closed === true ? { closed: true as const } : {}),
+        ...(value.smoothing === true ? { smoothing: true as const } : {}),
+        ...(value.maxDegree !== undefined ? { maxDegree: value.maxDegree as number } : {}),
+        ...(drawing ? { drawing } : {}),
+      };
     }
     case "sweep": {
       if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
@@ -866,8 +879,32 @@ function readLoops(value: unknown): ProfileLoop[] | null | undefined {
   return loops;
 }
 
+function readLoftBoundary(value: unknown): LoftBoundary | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "free") return { kind: "free" };
+  const tension = value.tension === undefined ? undefined : finite(value.tension) && value.tension > 0 ? value.tension : null;
+  if (tension === null) return null;
+  if (value.kind === "normal") return { kind: "normal", ...(tension !== undefined ? { tension } : {}) };
+  if (value.kind === "tangent") {
+    const dir = vec(value.dir);
+    if (!dir) return null;
+    return { kind: "tangent", dir, ...(tension !== undefined ? { tension } : {}) };
+  }
+  if (value.kind === "curvature") {
+    const dir = value.dir === undefined ? undefined : vec(value.dir);
+    if (value.dir !== undefined && !dir) return null;
+    return { kind: "curvature", ...(dir ? { dir } : {}), ...(tension !== undefined ? { tension } : {}) };
+  }
+  return null;
+}
+
 function readSectionItem(raw: unknown): LoftSection | null {
   if (!isRecord(raw)) return null;
+  if (raw.apex !== undefined) {
+    const apex = vec(raw.apex);
+    if (!apex) return null;
+    return { origin: [...apex] as Vec3, turn: [0, 0, 0], apex };
+  }
   const at = vec(raw.origin);
   const turn = raw.turn === undefined ? ([0, 0, 0] as Vec3) : vec(raw.turn);
   if (!at || !turn) return null;

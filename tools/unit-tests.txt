@@ -334,3 +334,4 @@ mcp/surface-inspect.test.ts
 src/modeling/nurbs-eval.test.ts
 src/sketch/nurbs.test.ts
 mcp/nurbs-sweep.test.ts
+mcp/loft-fillet-v2.test.ts

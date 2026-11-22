@@ -644,6 +644,59 @@ LimeShape* lime_tree_blend(
     }
 }
 
+/// --- Organic surfaces S3: variable-radius, G2 curvature-continuous, and conic-rho fillets.
+LimeShape* lime_tree_fillet_v2(
+    const LimeShape* from,
+    const int* edges,
+    int count,
+    double size,
+    int continuity,
+    double rho,
+    const double* variable,
+    int variable_len,
+    double* max_mm,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<TopoDS_Edge> found;
+        for (int i = 0; i < count; ++i) {
+            if (edges[i] < 0 || edges[i] >= from->held.edges.Extent()) {
+                set_error(error, "That edge is not on this solid");
+                return nullptr;
+            }
+            found.push_back(TopoDS::Edge(from->held.edges(edges[i] + 1)));
+        }
+        if (found.empty()) {
+            set_error(error, "Pick an edge to fillet.");
+            return nullptr;
+        }
+        FilletV2Spec spec;
+        spec.size = size;
+        spec.continuity = continuity;
+        spec.rho = rho;
+        if (variable != nullptr && variable_len >= 4) {
+            spec.variable.assign(variable, variable + variable_len);
+        }
+        std::string message;
+        TopoDS_Shape built;
+        double volume = 0.0;
+        if (!fillet_v2_build(from->held.shape, found, spec, built, volume, message)) {
+            if (max_mm != nullptr && message.find("did not fit") != std::string::npos && spec.variable.empty() && size > 0.0) {
+                *max_mm = largest_blend(from->held.shape, found, size, false);
+            }
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(built, volume, blend_failed(false, found.size()), error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `faces[i]` is the face edge `i`'s first distance runs along. `mode` 1 is two distances, 2 a distance and an angle
 /// in degrees from that face. The Rust side resolves edges and faces before this.
 LimeShape* lime_tree_chamfer2(
@@ -2892,6 +2945,106 @@ LimeShape* lime_tree_sweep(
         const TopoDS_Shape shape = build_sweep(base, before, op != nullptr ? op : "fuse", spec, held_edges, volume, message);
         if (shape.IsNull()) {
             set_error(error, message.empty() ? "Open CASCADE could not build the sweep" : message);
+            return nullptr;
+        }
+        auto made = hold(shape, volume);
+        if (from != nullptr) {
+            inherit_about(made->held, from->held);
+        }
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// --- Organic surfaces S3: Controlled Loft v2 (apex caps, guide rails, boundary tangency/curvature, closed periodic, degree cap).
+/// `apex_flags[s] != 0` marks section `s` as a punctual apex at `head[11*s .. 11*s+3]`.
+/// `guides_blob` holds `guide_count` packed `Curve3DSpec` records in sequence.
+/// `conds` is 10 doubles: `[start_kind, start_has_dir, sdx, sdy, sdz, start_tension, end_kind, end_has_dir, edx, edy, edz, end_tension]` (12 doubles).
+LimeShape* lime_tree_loft_v2(
+    const LimeShape* from,
+    const char* op,
+    const double* head,
+    int section_count,
+    const double* data,
+    const double* loop_blob,
+    int loop_count,
+    const int* loop_at,
+    const int* apex_flags,
+    int ruled,
+    int closed,
+    int smoothing,
+    int max_degree,
+    const double* conds,
+    const double* guides_blob,
+    int guides_len,
+    int guide_count,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        LoftV2Spec spec;
+        spec.ruled = ruled != 0;
+        spec.closed = closed != 0;
+        spec.smoothing = smoothing != 0;
+        spec.max_degree = max_degree;
+        std::string message;
+        if (!decode_sweep_sections(head, section_count, data, loop_blob, loop_count, loop_at, spec.sections, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        if (apex_flags != nullptr) {
+            for (int s = 0; s < section_count; ++s) {
+                if (apex_flags[s] != 0) {
+                    const double* h = head + 11 * static_cast<size_t>(s);
+                    spec.sections[static_cast<size_t>(s)].has_apex = true;
+                    spec.sections[static_cast<size_t>(s)].apex[0] = h[0];
+                    spec.sections[static_cast<size_t>(s)].apex[1] = h[1];
+                    spec.sections[static_cast<size_t>(s)].apex[2] = h[2];
+                }
+            }
+        }
+        if (conds != nullptr) {
+            spec.start_cond.kind = static_cast<int>(std::llround(conds[0]));
+            spec.start_cond.has_dir = conds[1] != 0.0;
+            spec.start_cond.dir[0] = conds[2];
+            spec.start_cond.dir[1] = conds[3];
+            spec.start_cond.dir[2] = conds[4];
+            spec.start_cond.tension = conds[5];
+            spec.end_cond.kind = static_cast<int>(std::llround(conds[6]));
+            spec.end_cond.has_dir = conds[7] != 0.0;
+            spec.end_cond.dir[0] = conds[8];
+            spec.end_cond.dir[1] = conds[9];
+            spec.end_cond.dir[2] = conds[10];
+            spec.end_cond.tension = conds[11];
+        }
+        if (guides_blob != nullptr && guides_len > 0 && guide_count > 0) {
+            int offset = 0;
+            for (int g = 0; g < guide_count; ++g) {
+                if (offset >= guides_len) {
+                    set_error(error, "Guide curve data is incomplete.");
+                    return nullptr;
+                }
+                Curve3DSpec guide;
+                int used = 0;
+                if (!decode_curve3d(guides_blob + offset, guides_len - offset, guide, used, message)) {
+                    set_error(error, message);
+                    return nullptr;
+                }
+                offset += used;
+                spec.guides.push_back(std::move(guide));
+            }
+        }
+        double volume = 0.0;
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const double before = from != nullptr ? from->held.volume : 0.0;
+        const Held* held_edges = from != nullptr ? &from->held : nullptr;
+        const TopoDS_Shape shape = build_loft_v2(base, before, op != nullptr ? op : "fuse", spec, held_edges, volume, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not build the loft" : message);
             return nullptr;
         }
         auto made = hold(shape, volume);

@@ -42,8 +42,10 @@
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
+#include <ShapeAnalysis_Surface.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <gp_GTrsf.hxx>
@@ -9900,6 +9902,706 @@ TopoDS_Shape build_sweep(
         return tool;
     }
     return combine_profile_tools(current, before, which, {tool}, "sweep", volume, error);
+}
+
+// --- Organic surfaces S3: Variable-radius, exact G2 quintic NURBS, & exact Conic-rho fillets + Controlled Loft v2 ---
+
+namespace {
+
+double eval_variable_radius(const std::vector<double>& variable, double fallback_r, double u) {
+    if (variable.size() < 4) return fallback_r;
+    const size_t n = variable.size() / 2;
+    const double t = std::clamp(u, 0.0, 1.0);
+    if (t <= variable[0]) return variable[1];
+    if (t >= variable[(n - 1) * 2]) return variable[(n - 1) * 2 + 1];
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const double u0 = variable[i * 2];
+        const double u1 = variable[(i + 1) * 2];
+        if (t >= u0 && t <= u1 && u1 > u0 + 1e-12) {
+            const double s = (t - u0) / (u1 - u0);
+            // Smoothstep Hermite blend between variable-radius stations for C1/G2 transitions along the edge.
+            const double h = s * s * (3.0 - 2.0 * s);
+            return variable[i * 2 + 1] * (1.0 - h) + variable[(i + 1) * 2 + 1] * h;
+        }
+    }
+    return fallback_r;
+}
+
+/// Outward normal and normal curvature of `face` at 3D point `p` along tangent direction `dir_in_face`.
+bool face_frame_at(
+    const TopoDS_Face& face,
+    const gp_Pnt& p,
+    const gp_Vec& dir_hint,
+    gp_Vec& out_normal,
+    double& out_kn) {
+    out_kn = 0.0;
+    try {
+        const Handle(Geom_Surface) surf = BRep_Tool::Surface(face);
+        if (surf.IsNull()) return false;
+        ShapeAnalysis_Surface sas(surf);
+        const gp_Pnt2d uv = sas.ValueOfUV(p, 1e-6);
+        BRepAdaptor_Surface bas(face);
+        BRepLProp_SLProps props(bas, uv.X(), uv.Y(), 2, 1e-7);
+        if (!props.IsNormalDefined()) return false;
+        gp_Dir n = props.Normal();
+        if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+        out_normal = gp_Vec(n);
+        if (bas.GetType() != GeomAbs_Plane && props.IsCurvatureDefined()) {
+            // Directional normal curvature along dir_hint via Euler's formula: kn = k1 cos²θ + k2 sin²θ.
+            gp_Dir d1, d2;
+            props.CurvatureDirections(d1, d2);
+            double k1 = props.MaxCurvature();
+            double k2 = props.MinCurvature();
+            if (face.Orientation() == TopAbs_REVERSED) {
+                k1 = -k1;
+                k2 = -k2;
+            }
+            gp_Vec t = dir_hint - out_normal * dir_hint.Dot(out_normal);
+            if (t.Magnitude() > 1e-9) {
+                t.Normalize();
+                const double c = t.Dot(gp_Vec(d1));
+                const double s = t.Dot(gp_Vec(d2));
+                out_kn = k1 * c * c + k2 * s * s;
+            }
+        }
+        return true;
+    } catch (const Standard_Failure&) {
+        return false;
+    }
+}
+
+/// Build an exact G2 quintic NURBS (continuity==1) or rational quadratic Conic-rho (continuity==2) cutter solid
+/// for a convex edge between two faces, and subtract it cleanly from `shape`.
+bool try_exact_edge_surface_fillet(
+    const TopoDS_Shape& shape,
+    const TopoDS_Edge& edge,
+    const FilletV2Spec& spec,
+    TopoDS_Shape& out_shape) {
+    TopTools_IndexedDataMapOfShapeListOfShape ef_map;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ef_map);
+    if (!ef_map.Contains(edge)) return false;
+    const TopTools_ListOfShape& adj = ef_map.FindFromKey(edge);
+    if (adj.Extent() != 2) return false;
+    const TopoDS_Face f1 = TopoDS::Face(adj.First());
+    const TopoDS_Face f2 = TopoDS::Face(adj.Last());
+    if (f1.IsSame(f2)) return false;
+
+    BRepAdaptor_Curve ecurve(edge);
+    const double u_first = ecurve.FirstParameter();
+    const double u_last = ecurve.LastParameter();
+    if (!(u_last > u_first + 1e-7)) return false;
+
+    const bool is_line = ecurve.GetType() == GeomAbs_Line;
+    const bool is_const = spec.variable.size() < 4;
+    const bool is_planar_pair = BRepAdaptor_Surface(f1).GetType() == GeomAbs_Plane
+        && BRepAdaptor_Surface(f2).GetType() == GeomAbs_Plane;
+    // Exact prism/loft cutter works cleanest on straight edges between planar faces (and straight variable edges).
+    if (!is_line || !is_planar_pair) return false;
+
+    const gp_Pnt q_start = ecurve.Value(u_first);
+    const gp_Pnt q_end = ecurve.Value(u_last);
+    gp_Vec e_vec(q_start, q_end);
+    const double e_len = e_vec.Magnitude();
+    if (!(e_len > 1e-4)) return false;
+    const gp_Vec e_dir = e_vec / e_len;
+
+    gp_Vec n1, n2;
+    double kn1 = 0.0, kn2 = 0.0;
+    const gp_Pnt q_mid = ecurve.Value(0.5 * (u_first + u_last));
+    if (!face_frame_at(f1, q_mid, e_dir, n1, kn1) || !face_frame_at(f2, q_mid, e_dir, n2, kn2)) {
+        return false;
+    }
+
+    // Determine inward face tangent directions pointing from edge into each face interior.
+    gp_Vec t1 = e_dir.Crossed(n1);
+    gp_Vec t2 = e_dir.Crossed(n2);
+    if (t1.Magnitude() < 1e-6 || t2.Magnitude() < 1e-6) return false;
+    t1.Normalize();
+    t2.Normalize();
+    // Orient t1/t2 toward each face's centre of mass so we strictly point into the face.
+    GProp_GProps gp1, gp2;
+    BRepGProp::SurfaceProperties(f1, gp1);
+    BRepGProp::SurfaceProperties(f2, gp2);
+    if (gp_Vec(q_mid, gp1.CentreOfMass()).Dot(t1) < 0.0) t1.Reverse();
+    if (gp_Vec(q_mid, gp2.CentreOfMass()).Dot(t2) < 0.0) t2.Reverse();
+
+    // Convexity check: for a convex edge, outward normal n1 points AWAY from f2 (so n1 · t2 < 0).
+    if (n1.Dot(t2) >= -1e-3 || n2.Dot(t1) >= -1e-3) return false;
+    const double cos_dihedral = std::clamp(t1.Dot(t2), -0.99, 0.99);
+    const double half_ang = 0.5 * std::acos(cos_dihedral);
+    const double tan_half = std::tan(half_ang);
+    if (!(tan_half > 1e-4)) return false;
+
+    const double pad = 0.5;
+    const double out_eps = 0.5;
+    const double rho = std::clamp(spec.rho, 0.05, 0.95);
+    const double w_mid = rho / (1.0 - rho);
+
+    auto make_section_wire = [&](const gp_Pnt& q, double r) -> TopoDS_Wire {
+        const double d = (spec.continuity == 1 ? 1.25 : 1.0) * r / tan_half;
+        const gp_Pnt p0 = q.Translated(t1 * d);
+        const gp_Pnt p_end = q.Translated(t2 * d);
+
+        Handle(Geom_BSplineCurve) blend_curve;
+        if (spec.continuity == 1) {
+            // Exact G2 degree-5 (quintic) Bezier cross-section:
+            // P0, P1, P2 lie on f1's tangent line (k(0)=0 exact G2 with planar f1);
+            // P5, P4, P3 lie on f2's tangent line (k(1)=0 exact G2 with planar f2).
+            TColgp_Array1OfPnt poles(1, 6);
+            poles.SetValue(1, p0);
+            poles.SetValue(2, p0.Translated(t1 * (-0.35 * d)));
+            poles.SetValue(3, p0.Translated(t1 * (-0.72 * d)));
+            poles.SetValue(4, p_end.Translated(t2 * (-0.72 * d)));
+            poles.SetValue(5, p_end.Translated(t2 * (-0.35 * d)));
+            poles.SetValue(6, p_end);
+            TColStd_Array1OfReal knots(1, 2);
+            knots.SetValue(1, 0.0);
+            knots.SetValue(2, 1.0);
+            TColStd_Array1OfInteger mults(1, 2);
+            mults.SetValue(1, 6);
+            mults.SetValue(2, 6);
+            blend_curve = new Geom_BSplineCurve(poles, knots, mults, 5, Standard_False);
+        } else {
+            // Exact rational quadratic Conic-rho Bezier: poles [P0, Q, Pend], weights [1, rho/(1-rho), 1].
+            TColgp_Array1OfPnt poles(1, 3);
+            poles.SetValue(1, p0);
+            poles.SetValue(2, q);
+            poles.SetValue(3, p_end);
+            TColStd_Array1OfReal weights(1, 3);
+            weights.SetValue(1, 1.0);
+            weights.SetValue(2, w_mid);
+            weights.SetValue(3, 1.0);
+            TColStd_Array1OfReal knots(1, 2);
+            knots.SetValue(1, 0.0);
+            knots.SetValue(2, 1.0);
+            TColStd_Array1OfInteger mults(1, 2);
+            mults.SetValue(1, 3);
+            mults.SetValue(2, 3);
+            blend_curve = new Geom_BSplineCurve(poles, weights, knots, mults, 2, Standard_False);
+        }
+
+        const gp_Pnt p_end_out = p_end.Translated(n2 * out_eps);
+        const gp_Pnt q_out = q.Translated((n1 + n2) * out_eps);
+        const gp_Pnt p0_out = p0.Translated(n1 * out_eps);
+
+        BRepBuilderAPI_MakeWire mw;
+        mw.Add(BRepBuilderAPI_MakeEdge(blend_curve));
+        mw.Add(BRepBuilderAPI_MakeEdge(p_end, p_end_out));
+        mw.Add(BRepBuilderAPI_MakeEdge(p_end_out, q_out));
+        mw.Add(BRepBuilderAPI_MakeEdge(q_out, p0_out));
+        mw.Add(BRepBuilderAPI_MakeEdge(p0_out, p0));
+        return mw.IsDone() ? mw.Wire() : TopoDS_Wire();
+    };
+
+    try {
+        TopoDS_Shape cutter;
+        if (is_const) {
+            const gp_Pnt q0 = q_start.Translated(e_dir * (-pad));
+            const TopoDS_Wire w = make_section_wire(q0, spec.size);
+            if (w.IsNull()) return false;
+            BRepBuilderAPI_MakeFace mf(w, Standard_True);
+            if (!mf.IsDone()) return false;
+            BRepPrimAPI_MakePrism prism(mf.Face(), e_dir * (e_len + 2.0 * pad), Standard_False, Standard_True);
+            if (!prism.IsDone() || prism.Shape().IsNull()) return false;
+            cutter = prism.Shape();
+        } else {
+            BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False, 1e-6);
+            loft.CheckCompatibility(Standard_True);
+            loft.SetSmoothing(Standard_True);
+            loft.SetContinuity(GeomAbs_C2);
+            const int n_steps = 12;
+            // Extend slightly past both ends with constant end radii so end faces trim cleanly.
+            const double r0 = eval_variable_radius(spec.variable, spec.size, 0.0);
+            const double r1 = eval_variable_radius(spec.variable, spec.size, 1.0);
+            const TopoDS_Wire w_pre = make_section_wire(q_start.Translated(e_dir * (-pad)), r0);
+            if (w_pre.IsNull()) return false;
+            loft.AddWire(w_pre);
+            for (int i = 0; i <= n_steps; ++i) {
+                const double t = static_cast<double>(i) / static_cast<double>(n_steps);
+                const gp_Pnt qt = q_start.Translated(e_dir * (e_len * t));
+                const double rt = eval_variable_radius(spec.variable, spec.size, t);
+                const TopoDS_Wire wt = make_section_wire(qt, rt);
+                if (wt.IsNull()) return false;
+                loft.AddWire(wt);
+            }
+            const TopoDS_Wire w_post = make_section_wire(q_end.Translated(e_dir * pad), r1);
+            if (w_post.IsNull()) return false;
+            loft.AddWire(w_post);
+            loft.Build();
+            if (!loft.IsDone() || loft.Shape().IsNull()) return false;
+            cutter = loft.Shape();
+        }
+        BRepAlgoAPI_Cut cut(shape, cutter);
+        cut.SetFuzzyValue(1e-5);
+        Handle(Message_ProgressIndicator) watch;
+        cut.Build(deadline_range(watch));
+        if (!cut.IsDone() || cut.Shape().IsNull()) return false;
+        const TopoDS_Shape solid = as_solid(cut.Shape());
+        if (solid.IsNull() || !has_solid(solid)) return false;
+        const double vol = volume_of(solid);
+        if (!(vol > 1e-6) || !BRepCheck_Analyzer(solid).IsValid()) return false;
+        out_shape = solid;
+        return true;
+    } catch (const Standard_Failure&) {
+        return false;
+    }
+}
+
+}  // namespace
+
+bool fillet_v2_build(
+    const TopoDS_Shape& current,
+    const std::vector<TopoDS_Edge>& edges,
+    const FilletV2Spec& spec,
+    TopoDS_Shape& built,
+    double& volume,
+    std::string& error) {
+    const bool many = edges.size() > 1;
+    const char* failed = many ? "The fillet did not fit these edges" : "The fillet did not fit this edge";
+    if (edges.empty()) {
+        error = failed;
+        return false;
+    }
+    const bool is_var = spec.variable.size() >= 4;
+    if (!is_var && !(spec.size > 0.0)) {
+        error = "A fillet needs a positive radius";
+        return false;
+    }
+    if (is_var) {
+        for (size_t i = 0; i + 1 < spec.variable.size(); i += 2) {
+            if (!std::isfinite(spec.variable[i]) || !std::isfinite(spec.variable[i + 1]) || !(spec.variable[i + 1] > 0.0)) {
+                error = "Every variable fillet radius must be positive.";
+                return false;
+            }
+        }
+    }
+    const std::string refused = blend_refusal(current, edges, false);
+    if (!refused.empty()) {
+        error = refused;
+        return false;
+    }
+    g_stats.builds += 1;
+
+    // Exact G2 quintic NURBS / exact rational Conic-rho path when continuity is G2 or Conic.
+    if (spec.continuity == 1 || spec.continuity == 2) {
+        TopoDS_Shape running = current;
+        bool all_exact = true;
+        for (const TopoDS_Edge& e : edges) {
+            // Re-locate edge on running solid when applying sequentially to multiple edges.
+            TopoDS_Edge target = e;
+            if (!running.IsSame(current)) {
+                BRepAdaptor_Curve orig_c(e);
+                const gp_Pnt orig_mid = orig_c.Value(0.5 * (orig_c.FirstParameter() + orig_c.LastParameter()));
+                double best_d = 1e-2;
+                TopoDS_Edge found;
+                for (TopExp_Explorer ex(running, TopAbs_EDGE); ex.More(); ex.Next()) {
+                    const TopoDS_Edge cand = TopoDS::Edge(ex.Current());
+                    BRepAdaptor_Curve cc(cand);
+                    const gp_Pnt cm = cc.Value(0.5 * (cc.FirstParameter() + cc.LastParameter()));
+                    const double d = cm.Distance(orig_mid);
+                    if (d < best_d) {
+                        best_d = d;
+                        found = cand;
+                    }
+                }
+                if (found.IsNull()) {
+                    all_exact = false;
+                    break;
+                }
+                target = found;
+            }
+            TopoDS_Shape next_shape;
+            if (!try_exact_edge_surface_fillet(running, target, spec, next_shape)) {
+                all_exact = false;
+                break;
+            }
+            running = next_shape;
+        }
+        if (all_exact) {
+            const double vol = volume_of(running);
+            if (vol > 1e-6) {
+                built = running;
+                volume = vol;
+                return true;
+            }
+        }
+    }
+
+    // Standard OCCT BRepFilletAPI_MakeFillet (G1 constant/variable, and fallback for curved/multi-edge G2/Conic).
+    try {
+        const ChFi3d_FilletShape fshape = spec.continuity == 1 ? ChFi3d_Polynomial
+            : spec.continuity == 2 ? ChFi3d_QuasiAngular
+            : ChFi3d_Rational;
+        BRepFilletAPI_MakeFillet builder(current, fshape);
+        builder.SetContinuity(spec.continuity == 1 ? GeomAbs_C2 : GeomAbs_C1, 1e-4);
+        if (is_var) {
+            const int n = static_cast<int>(spec.variable.size() / 2);
+            TColgp_Array1OfPnt2d u_and_r(1, n);
+            for (int i = 0; i < n; ++i) {
+                u_and_r.SetValue(
+                    i + 1,
+                    gp_Pnt2d(
+                        std::clamp(spec.variable[static_cast<size_t>(i * 2)], 0.0, 1.0),
+                        spec.variable[static_cast<size_t>(i * 2 + 1)]));
+            }
+            for (const TopoDS_Edge& edge : edges) {
+                builder.Add(u_and_r, edge);
+            }
+        } else {
+            for (const TopoDS_Edge& edge : edges) {
+                builder.Add(spec.size, edge);
+            }
+        }
+        Handle(Message_ProgressIndicator) watch;
+        builder.Build(deadline_range(watch));
+        if (!builder.IsDone() || builder.Shape().IsNull()) {
+            error = past_deadline() ? deadline_message() : failed;
+            return false;
+        }
+        const TopoDS_Shape solid = as_solid(builder.Shape());
+        const double solid_volume = solid.IsNull() || !has_solid(solid) ? 0.0 : volume_of(solid);
+        if (!(solid_volume > 1e-6)) {
+            error = failed;
+            return false;
+        }
+        built = solid;
+        volume = solid_volume;
+        return true;
+    } catch (const Standard_Failure&) {
+        error = failed;
+        return false;
+    }
+}
+
+namespace {
+
+gp_Pnt wire_centroid(const TopoDS_Wire& wire) {
+    GProp_GProps props;
+    BRepGProp::LinearProperties(wire, props);
+    if (props.Mass() > 1e-9) return props.CentreOfMass();
+    Bnd_Box box;
+    BRepBndLib::Add(wire, box);
+    if (box.IsVoid()) return gp_Pnt(0, 0, 0);
+    double x0, y0, z0, x1, y1, z1;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    return gp_Pnt(0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1));
+}
+
+TopoDS_Wire transform_wire_affine(const TopoDS_Wire& wire, const gp_Pnt& from_c, const gp_Pnt& to_c, double scale) {
+    gp_Trsf t1;
+    t1.SetTranslation(gp_Vec(from_c, gp_Pnt(0, 0, 0)));
+    gp_Trsf ts;
+    ts.SetScale(gp_Pnt(0, 0, 0), std::max(scale, 1e-3));
+    gp_Trsf t2;
+    t2.SetTranslation(gp_Vec(gp_Pnt(0, 0, 0), to_c));
+    gp_Trsf full = t2 * ts * t1;
+    BRepBuilderAPI_Transform xf(wire, full, Standard_True);
+    return TopoDS::Wire(xf.Shape());
+}
+
+TopoDS_Wire offset_wire_along(const TopoDS_Wire& wire, const gp_Vec& shift) {
+    gp_Trsf tr;
+    tr.SetTranslation(shift);
+    BRepBuilderAPI_Transform xf(wire, tr, Standard_True);
+    return TopoDS::Wire(xf.Shape());
+}
+
+}  // namespace
+
+TopoDS_Shape build_loft_v2(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const LoftV2Spec& spec,
+    const Held* held_for_edges,
+    double& volume,
+    std::string& error) {
+    if (spec.sections.size() < 2) {
+        error = "A loft needs at least 2 sections.";
+        return {};
+    }
+    if (spec.sections.size() > 200) {
+        error = "A loft takes at most 200 sections.";
+        return {};
+    }
+    if (spec.closed && spec.sections.size() < 3) {
+        error = "A closed periodic loft needs at least 3 sections.";
+        return {};
+    }
+
+    // Build section wires / vertices.
+    struct BuiltSec {
+        bool is_apex = false;
+        TopoDS_Vertex apex;
+        TopoDS_Wire outer;
+        std::vector<TopoDS_Wire> holes;
+        gp_Pnt centre;
+        gp_Dir normal;
+    };
+    std::vector<BuiltSec> built_secs;
+    built_secs.reserve(spec.sections.size());
+    size_t hole_count = 0;
+    for (size_t i = 0; i < spec.sections.size(); ++i) {
+        const LoftSection& sec = spec.sections[i];
+        BuiltSec bs;
+        if (sec.has_apex) {
+            if (i != 0 && i + 1 != spec.sections.size()) {
+                error = "A point apex section can only be the first or last section of a loft.";
+                return {};
+            }
+            if (spec.closed) {
+                error = "A closed periodic loft cannot have a point apex section.";
+                return {};
+            }
+            bs.is_apex = true;
+            bs.centre = gp_Pnt(sec.apex[0], sec.apex[1], sec.apex[2]);
+            bs.apex = BRepBuilderAPI_MakeVertex(bs.centre);
+            bs.normal = gp_Dir(0, 0, 1);
+            built_secs.push_back(std::move(bs));
+            continue;
+        }
+        if (!sweep_section_wires(sec, bs.outer, bs.holes, error)) {
+            error = "Section " + std::to_string(i) + ": " + error;
+            return {};
+        }
+        bs.centre = wire_centroid(bs.outer);
+        const ProfileFrame fr = frame_of(sec.profile);
+        bs.normal = fr.w;
+        if (built_secs.empty() || (built_secs.size() == 1 && built_secs[0].is_apex)) {
+            hole_count = bs.holes.size();
+        } else if (bs.holes.size() != hole_count) {
+            error = "Every loft section needs the same number of holes.";
+            return {};
+        }
+        built_secs.push_back(std::move(bs));
+    }
+
+    // Build optional 3D guide rail adaptors.
+    std::vector<TopoDS_Wire> guide_wires;
+    for (const Curve3DSpec& g : spec.guides) {
+        TopoDS_Wire gw = curve3d_wire(g, held_for_edges, error);
+        if (gw.IsNull()) return {};
+        guide_wires.push_back(gw);
+    }
+
+    // Build the ordered list of outer wires (inserting guide-driven intermediate wires & boundary tangency wires).
+    auto run_loft_chain = [&](bool is_hole, size_t hole_idx) -> TopoDS_Shape {
+        const bool want_solid = !spec.closed;
+        BRepOffsetAPI_ThruSections loft(want_solid ? Standard_True : Standard_False, spec.ruled ? Standard_True : Standard_False, 1e-6);
+        loft.CheckCompatibility(Standard_True);
+        const bool need_smooth = spec.smoothing || !guide_wires.empty()
+            || spec.start_cond.kind != 0 || spec.end_cond.kind != 0;
+        if (need_smooth && !spec.ruled) {
+            loft.SetSmoothing(Standard_True);
+            loft.SetContinuity(GeomAbs_C2);
+            loft.SetParType(Approx_Centripetal);
+        }
+        if (spec.max_degree >= 2 && spec.max_degree <= 10) {
+            loft.SetMaxDegree(spec.max_degree);
+        }
+
+        // Case A: Guide-rail driven loft between sections (when guides provided and no apexes).
+        if (!is_hole && !guide_wires.empty() && built_secs.size() >= 2 && !built_secs.front().is_apex && !built_secs.back().is_apex) {
+            const TopoDS_Wire& w0 = built_secs.front().outer;
+            const TopoDS_Wire& w1 = built_secs.back().outer;
+            const gp_Pnt c0 = built_secs.front().centre;
+            const gp_Pnt c1 = built_secs.back().centre;
+
+            std::vector<BRepAdaptor_CompCurve> rails;
+            rails.reserve(guide_wires.size());
+            std::vector<double> r0_dist;
+            for (const TopoDS_Wire& gw : guide_wires) {
+                rails.emplace_back(gw);
+                const gp_Pnt rp0 = rails.back().Value(rails.back().FirstParameter());
+                r0_dist.push_back(std::max(c0.Distance(rp0), 1e-3));
+            }
+            const int n_mid = 10;
+            loft.AddWire(w0);
+            for (int k = 1; k < n_mid; ++k) {
+                const double t = static_cast<double>(k) / static_cast<double>(n_mid);
+                const gp_Pnt base_c(
+                    c0.X() + (c1.X() - c0.X()) * t,
+                    c0.Y() + (c1.Y() - c0.Y()) * t,
+                    c0.Z() + (c1.Z() - c0.Z()) * t);
+                double scale = 1.0;
+                gp_Pnt target_c = base_c;
+                if (rails.size() == 1) {
+                    const double u = rails[0].FirstParameter() + (rails[0].LastParameter() - rails[0].FirstParameter()) * t;
+                    const gp_Pnt rp = rails[0].Value(u);
+                    const gp_Pnt rp0 = rails[0].Value(rails[0].FirstParameter());
+                    const gp_Pnt rp1 = rails[0].Value(rails[0].LastParameter());
+                    // Measure radial bulge relative to the chord connecting rail start & end.
+                    const gp_Pnt chord_p(
+                        rp0.X() + (rp1.X() - rp0.X()) * t,
+                        rp0.Y() + (rp1.Y() - rp0.Y()) * t,
+                        rp0.Z() + (rp1.Z() - rp0.Z()) * t);
+                    const double base_rad = std::max(base_c.Distance(chord_p), 1e-3);
+                    const double rail_rad = std::max(base_c.Distance(rp), 1e-3);
+                    scale = rail_rad / base_rad;
+                } else {
+                    // Multi-rail: average center of rail points and average radial scale ratio.
+                    double cx = 0, cy = 0, cz = 0;
+                    std::vector<gp_Pnt> rpts;
+                    for (const BRepAdaptor_CompCurve& rail : rails) {
+                        const double u = rail.FirstParameter() + (rail.LastParameter() - rail.FirstParameter()) * t;
+                        const gp_Pnt rp = rail.Value(u);
+                        rpts.push_back(rp);
+                        cx += rp.X();
+                        cy += rp.Y();
+                        cz += rp.Z();
+                    }
+                    const double inv = 1.0 / static_cast<double>(rpts.size());
+                    target_c = gp_Pnt(cx * inv, cy * inv, cz * inv);
+                    double ratio_sum = 0.0;
+                    for (size_t r = 0; r < rpts.size(); ++r) {
+                        ratio_sum += std::max(target_c.Distance(rpts[r]), 1e-3) / r0_dist[r];
+                    }
+                    scale = ratio_sum * inv;
+                }
+                loft.AddWire(transform_wire_affine(w0, c0, target_c, scale));
+            }
+            loft.AddWire(w1);
+        } else {
+            // Case B: Standard / Apex / Boundary-Condition / Closed Periodic loft.
+            for (size_t i = 0; i < built_secs.size(); ++i) {
+                const BuiltSec& bs = built_secs[i];
+                if (bs.is_apex) {
+                    if (!is_hole) loft.AddVertex(bs.apex);
+                    continue;
+                }
+                const TopoDS_Wire& w = is_hole ? bs.holes[hole_idx] : bs.outer;
+
+                // End boundary condition BEFORE the last section.
+                if (i + 1 == built_secs.size() && spec.end_cond.kind != 0 && !spec.ruled && built_secs.size() >= 2) {
+                    const gp_Vec span(built_secs[i - 1].centre, bs.centre);
+                    const double span_len = span.Magnitude();
+                    gp_Vec dir = spec.end_cond.has_dir
+                        ? gp_Vec(spec.end_cond.dir[0], spec.end_cond.dir[1], spec.end_cond.dir[2])
+                        : gp_Vec(bs.normal);
+                    if (dir.Magnitude() > 1e-9 && span_len > 1e-4) {
+                        dir.Normalize();
+                        if (dir.Dot(span) < 0.0) dir.Reverse();
+                        const double tension = std::clamp(spec.end_cond.tension, 0.1, 3.0);
+                        const double step = std::clamp(0.06 * tension * span_len, 0.05, 0.25 * span_len);
+                        loft.AddWire(offset_wire_along(w, dir * (-step)));
+                    }
+                }
+
+                loft.AddWire(w);
+
+                // Start boundary condition AFTER the first section.
+                if (i == 0 && spec.start_cond.kind != 0 && !spec.ruled && built_secs.size() >= 2) {
+                    const gp_Vec span(bs.centre, built_secs[1].centre);
+                    const double span_len = span.Magnitude();
+                    gp_Vec dir = spec.start_cond.has_dir
+                        ? gp_Vec(spec.start_cond.dir[0], spec.start_cond.dir[1], spec.start_cond.dir[2])
+                        : gp_Vec(bs.normal);
+                    if (dir.Magnitude() > 1e-9 && span_len > 1e-4) {
+                        dir.Normalize();
+                        if (dir.Dot(span) < 0.0) dir.Reverse();
+                        const double tension = std::clamp(spec.start_cond.tension, 0.1, 3.0);
+                        const double step = std::clamp(0.06 * tension * span_len, 0.05, 0.25 * span_len);
+                        loft.AddWire(offset_wire_along(w, dir * step));
+                    }
+                }
+            }
+            if (spec.closed && !built_secs.empty() && !built_secs[0].is_apex) {
+                loft.AddWire(is_hole ? built_secs[0].holes[hole_idx] : built_secs[0].outer);
+            }
+        }
+
+        TopoDS_Shape tool;
+        try {
+            loft.Build();
+            if (!loft.IsDone() || loft.Shape().IsNull()) {
+                error = "Open CASCADE could not loft through these sections. Check that each one is a simple outline and that they do not cross.";
+                return {};
+            }
+            tool = loft.Shape();
+        } catch (const Standard_Failure&) {
+            error = "Open CASCADE could not loft through these sections. Check that each one is a simple outline and that they do not cross.";
+            return {};
+        }
+
+        if (spec.closed) {
+            // Closed periodic loft produces a closed shell -> sew & promote to watertight solid.
+            BRepBuilderAPI_Sewing sew(1e-4);
+            sew.Add(tool);
+            sew.Perform();
+            TopoDS_Shape sewed = sew.SewedShape();
+            TopoDS_Shell shell;
+            for (TopExp_Explorer ex(sewed, TopAbs_SHELL); ex.More(); ex.Next()) {
+                shell = TopoDS::Shell(ex.Current());
+                break;
+            }
+            if (shell.IsNull()) {
+                BRep_Builder bb;
+                bb.MakeShell(shell);
+                int face_count = 0;
+                for (TopExp_Explorer ex(sewed, TopAbs_FACE); ex.More(); ex.Next()) {
+                    bb.Add(shell, ex.Current());
+                    ++face_count;
+                }
+                if (face_count == 0) {
+                    error = "The closed loft did not form a closed shell.";
+                    return {};
+                }
+                shell.Closed(Standard_True);
+            }
+            BRepBuilderAPI_MakeSolid ms(shell);
+            if (!ms.IsDone() || ms.Solid().IsNull()) {
+                error = "The closed loft did not form a watertight solid.";
+                return {};
+            }
+            tool = ms.Solid();
+        }
+        if (!has_solid(tool)) {
+            error = "The loft did not close into a solid.";
+            return {};
+        }
+        tool = as_solid(tool);
+        GProp_GProps props;
+        integrate(tool, props);
+        if (std::abs(props.Mass()) <= 1e-6) {
+            error = "The loft has no volume.";
+            return {};
+        }
+        if (props.Mass() < 0.0) {
+            tool.Reverse();
+        }
+        if (!BRepCheck_Analyzer(tool).IsValid()) {
+            ShapeFix_Solid fix;
+            fix.Init(TopoDS::Solid(tool));
+            fix.Perform();
+            tool = fix.Solid();
+            if (!BRepCheck_Analyzer(tool).IsValid()) {
+                error = "The loft twists through itself. Space the sections further apart, or make tight bends gentler.";
+                return {};
+            }
+        }
+        return tool;
+    };
+
+    TopoDS_Shape tool = run_loft_chain(false, 0);
+    if (tool.IsNull()) return {};
+    for (size_t h = 0; h < hole_count; ++h) {
+        TopoDS_Shape hole_solid = run_loft_chain(true, h);
+        if (hole_solid.IsNull()) return {};
+        double cut_vol = 0.0;
+        tool = combine(tool, "cut", hole_solid, cut_vol, error);
+        if (tool.IsNull() || !error.empty()) {
+            if (error.empty()) error = "Open CASCADE could not hollow the loft.";
+            return {};
+        }
+    }
+
+    if (current.IsNull()) {
+        GProp_GProps props;
+        integrate(tool, props);
+        volume = std::abs(props.Mass());
+        return tool;
+    }
+    return combine_profile_tools(current, before, which, {tool}, "loft", volume, error);
 }
 
 }  // namespace lime_occt

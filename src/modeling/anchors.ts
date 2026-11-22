@@ -211,11 +211,29 @@ export function opBox(op: ModelOp): Box | null {
     case "loft": {
       let box: Box | null = null;
       for (const section of op.sections) {
+        if (section.apex) {
+          box = grow(box, section.apex);
+          continue;
+        }
         const [u, v, w] = axes(section.turn);
         if (section.loops?.length) {
           for (const [pu, pv] of loopPoints(section.loops)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
         } else if (section.radius !== undefined) box = circleBox(box, section.origin, w, Math.max(section.radius, section.radiusV ?? 0));
         else for (const [pu, pv] of reach(section.profile ?? [], section.smooth, section.corners)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
+      }
+      for (const g of op.guides ?? []) {
+        if (g.kind === "polyline") for (const p of g.points) box = grow(box, p);
+        else if (g.kind === "spline") for (const p of g.through) box = grow(box, p);
+        else if (g.kind === "nurbs") for (const p of g.poles) box = grow(box, p);
+        else if (g.kind === "segments") {
+          box = grow(box, g.start);
+          for (const seg of g.segments) {
+            if (seg.kind === "arc") box = grow(box, seg.through);
+            else if (seg.kind === "spline") for (const p of seg.through) box = grow(box, p);
+            else if (seg.kind === "nurbs" && seg.poles) for (const p of seg.poles) box = grow(box, p);
+            box = grow(box, seg.to);
+          }
+        }
       }
       return box;
     }

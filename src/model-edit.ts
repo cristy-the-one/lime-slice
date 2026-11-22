@@ -16,7 +16,7 @@ import { heatRow, isPartKind, isShaftFit, vRow, type PartKind } from "./model-pa
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
 import { draftOp } from "./model-request.ts";
-import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, type DraftOp, type JoinOp,childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, type DraftOp, type FilletContinuity, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 import { isSketchHoleGroup, sketchHolePanel } from "./sketch/holes.ts";
 
 /**
@@ -289,6 +289,12 @@ export interface ChamferChoice {
   flip: boolean;
 }
 
+/** S3 (U5). Fillet profile (G1 circular, G2 smooth, conic) and variable-radius toggle. */
+export interface FilletChoice {
+  continuity: FilletContinuity;
+  variable: boolean;
+}
+
 export interface EditPanel {
   tool: ModelTool;
   /** Input id → value. */
@@ -335,6 +341,8 @@ export interface EditPanel {
   shellClosed?: boolean;
   /** A chamfer's sides, as the panel's Equal, Two sizes, and Angle, and its Flip box. */
   chamfer?: ChamferChoice;
+  /** S3 (U5): A fillet's profile (G1, G2, conic) and variable-radius toggle. */
+  fillet?: FilletChoice;
   /** A join: its tool stays as applied; its op and Keep can change. */
   join?: { name: string; keepTool: boolean };
   // --- A3 composite features: the choices a feature group's panel reopens with, including the face. ---
@@ -425,15 +433,33 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "chamfer": {
       // --- A5. A blend of one step's edges opens on that step. Picked edges stay picked. ---
       const step = storedEdgeStep(op.edges);
-      const sides = op.kind === "chamfer"
-        ? {
-            fields: { modelBlend: op.size, ...(op.size2 !== undefined ? { modelChamfer2: op.size2 } : {}), ...(op.angleDeg !== undefined ? { modelChamferAngle: op.angleDeg } : {}) },
-            chamfer: { form: op.size2 !== undefined ? "two" as const : op.angleDeg !== undefined ? "angle" as const : "equal" as const, flip: op.flip === true },
-          }
-        : { fields: { modelBlend: op.size } };
+      if (op.kind === "chamfer") {
+        return {
+          tool: "chamfer",
+          fields: { modelBlend: op.size, ...(op.size2 !== undefined ? { modelChamfer2: op.size2 } : {}), ...(op.angleDeg !== undefined ? { modelChamferAngle: op.angleDeg } : {}) },
+          chamfer: { form: op.size2 !== undefined ? "two" as const : op.angleDeg !== undefined ? "angle" as const : "equal" as const, flip: op.flip === true },
+          edges: op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)),
+          ...(step ? { step } : {}),
+        };
+      }
+      const stations = op.variable && op.variable.length >= 2 ? op.variable : null;
+      const fields: Record<string, number> = {
+        modelBlend: op.size,
+        ...(op.rho !== undefined ? { modelFilletRho: op.rho } : {}),
+        ...(stations
+          ? {
+              modelFilletStart: stations[0]![1],
+              modelFilletMid: stations.length >= 3 ? stations[Math.floor(stations.length / 2)]![1] : 0,
+              modelFilletEnd: stations[stations.length - 1]![1],
+            }
+          : {}),
+      };
+      const continuity = op.continuity ?? "g1";
+      const hasCustomFillet = continuity !== "g1" || stations !== null;
       return {
-        tool: op.kind,
-        ...sides,
+        tool: "fillet",
+        fields,
+        ...(hasCustomFillet ? { fillet: { continuity, variable: stations !== null } } : {}),
         edges: op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)),
         ...(step ? { step } : {}),
       };

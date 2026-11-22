@@ -294,7 +294,16 @@ const op = {
       properties: {
         kind: { const: "fillet" },
         edges: edgeList,
-        size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+        size: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Default radius, mm." },
+        continuity: { enum: ["g1", "g2", "conic"], description: "Profile: g1 circular (default), g2 curvature-continuous, or conic." },
+        rho: { type: "number", minimum: 0.05, maximum: 0.95, description: "Conic fullness ρ (0.05–0.95, default 0.5)." },
+        variable: {
+          type: "array",
+          minItems: 2,
+          maxItems: 50,
+          items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } },
+          description: "Variable-radius [u, radius] stations along the edge (u in [0, 1], radius > 0).",
+        },
         label,
       },
     },
@@ -544,6 +553,43 @@ const sweepSectionItem = {
   },
 };
 
+const loftBoundaryField = {
+  type: "object",
+  description: "Start or end loft boundary condition: free, normal, tangent, or curvature.",
+  oneOf: [
+    { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "free", description: "Natural free end (default)." } } },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: {
+        kind: { const: "normal", description: "Normal to the section plane." },
+        tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tangent tension (default 1)." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "dir"],
+      properties: {
+        kind: { const: "tangent", description: "Explicit departure tangent vector." },
+        dir: { ...vec3, description: "Tangent direction vector." },
+        tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tangent tension (default 1)." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: {
+        kind: { const: "curvature", description: "Curvature-faired G2 boundary." },
+        dir: { ...vec3, description: "Optional tangent direction vector." },
+        tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tension (default 1)." },
+      },
+    },
+  ],
+};
+
 const sweepModeField = {
   type: "object",
   description: "Sweep frame law along the spine.",
@@ -619,11 +665,10 @@ const sketchOps = [
         type: "array",
         minItems: 2,
         maxItems: 200,
-        description: "Cross-sections in order, each on its own plane.",
+        description: "Cross-sections in order, each on its own plane, or a point apex cap.",
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["origin"],
           properties: {
             origin: { ...vec3, description: "Plane origin; a circle's centre." },
             turn: { ...vec3, description: "Plane turn, degrees X, Y, Z; W is the plane's normal." },
@@ -631,11 +676,18 @@ const sketchOps = [
             radiusV: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Ellipse along V." },
             profile,
             loops: loopsField,
+            apex: { ...vec3, description: "Point apex cap (valid as first or last section)." },
             ...profileShape,
           },
         },
       },
       ruled: { type: "boolean", description: "Flat between sections." },
+      guides: { type: "array", maxItems: 20, items: curve3dField, description: "3D guide rails shaping the loft between sections." },
+      startCondition: loftBoundaryField,
+      endCondition: loftBoundaryField,
+      closed: { type: "boolean", description: "Close the last section smoothly back to the first (periodic ring)." },
+      smoothing: { type: "boolean", description: "Enable curvature-fairing B-spline smoothing." },
+      maxDegree: { type: "integer", minimum: 2, maximum: 12, description: "Cap maximum U/V B-spline degree (default 8)." },
       label,
     },
   },

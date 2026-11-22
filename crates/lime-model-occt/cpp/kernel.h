@@ -558,6 +558,9 @@ struct LoftSection {
     double radius_v = 0;
     /// K1: closed loops instead of `profile`. Empty when the section uses a radius or a profile.
     std::vector<ProfileLoop> loops;
+    /// S3: punctual point-apex section (first or last section only).
+    bool has_apex = false;
+    double apex[3] = {0, 0, 0};
 };
 
 /// K1. Read one loop blob from `data`. `used` is how many doubles it consumed. The blob is `encode_loops` in tree.rs:
@@ -719,6 +722,54 @@ TopoDS_Shape build_sweep(
     double before,
     const std::string& which,
     const SweepSpec& spec,
+    const Held* held_for_edges,
+    double& volume,
+    std::string& error);
+
+/// --- Organic surfaces S3: variable-radius, G2 curvature-continuous, and conic-rho fillets.
+struct FilletV2Spec {
+    double size = 0.0;
+    /// 0 = Circular G1 (default), 1 = Smooth G2 quintic NURBS, 2 = Conic rational quadratic (rho).
+    int continuity = 0;
+    /// Conic rho in (0.05, 0.95); default 0.5 (parabola).
+    double rho = 0.5;
+    /// Optional flat [u0, r0, u1, r1, ...] variable-radius stations along edge parameter u in [0, 1].
+    std::vector<double> variable;
+};
+
+bool fillet_v2_build(
+    const TopoDS_Shape& current,
+    const std::vector<TopoDS_Edge>& edges,
+    const FilletV2Spec& spec,
+    TopoDS_Shape& built,
+    double& volume,
+    std::string& error);
+
+/// --- Organic surfaces S3: controlled Loft v2 (apex caps, guide rails, boundary tangency/curvature, closed periodic, degree cap).
+struct LoftBoundarySpec {
+    /// 0 = Free, 1 = Normal, 2 = Tangent, 3 = Curvature.
+    int kind = 0;
+    bool has_dir = false;
+    double dir[3] = {0, 0, 1};
+    double tension = 1.0;
+};
+
+struct LoftV2Spec {
+    std::vector<LoftSection> sections;
+    bool ruled = false;
+    std::vector<Curve3DSpec> guides;
+    LoftBoundarySpec start_cond;
+    LoftBoundarySpec end_cond;
+    bool closed = false;
+    bool smoothing = false;
+    int max_degree = 0;
+};
+
+TopoDS_Shape build_loft_v2(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const LoftV2Spec& spec,
     const Held* held_for_edges,
     double& volume,
     std::string& error);

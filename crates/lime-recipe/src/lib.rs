@@ -1818,6 +1818,37 @@ pub mod ops {
         Json::obj().set("kind", "fillet").set("edges", edges).set("size", size)
     }
 
+    /// A curvature-continuous ($G^2$) smooth fillet on `edges`.
+    pub fn fillet_g2(edges: Json, size: f64) -> Json {
+        fillet(edges, size).set("continuity", "g2")
+    }
+
+    /// A rational conic fillet of fullness `rho` (0.05..0.95) on `edges`.
+    pub fn fillet_conic(edges: Json, size: f64, rho: f64) -> Json {
+        fillet(edges, size).set("continuity", "conic").set("rho", rho)
+    }
+
+    /// A variable-radius fillet with `[u, radius]` stations (`u` in `0..=1`) and optional continuity (`"g1"`, `"g2"`, `"conic"`).
+    pub fn fillet_variable(edges: Json, stations: &[[f64; 2]], continuity: Option<&str>) -> Json {
+        let size = stations.first().map(|s| s[1]).unwrap_or(1.0);
+        let mut obj = fillet(edges, size).set("variable", Json::arr(stations.iter().map(|s| Json::from(*s)).collect()));
+        if let Some(c) = continuity {
+            obj = obj.set("continuity", c);
+        }
+        obj
+    }
+
+    /// A point apex section for a controlled loft (`{ apex: [x, y, z] }`).
+    pub fn loft_apex(point: [f64; 3]) -> Json {
+        Json::obj().set("apex", point)
+    }
+
+    /// A controlled loft through `sections` (`op` is `"fuse"`, `"cut"`, or `"common"`).
+    /// Chain `.set("guides", ...)`, `.set("startCondition", ...)`, `.set("endCondition", ...)`, `.set("closed", true)`, or `.set("smoothing", true)`.
+    pub fn loft(op: &str, sections: Vec<Json>) -> Json {
+        Json::obj().set("kind", "loft").set("op", op).set("sections", Json::arr(sections))
+    }
+
     /// The kernel's gear step (API 1.12): a spur gear with true involute flanks, `thickness` mm along its axis, its base
     /// centred on `origin` (part frame), combined by `op` ("fuse", "cut" or "common"). Add `bore`, `boreShape`,
     /// `hubDiameter`, `hubHeight`, `phaseDeg` or `turn` with `.set`; guide {kind:"gear"} lists them.
@@ -7894,5 +7925,24 @@ mod animation_tests {
         assert_eq!(ask.get("max").and_then(Json::as_f64), Some(30.0));
         assert_eq!(ask.get("tolerance").and_then(Json::as_f64), Some(0.005));
         assert!(ContactAsk::new("Wheel", 1).json(&at).get("against").is_none(), "any part, unless one is named");
+    }
+
+    #[test]
+    fn s3_fillet_v2_and_loft_v2_ops_build_expected_json() {
+        use crate::ops;
+        let f_g2 = ops::fillet_g2(Json::arr(vec![Json::from(0.0)]), 3.0);
+        assert_eq!(f_g2.get("continuity").and_then(Json::as_str), Some("g2"));
+        let f_conic = ops::fillet_conic(Json::arr(vec![Json::from(0.0)]), 4.0, 0.7);
+        assert_eq!(f_conic.get("continuity").and_then(Json::as_str), Some("conic"));
+        assert_eq!(f_conic.get("rho").and_then(Json::as_f64), Some(0.7));
+        let f_var = ops::fillet_variable(Json::arr(vec![Json::from(0.0)]), &[[0.0, 1.0], [1.0, 4.0]], Some("g2"));
+        assert_eq!(f_var.get("continuity").and_then(Json::as_str), Some("g2"));
+        assert_eq!(f_var.at("variable.1.1").and_then(Json::as_f64), Some(4.0));
+        let apex = ops::loft_apex([0.0, 0.0, 20.0]);
+        assert_eq!(apex.at("apex.2").and_then(Json::as_f64), Some(20.0));
+        let loft = ops::loft("fuse", vec![apex]).set("closed", true).set("smoothing", true);
+        assert_eq!(loft.get("kind").and_then(Json::as_str), Some("loft"));
+        assert_eq!(loft.get("closed").and_then(Json::as_bool), Some(true));
+        assert_eq!(loft.get("smoothing").and_then(Json::as_bool), Some(true));
     }
 }

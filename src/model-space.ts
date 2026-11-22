@@ -11,7 +11,7 @@
 import { eulerOrient, matMul, orientEuler, wrapDeg, type Bounds, type Mat3 } from "./mesh-place.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
 import { partCentreZ } from "./model-part.ts";
-import type { ModelOp, Vec3 } from "./model-tree.ts";
+import type { Curve3D, LoftBoundary, ModelOp, Vec3 } from "./model-tree.ts";
 
 /** `q = m·p + t`. A rigid pose, or a rigid pose times one uniform scale folded into `m`. */
 export interface Affine {
@@ -212,40 +212,39 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
       return { ...op, origin: point(op.origin), turn: [turned.rx, turned.ry, turned.rz] };
     }
     case "loft": {
-      // Each section's plane is a frame, as a profile's is.
-      if (moveOnly(back)) return { ...op, sections: op.sections.map((section) => ({ ...section, origin: point(section.origin) })) };
       const s = poseScale(back);
       const turn = back.m.map((value) => value / s) as Mat3;
+      const moveOnlyPose = moveOnly(back);
+      const moveBoundary = (cond: LoftBoundary | undefined): LoftBoundary | undefined => {
+        if (!cond || moveOnlyPose) return cond;
+        if (cond.kind === "tangent") return { ...cond, dir: turnDir(back, cond.dir) };
+        if (cond.kind === "curvature" && cond.dir) return { ...cond, dir: turnDir(back, cond.dir) };
+        return cond;
+      };
+      const sections = op.sections.map((section) => {
+        if (section.apex) {
+          const moved = point(section.apex);
+          return { ...section, origin: moved, apex: moved };
+        }
+        if (moveOnlyPose) return { ...section, origin: point(section.origin) };
+        const turned = orientEuler(matMul(turn, eulerOrient(section.turn[0], section.turn[1], section.turn[2])));
+        return { ...section, origin: point(section.origin), turn: [turned.rx, turned.ry, turned.rz] as Vec3 };
+      });
+      const guides = op.guides?.map((g) => moveCurve3D(g, point));
+      const startCondition = moveBoundary(op.startCondition);
+      const endCondition = moveBoundary(op.endCondition);
       return {
         ...op,
-        sections: op.sections.map((section) => {
-          const turned = orientEuler(matMul(turn, eulerOrient(section.turn[0], section.turn[1], section.turn[2])));
-          return { ...section, origin: point(section.origin), turn: [turned.rx, turned.ry, turned.rz] as Vec3 };
-        }),
+        sections,
+        ...(guides ? { guides } : {}),
+        ...(startCondition ? { startCondition } : {}),
+        ...(endCondition ? { endCondition } : {}),
       };
     }
     case "sweep": {
       const s = poseScale(back);
       const turn = back.m.map((value) => value / s) as Mat3;
       const moveOnlyPose = moveOnly(back);
-      const moveCurve = (curve: typeof op.spine): typeof op.spine => {
-        if (curve.kind === "polyline") return { ...curve, points: curve.points.map(point) };
-        if (curve.kind === "spline") return { ...curve, through: curve.through.map(point) };
-        if (curve.kind === "nurbs") return { ...curve, poles: curve.poles.map(point) };
-        if (curve.kind === "segments") {
-          return {
-            kind: "segments",
-            start: point(curve.start),
-            segments: curve.segments.map((seg) => {
-              if (seg.kind === "line") return { kind: "line", to: point(seg.to) };
-              if (seg.kind === "arc") return { kind: "arc", through: point(seg.through), to: point(seg.to) };
-              if (seg.kind === "nurbs") return { ...seg, ...(seg.poles ? { poles: seg.poles.map(point) } : {}), to: point(seg.to) };
-              return { kind: "spline", through: seg.through.map(point), to: point(seg.to) };
-            }),
-          };
-        }
-        return curve;
-      };
       const sections = op.sections.map((section) => {
         if (moveOnlyPose) return { ...section, origin: point(section.origin) };
         const turned = orientEuler(matMul(turn, eulerOrient(section.turn[0], section.turn[1], section.turn[2])));
@@ -255,10 +254,10 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
         ? op.mode.kind === "fixedBinormal"
           ? { kind: "fixedBinormal" as const, dir: turnDir(back, op.mode.dir) }
           : op.mode.kind === "auxSpine"
-            ? { ...op.mode, spine: moveCurve(op.mode.spine) }
+            ? { ...op.mode, spine: moveCurve3D(op.mode.spine, point) }
             : op.mode
         : undefined;
-      return { ...op, sections, spine: moveCurve(op.spine), ...(mode ? { mode } : {}) };
+      return { ...op, sections, spine: moveCurve3D(op.spine, point), ...(mode ? { mode } : {}) };
     }
     // --- Print transitions: the build direction turns with the pose; edges are picked on the solid.
     case "transition":
@@ -285,6 +284,25 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
     default:
       return op;
   }
+}
+
+function moveCurve3D(curve: Curve3D, point: (p: Vec3) => Vec3): Curve3D {
+  if (curve.kind === "polyline") return { ...curve, points: curve.points.map(point) };
+  if (curve.kind === "spline") return { ...curve, through: curve.through.map(point) };
+  if (curve.kind === "nurbs") return { ...curve, poles: curve.poles.map(point) };
+  if (curve.kind === "segments") {
+    return {
+      kind: "segments",
+      start: point(curve.start),
+      segments: curve.segments.map((seg) => {
+        if (seg.kind === "line") return { kind: "line", to: point(seg.to) };
+        if (seg.kind === "arc") return { kind: "arc", through: point(seg.through), to: point(seg.to) };
+        if (seg.kind === "nurbs") return { ...seg, ...(seg.poles ? { poles: seg.poles.map(point) } : {}), to: point(seg.to) };
+        return { kind: "spline", through: seg.through.map(point), to: point(seg.to) };
+      }),
+    };
+  }
+  return curve;
 }
 
 /**

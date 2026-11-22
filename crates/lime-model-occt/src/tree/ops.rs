@@ -554,6 +554,37 @@ pub enum SweepMode {
     FixedBinormal { dir: [f64; 3] },
 }
 
+/// --- Organic surfaces S3 (U5): Fillet cross-section profile continuity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilletContinuity {
+    G1,
+    G2,
+    Conic,
+}
+
+/// --- Organic surfaces S3: Start/end boundary condition for controlled Lofts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LoftBoundary {
+    Free,
+    Normal {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension: Option<f64>,
+    },
+    Tangent {
+        dir: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension: Option<f64>,
+    },
+    Curvature {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension: Option<f64>,
+    },
+}
+
 /// A closed loop on a profile's plane. A loop inside no other is an outline, and one inside an outline is its hole.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -606,6 +637,15 @@ pub enum Op {
     Fillet {
         edges: Vec<EdgePick>,
         size: f64,
+        /// S3 (U5): "g1" (Circular, default), "g2" (Smooth curvature-continuous), or "conic".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuity: Option<FilletContinuity>,
+        /// S3 (U5): Conic rho in (0.05, 0.95); default 0.5.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rho: Option<f64>,
+        /// S3 (U5): Optional variable-radius `[u, radiusMm]` stations along edge parameter `u` in `[0, 1]`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variable: Vec<[f64; 2]>,
     },
     /// Equal distances by default. With `size2`, `size` runs along each edge's upper face (the one whose outward
     /// normal points more up; on a level tie, more along +X, then +Y) and `size2` along the other. With `angleDeg`,
@@ -712,6 +752,24 @@ pub enum Op {
         sections: Vec<LoftSection>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         ruled: bool,
+        /// S3: Optional 3D guide rails shaping the loft between sections.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guides: Vec<Curve3D>,
+        /// S3: Start boundary continuity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_condition: Option<LoftBoundary>,
+        /// S3: End boundary continuity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_condition: Option<LoftBoundary>,
+        /// S3: Close the loft periodically back to the first section (>= 3 sections).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
+        /// S3: Enable OCCT smoothing + C2 optimization.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        smoothing: bool,
+        /// S3: Optional max U degree cap (2..10) for knot hygiene.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_degree: Option<u8>,
     },
     /// --- Organic surfaces S2: real kernel sweep (`BRepOffsetAPI_MakePipeShell`) of `sections` along exact 3D `spine`.
     Sweep {
@@ -912,4 +970,7 @@ pub struct LoftSection {
     /// K1: closed loops in place of `profile` or `radius`. Empty, and omitted, otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<ProfileLoop>,
+    /// S3: punctual point-apex section (first or last section only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apex: Option<[f64; 3]>,
 }

@@ -7,7 +7,7 @@
  * kernel's words, before anything is sent.
  */
 import { loftOp } from "../model-request.ts";
-import type { BooleanKind, LoftDrawing, LoftOp, LoftSection, ProfileLoop as EngineLoop, ProfileSegment as EngineSegment, Vec2, Vec3 } from "../model-tree.ts";
+import type { BooleanKind, Curve3D, LoftBoundary, LoftDrawing, LoftOp, LoftSection, ProfileLoop as EngineLoop, ProfileSegment as EngineSegment, Vec2, Vec3 } from "../model-tree.ts";
 import { frameOf, toWorld } from "./frame.ts";
 import { addCircle, emptySketch, sketchJson, type Pt, type SketchData } from "./model.ts";
 import { loopSignedArea, toLoops, type ProfileLoop, type Region } from "./regions.ts";
@@ -53,6 +53,7 @@ export function sectionFromRegion(sketch: SketchData, region: Region): LoftSecti
 
 /** Area of one section: loops, a circle or ellipse, or a point profile. */
 export function sectionArea(section: LoftSection): number {
+  if (section.apex) return 0;
   if (section.loops && section.loops.length > 0) {
     let area = 0;
     for (const loop of section.loops) area += loopSignedArea(loop as ProfileLoop);
@@ -90,10 +91,16 @@ export function loftAreaVolume(sections: readonly LoftSection[]): number {
 
 /** True when every section lies in the first section's plane. */
 export function sectionsCoplanar(sections: readonly LoftSection[]): boolean {
-  const first = sections[0];
+  const first = sections.find((s) => !s.apex);
   if (!first || sections.length < 2) return false;
   const base = frameOf({ origin: first.origin, turn: first.turn });
-  for (const section of sections.slice(1)) {
+  for (const section of sections) {
+    if (section === first) continue;
+    if (section.apex) {
+      const rise = (section.apex[0] - base.origin[0]) * base.w[0] + (section.apex[1] - base.origin[1]) * base.w[1] + (section.apex[2] - base.origin[2]) * base.w[2];
+      if (Math.abs(rise) > 1e-4) return false;
+      continue;
+    }
     const frame = frameOf({ origin: section.origin, turn: section.turn });
     const parallel = Math.abs(base.w[0] * frame.w[0] + base.w[1] * frame.w[1] + base.w[2] * frame.w[2]);
     if (parallel < 0.999) return false;
@@ -104,7 +111,16 @@ export function sectionsCoplanar(sections: readonly LoftSection[]): boolean {
 }
 
 /** The loft op, with a copy of each sketch on `drawing`. An error is not sent. */
-export function buildSketchLoft(input: { picks: readonly LoftPickInput[]; ruled: boolean; mode: ResolvedMode }): { op: LoftOp } | { error: string } {
+export function buildSketchLoft(input: {
+  picks: readonly LoftPickInput[];
+  ruled: boolean;
+  mode: ResolvedMode;
+  closed?: boolean;
+  smoothing?: boolean;
+  startCondition?: LoftBoundary;
+  endCondition?: LoftBoundary;
+  guides?: readonly Curve3D[];
+}): { op: LoftOp } | { error: string } {
   if (input.picks.length < 2) return { error: SECTIONS_REFUSAL };
   const sections = input.picks.map((pick) => pick.section);
   if (sectionsCoplanar(sections)) return { error: COPLANAR_REFUSAL };
@@ -114,7 +130,18 @@ export function buildSketchLoft(input: { picks: readonly LoftPickInput[]; ruled:
   }
   const boolean: BooleanKind = input.mode === "new" ? "fuse" : input.mode;
   const drawing: LoftDrawing = { sketches: input.picks.map((pick) => (pick.sketch ? sketchJson(pick.sketch) : null)) };
-  return { op: { ...loftOp(boolean, sections, input.ruled), drawing } };
+  return {
+    op: {
+      ...loftOp(boolean, sections, input.ruled, {
+        ...(input.closed ? { closed: true } : {}),
+        ...(input.smoothing ? { smoothing: true } : {}),
+        ...(input.startCondition ? { startCondition: input.startCondition } : {}),
+        ...(input.endCondition ? { endCondition: input.endCondition } : {}),
+        ...(input.guides?.length ? { guides: input.guides } : {}),
+      }),
+      drawing,
+    },
+  };
 }
 
 /**
@@ -143,6 +170,7 @@ export function loftEditOf(op: { kind: string }, root: boolean): LoftPreset | nu
 
 /** A sketch a section can be drawn as again. Null when the section has no outline. */
 export function sketchFromSection(section: LoftSection): SketchData | null {
+  if (section.apex) return null;
   const plane = { origin: [...section.origin] as Vec3, turn: [...section.turn] as Vec3 };
   let sketch = emptySketch(plane);
   if (section.loops && section.loops.length > 0) {
@@ -159,6 +187,7 @@ export function sketchFromSection(section: LoftSection): SketchData | null {
 
 /** Sampled outline in model space, for the coarse ghost. The outer loop, or the circle. */
 export function sectionOutline(section: LoftSection, count = 24): Vec3[] {
+  if (section.apex) return [[...section.apex]];
   const frame = frameOf({ origin: section.origin, turn: section.turn });
   let uv: Pt[] = [];
   if (section.loops && section.loops.length > 0) uv = sampleLoopPoints(section.loops[0]!);
@@ -223,6 +252,7 @@ function readLoops(value: unknown): EngineLoop[] | null {
 }
 
 function cloneSection(section: LoftSection): LoftSection {
+  if (section.apex) return { origin: [...section.apex] as Vec3, turn: [0, 0, 0], apex: [...section.apex] as Vec3 };
   return {
     origin: [...section.origin] as Vec3,
     turn: [...section.turn] as Vec3,

@@ -4,11 +4,12 @@ import { rootSpec } from "../../model-primitive";
 import { selectedEdges, selectedFaces } from "../../model-blend";
 import { isFeatureTool } from "../../model-features";
 import { isRepeatTool } from "../../model-repeat";
-import { type ModelOp, type Vec3 } from "../../model-tree";
+import { type FilletContinuity, type ModelOp, type Vec3 } from "../../model-tree";
 import { moveFacesOp, shellOp, stepEdges } from "../../model-request";
 import { draftPanelOp } from "../../model-edit";
 import {
   fieldPrimitive,
+  filletChoice,
   holeBoxes,
   chamferChoice,
   joinOpen,
@@ -83,6 +84,23 @@ export function holeSizesNow(): HoleSizes {
   };
 }
 
+/** S3 (U5). Fillet profile continuity, conic rho, and variable radius stations as the panel says them. Nothing for default circular G1 constant fillet. */
+function filletOptions(tool: "fillet" | "chamfer"): { continuity?: FilletContinuity; rho?: number; variable?: [number, number][] } {
+  if (tool !== "fillet") return {};
+  const { continuity, variable } = filletChoice();
+  const profile = continuity === "g2"
+    ? { continuity: "g2" as const }
+    : continuity === "conic"
+      ? { continuity: "conic" as const, rho: Math.min(0.95, Math.max(0.05, num("#modelFilletRho") || 0.5)) }
+      : {};
+  if (!variable) return profile;
+  const rStart = Math.max(0.05, num("#modelFilletStart") || num("#modelBlend") || 1);
+  const rMid = num("#modelFilletMid");
+  const rEnd = Math.max(0.05, num("#modelFilletEnd") || rStart);
+  const stations: [number, number][] = rMid > 0 ? [[0, rStart], [0.5, rMid], [1, rEnd]] : [[0, rStart], [1, rEnd]];
+  return { ...profile, variable: stations };
+}
+
 /** Gaps 13. A chamfer's second size or angle, and its flip, as the panel says them. Nothing for equal sides or a fillet. */
 function chamferSides(tool: "fillet" | "chamfer"): { size2?: number; angleDeg?: number; flip?: true } {
   if (tool !== "chamfer") return {};
@@ -104,14 +122,21 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
   switch (tool) {
     case "fillet":
     case "chamfer": {
+      const filletExtra = filletOptions(tool);
+      const blendSize = tool === "fillet" && filletExtra.variable ? filletExtra.variable[0]![1] : num("#modelBlend");
       // --- A5. One step's edges, or the edges picked on the solid. ---
       if (edgeMode() === "step") {
         const id = edgeStepId();
         if (id == null || !edgeStepKnown()) return null;
-        return { kind: tool, edges: [stepEdges(id, edgeFilterChoice())], size: num("#modelBlend"), ...chamferSides(tool) };
+        return tool === "fillet"
+          ? { kind: "fillet", edges: [stepEdges(id, edgeFilterChoice())], size: blendSize, ...filletExtra }
+          : { kind: "chamfer", edges: [stepEdges(id, edgeFilterChoice())], size: blendSize, ...chamferSides(tool) };
       }
       const edges = selectedEdges(S.picks);
-      return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend"), ...chamferSides(tool) };
+      if (edges.length === 0) return null;
+      return tool === "fillet"
+        ? { kind: "fillet", edges, size: blendSize, ...filletExtra }
+        : { kind: "chamfer", edges, size: blendSize, ...chamferSides(tool) };
     }
     case "hole": {
       // --- F4. One group, one hole per point snapped when the panel opened. ---

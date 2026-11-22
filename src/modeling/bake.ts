@@ -20,7 +20,7 @@ import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
 import type { BeltSettings } from "../belt.ts";
-import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SweepMode, SweepTransition, Vec2, Vec3 } from "../model-tree.ts";
+import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, FilletContinuity, LoftBoundary, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SweepMode, SweepTransition, Vec2, Vec3 } from "../model-tree.ts";
 import { drillDown, isGlobalFrame, planePoint, planePrimitive, type Workplane } from "../workplane.ts";
 
 /** A baked op: as stored, as typed with its defaults filled, and any notes. */
@@ -339,10 +339,44 @@ export function readShape(spec: Record<string, unknown>, points: number): Profil
   return { smooth: true, corners: [...new Set(spec.corners as number[])] };
 }
 
-/** One loft section: origin and turn as a profile's plane, then a radius (radiusV for an ellipse) or a profile. */
+function readLoftBoundaryField(value: unknown): LoftBoundary | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "Loft boundary condition must be an object." };
+  const raw = value as Record<string, unknown>;
+  if (raw.kind === "free") return { kind: "free" };
+  let tension: number | undefined;
+  if (raw.tension !== undefined) {
+    if (typeof raw.tension !== "number" || !Number.isFinite(raw.tension) || !(raw.tension > 0)) {
+      return { reason: "Loft boundary tension must be a positive number." };
+    }
+    tension = raw.tension;
+  }
+  if (raw.kind === "normal") return { kind: "normal", ...(tension !== undefined ? { tension } : {}) };
+  if (raw.kind === "tangent") {
+    const dir = vec3Of(raw.dir);
+    if (!dir || Math.hypot(...dir) < 1e-9) return { reason: "Loft tangent boundary needs a non-zero dir [x, y, z]." };
+    return { kind: "tangent", dir, ...(tension !== undefined ? { tension } : {}) };
+  }
+  if (raw.kind === "curvature") {
+    let dir: Vec3 | undefined;
+    if (raw.dir !== undefined) {
+      const parsed = vec3Of(raw.dir);
+      if (!parsed || Math.hypot(...parsed) < 1e-9) return { reason: "Loft curvature dir must be a non-zero [x, y, z] vector." };
+      dir = parsed;
+    }
+    return { kind: "curvature", ...(dir ? { dir } : {}), ...(tension !== undefined ? { tension } : {}) };
+  }
+  return { reason: "Loft boundary kind must be free, normal, tangent, or curvature." };
+}
+
+/** One loft section: origin and turn as a profile's plane, then a radius (radiusV for an ellipse) or a profile, or an apex point cap. */
 export function readSection(value: unknown): LoftSection | { reason: string } {
   if (!value || typeof value !== "object") return { reason: "A section is an object with origin and a radius or a profile." };
   const spec = value as Record<string, unknown>;
+  if (spec.apex !== undefined) {
+    const apex = vec3Of(spec.apex);
+    if (!apex) return { reason: "A point apex section needs apex: [x, y, z]." };
+    return { origin: [...apex] as Vec3, turn: [0, 0, 0], apex };
+  }
   const origin = readVec3(spec.origin, [NaN, NaN, NaN]);
   if (origin.some((n) => !Number.isFinite(n))) return { reason: "A section needs an origin [x, y, z]." };
   const turn = readVec3(spec.turn, [0, 0, 0]);
@@ -403,7 +437,39 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     if ("reason" in picked) return picked;
     const size = spec.size;
     if (typeof size !== "number") return { reason: "This edit needs a size in millimetres." };
-    if (kind === "fillet") return { op: toSolidOp({ kind, edges: picked, size }, ctx.pose), typed: { kind, edges: picked, size } };
+    if (kind === "fillet") {
+      let continuity: FilletContinuity | undefined;
+      if (spec.continuity !== undefined) {
+        if (spec.continuity !== "g1" && spec.continuity !== "g2" && spec.continuity !== "conic") {
+          return { reason: "Fillet continuity must be g1, g2, or conic." };
+        }
+        if (spec.continuity !== "g1") continuity = spec.continuity;
+      }
+      let rho: number | undefined;
+      if (spec.rho !== undefined) {
+        if (typeof spec.rho !== "number" || !Number.isFinite(spec.rho) || spec.rho < 0.05 || spec.rho > 0.95) {
+          return { reason: "Conic fillet rho must be between 0.05 and 0.95." };
+        }
+        rho = spec.rho;
+      }
+      let variable: [number, number][] | undefined;
+      if (spec.variable !== undefined) {
+        if (!Array.isArray(spec.variable) || spec.variable.length < 2) {
+          return { reason: "Variable fillet needs at least two [u, radius] stations." };
+        }
+        const parsed = spec.variable.map(pairOf);
+        if (parsed.some((p) => !p || p[0] < 0 || p[0] > 1 || !(p[1] > 0))) {
+          return { reason: "Variable fillet stations are [u, radius] with u in [0, 1] and radius > 0." };
+        }
+        variable = parsed as [number, number][];
+      }
+      const extra = {
+        ...(continuity ? { continuity } : {}),
+        ...(rho !== undefined ? { rho } : {}),
+        ...(variable ? { variable } : {}),
+      };
+      return { op: toSolidOp({ kind, edges: picked, size, ...extra }, ctx.pose), typed: { kind, edges: picked, size, ...extra } };
+    }
     // Gaps 13. A second distance or an angle, and which face takes `size`. Absent fields keep equal sides.
     const second = typeof spec.size2 === "number" ? { size2: spec.size2 } : {};
     const angle = typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {};
@@ -593,9 +659,47 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
         if ("reason" in section) return { reason: `sections[${index}]: ${section.reason}` };
         sections.push(section);
       }
+      let guides: Curve3D[] | undefined;
+      if (spec.guides !== undefined) {
+        if (!Array.isArray(spec.guides)) return { reason: "Loft guides must be an array of Curve3D objects." };
+        guides = [];
+        for (const [idx, g] of (spec.guides as unknown[]).entries()) {
+          const curve = readCurve3DField(g, ctx);
+          if ("reason" in curve) return { reason: `guides[${idx}]: ${curve.reason}` };
+          guides.push(curve);
+        }
+      }
+      let startCondition: LoftBoundary | undefined;
+      if (spec.startCondition !== undefined) {
+        const parsed = readLoftBoundaryField(spec.startCondition);
+        if ("reason" in parsed) return { reason: `startCondition: ${parsed.reason}` };
+        startCondition = parsed;
+      }
+      let endCondition: LoftBoundary | undefined;
+      if (spec.endCondition !== undefined) {
+        const parsed = readLoftBoundaryField(spec.endCondition);
+        if ("reason" in parsed) return { reason: `endCondition: ${parsed.reason}` };
+        endCondition = parsed;
+      }
+      let maxDegree: number | undefined;
+      if (spec.maxDegree !== undefined) {
+        if (typeof spec.maxDegree !== "number" || !Number.isInteger(spec.maxDegree) || spec.maxDegree < 2 || spec.maxDegree > 12) {
+          return { reason: "Loft maxDegree must be an integer from 2 to 12." };
+        }
+        maxDegree = spec.maxDegree;
+      }
+      const made = loftOp(booleanOp, sections, spec.ruled === true, {
+        ...(guides?.length ? { guides } : {}),
+        ...(startCondition ? { startCondition } : {}),
+        ...(endCondition ? { endCondition } : {}),
+        ...(spec.closed === true ? { closed: true } : {}),
+        ...(spec.smoothing === true ? { smoothing: true } : {}),
+        ...(maxDegree !== undefined ? { maxDegree } : {}),
+      });
+      return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
     }
     const made = loftOp(booleanOp, sections, spec.ruled === true);
-    const typed = kind === "sweep" ? { ...cleanOp(spec), op: booleanOp, sections: sections.length } : { ...made };
+    const typed = { ...cleanOp(spec), op: booleanOp, sections: sections.length };
     return { op: toSolidOp(made, ctx.pose), typed };
   }
   if (kind === "shell") {

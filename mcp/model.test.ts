@@ -165,7 +165,7 @@ check("reopening keeps the committed mesh", reopened.ok === true && keptMesh, JS
   const wrong = await refusal("model_apply", { object: box.object, op: { kind: "fillet", edges: [0], radius: 1 } });
   check(
     "a fillet with a wrong field is refused with the fields a fillet takes",
-    wrong === "input.op.radius is not a field of this tool. A fillet op takes edges (required, list or object), size (required, number), label (text). guide {kind:\"fillet\"} has its full schema.",
+    wrong === "input.op.radius is not a field of this tool. A fillet op takes edges (required, list or object), size (required, number), continuity (g1|g2|conic), rho (number), variable (list), label (text). guide {kind:\"fillet\"} has its full schema.",
     wrong,
   );
   const missing = await refusal("model_apply", { object: box.object, op: { kind: "hole", through: true, at: { u: 0, v: "x" } } });

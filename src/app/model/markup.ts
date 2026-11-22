@@ -177,6 +177,12 @@ const DOCK = `
                 <button class="btn mode on" id="modelEdgesPicked" type="button" data-edge-mode="picked" aria-pressed="true">Picked</button>
                 <button class="btn mode" id="modelEdgesStep" type="button" data-edge-mode="step" aria-pressed="false" data-tip="Every sharp edge a history step made that is still on this solid">A step</button>
               </div>
+              <!-- S3 (U5): Fillet profile: circular arc (G1, default), curvature-continuous (G2), or conic rho. -->
+              <div class="modes" id="modelFilletProfile" data-for="fillet" role="group" aria-label="Fillet profile">
+                <button class="btn mode on" type="button" data-fillet-profile="g1" aria-pressed="true" data-tip="Circular arc cross-section (G1, default)">Circular G1</button>
+                <button class="btn mode" type="button" data-fillet-profile="g2" aria-pressed="false" data-tip="Curvature-continuous smooth blend (G2)">Smooth G2</button>
+                <button class="btn mode" type="button" data-fillet-profile="conic" aria-pressed="false" data-tip="Rational conic profile with fullness ρ">Conic</button>
+              </div>
               <!-- Gaps 13: equal sides, two sizes, or a size and an angle. -->
               <div class="modes" id="modelChamferForm" data-for="chamfer" role="group" aria-label="Chamfer sides">
                 <button class="btn mode on" type="button" data-chamfer-form="equal" aria-pressed="true" data-tip="Size along both faces">Equal</button>
@@ -266,6 +272,11 @@ const DOCK = `
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
                 <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
+                <!-- S3 (U5): Conic fullness rho and variable-radius stations along the edge. -->
+                <label data-for="fillet" data-fillet-profile="conic" data-snap="0.05" data-tip="Conic fullness ρ: 0.05 flat, 0.5 parabolic, 0.95 very full."><span class="scrub-label" data-scrub>Conic ρ</span><input id="modelFilletRho" type="number" step="0.05" min="0.05" max="0.95" value="0.5" aria-label="Conic fullness rho"></label>
+                <label data-for="fillet" data-fillet-var="1" data-snap="0.5" data-tip="Radius at the start of the edge (u = 0)."><span class="scrub-label" data-scrub>Start r</span><input id="modelFilletStart" type="number" step="0.1" min="0.05" value="1" aria-label="Variable fillet start radius"></label>
+                <label data-for="fillet" data-fillet-var="1" data-snap="0.5" data-tip="Optional radius at the middle (u = 0.5). 0 tapers linearly."><span class="scrub-label" data-scrub>Middle r</span><input id="modelFilletMid" type="number" step="0.1" min="0" value="0" aria-label="Variable fillet middle radius"></label>
+                <label data-for="fillet" data-fillet-var="1" data-snap="0.5" data-tip="Radius at the end of the edge (u = 1)."><span class="scrub-label" data-scrub>End r</span><input id="modelFilletEnd" type="number" step="0.1" min="0.05" value="3" aria-label="Variable fillet end radius"></label>
                 <!-- Gaps 13: a chamfer's other side, by a distance or by an angle from the face Size runs along. -->
                 <label data-for="chamfer" data-chamfer="two" data-snap="1" data-tip="Along the other face."><span class="scrub-label" data-scrub>Other side</span><input id="modelChamfer2" type="number" step="0.1" min="0" value="2" aria-label="Chamfer distance along the other face"></label>
                 <label data-for="chamfer" data-chamfer="angle" data-snap="15" data-tip="From the face Size runs along."><span class="scrub-label" data-scrub>Angle°</span><input id="modelChamferAngle" type="number" step="1" min="1" max="89" value="45" aria-label="Chamfer angle from the first face, degrees"></label>
@@ -395,6 +406,7 @@ const DOCK = `
                 <label class="model-keep"><input id="modelThrough" type="checkbox"> Through all</label>
                 <label class="model-keep"><input id="modelCounterbore" type="checkbox"> Counterbore</label>
               </div>
+              <label class="model-keep" data-for="fillet" data-tip="Taper the fillet radius along the edge (Start, optional Middle, End)."><input id="modelFilletVariable" type="checkbox"> Variable radius</label>
               <p class="model-note" id="modelChamferSide" data-for="chamfer" data-chamfer="two angle">Size runs along each edge's upper face.</p>
               <label class="model-keep" data-for="chamfer" data-chamfer="two angle"><input id="modelChamferFlip" type="checkbox"> Flip the sides</label>
               <!-- A2 shell -->

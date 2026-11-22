@@ -81,13 +81,16 @@ export type BooleanKind = "fuse" | "cut" | "common";
 /** A join between two objects' trees: this tree's solid with `tool`'s step, placed by `relative`. */
 export type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
+/** Cross-section profile continuity for `fillet`. Default `"g1"` (circular arc). */
+export type FilletContinuity = "g1" | "g2" | "conic";
+
 /** One edit, in the solid's own frame. A fresh fillet or chamfer names edges by index. */
 type ModelOpBase =
   /** `merge` joins the faces and edges the boolean leaves on one surface; absent on a step saved before it. */
   | ({ kind: "boolean"; op: BooleanKind; merge?: true } & PrimitiveSpec)
   | HoleOp
   | { kind: "split"; origin: Vec3; normal: Vec3 }
-  | { kind: "fillet"; edges: EdgePick[]; size: number }
+  | { kind: "fillet"; edges: EdgePick[]; size: number; continuity?: FilletContinuity; rho?: number; variable?: [number, number][] }
   /**
    * Equal distances, or with `size2` two: `size` along each edge's upper face and `size2` along the other. With
    * `angleDeg`, `size` along that face at that angle from it. `flip` swaps which face takes `size`.
@@ -330,7 +333,8 @@ export interface RevolveOp {
 
 /**
  * One cross-section of a loft, on a plane as a profile's is: a closed outline of `[u, v]` points (smooth, sharp at
- * `corners`, as a profile's), or a circle of `radius` about the plane's origin, an ellipse with `radiusV` along V.
+ * `corners`, as a profile's), a circle of `radius` about the plane's origin (an ellipse with `radiusV` along V),
+ * `loops`, or a point `apex` cap (valid as first or last loft section).
  */
 export interface LoftSection {
   origin: Vec3;
@@ -342,7 +346,16 @@ export interface LoftSection {
   corners?: number[];
   /** K1: closed loops in place of `profile` or `radius`. Absent otherwise. */
   loops?: ProfileLoop[];
+  /** S3: degenerate point cap at the start or end of a loft. */
+  apex?: Vec3;
 }
+
+/** S3: Start or end boundary tangency/curvature condition for a controlled loft. */
+export type LoftBoundary =
+  | { kind: "free" }
+  | { kind: "normal"; tension?: number }
+  | { kind: "tangent"; dir: Vec3; tension?: number }
+  | { kind: "curvature"; dir?: Vec3; tension?: number };
 
 /**
  * --- F3. A sweep remembered on the loft it became. The kernel never reads it.
@@ -374,6 +387,18 @@ export interface LoftOp {
   op: BooleanKind;
   sections: LoftSection[];
   ruled?: true;
+  /** S3: 3D guide rail curves shaping the loft between sections. */
+  guides?: Curve3D[];
+  /** S3: Start boundary condition (free, normal, tangent, curvature). */
+  startCondition?: LoftBoundary;
+  /** S3: End boundary condition (free, normal, tangent, curvature). */
+  endCondition?: LoftBoundary;
+  /** S3: Close the last section smoothly back to the first (periodic ring / torus). */
+  closed?: true;
+  /** S3: Enable curvature-fairing B-spline smoothing. */
+  smoothing?: true;
+  /** S3: Cap maximum U/V B-spline degree (default 8). */
+  maxDegree?: number;
   /** --- F3. Stripped before the engine sees the op. An old loft has none. --- */
   drawing?: LoftDrawing;
 }
@@ -991,7 +1016,13 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const picked = op.edges.filter((edge) => !isEdgeStep(edge)).length;
       const steps = op.edges.filter(isEdgeStep).map((edge) => `${edge.filter && edge.filter !== "all" ? `${edge.filter} ` : ""}edges of node ${edge.fromNode}`);
       const count = [...(picked > 0 || steps.length === 0 ? [picked === 1 ? "1 edge" : `${picked} edges`] : []), ...steps].join(" + ");
-      if (op.kind === "fillet") return `Fillet ${count} r ${n(op.size)}`;
+      if (op.kind === "fillet") {
+        const profile = op.continuity === "g2" ? ", G2" : op.continuity === "conic" ? `, conic ρ=${n(op.rho ?? 0.5)}` : "";
+        const radii = op.variable && op.variable.length >= 2
+          ? ` r ${n(op.variable[0]![1])}→${n(op.variable[op.variable.length - 1]![1])}`
+          : ` r ${n(op.size)}`;
+        return `Fillet ${count}${radii}${profile}`;
+      }
       const second = op.size2 !== undefined ? ` × ${n(op.size2)}` : op.angleDeg !== undefined ? ` at ${n(op.angleDeg)}°` : "";
       return `Chamfer ${count} ${n(op.size)}${second}${second && op.flip ? ", flipped" : ""}`;
     }
@@ -1025,7 +1056,8 @@ export function opLabel(op: ModelOp, parts?: number): string {
         return `${verb} along ${op.drawing.sweep.path.length} points`;
       }
       const verb = op.op === "fuse" ? "Loft" : `${BOOLEAN_VERB[op.op]} loft`;
-      return `${verb} through ${op.sections.length} sections${op.ruled ? ", ruled" : ""}`;
+      const flags = [op.ruled ? "ruled" : "", op.closed ? "closed" : "", op.guides?.length ? `${op.guides.length} guide${op.guides.length === 1 ? "" : "s"}` : ""].filter(Boolean);
+      return `${verb} through ${op.sections.length} sections${flags.length ? `, ${flags.join(", ")}` : ""}`;
     }
     case "sweep": {
       const verb = op.op === "fuse" ? "Sweep" : `${BOOLEAN_VERB[op.op]} sweep`;

@@ -16,7 +16,7 @@ import { showLessonsFor } from "./lessons-note";
 import { endsText, type PickedPoint } from "../measure-points";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { pushToast } from "./toasts";
-import type { ChamferChoice, EditPanel } from "../model-edit";
+import type { ChamferChoice, EditPanel, FilletChoice } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
 import { lastFace, selectedEdges, selectedFaces } from "../model-blend";
@@ -516,7 +516,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // --- end A4 ---
-    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextDir [data-dir], #modelTextWrap [data-wrap], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form]");
+    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextDir [data-dir], #modelTextWrap [data-wrap], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form], #modelFilletProfile [data-fillet-profile]");
     if (featureMode) {
       // --- Text with real fonts: a style the font cannot make says why, and changes nothing.
       if (featureMode.getAttribute("aria-disabled") === "true") {
@@ -658,6 +658,12 @@ export function mountModelChrome(next: ModelChromeHooks) {
       hooks?.paramsChanged();
       return;
     }
+    if (ev.target instanceof HTMLElement && ev.target.id === "modelFilletVariable") {
+      syncFields();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
     // --- A4. Align to the path changes the group at once. ---
     if (ev.target instanceof HTMLElement && (ev.target.id === "modelPatAlign" || ev.target.id === "modelPatCombine")) {
       refreshNote();
@@ -684,7 +690,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow" || ev.target.id === "modelPartHoleFor" || ev.target.id === "modelPartSection")) return;
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelFilletVariable" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow" || ev.target.id === "modelPartHoleFor" || ev.target.id === "modelPartSection")) return;
     if (ev.target instanceof HTMLInputElement && (ev.target.id === "modelPartLength" || ev.target.id === "modelPartDiameter" || ev.target.id === "modelPartBore")) ev.target.dataset.touched = "1";
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
@@ -1140,6 +1146,7 @@ function fillEdit() {
     setEdgeSource("picked", { quiet: true });
   }
   if (panel.tool === "chamfer") paintChamfer(panel.chamfer ?? { form: "equal", flip: false });
+  if (panel.tool === "fillet") paintFillet(panel.fillet ?? { continuity: "g1", variable: false });
   // --- A2 shell ---
   if (panel.shellClosed !== undefined) setShellClosed(panel.shellClosed);
   if (panel.join) {
@@ -1411,6 +1418,9 @@ function syncFields() {
     const flatOk = node.dataset.flat === undefined || tool !== "text" || curvedNow === null;
     // --- end A3 ---
     const chamferOk = !node.dataset.chamfer || node.dataset.chamfer.split(" ").includes(chamferChoice().form);
+    const filletNow = filletChoice();
+    const filletProfileOk = !node.dataset.filletProfile || node.dataset.filletProfile === filletNow.continuity;
+    const filletVarOk = node.dataset.filletVar === undefined || filletNow.variable;
     // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
     const whenOk = !node.dataset.when || (node.dataset.when === edgeSource && (tool === "fillet" || tool === "chamfer"));
     // --- A4. A pattern mode shows only its own fields. Count stays for every mode. ---
@@ -1423,7 +1433,7 @@ function syncFields() {
     // --- A gear's Flat is for a D bore.
     const gearBoreOk = (!node.dataset.gearBore || (node.dataset.gearBore === gearBoreShape() && gearKind() === "external")) && (!node.dataset.gearKind || node.dataset.gearKind.split(" ").includes(gearKind()));
     const partOk = !node.dataset.partKind || node.dataset.partKind.split(" ").includes(partKindNow());
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk && partOk));
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && filletProfileOk && filletVarOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk && partOk));
   });
   // --- A3 composite features ---
   // --- Text with real fonts: what the font picked allows, and the sample line, whenever the card shows.
@@ -2110,6 +2120,24 @@ function applyHoleDefaults() {
 const HOLE_CHOICES: ReadonlySet<string> = new Set(["modelThrough", "modelCounterbore", "modelScrew"]);
 
 /** The hole's Through all and Counterbore boxes, as ticked. */
+/** S3 (U5). Fillet profile (G1 circular, G2 smooth, conic) and variable-radius toggle. */
+export function filletChoice(): FilletChoice {
+  const on = document.querySelector<HTMLButtonElement>('#modelFilletProfile [aria-pressed="true"]')?.dataset.filletProfile;
+  const continuity = on === "g2" || on === "conic" ? on : "g1";
+  return { continuity, variable: document.querySelector<HTMLInputElement>("#modelFilletVariable")?.checked ?? false };
+}
+
+function paintFillet(choice: FilletChoice) {
+  document.querySelectorAll<HTMLButtonElement>("#modelFilletProfile [data-fillet-profile]").forEach((button) => {
+    const on = button.dataset.filletProfile === choice.continuity;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
+  const box = document.querySelector<HTMLInputElement>("#modelFilletVariable");
+  if (box) box.checked = choice.variable;
+  syncFields();
+}
+
 /** A chamfer's sides: equal, two sizes, or a size and an angle, and whether Size runs along the lower face. */
 export function chamferChoice(): ChamferChoice {
   const on = document.querySelector<HTMLButtonElement>('#modelChamferForm [aria-pressed="true"]')?.dataset.chamferForm;
@@ -2576,6 +2604,7 @@ function dragContext(): DragContext {
     // --- A4. Linear until the panel says polar or path. ---
     ...(tool === "pattern" ? { repeat: { mode: repeatModeNow() } } : {}),
     ...(tool === "chamfer" ? { chamfer: chamferChoice().form } : {}),
+    ...(tool === "fillet" ? { fillet: filletChoice() } : {}),
     ...(tool === "place" && hooks?.placeAxes() ? { placeAxes: hooks.placeAxes()! } : {}),
   };
 }

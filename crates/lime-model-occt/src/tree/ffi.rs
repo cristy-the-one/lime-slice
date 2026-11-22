@@ -103,6 +103,20 @@ extern "C" {
         max_mm: *mut f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    /// --- Organic surfaces S3: variable-radius, G2 curvature-continuous, and conic-rho fillets.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_fillet_v2(
+        from: *const RawShape,
+        edges: *const c_int,
+        count: c_int,
+        size: f64,
+        continuity: c_int,
+        rho: f64,
+        variable: *const f64,
+        variable_len: c_int,
+        max_mm: *mut f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     /// A chamfer by two distances (`mode` 1) or a distance and an angle in degrees (`mode` 2). `faces[i]` is the face
     /// edge `i`'s first distance runs along.
     #[allow(clippy::too_many_arguments)]
@@ -600,6 +614,28 @@ extern "C" {
         scale_stations: *const f64,
         scale_count: c_int,
         twist_deg: f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    /// --- Organic surfaces S3: controlled Loft v2 (apex caps, guide rails, boundary tangency/curvature, closed periodic, degree cap).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_loft_v2(
+        from: *const RawShape,
+        op: *const c_char,
+        head: *const f64,
+        section_count: c_int,
+        data: *const f64,
+        loop_blob: *const f64,
+        loop_count: c_int,
+        loop_at: *const c_int,
+        apex_flags: *const c_int,
+        ruled: c_int,
+        closed: c_int,
+        smoothing: c_int,
+        max_degree: c_int,
+        conds: *const f64,
+        guides_blob: *const f64,
+        guides_len: c_int,
+        guide_count: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     pub(super) fn lime_tree_distance(

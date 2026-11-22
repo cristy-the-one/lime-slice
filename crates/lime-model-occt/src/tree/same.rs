@@ -38,11 +38,22 @@ pub(super) fn same_request(stored: &Op, incoming: &Op) -> bool {
         return false;
     }
     let (stored_edges, incoming_edges) = match (stored, incoming) {
-        (Op::Fillet { edges: a, size: x }, Op::Fillet { edges: b, size: y })
-            if x == y && a.len() == b.len() =>
-        {
-            (a, b)
-        }
+        (
+            Op::Fillet {
+                edges: a,
+                size: x,
+                continuity: xc,
+                rho: xr,
+                variable: xv,
+            },
+            Op::Fillet {
+                edges: b,
+                size: y,
+                continuity: yc,
+                rho: yr,
+                variable: yv,
+            },
+        ) if x == y && xc == yc && xr == yr && xv == yv && a.len() == b.len() => (a, b),
         (
             Op::Chamfer {
                 edges: a,

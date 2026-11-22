@@ -7,7 +7,7 @@ import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
 import { partitionNumbers } from "./modeling/partition.ts";
-import { savedNodes, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type SweepMode, type SweepOp, type SweepTransition, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftBoundary, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type SweepMode, type SweepOp, type SweepTransition, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project names its solids without loading these requests (./brep-file.ts).
 export { isBrep, solidFileName } from "./brep-file.ts";
@@ -180,6 +180,9 @@ function copyCurve3D(curve: Curve3D): Curve3D {
 }
 
 function copySection(section: LoftSection): LoftSection {
+  if (section.apex) {
+    return { origin: [...section.apex], turn: [0, 0, 0], apex: [...section.apex] };
+  }
   return {
     origin: [...section.origin],
     turn: [...section.turn],
@@ -189,6 +192,13 @@ function copySection(section: LoftSection): LoftSection {
         ? { radius: section.radius, ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}) }
         : { profile: (section.profile ?? []).map(([u, v]) => [u, v] as Vec2), ...shapeFields({ smooth: section.smooth, corners: section.corners }) }),
   };
+}
+
+function copyLoftBoundary(cond: LoftBoundary): LoftBoundary {
+  if (cond.kind === "free") return { kind: "free" };
+  if (cond.kind === "normal") return { kind: "normal", ...(cond.tension !== undefined ? { tension: cond.tension } : {}) };
+  if (cond.kind === "tangent") return { kind: "tangent", dir: [...cond.dir], ...(cond.tension !== undefined ? { tension: cond.tension } : {}) };
+  return { kind: "curvature", ...(cond.dir ? { dir: [...cond.dir] } : {}), ...(cond.tension !== undefined ? { tension: cond.tension } : {}) };
 }
 
 /** Real kernel pipe-shell sweep along a 3D spine curve (`BRepOffsetAPI_MakePipeShell`). */
@@ -232,21 +242,31 @@ function shapeFields(shape: ProfileShape): { smooth?: true; corners?: number[] }
   return { ...(shape.smooth ? { smooth: true as const } : {}), ...(shape.smooth && shape.corners?.length ? { corners: [...shape.corners] } : {}) };
 }
 
-/** A loft through `sections`, each a profile (with its shape) or a circle or ellipse, on its own plane. */
-export function loftOp(op: BooleanKind, sections: readonly LoftSection[], ruled = false): LoftOp {
+/** A loft through `sections`, each a profile (with its shape), a circle or ellipse, loops, or a point apex, with optional S3 guides and boundary conditions. */
+export function loftOp(
+  op: BooleanKind,
+  sections: readonly LoftSection[],
+  ruled = false,
+  options: {
+    guides?: readonly Curve3D[];
+    startCondition?: LoftBoundary;
+    endCondition?: LoftBoundary;
+    closed?: boolean;
+    smoothing?: boolean;
+    maxDegree?: number;
+  } = {},
+): LoftOp {
   return {
     kind: "loft",
     op,
-    sections: sections.map((section) => ({
-      origin: [...section.origin],
-      turn: [...section.turn],
-      ...(section.loops && section.loops.length > 0
-        ? { loops: copyLoops(section.loops) }
-        : section.radius !== undefined
-          ? { radius: section.radius, ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}) }
-          : { profile: (section.profile ?? []).map(([u, v]) => [u, v] as Vec2), ...shapeFields({ smooth: section.smooth, corners: section.corners }) }),
-    })),
+    sections: sections.map(copySection),
     ...(ruled ? { ruled: true as const } : {}),
+    ...(options.guides && options.guides.length > 0 ? { guides: options.guides.map(copyCurve3D) } : {}),
+    ...(options.startCondition ? { startCondition: copyLoftBoundary(options.startCondition) } : {}),
+    ...(options.endCondition ? { endCondition: copyLoftBoundary(options.endCondition) } : {}),
+    ...(options.closed ? { closed: true as const } : {}),
+    ...(options.smoothing ? { smoothing: true as const } : {}),
+    ...(options.maxDegree !== undefined ? { maxDegree: options.maxDegree } : {}),
   };
 }
 

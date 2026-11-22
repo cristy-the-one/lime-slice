@@ -32,7 +32,7 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   create: SIZE_FIELDS,
   boolean: ["modelX", "modelY", "modelZ", ...SIZE_FIELDS, "modelRx", "modelRy", "modelRz"],
   split: ["modelPlane", "modelTiltA", "modelTiltB"],
-  fillet: ["modelBlend"],
+  fillet: ["modelBlend", "modelFilletRho", "modelFilletStart", "modelFilletMid", "modelFilletEnd"],
   chamfer: ["modelBlend", "modelChamfer2", "modelChamferAngle"],
   hole: ["modelX", "modelY", "modelZ", "modelHoleR", "modelHoleD", "modelBoreR", "modelBoreD"],
   // --- A2 shell ---
@@ -126,8 +126,8 @@ export interface DragContext {
   extent: number;
   /** The split plane the panel describes, or null while it has none (Face mode with no flat face picked). */
   split: SplitPlan | null;
-  /** Where a blend's size handle sits, or null with no edge picked. */
-  edge: { point: Vec3; out: Vec3 } | null;
+  /** Where a blend's size handle sits, or null with no edge picked. `start` and `end` seat variable-radius fillet dots along the edge. */
+  edge: { point: Vec3; out: Vec3; start?: Vec3; end?: Vec3 } | null;
   /** Unit direction into the material. Omitted holes drill toward −Z. */
   holeAxis?: Vec3;
   /** The hole's Through all and Counterbore boxes. Through all has no depth to drag; a counterbore adds two knobs. */
@@ -166,6 +166,8 @@ export interface DragContext {
   repeat?: { mode: "linear" | "polar" | "path" };
   /** A chamfer's sides as the panel shows them: a second size or an angle adds a knob. Absent is equal sides. */
   chamfer?: "equal" | "two" | "angle";
+  /** S3 (U5): A fillet's profile and variable-radius mode, adding Conic ρ or start/mid/end edge knobs. */
+  fillet?: { continuity: "g1" | "g2" | "conic"; variable: boolean };
   /**
    * --- Assemblies M10. Model space's axes as the view draws them, for a part open in its own frame: Place moves and turns
    * the part in model space, so its arrows and rings point along model X, Y, Z. Absent while the view is model space.
@@ -501,7 +503,26 @@ function blendHandles(tool: "fillet" | "chamfer", ctx: DragContext): Spec[] {
   if (!ctx.edge) return [];
   const size = ctx.read("modelBlend");
   const knob = axisHandle("blend", "knob", "modelBlend", onFeature(add(ctx.edge.point, scale(ctx.edge.out, size))), ctx.edge.out, "accent", tool === "fillet" ? "Fillet" : "Chamfer", { min: 0.05, step: 0.5 });
-  if (tool !== "chamfer" || !ctx.chamfer || ctx.chamfer === "equal") return [knob];
+  if (tool === "fillet") {
+    const out: Spec[] = [knob];
+    if (ctx.fillet?.variable) {
+      const startPt = ctx.edge.start ?? ctx.edge.point;
+      const endPt = ctx.edge.end ?? ctx.edge.point;
+      const rStart = Math.max(0.05, ctx.read("modelFilletStart") || size);
+      const rMid = Math.max(0, ctx.read("modelFilletMid"));
+      const rEnd = Math.max(0.05, ctx.read("modelFilletEnd") || size);
+      out.push(
+        axisHandle("fillet-start", "knob", "modelFilletStart", onFeature(add(startPt, scale(ctx.edge.out, rStart))), ctx.edge.out, "x", "Start r", { min: 0.05, step: 0.5 }),
+        axisHandle("fillet-mid", "knob", "modelFilletMid", onFeature(add(ctx.edge.point, scale(ctx.edge.out, rMid || (rStart + rEnd) / 2))), ctx.edge.out, "y", "Middle r", { min: 0, step: 0.5 }),
+        axisHandle("fillet-end", "knob", "modelFilletEnd", onFeature(add(endPt, scale(ctx.edge.out, rEnd))), ctx.edge.out, "z", "End r", { min: 0.05, step: 0.5 }),
+      );
+    }
+    if (ctx.fillet?.continuity === "conic") {
+      out.push(axisHandle("fillet-rho", "knob", "modelFilletRho", KNOB, ctx.edge.out, "accent", "Conic ρ", { min: 0.05, max: 0.95, step: 0.05, rate: 0.02, unit: "×" }));
+    }
+    return out;
+  }
+  if (!ctx.chamfer || ctx.chamfer === "equal") return [knob];
   // The other side has no place of its own on the edge until the bevel is built: its knob docks.
   const other = ctx.chamfer === "two"
     ? axisHandle("chamfer-2", "knob", "modelChamfer2", KNOB, ctx.edge.out, "accent", "Other side", { min: 0.05, step: 0.5 })
@@ -813,9 +834,12 @@ export function turnGimbal(turn: Vec3): [Vec3, Vec3, Vec3] {
  * The fillet or chamfer size handle: the edge's middle point, pushed out along the direction
  * from the solid's centre that is square to the edge.
  */
-export function edgeAnchor(points: ArrayLike<number>, center: Vec3): { point: Vec3; out: Vec3 } | null {
+export function edgeAnchor(points: ArrayLike<number>, center: Vec3): { point: Vec3; out: Vec3; start: Vec3; end: Vec3 } | null {
   const count = Math.floor(points.length / 3);
   if (count < 2) return null;
+  const start: Vec3 = [points[0]!, points[1]!, points[2]!];
+  const last = (count - 1) * 3;
+  const end: Vec3 = [points[last]!, points[last + 1]!, points[last + 2]!];
   let total = 0;
   const lengths: number[] = [];
   for (let i = 0; i + 1 < count; i += 1) {
@@ -824,7 +848,7 @@ export function edgeAnchor(points: ArrayLike<number>, center: Vec3): { point: Ve
     total += step;
   }
   let walk = total / 2;
-  let point: Vec3 = [points[0]!, points[1]!, points[2]!];
+  let point: Vec3 = [...start];
   let tangent: Vec3 = [points[3]! - points[0]!, points[4]! - points[1]!, points[5]! - points[2]!];
   for (let i = 0; i < lengths.length; i += 1) {
     const length = lengths[i]!;
@@ -842,7 +866,7 @@ export function edgeAnchor(points: ArrayLike<number>, center: Vec3): { point: Ve
   const away = sub(point, center);
   let out = sub(away, scale(along, dot(away, along)));
   if (Math.hypot(...out) < 1e-9) out = Math.abs(along[2]) < 0.9 ? cross(along, Z) : cross(along, X);
-  return { point, out: normalize(out) };
+  return { point, out: normalize(out), start, end };
 }
 
 /**

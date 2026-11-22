@@ -51,12 +51,21 @@ pub(super) struct Resolved {
 /// kept by `filter`; the op keeps the step pick as sent. Other ops pass through.
 pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String> {
     match op {
-        Op::Fillet { edges, size } => {
+        Op::Fillet {
+            edges,
+            size,
+            continuity,
+            rho,
+            variable,
+        } => {
             let (refs, picks) = resolve_blend(from, edges, "fillet", steps)?;
             Ok(Resolved {
                 op: Op::Fillet {
                     edges: refs,
                     size: *size,
+                    continuity: *continuity,
+                    rho: *rho,
+                    variable: variable.clone(),
                 },
                 picks,
             })
