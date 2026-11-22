@@ -79,6 +79,8 @@
 #include <GeomFill_SimpleBound.hxx>
 #include <BRepOffsetAPI_MakeFilling.hxx>
 #include <Geom_BezierCurve.hxx>
+#include <Geom_SurfaceOfRevolution.hxx>
+#include <iostream>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BezierSurface.hxx>
 #include <Geom_Circle.hxx>
@@ -11923,6 +11925,84 @@ TopoDS_Face fill_geomfill(const std::vector<Handle(Geom_BSplineCurve)>& curves, 
     }
 }
 
+// GeomPlate's own starting plane exists only when every support normal sits in one half-space.
+// A closed wall does not, so the plate stays flat and meets the wall at 90°. A dome whose
+// meridian leaves the opening vertically gives that solve a surface it can actually deform.
+TopoDS_Face dome_init(
+    const std::vector<std::vector<TopoDS_Edge>>& sides,
+    const std::vector<TopoDS_Face>& supports,
+    const std::vector<int>& orders) {
+    try {
+        std::vector<gp_Pnt> samples;
+        gp_Vec free(0, 0, 0);
+        for (size_t i = 0; i < sides.size(); ++i) {
+            for (const TopoDS_Edge& edge : sides[i]) {
+                BRepAdaptor_Curve curve(edge);
+                const double first = curve.FirstParameter();
+                const double last = curve.LastParameter();
+                if (!(last > first)) continue;
+                for (int s = 0; s < 5; ++s) {
+                    samples.push_back(curve.Value(first + (last - first) * (static_cast<double>(s) / 4.0)));
+                }
+            }
+            if (i >= supports.size() || supports[i].IsNull() || orders[i] <= 0 || sides[i].empty()) continue;
+            const TopoDS_Face& face = supports[i];
+            const TopoDS_Edge& edge = sides[i].front();
+            Standard_Real c0 = 0.0;
+            Standard_Real c1 = 0.0;
+            const Handle(Geom2d_Curve) pcurve = BRep_Tool::CurveOnSurface(edge, face, c0, c1);
+            if (pcurve.IsNull() || !(c1 > c0)) continue;
+            const gp_Pnt2d uv = pcurve->Value(0.5 * (c0 + c1));
+            BRepAdaptor_Surface surface(face);
+            BRepLProp_SLProps props(surface, 1, 1e-7);
+            props.SetParameters(uv.X(), uv.Y());
+            if (!props.IsNormalDefined()) continue;
+            gp_Dir normal = props.Normal();
+            if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
+            BRepAdaptor_Curve curve(edge);
+            gp_Pnt at;
+            gp_Vec tangent;
+            curve.D1(0.5 * (curve.FirstParameter() + curve.LastParameter()), at, tangent);
+            if (tangent.Magnitude() < 1e-9) continue;
+            tangent.Normalize();
+            gp_Vec cross = gp_Vec(normal).Crossed(tangent);
+            if (cross.Magnitude() < 1e-9) continue;
+            cross.Normalize();
+            const gp_Pnt trial = at.Translated(cross * 0.5);
+            BRepClass_FaceClassifier classifier(face, trial, 1e-6);
+            if (classifier.State() == TopAbs_IN) cross.Reverse();
+            free += cross;
+        }
+        if (samples.size() < 3 || free.Magnitude() < 1e-6) return {};
+        gp_Pnt center(0, 0, 0);
+        for (const gp_Pnt& point : samples) center.ChangeCoord() += point.Coord();
+        center.ChangeCoord().Divide(static_cast<double>(samples.size()));
+        const gp_Dir axis(free);
+        const gp_Vec axis_vec(axis);
+        const gp_Ax2 frame(center, axis);
+        double radius = 0.0;
+        for (const gp_Pnt& point : samples) {
+            const gp_Vec from(center, point);
+            const gp_Vec radial = from - axis_vec * from.Dot(axis_vec);
+            radius = std::max(radius, radial.Magnitude());
+        }
+        if (!(radius > 1.0)) return {};
+        const double height = 0.55 * radius;
+        const gp_Pnt base = center.Translated(gp_Vec(frame.XDirection()) * radius);
+        TColgp_Array1OfPnt poles(1, 3);
+        poles.SetValue(1, base);
+        poles.SetValue(2, base.Translated(gp_Vec(axis) * height));
+        poles.SetValue(3, center.Translated(gp_Vec(axis) * height));
+        Handle(Geom_BezierCurve) profile = new Geom_BezierCurve(poles);
+        Handle(Geom_SurfaceOfRevolution) dome = new Geom_SurfaceOfRevolution(profile, gp_Ax1(center, axis));
+        BRepBuilderAPI_MakeFace face(dome, 0.0, 2.0 * M_PI, profile->FirstParameter(), profile->LastParameter(), 1e-6);
+        if (!face.IsDone() || face.Face().IsNull()) return {};
+        return face.Face();
+    } catch (const Standard_Failure&) {
+        return {};
+    }
+}
+
 TopoDS_Face fill_plate(
     const std::vector<std::vector<TopoDS_Edge>>& sides,
     const std::vector<TopoDS_Face>& supports,
@@ -11933,8 +12013,14 @@ TopoDS_Face fill_plate(
     std::string& error) {
     const double tol3d = tolerance > 0.0 ? std::clamp(tolerance, 1e-7, 1e-4) : 1e-5;
     try {
-        // Eight iterations, up to degree 8: a closed G1 or G2 contour does not settle in the default two.
-        BRepOffsetAPI_MakeFilling filling(3, 15, 8, Standard_False, 1e-5, tol3d, 0.001, 0.02, 8, 9);
+        const int max_order = orders.empty() ? 0 : *std::max_element(orders.begin(), orders.end());
+        // Degree i+2 is the resolution Open CASCADE recommends for a constraint of order i.
+        const int degree = max_order >= 2 ? 4 : 3;
+        BRepOffsetAPI_MakeFilling filling(degree, 15, 3, Standard_False, 1e-5, tol3d, 0.001, 0.02, 8, 9);
+        if (max_order > 0) {
+            const TopoDS_Face dome = dome_init(sides, supports, orders);
+            if (!dome.IsNull()) filling.LoadInitSurface(dome);
+        }
         for (size_t i = 0; i < sides.size(); ++i) {
             const GeomAbs_Shape order = abs_order(orders[i]);
             for (const TopoDS_Edge& edge : sides[i]) {
@@ -11951,8 +12037,19 @@ TopoDS_Face fill_plate(
             error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
             return {};
         }
+        {
+            std::ostringstream plate;
+            plate.imbue(std::locale::classic());
+            plate << "S5 plate g0Mm=" << filling.G0Error()
+                  << " g1Rad=" << filling.G1Error()
+                  << " g2=" << filling.G2Error() << '\n';
+            std::cout << plate.str();
+        }
         for (TopExp_Explorer explorer(filling.Shape(), TopAbs_FACE); explorer.More(); explorer.Next()) {
-            return TopoDS::Face(explorer.Current());
+            TopoDS_Face face = TopoDS::Face(explorer.Current());
+            // MakeFilling can leave a bound with only a pcurve. Sewing then throws "No geometry".
+            BRepLib::BuildCurves3d(face);
+            return face;
         }
         error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
         return {};
