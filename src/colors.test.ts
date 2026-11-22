@@ -169,6 +169,15 @@ check("travel keeps its color in any mode", colorForPath("travel", "speed", 0, f
 check("speed mode starts on the slow stop", colorForPath("outer", "speed", 0, slow) === SPEED_RAMP[0].toLowerCase());
 check("weight mode ends on the heavy stop", colorForPath("outer", "weight", 1) === WEIGHT_RAMP[2].toLowerCase());
 
+// A CSS minifier may shorten #ffffff to #fff (Lightning CSS does), and a hand-written theme may use either.
+check("#fff reads as white", hexRgb("#fff").join() === "255,255,255", hexRgb("#fff").join());
+check("#f80 reads as #ff8800", hexRgb("#f80").join() === "255,136,0", hexRgb("#f80").join());
+check("#ffffff reads as white", hexRgb("#ffffff").join() === "255,255,255", hexRgb("#ffffff").join());
+check("upper case and spaces read the same", hexRgb(" #FF8800 ").join() === "255,136,0", hexRgb(" #FF8800 ").join());
+check("#f808 drops its alpha", hexRgb("#f808").join() === "255,136,0", hexRgb("#f808").join());
+check("#ff880080 drops its alpha", hexRgb("#ff880080").join() === "255,136,0", hexRgb("#ff880080").join());
+check("not a color reads as black", hexRgb("teal").join() === "0,0,0", hexRgb("teal").join());
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

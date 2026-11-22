@@ -114,8 +114,15 @@ export function lerpHex(a: string, b: string, t: number): string {
   return `#${mix.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/**
+ * A CSS hex color as [r, g, b], 0–255. Takes #rgb, #rgba, #rrggbb and #rrggbbaa (alpha is dropped), because a CSS
+ * minifier may shorten #ffffff to #fff and a theme may be written either way. Anything else is black.
+ */
 export function hexRgb(hex: string): [number, number, number] {
-  const n = parseInt(hex.slice(1), 16);
+  let digits = hex.trim().replace(/^#/, "");
+  if (!/^(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(digits)) return [0, 0, 0];
+  if (digits.length <= 4) digits = [...digits].map((c) => c + c).join("");
+  const n = parseInt(digits.slice(0, 6), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
