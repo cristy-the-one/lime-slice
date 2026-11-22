@@ -34,7 +34,7 @@ New spec files go into `test:smoke` in `package.json`, or CI never runs them.
 
 ## Unit tests
 
-`node tools/run-unit.mjs` runs `tools/unit-tests.txt` as one chain, and **stops at the first failing file**. If a file fails, the files after it never ran; fix or rebuild, then run the chain again. A new test file has to be added to `tools/unit-tests.txt`.
+`node tools/run-unit.mjs` runs `tools/unit-tests.txt`, several files at once. `LIME_UNIT_JOBS` sets how many (otherwise the smaller of the machine's cores and 8); `LIME_UNIT_JOBS=1` runs one at a time. A line marked `# serial` runs alone after the others. Every file runs, and a failure is listed at the end with its exit code. A new test file has to be added to `tools/unit-tests.txt`.
 
 ## MCP and engine tests
 
