@@ -144,7 +144,7 @@ const sameBox = (a: { min: number[]; max: number[] }, b: { min: number[]; max: n
 {
   const bytes = encodePoseSheet(ordered, frameConfig);
   const sheet = JSON.parse(new TextDecoder().decode(bytes)) as ReturnType<typeof buildPoseSheet>;
-  check("pose sheet format & units", sheet.format === "lime-slice-pose" && sheet.units === "mm" && sheet.assembly === "Robot Arm");
+  check("pose sheet format & units", sheet.format === "lime-pose" && sheet.units === "mm" && sheet.assembly === "Robot Arm");
   check("pose sheet configuration matches frame", sheet.configuration.kind === "frame" && sheet.configuration.frame === sampled.frames.length);
   check("pose sheet has 4 members", sheet.members.length === 4);
   const armRow = sheet.members.find((m) => m.name === "Arm")!;

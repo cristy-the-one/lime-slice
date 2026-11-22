@@ -221,7 +221,7 @@ test("Pose Export dialog saves every format at Now and at a stopped animation fr
     const [dl] = await Promise.all([page.waitForEvent("download"), dlg.locator("[data-pose-export-action='submit']").click()]);
     expect(dl.suggestedFilename()).toBe("test-arm-pose.json");
     const sheet = JSON.parse(readFileSync((await dl.path())!, "utf8"));
-    expect(sheet.format).toBe("lime-slice-pose");
+    expect(sheet.format).toBe("lime-pose");
     expect(sheet.configuration).toEqual({ kind: "now" });
     expect(sheet.members).toHaveLength(2);
     await expect(dlg).toHaveCount(0);

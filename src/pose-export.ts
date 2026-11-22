@@ -249,7 +249,7 @@ export interface PoseSheetMember {
 }
 
 export interface PoseSheet {
-  format: "lime-slice-pose";
+  format: "lime-pose";
   version: 1;
   units: "mm";
   assembly: string;
@@ -260,7 +260,7 @@ export interface PoseSheet {
 export function buildPoseSheet(ordered: OrderedPoseExport, config: PoseExportConfig): PoseSheet {
   const nameById = new Map(ordered.members.map((m) => [m.object, m.name] as const));
   return {
-    format: "lime-slice-pose",
+    format: "lime-pose",
     version: 1,
     units: "mm",
     assembly: ordered.assemblyName,

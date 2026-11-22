@@ -163,7 +163,7 @@ const poseRes = await call("pose_export", { assembly: "Robot Arm", format: "pose
 check("pose_export pose writes JSON pose sheet", poseRes.ok === true && String(poseRes.path).endsWith("robot-arm-pose.json"), show(poseRes));
 const sheet = JSON.parse(readFileSync(String(poseRes.path), "utf8"));
 const armRow = sheet.members.find((m: { name: string }) => m.name === "Arm");
-check("Pose sheet records 4 members and Arm hinge at 30 deg", sheet.format === "lime-slice-pose" && sheet.members.length === 4 && Math.abs(armRow.joint.value - 30) < 1e-6, show(sheet));
+check("Pose sheet records 4 members and Arm hinge at 30 deg", sheet.format === "lime-pose" && sheet.members.length === 4 && Math.abs(armRow.joint.value - 30) < 1e-6, show(sheet));
 
 // 8. Frame export & animated GLB (when lust is available)
 if (findLust()) {
