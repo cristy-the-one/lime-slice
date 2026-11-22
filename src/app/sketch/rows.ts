@@ -93,6 +93,14 @@ function editTools(): Node[] {
   return out;
 }
 
+/** What the spline row shows, so the card rebuilds when the mode, comb, or selected point changes. */
+export function splineRowKey(): string {
+  const info = selectedSplineInfo();
+  if (S.editor.tool !== "spline" && info == null) return "";
+  const mode = info?.mode ?? S.editor.draw.splineMode;
+  return `spline:${mode}:${S.editor.showCurvatureComb ? "comb" : ""}:${info ? `${info.entityId}:${info.cvIndex}:${info.weight}:${info.canCrease}` : ""}`;
+}
+
 function selectedSplineInfo(): { entityId: number; mode: "cv" | "through"; cvIndex: number | null; weight: number; canCrease: boolean } | null {
   const sketch = activeSketch(S.editor);
   if (!sketch) return null;

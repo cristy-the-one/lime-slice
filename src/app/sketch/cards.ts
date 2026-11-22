@@ -8,7 +8,7 @@ import { askOpen } from "./holes";
 import { resolvedLoftMode, scaleOf } from "./loft";
 import { profileNote } from "./profile";
 import { resolvedRevolveMode } from "./revolve";
-import { editingRow, offsetHasEnds } from "./rows";
+import { editingRow, offsetHasEnds, splineRowKey } from "./rows";
 import { featureBlocked, markBlocked, paintStarts, pickPrompt } from "./starts";
 import { resolvedSweepMode } from "./sweep";
 import { showMarks } from "./view";
@@ -42,6 +42,8 @@ function cardsState(pinned: readonly { id: number; name: string }[]): string {
     if (S.profile) parts.push(`profile:${profileNote()}`);
     // P2: the demo's strip and footer, and the Make row's How.
     parts.push(S.demo ? `demo:${S.demo.kind}:${S.demo.made}` : "", S.makeHowOpen ? "make-how" : "", S.editHowOpen ? "edit-how" : "");
+    // S2 (U3): the spline row's pressed mode, comb, and selected control point.
+    parts.push(splineRowKey());
     // O1: the wall options show while Offset is on, and Close the ends only for a line with ends.
     if (S.editor.tool === "offset") {
       const offsetting = S.editor.draw.gesture?.kind === "offset" ? S.editor.draw.gesture.distance : null;

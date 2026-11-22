@@ -1002,7 +1002,6 @@ impl Op {
                 | Op::Thicken { .. }
                 | Op::TrimSplit { .. }
                 | Op::SplitFace { .. }
-                | Op::Scale { .. }
                 | Op::Unify
         )
     }

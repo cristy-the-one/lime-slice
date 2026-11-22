@@ -2,8 +2,9 @@
  * S3 drawing tools: circle, arc, polygon, slot, spline, trim, offset, fillet, construction, use.
  * Each one with the pointer and with a typed size. Line and rectangle stay covered in shell.test.ts.
  */
-import { arcFrom3, arcPoint } from "./geom.ts";
+import { arcFrom3, arcPoint, curveOf } from "./geom.ts";
 import { sketchPoint, type SketchData } from "./model.ts";
+import { sketchRegions } from "./regions.ts";
 import { activeSketch, commitSizes, enterSketch, previewSizes, sketchDimensions, sketchKey, sketchOff, sketchPointer, sketchReadout, undoSketch, withRefs, withTool, type SketchEditor, type SketchEnv } from "./session.ts";
 import { arcFromChord, hitReference, regularPolygon, slotWidth, tangentArcBySweep } from "./tools.ts";
 import { planeOf, originFrame } from "./frame.ts";
@@ -135,8 +136,18 @@ editor = click(editor, [0, 0]);
 editor = click(editor, [4, 3]);
 editor = click(editor, [8, 0]);
 editor = click(editor, [0, 0]);
-const closed = activeSketch(editor)?.entities.find((entity) => entity.kind === "spline");
+const closedSketch = activeSketch(editor);
+const closed = closedSketch?.entities.find((entity) => entity.kind === "spline");
 check("clicking the start closes the spline", !!closed && closed.kind === "spline" && closed.through[0] === closed.through[closed.through.length - 1]);
+const closedCurve = closedSketch && closed ? curveOf(closedSketch, closed) : null;
+const loopGap = closedCurve && closedCurve.kind === "spline" && closedCurve.samples.length >= 2
+  ? Math.hypot(closedCurve.samples[0]![0] - closedCurve.samples.at(-1)![0]!, closedCurve.samples[0]![1] - closedCurve.samples.at(-1)![1]!)
+  : Infinity;
+check(
+  "a closed control-point spline is one periodic region",
+  !!closedCurve && closedCurve.kind === "spline" && closedCurve.closed && loopGap < 1e-6 && !!closedSketch && sketchRegions(closedSketch).length === 1,
+  `gap=${loopGap} regions=${closedSketch ? sketchRegions(closedSketch).length : "none"}`,
+);
 
 const cross = (sketch: SketchData) => sketch;
 editor = open("line");

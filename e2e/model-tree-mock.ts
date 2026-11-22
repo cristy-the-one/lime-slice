@@ -12,7 +12,10 @@ export interface MockSolid {
   edges: { id: number; lengthMm: number; points: number[] }[];
   /** Edges (by index) that are the seam of a round face. */
   seams?: number[];
+  /** False for an open sheet. Absent means a closed solid. */
   solid?: boolean;
+  /** Open-border edge indexes on a sheet. */
+  nakedEdges?: number[];
   /** --- A10. The node that made each face, when a test wants colour by step. */
   stepFaces?: (number | null)[];
 }
