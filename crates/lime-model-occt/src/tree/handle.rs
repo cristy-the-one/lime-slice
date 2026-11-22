@@ -148,6 +148,13 @@ impl Store {
                 }
                 Ok(Answer::Plain(json!({ "solids": rows }).to_string()))
             }
+            Request::StepAssembly { data_b64 } => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data_b64.trim())
+                    .map_err(|err| Failure::Message(err.to_string()))?;
+                let json = Shape::read_step_assembly(&bytes).map_err(Failure::Message)?;
+                Ok(Answer::Plain(json))
+            }
             Request::ShapeSolids { data_b64 } => {
                 let shape = root_shape(Some(data_b64), None, None, None, None)?;
                 let more = format!("This shape has more than {STEP_SOLIDS_MAX} solids");
@@ -418,7 +425,8 @@ impl Store {
                 pieces,
                 names,
                 poses,
-            } if !pieces.is_empty() || !poses.is_empty() => {
+                assembly,
+            } if !pieces.is_empty() || !poses.is_empty() || assembly.is_some() => {
                 if format != ExportFormat::Step {
                     return Err(Failure::Message(
                         "A split to print's pieces export as STEP".into(),
@@ -464,11 +472,69 @@ impl Store {
                 for (key, node) in &all {
                     raw.push(doc_in(&mut self.docs, key)?.shape(*node).raw());
                 }
-                let bytes =
-                    Shape::step_bytes_of(&raw, &names, &places).map_err(Failure::Message)?;
+                let (bytes, part_count) = if let Some(asm) = assembly {
+                    if poses.len() != all.len() {
+                        return Err(Failure::Message(format!(
+                            "A STEP assembly of {} members needs a pose for each, and {} came.",
+                            all.len(),
+                            poses.len()
+                        )));
+                    }
+                    if asm.parents.len() != all.len() || asm.part_ids.len() != all.len() {
+                        return Err(Failure::Message(
+                            "Each assembly member needs a parent and part id.".into(),
+                        ));
+                    }
+                    // Pick one representative solid per distinct part index.
+                    let num_parts = asm.part_names.len();
+                    let mut part_raw: Vec<*const super::ffi::RawShape> = vec![std::ptr::null(); num_parts];
+                    for (member_idx, &pid) in asm.part_ids.iter().enumerate() {
+                        let Ok(u) = usize::try_from(pid) else {
+                            return Err(Failure::Message("Invalid part id in assembly export.".into()));
+                        };
+                        if u >= num_parts {
+                            return Err(Failure::Message("Part id out of range in assembly export.".into()));
+                        }
+                        if part_raw[u].is_null() {
+                            part_raw[u] = raw[member_idx];
+                        }
+                    }
+                    if part_raw.iter().any(|p| p.is_null()) {
+                        return Err(Failure::Message("Every distinct part needs at least one member.".into()));
+                    }
+                    let parse_hex = |s: &str| -> Option<[f64; 3]> {
+                        let hex = s.trim().strip_prefix('#')?;
+                        if hex.len() != 6 {
+                            return None;
+                        }
+                        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                        Some([f64::from(r) / 255.0, f64::from(g) / 255.0, f64::from(b) / 255.0])
+                    };
+                    let parsed_colors: Vec<Option<[f64; 3]>> = (0..all.len())
+                        .map(|i| asm.colors.get(i).and_then(|s| parse_hex(s)))
+                        .collect();
+                    let bytes = Shape::step_assembly_bytes_of(
+                        &asm.name,
+                        &part_raw,
+                        &asm.part_names,
+                        &names,
+                        &asm.parents,
+                        &asm.part_ids,
+                        &places,
+                        &parsed_colors,
+                    )
+                    .map_err(Failure::Message)?;
+                    (bytes, num_parts)
+                } else {
+                    let bytes = Shape::step_bytes_of(&raw, &names, &places)
+                        .map_err(Failure::Message)?;
+                    (bytes, raw.len())
+                };
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 Ok(Answer::Plain(format!(
-                    "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{},\"format\":\"step\",\"solids\":{}}}",
+                    "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{},\"format\":\"step\",\"solids\":{},\"parts\":{part_count}}}",
                     bytes.len(),
                     raw.len()
                 )))

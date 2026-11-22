@@ -82,6 +82,8 @@ const primitiveFields = {
   flats: { type: "boolean", description: "Across flats." },
   partKind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket", "gt2", "v"], description: "Part kind. guide {topic:\"ops\", section:\"part\"}." },
   teeth: { type: "integer", minimum: 1, maximum: 400, description: "GT2 teeth, a whole number. guide {topic:\"ops\", section:\"part\"}." },
+  section: { enum: ["SPZ", "SPA", "SPB", "SPC"], description: "V pulley section. Default SPZ." },
+  grooves: { type: "integer", minimum: 1, maximum: 6, description: "V pulley grooves, 1 to 6. Default 1." },
   nominal: { type: "string", description: "M3–M24. Default M6." },
   allowance: { type: "number", minimum: 0, maximum: 1, description: "Hole or shaft allowance, mm." },
   length: { type: "number", minimum: 0, maximum: 200, description: "Under the head, mm." },
@@ -1061,6 +1063,7 @@ const DESTRUCTIVE = new Set([
   "gcode_export",
   "export_3mf",
   "model_export_step",
+  "pose_export",
   "object_remove",
   "model_drop",
   // Its steps may be any of the above.
@@ -1956,8 +1959,19 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_export_step",
-    description: "Write a solid, or a posed assembly, as a .step file in the workspace. Overwrites the same name.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { object: handle, name: { type: "string", minLength: 1 }, pieces: { type: "boolean", description: "Its split to print pieces, a named solid each." }, assembly: { type: "boolean", description: "Its assembly's parts at their assembled poses, a named solid each." } } },
+    description: "Write a solid, or a posed assembly (AP242 assembly tree by default; flat:true for one named solid per member), as a .step file in the workspace. Overwrites the same name.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name"],
+      properties: {
+        object: handle,
+        name: { type: "string", minLength: 1, description: "Output .step file name or relative path in the workspace." },
+        pieces: { type: "boolean", description: "Its split to print pieces, a named solid each." },
+        assembly: { type: "boolean", description: "Its assembly's parts at their assembled poses as a STEP AP242 assembly tree." },
+        flat: { type: "boolean", description: "With assembly:true, write the 7.0 flat STEP (one named solid per member, no product tree)." },
+      },
+    },
   },
   {
     name: "measure",
@@ -2026,6 +2040,34 @@ export const TOOLS: ToolSpec[] = [
         gif: { type: "string", minLength: 1, description: "GIF path." }, frames: { type: "string", minLength: 1, description: "PNG folder." },
       } },
     } },
+  },
+  {
+    name: "pose_export",
+    description: "Export a posed assembly (or a sampled animation frame) for external programs without changing the assembly or print layout. Formats: step (AP242 assembly tree by default, or flat), glb (glTF 2.0 binary in metres Y-up, with joint tree, shared part meshes, colours, and optional kept animation), 3mf (assembly at the pose, shared parts and colours), stl (one file or ZIP of one STL per member), obj (OBJ + MTL with one group per member), pose (JSON pose sheet with joint values and 4x4 placements in mm). Overwrites the target path in the workspace.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["format"],
+      properties: {
+        assembly: { type: "string", minLength: 1, maxLength: 120, description: "Assembly name, id, or member handle; defaults to the selected object's assembly." },
+        format: { enum: ["step", "glb", "3mf", "stl", "obj", "pose"], description: "Output format: step, glb, 3mf, stl, obj, or pose." },
+        frame: {
+          type: "object",
+          additionalProperties: false,
+          required: ["animation", "t"],
+          description: "Sample a kept animation or animation plugin at time t (seconds) without mutating the assembly.",
+          properties: {
+            animation: { type: "string", minLength: 1, maxLength: 80, description: "Kept animation name or animation plugin id." },
+            t: { type: "number", minimum: 0, description: "Time in seconds along the animation." },
+          },
+        },
+        animation: { type: "string", minLength: 1, maxLength: 80, description: "For format:\"glb\", embed this kept animation or animation plugin as a glTF animation." },
+        path: { type: "string", minLength: 1, description: "Workspace file path; defaults to <assembly>-pose.<ext> or <assembly>-frame-N.<ext>." },
+        chordMm: { type: "number", minimum: 0.01, maximum: 1, description: "Mesh chord tolerance in mm for glb, 3mf, stl and obj (default 0.05). STL parts keep their own triangles." },
+        step: { enum: ["tree", "flat"], description: "For format:\"step\": \"tree\" (default, AP242 assembly tree) or \"flat\" (one named solid per member)." },
+        stl: { enum: ["one", "each"], description: "For format:\"stl\": \"one\" (default, one STL file) or \"each\" (ZIP with one STL per member)." },
+      },
+    },
   },
   {
     name: "motion_run",

@@ -36,6 +36,10 @@ export interface PartFields {
   pitchCircle?: number;
   /** Plate [width, depth, thickness] or L-bracket [leg, width, thickness]. 0 is that axis's default. */
   size?: [number, number, number];
+  /** V-belt pulley section: SPZ, SPA, SPB, or SPC. SPZ when absent. */
+  section?: string;
+  /** V-belt pulley groove count, 1 to 6. 1 when absent. */
+  grooves?: number;
 }
 
 /** What the kernel stores on a part, plus `height` (0 is a fastener's table row, or a fitting's default length). */
@@ -61,6 +65,8 @@ export interface PartSpec {
   holes?: number;
   pitchCircle?: number;
   size?: [number, number, number];
+  section?: string;
+  grooves?: number;
   height: number;
 }
 
@@ -161,11 +167,30 @@ export const FITTING_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "heat-set", label: "Heat-set boss" },
 ];
 
-/** The Pulleys group. The V pulley is in the list and refused until the ISO 4183 table is in the plan. */
+/** The Pulleys group: GT2 (section 5.1) and narrow V-belt (section 5.2, ISO 4183). */
 export const PULLEY_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "gt2", label: "GT2 pulley" },
   { id: "v", label: "V pulley" },
 ];
+
+/** ISO 4183 (DIN 2211) narrow V-belt groove table (docs/plan-mech-parts.md §5.2). */
+export type VSection = "SPZ" | "SPA" | "SPB" | "SPC";
+export interface VRow { section: VSection; bw: number; c: number; h: number; e: number; f: number; ddBreak: number; ddDefault: number }
+
+export const V_ROWS: readonly VRow[] = [
+  { section: "SPZ", bw: 8.5, c: 2.0, h: 9.0, e: 12.0, f: 8.0, ddBreak: 80, ddDefault: 63 },
+  { section: "SPA", bw: 11.0, c: 2.8, h: 11.0, e: 15.0, f: 10.0, ddBreak: 118, ddDefault: 90 },
+  { section: "SPB", bw: 14.0, c: 3.5, h: 14.0, e: 19.0, f: 12.5, ddBreak: 190, ddDefault: 140 },
+  { section: "SPC", bw: 19.0, c: 4.8, h: 19.0, e: 25.5, f: 17.0, ddBreak: 315, ddDefault: 224 },
+];
+
+export const V_SECTIONS: readonly VSection[] = ["SPZ", "SPA", "SPB", "SPC"];
+
+export function vRow(section: string | undefined): VRow | undefined {
+  const name = (section ?? "").trim();
+  if (name.length === 0) return V_ROWS[0];
+  return V_ROWS.find((row) => row.section === name);
+}
 
 export const BRACKET_KINDS: readonly { id: PartKind; label: string }[] = [
   { id: "plate", label: "Plate" },
@@ -192,9 +217,6 @@ export const ISO_273: readonly { nominal: string; hole: number }[] = [
   { nominal: "M20", hole: 22 },
   { nominal: "M24", hole: 26 },
 ];
-
-/** Choosing a V pulley, or sending one, is refused with this sentence. */
-export const V_PULLEY = "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.";
 
 /** Ruthex RX, the 14.12.2023 Produktdatenblatt (docs/plan-mech-parts.md §4.10). `d2` is the lead-in; the boss is a cone. */
 export interface HeatRow { article: string; thread: string; d1: number; d2: number; l: number; w: number; d3: number }
@@ -555,11 +577,44 @@ function gt2Problem(spec: PartSpec): string | null {
   return null;
 }
 
+/** Stray fields and ISO 4183 ranges for a V-belt pulley (docs/plan-mech-parts.md §5.2). */
+function vProblem(spec: PartSpec): string | null {
+  if (spec.length !== undefined) return "A V pulley has no length.";
+  if (spec.height !== 0) return "A V pulley's width comes from its section and grooves.";
+  if (textSet(spec.nominal)) return "A V pulley has no nominal size.";
+  if (spec.allowance !== undefined) return "A V pulley has no allowance.";
+  const headSet = (value: number | undefined) => value !== undefined && value !== 0;
+  if (headSet(spec.headDiameter)) return "Only a socket screw takes a head diameter.";
+  if (headSet(spec.headHeight)) return "Only a socket screw takes a head height.";
+  if (headSet(spec.socketDepth)) return "Only a socket screw takes a socket depth.";
+  if (spec.hollow !== undefined) return "Only a spacer is hollow or solid.";
+  if (textSet(spec.fit)) return "Only a shaft takes a fit.";
+  if (textSet(spec.article)) return "Only a heat-set boss takes an article.";
+  if (headSet(spec.taper)) return "Only a heat-set boss takes a taper.";
+  if (spec.setScrew !== undefined) return "Only a collar takes a set screw.";
+  const row = vRow(spec.section);
+  if (!row) return "The V pulley takes SPZ, SPA, SPB or SPC.";
+  const rawGrooves = spec.grooves ?? 1;
+  if (!Number.isFinite(rawGrooves) || Math.abs(rawGrooves - Math.round(rawGrooves)) > 1e-9) return "The grooves are a whole number from 1 to 6.";
+  const grooves = Math.round(rawGrooves);
+  if (grooves < 1 || grooves > 6) return "A V pulley takes 1 to 6 grooves.";
+  const dd = spec.diameter ?? row.ddDefault;
+  if (!Number.isFinite(dd) || dd > 400) return "The datum diameter is at most 400 mm.";
+  const minDd = 2 * (row.h + 2 + 1.5);
+  if (dd + 1e-9 < minDd) return `An ${row.section} pulley needs a datum diameter of at least ${mmUp(minDd)} mm.`;
+  const bore = spec.bore ?? 8;
+  if (!Number.isFinite(bore) || bore < 3 - 1e-9) return "The bore is at least 3 mm.";
+  const maxBore = 2 * (dd * 0.5 - row.h - 2);
+  if (bore > maxBore + 1e-9) return `The bore is at most ${mmDown(maxBore)} mm on this pulley, so 2 mm stays under the grooves.`;
+  return null;
+}
+
 /** The sentence a part is refused with, or null when the kernel can build it. */
 export function partProblem(spec: PartSpec): string | null {
   if (!isPartKind(spec.partKind)) return "A part needs a kind: nut, socket, hex, washer, spacer, shaft, collar, heat-set, plate, bracket, gt2, or v.";
   const kind = spec.partKind;
-  if (kind === "v") return V_PULLEY;
+  if (kind !== "v" && textSet(spec.section)) return "Only a V pulley takes a section.";
+  if (kind !== "v" && spec.grooves !== undefined) return "Only a V pulley takes grooves.";
   if (kind !== "gt2" && spec.teeth !== undefined) return "Only a GT2 pulley takes teeth.";
   const bore = spec.boreKind?.trim();
   if (bore === "thread") return "A modelled thread is not available yet. Use tap drill.";
@@ -569,6 +624,7 @@ export function partProblem(spec: PartSpec): string | null {
   if (textSet(spec.holeFor)) return "Only a plate or an L-bracket takes a hole for.";
   if (spec.holes !== undefined) return "Only a plate or an L-bracket takes a hole count.";
   if (spec.pitchCircle !== undefined) return "Only a plate takes a pitch circle.";
+  if (kind === "v") return vProblem(spec);
   if ((kind === "nut" || kind === "washer") && spec.length !== undefined) {
     return kind === "nut" ? "A nut has no length under a head." : "A washer has no length under a head.";
   }
@@ -714,6 +770,15 @@ export function resolvedPart(spec: PartSpec): ResolvedPart | null {
     const hole = (spec.bore ?? 5) / 2;
     return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, width], centreZ: width / 2, rounds: [{ radius, z0: 0, z1: width, hole }] };
   }
+  if (kind === "v") {
+    const row = vRow(spec.section)!;
+    const dd = spec.diameter ?? row.ddDefault;
+    const grooves = Math.round(spec.grooves ?? 1);
+    const radius = dd / 2 + row.c;
+    const width = 2 * row.f + (grooves - 1) * row.e;
+    const hole = (spec.bore ?? 8) / 2;
+    return { kind, nominal: "", min: [-radius, -radius, 0], max: [radius, radius, width], centreZ: width / 2, rounds: [{ radius, z0: 0, z1: width, hole }] };
+  }
   if (kind === "heat-set") {
     const row = heatRow(spec.article)!;
     const boss = spec.diameter ?? row.d1 + 2 * row.w;
@@ -777,6 +842,12 @@ export function partLabel(spec: PartSpec): string {
   if (part.kind === "collar") return `Collar ⌀${formatMm(spec.diameter ?? 14)} / ⌀${formatMm(spec.bore ?? 8)} × ${formatMm(part.max[2])}`;
   if (part.kind === "heat-set") return `Heat-set boss ${(spec.article ?? "").trim() || HEAT_DEFAULT}`;
   if (part.kind === "gt2") return `GT2 pulley ${Math.round(spec.teeth ?? 20)} teeth`;
+  if (part.kind === "v") {
+    const row = vRow(spec.section)!;
+    const dd = spec.diameter ?? row.ddDefault;
+    const grooves = Math.round(spec.grooves ?? 1);
+    return grooves === 1 ? `V pulley ${row.section} ⌀${formatMm(dd)}` : `V pulley ${row.section} ⌀${formatMm(dd)}, ${grooves} grooves`;
+  }
   if (part.kind === "plate" || part.kind === "bracket") {
     const [a, b, c] = spec.size ?? [0, 0, 0];
     const size = part.kind === "plate" ? [axisOr(a, 80), axisOr(b, 60), axisOr(c, 4)] : [axisOr(a, 40), axisOr(b, 30), axisOr(c, 3)];
@@ -792,7 +863,7 @@ export function partLabel(spec: PartSpec): string {
 }
 
 /** The table row, so the card shows the standard sizes without opening More. */
-export function partRowText(kind: string, nominal: string, article?: string, holeFor?: string): string {
+export function partRowText(kind: string, nominal: string, article?: string, holeFor?: string, section?: string, diameter?: number, grooves?: number): string {
   if (kind === "nut") {
     const row = NUTS.find((item) => item.nominal === nominal);
     return row ? `ISO 4032: across flats ${row.s} mm, thick ${row.m} mm, tap drill ${row.drill} mm.` : "";
@@ -817,8 +888,20 @@ export function partRowText(kind: string, nominal: string, article?: string, hol
     return row ? `Ruthex ${row.article}: insert ⌀${row.d1} mm, wall ${row.w} mm, hole ⌀${row.d3} mm, tall ${row.l} mm.` : "";
   }
   if (kind === "gt2") return "An approximate GT2 groove. Pitch 2 mm, no flanges.";
-  // The card already shows why in its note (partProblem); repeating it here printed the sentence twice.
-  if (kind === "v") return "";
+  if (kind === "v") {
+    const row = vRow(section);
+    if (!row) return "";
+    const dd = diameter !== undefined && Number.isFinite(diameter) ? diameter : row.ddDefault;
+    const n = grooves !== undefined && Number.isFinite(grooves) ? Math.max(1, Math.min(6, Math.round(grooves))) : 1;
+    const de = formatMm(dd + 2 * row.c);
+    const width = formatMm(2 * row.f + (n - 1) * row.e);
+    const angle = dd <= row.ddBreak ? 34 : 38;
+    const base = `ISO 4183 ${row.section}: outside ⌀${de} mm, width ${width} mm, angle ${angle}°.`;
+    if (dd < row.ddDefault - 1e-9) {
+      return `${base} Under ${row.ddDefault} mm the belt bends more than its maker allows, and wears sooner.`;
+    }
+    return base;
+  }
   if (kind === "plate" || kind === "bracket") {
     const choice = (holeFor ?? "").trim() || "M4";
     if (choice === "free") return "Free diameter, 2 to 30 mm. The number is the hole.";
@@ -855,6 +938,8 @@ export function partFrom(input: Record<string, unknown>): { fields: PartFields; 
     holeFor: typeof input.holeFor === "string" ? input.holeFor : undefined,
     holes: num(input.holes),
     pitchCircle: num(input.pitchCircle),
+    section: typeof input.section === "string" ? input.section : undefined,
+    grooves: num(input.grooves),
     size: input.partKind === "plate" || input.partKind === "bracket"
       ? [num(input.dx) ?? 0, num(input.dy) ?? 0, num(input.dz) ?? 0]
       : undefined,
@@ -879,6 +964,8 @@ export function partFrom(input: Record<string, unknown>): { fields: PartFields; 
   if (spec.taper) fields.taper = spec.taper;
   if (spec.setScrew !== undefined) fields.setScrew = spec.setScrew;
   if (kind === "gt2" && spec.teeth !== undefined) fields.teeth = spec.teeth;
+  if (kind === "v" && spec.section && spec.section.trim().length > 0) fields.section = spec.section.trim();
+  if (kind === "v" && spec.grooves !== undefined) fields.grooves = spec.grooves;
   if (spec.holeFor && spec.holeFor.trim().length > 0) fields.holeFor = spec.holeFor.trim();
   if (spec.holes !== undefined) fields.holes = spec.holes;
   if (spec.pitchCircle !== undefined) fields.pitchCircle = spec.pitchCircle;

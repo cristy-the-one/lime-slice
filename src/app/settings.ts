@@ -911,7 +911,7 @@ function objectListHtml(): Html | "" {
         <div class="obj-group-name"><b>${group.name}</b><span>${members.length} parts</span></div>
         <div class="obj-actions">
           <button class="btn obj-layout" type="button" data-assembly-layout="${group.id}" aria-label="Lay out ${group.name}" data-tip="Lay out these parts on the bed for print, around the other objects. The assembly stays as it is.">Lay out</button>
-          <button class="btn obj-step" type="button" data-assembly-step="${group.id}" aria-label="Export ${group.name} as STEP" data-tip="Save one STEP file of the assembly: each part a named solid at its assembled pose.">STEP</button>
+          <button class="btn obj-step" type="button" data-assembly-step="${group.id}" aria-label="Export ${group.name} as STEP" data-tip="Save one STEP AP242 assembly of the posed parts.">STEP</button>
           <button class="btn obj-ungroup" type="button" data-assembly-ungroup="${group.id}" aria-label="Ungroup ${group.name}" data-tip="Ungroup: every part keeps where it is.">Ungroup</button>
         </div>
       </div>${members.map(row)}`;

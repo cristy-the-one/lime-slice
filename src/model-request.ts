@@ -368,7 +368,27 @@ export function gotoRequest(key: string, node: NodeId, chordMm: number): TreeReq
  * --- Assemblies M9. `poses`, one a solid in the same order, writes each where its pose puts it: an assembly's members
  * at their poses in model space.
  */
-export function exportRequest(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[], poses?: readonly Affine[]): TreeRequest {
+/**
+ * --- Pose export E1. AP242 assembly tree metadata for `export`: one product per distinct part (`partNames`),
+ * located instances (`partIds` into `partNames`, `parents` index or -1 for root), and optional `#rrggbb` per member.
+ */
+export interface StepAssemblyExport {
+  name: string;
+  parents: readonly number[];
+  partIds: readonly number[];
+  partNames: readonly string[];
+  colors?: readonly string[];
+}
+
+export function exportRequest(
+  key: string,
+  node: NodeId,
+  format: "step" | "brep",
+  pieces?: readonly { key: string; node: NodeId }[],
+  names?: readonly string[],
+  poses?: readonly Affine[],
+  assembly?: StepAssemblyExport,
+): TreeRequest {
   return {
     call: "export",
     key,
@@ -376,5 +396,14 @@ export function exportRequest(key: string, node: NodeId, format: "step" | "brep"
     format,
     ...(pieces?.length || poses?.length ? { pieces: (pieces ?? []).map((piece) => ({ key: piece.key, node: piece.node })), names: [...(names ?? [])] } : {}),
     ...(poses?.length ? { poses: poses.map((pose) => ({ m: [...pose.m], t: [...pose.t] })) } : {}),
+    ...(assembly ? {
+      assembly: {
+        name: assembly.name,
+        parents: [...assembly.parents],
+        partIds: [...assembly.partIds],
+        partNames: [...assembly.partNames],
+        ...(assembly.colors?.length ? { colors: [...assembly.colors] } : {}),
+      },
+    } : {}),
   };
 }

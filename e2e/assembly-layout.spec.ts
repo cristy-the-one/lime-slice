@@ -132,13 +132,14 @@ test("STEP saves the assembly as named solids at their assembled poses", async (
 
   const [download] = await Promise.all([page.waitForEvent("download"), page.locator("[data-assembly-step]").click()]);
   expect(download.suggestedFilename()).toBe("body.step");
-  const asked = tree.of("export").at(-1) as { format?: string; pieces?: { key: string }[]; names?: string[]; poses?: { m: number[]; t: number[] }[] };
+  const asked = tree.of("export").at(-1) as { format?: string; pieces?: { key: string }[]; names?: string[]; poses?: { m: number[]; t: number[] }[]; assembly?: { name?: string; parents?: number[]; partIds?: number[] } };
   expect(asked.format).toBe("step");
   expect(asked.names, "each solid is named after its part, the root first").toEqual(["body", "hook 2"]);
   expect(asked.pieces).toHaveLength(1);
   expect(asked.poses).toHaveLength(2);
+  expect(asked.assembly?.parents).toEqual([-1, 0]);
   expect(asked.poses![1]!.t[2]! - asked.poses![0]!.t[2]!, "each solid goes at its assembled pose").toBeCloseTo(0.5, 3);
-  await expect(page.locator("#toasts")).toContainText("Saved body.step: 2 parts at their assembled poses");
+  await expect(page.locator("#toasts")).toContainText("Saved body.step: 2 members (2 parts) as a STEP AP242 assembly.");
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(shots, "layout-step-saved.png") });
 

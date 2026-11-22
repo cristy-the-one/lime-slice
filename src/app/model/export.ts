@@ -4,7 +4,7 @@ import { saveBytes, saveBytesToFolder } from "../save-bytes";
 import { encode3mf, encodeStl } from "../../mesh-place";
 import { type Affine } from "../../model-space";
 import { ROOT, nodeWithMesh, pathTo, withNode, type NodeId } from "../../model-tree";
-import { exportRequest, isBrep } from "../../model-request";
+import { exportRequest, isBrep, type StepAssemblyExport } from "../../model-request";
 import { heldPiece } from "../model-explode";
 import { type RowKey } from "../../model-history";
 import { meshTokenOf, withBrepFor } from "../../plate";
@@ -176,8 +176,16 @@ export async function brepRoot(key: string) {
 }
 
 /** The node's solid as `format`: `brep`, which the plate object keeps and a project saves, or `step` for the STEP button. */
-export async function exportSolid(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[], poses?: readonly Affine[]): Promise<ArrayBuffer | string> {
-  const body = await treeCall(key, node, exportRequest(key, node, format, pieces, names, poses));
+export async function exportSolid(
+  key: string,
+  node: NodeId,
+  format: "step" | "brep",
+  pieces?: readonly { key: string; node: NodeId }[],
+  names?: readonly string[],
+  poses?: readonly Affine[],
+  assembly?: StepAssemblyExport,
+): Promise<ArrayBuffer | string> {
+  const body = await treeCall(key, node, exportRequest(key, node, format, pieces, names, poses, assembly));
   const problem = text(body.error);
   if (problem) return problem;
   if (typeof body.bytesBase64 !== "string") return "Open CASCADE did not write this solid.";

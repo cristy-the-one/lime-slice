@@ -699,13 +699,15 @@ function renderPanel(): void {
     walk(null, 0);
   }
   for (const part of state.plate.objects) addPart(part.id, 0);
-  // The pose is what a STEP export writes: each member a named solid at its assembled pose.
+  // The pose is what an export writes: STEP AP242 assembly, glTF, 3MF, STL, OBJ, or Pose sheet.
   if (assemblies.length) {
     const exports = document.createElement("div"); exports.className = "pose-buttons"; panel.append(exports);
+    const openExport = button(exports, "Export…", "pose-export");
+    openExport.dataset.tip = "Export the posed assembly (or the stopped animation frame) as STEP, glTF, 3MF, STL, OBJ or Pose sheet.";
     for (const assembly of assemblies) {
       const save = button(exports, assemblies.length === 1 ? "Save pose as STEP" : `Save ${assembly.name} as STEP`, "step");
       save.dataset.assembly = assembly.id;
-      save.dataset.tip = "One STEP file of the assembly as posed: each part a named solid at its assembled pose.";
+      save.dataset.tip = "One STEP AP242 assembly of the posed parts.";
     }
   }
   addText(panel, "h3", "Animations");
@@ -743,6 +745,9 @@ function renderPanel(): void {
     if (!preparing) button(actions, animation?.clock.playing && !animation.motion ? "Pause" : "Play", "animation-play");
     if (animation && !preparing && !animation.motion) {
       button(actions, "Stop", "animation-stop"); button(actions, "Keep this frame", "animation-keep"); button(actions, "Save animation…", "animation-save");
+      const exportFrame = button(actions, "Export…", "pose-export");
+      exportFrame.dataset.assembly = animation.assembly;
+      exportFrame.dataset.tip = "Export this frame (or the whole animation as glTF) as STEP, glTF, 3MF, STL, OBJ or Pose sheet.";
       // Code the library does not hold yet (a project's animation, an edited one): keep it there, for any assembly.
       if (!libraryShas.has(animation.plugin.sha)) button(actions, "Keep in library…", "animation-library").dataset.tip = "Keep this animation in your plugin library, so it plays on any assembly, its member names chosen there.";
       const slider = document.createElement("input"); slider.type = "range"; slider.min = "0"; slider.max = String(animation.result.frames.length - 1); slider.value = String(animation.clock.frame(performance.now())); slider.dataset.poseAnimationFrame = ""; slider.setAttribute("aria-label", "Animation frame"); panel.append(slider);
@@ -1472,7 +1477,23 @@ function panelClick(event: Event): void {
   const target = (event.target as Element).closest<HTMLButtonElement>("[data-pose-action]");
   if (!target) return;
   const action = target.dataset.poseAction;
-  if (animation && action && !action.startsWith("animation-")) stopAnimation();
+  if (animation && action && !action.startsWith("animation-") && action !== "pose-export") stopAnimation();
+  if (action === "pose-export") {
+    const current = animation;
+    const frameIndex = current ? current.clock.frame(performance.now()) : undefined;
+    if (current?.clock.playing) {
+      current.clock.pause(performance.now());
+      syncPose();
+      renderPanel();
+    }
+    const title = current ? (animationFiles.find((item) => item.plugin === current.plugin.name)?.title ?? current.plugin.name) : undefined;
+    const assemblyId = target.dataset.assembly || current?.assembly || selected()?.assembly.id || liveAssemblies()[0]?.id;
+    void import("./pose-export-dialog.ts").then(({ showPoseExport }) => {
+      if (state.stage !== "pose") return;
+      showPoseExport({ assemblyId, animation: current, animationTitle: title, frameIndex });
+    });
+    return;
+  }
   if (action === "animation-play") { void playAnimation(); return; }
   if (action === "motion-run") { void startMotion(); return; }
   if (action === "motion-cancel") { cancelMotion("Run cancelled: nothing changed."); return; }

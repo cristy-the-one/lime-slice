@@ -1,6 +1,6 @@
 # Mechanical parts in the Model tab
 
-Status: milestone 1 (fasteners, sections 4.1–4.4) is on main (#780). Milestone 2 (fittings, sections 4.5–4.7 and 4.10) is on main (#783). Milestone 3 (brackets, sections 4.8 and 4.9) is on main (#786). Milestone 4 (GT2 pulley, section 5.1, decisions 13–16) is in review. The V pulley stays blocked on the ISO 4183 table. Decisions 9 to 16 are below. The rest of this file is still the spec. The catalogue and the lust fixtures on `study/mech-components` (`docs/studies/mechanical-components.md`, PR #773) stay study material. They are not the product, and they are not copied into the kernel.
+Status: milestone 1 (fasteners, sections 4.1–4.4) is on main (#780). Milestone 2 (fittings, sections 4.5–4.7 and 4.10) is on main (#783). Milestone 3 (brackets, sections 4.8 and 4.9) is on main (#786). Milestone 4 (GT2 pulley, section 5.1, decisions 13–16) is on main (#788). Milestone 5 (V-belt pulley, section 5.2, decisions 17–19) is implemented in #803. Decisions 9 to 19 are below. The rest of this file is still the spec. The catalogue and the lust fixtures on `study/mech-components` (`docs/studies/mechanical-components.md`, PR #773) stay study material. They are not the product, and they are not copied into the kernel.
 
 The owner's direction on that PR: each part is a native Model-tab part, built by the modelling kernel the way the gear primitive is (`crates/lime-model-occt/src/tree/gear.rs`, `docs/plan-native-recipes.md` milestone 8).
 

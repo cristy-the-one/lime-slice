@@ -209,6 +209,12 @@ pub struct Solid {
     /// Plate pitch-circle diameter, mm. 0 or absent lays the holes on the inset rectangle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch_circle: Option<f64>,
+    /// V-belt pulley section: SPZ, SPA, SPB, or SPC. SPZ when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    /// V-belt pulley groove count, 1 to 6. 1 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grooves: Option<f64>,
 }
 
 impl Solid {

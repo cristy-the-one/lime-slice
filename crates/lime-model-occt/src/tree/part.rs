@@ -8,18 +8,33 @@
 //! Fittings: spacer, shaft, collar, and heat-set boss. A shaft's diameter is
 //! `lime_recipe::horology::shaft`; the clearance table is not copied here.
 //!
-//! Pulleys: a GT2 pulley (section 5.1). The V pulley is refused until the ISO 4183 table is in the plan.
+//! Pulleys: a GT2 pulley (section 5.1) and a V-belt pulley (section 5.2, ISO 4183 narrow sections SPZ, SPA, SPB, SPC).
 
 use super::ffi::lime_tree_boolean;
-use super::ops::{Primitive, Solid};
+use super::ops::{BooleanOp, Op, Primitive, Solid};
 use super::shape::Shape;
 
 /// A cut that must break a face extends this far past it. Boolean clearance, not a standard size.
 const OVERSHOOT_MM: f64 = 0.2;
 
-/// The sentence for kind `v` until section 5.2 holds the ISO 4183 rows.
-const V_PULLEY: &str =
-    "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.";
+/// ISO 4183 (DIN 2211) narrow V-belt groove rows (docs/plan-mech-parts.md §5.2).
+struct VRow {
+    section: &'static str,
+    bw: f64,
+    c: f64,
+    h: f64,
+    e: f64,
+    f: f64,
+    dd_break: f64,
+    dd_default: f64,
+}
+
+const V_ROWS: &[VRow] = &[
+    VRow { section: "SPZ", bw: 8.5, c: 2.0, h: 9.0, e: 12.0, f: 8.0, dd_break: 80.0, dd_default: 63.0 },
+    VRow { section: "SPA", bw: 11.0, c: 2.8, h: 11.0, e: 15.0, f: 10.0, dd_break: 118.0, dd_default: 90.0 },
+    VRow { section: "SPB", bw: 14.0, c: 3.5, h: 14.0, e: 19.0, f: 12.5, dd_break: 190.0, dd_default: 140.0 },
+    VRow { section: "SPC", bw: 19.0, c: 4.8, h: 19.0, e: 25.5, f: 17.0, dd_break: 315.0, dd_default: 224.0 },
+];
 
 /// GT2 groove rectangle (docs/plan-mech-parts.md §5.1). Depth is radial, width is tangential.
 const GT2_DEPTH_MM: f64 = 0.75;
@@ -544,9 +559,53 @@ fn refuse_gt2(solid: &Solid) -> Result<(), String> {
     Ok(())
 }
 
+/// Fields a V-belt pulley does not read. Section, diameter (datum diameter), grooves and bore are its own.
+fn refuse_v(solid: &Solid) -> Result<(), String> {
+    if solid.length.is_some() {
+        return Err("A V pulley has no length.".into());
+    }
+    if solid.height != 0.0 {
+        return Err("A V pulley's width comes from its section and grooves.".into());
+    }
+    if text_set(&solid.nominal) {
+        return Err("A V pulley has no nominal size.".into());
+    }
+    if solid.allowance.is_some() {
+        return Err("A V pulley has no allowance.".into());
+    }
+    if set_positive(solid.head_diameter) {
+        return Err("Only a socket screw takes a head diameter.".into());
+    }
+    if set_positive(solid.head_height) {
+        return Err("Only a socket screw takes a head height.".into());
+    }
+    if set_positive(solid.socket_depth) {
+        return Err("Only a socket screw takes a socket depth.".into());
+    }
+    if solid.hollow.is_some() {
+        return Err("Only a spacer is hollow or solid.".into());
+    }
+    if text_set(&solid.fit) {
+        return Err("Only a shaft takes a fit.".into());
+    }
+    if text_set(&solid.article) {
+        return Err("Only a heat-set boss takes an article.".into());
+    }
+    if set_positive(solid.taper) {
+        return Err("Only a heat-set boss takes a taper.".into());
+    }
+    if solid.set_screw.is_some() {
+        return Err("Only a collar takes a set screw.".into());
+    }
+    Ok(())
+}
+
 fn refuse_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
-    if matches!(kind, Kind::V) {
-        return Err(V_PULLEY.into());
+    if !matches!(kind, Kind::V) && text_set(&solid.section) {
+        return Err("Only a V pulley takes a section.".into());
+    }
+    if !matches!(kind, Kind::V) && solid.grooves.is_some() {
+        return Err("Only a V pulley takes grooves.".into());
     }
     if solid.teeth.is_some() && !matches!(kind, Kind::Gt2) {
         return Err("Only a GT2 pulley takes teeth.".into());
@@ -565,6 +624,9 @@ fn refuse_stray(solid: &Solid, kind: Kind) -> Result<(), String> {
     }
     if matches!(kind, Kind::Gt2) {
         return refuse_gt2(solid);
+    }
+    if matches!(kind, Kind::V) {
+        return refuse_v(solid);
     }
     let fastener = matches!(kind, Kind::Nut | Kind::Socket | Kind::Hex | Kind::Washer);
     if matches!(kind, Kind::Nut | Kind::Washer) && solid.length.is_some() {
@@ -1583,6 +1645,85 @@ fn build_bracket(solid: &Solid) -> Result<Shape, String> {
     Ok(body)
 }
 
+/// One revolve about Z: the bore, the flat ends of the rim, and `n` trapezoidal ISO 4183 grooves.
+fn build_v(solid: &Solid) -> Result<Shape, String> {
+    let name = solid
+        .section
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("SPZ");
+    let Some(row) = V_ROWS.iter().find(|row| row.section == name) else {
+        return Err("The V pulley takes SPZ, SPA, SPB or SPC.".into());
+    };
+    let raw_grooves = solid.grooves.unwrap_or(1.0);
+    if !raw_grooves.is_finite() || (raw_grooves - raw_grooves.round()).abs() > 1e-9 {
+        return Err("The grooves are a whole number from 1 to 6.".into());
+    }
+    let grooves = raw_grooves.round() as i32;
+    if !(1..=6).contains(&grooves) {
+        return Err("A V pulley takes 1 to 6 grooves.".into());
+    }
+    let dd = solid.diameter.unwrap_or(row.dd_default);
+    if !dd.is_finite() || dd > 400.0 {
+        return Err("The datum diameter is at most 400 mm.".into());
+    }
+    let min_dd = 2.0 * (row.h + 2.0 + 1.5);
+    if dd + 1e-9 < min_dd {
+        return Err(format!(
+            "An {} pulley needs a datum diameter of at least {} mm.",
+            row.section,
+            mm_up(min_dd)
+        ));
+    }
+    let bore = solid.bore.unwrap_or(8.0);
+    if !bore.is_finite() || bore < 3.0 - 1e-9 {
+        return Err("The bore is at least 3 mm.".into());
+    }
+    let max_bore = 2.0 * (dd * 0.5 - row.h - 2.0);
+    if bore > max_bore + 1e-9 {
+        return Err(format!(
+            "The bore is at most {} mm on this pulley, so 2 mm stays under the grooves.",
+            mm_down(max_bore)
+        ));
+    }
+    let alpha_deg: f64 = if dd <= row.dd_break { 34.0 } else { 38.0 };
+    let tan_half = (alpha_deg * 0.5).to_radians().tan();
+    let r_out = dd * 0.5 + row.c;
+    let r_bot = dd * 0.5 - row.h;
+    let r_bore = bore * 0.5;
+    let width = 2.0 * row.f + f64::from(grooves - 1) * row.e;
+    let half_top = row.bw * 0.5 + row.c * tan_half;
+    let half_bot = row.bw * 0.5 - row.h * tan_half;
+    let centre_z = width * 0.5;
+    let mut profile: Vec<[f64; 2]> = Vec::with_capacity(4 + 4 * grooves as usize);
+    profile.push([r_bore, -centre_z]);
+    profile.push([r_out, -centre_z]);
+    for k in 0..grooves {
+        let zk = row.f + f64::from(k) * row.e - centre_z;
+        profile.push([r_out, zk - half_top]);
+        profile.push([r_bot, zk - half_bot]);
+        profile.push([r_bot, zk + half_bot]);
+        profile.push([r_out, zk + half_top]);
+    }
+    profile.push([r_out, centre_z]);
+    profile.push([r_bore, centre_z]);
+    let plane_origin = [solid.origin[0], solid.origin[1], solid.origin[2] + centre_z];
+    let plane_turn = euler_of(mat_mul(turn_matrix(solid.turn), turn_matrix([90.0, 0.0, 0.0])));
+    Shape::feature(&Op::Revolve {
+        op: BooleanOp::Fuse,
+        origin: plane_origin,
+        turn: plane_turn,
+        profile,
+        axis_origin: Some([0.0, 0.0]),
+        axis_dir: Some([0.0, 1.0]),
+        angle_deg: Some(360.0),
+        smooth: false,
+        corners: Vec::new(),
+        loops: Vec::new(),
+    })
+}
+
 /// The part `solid` describes, or the one sentence why it is not one.
 pub(super) fn build_part(solid: &Solid) -> Result<Shape, String> {
     let kind = kind_of(solid)?;
@@ -1600,6 +1741,6 @@ pub(super) fn build_part(solid: &Solid) -> Result<Shape, String> {
         Kind::Plate => build_plate(solid),
         Kind::Bracket => build_bracket(solid),
         Kind::Gt2 => build_gt2(solid),
-        Kind::V => Err(V_PULLEY.into()),
+        Kind::V => build_v(solid),
     }
 }

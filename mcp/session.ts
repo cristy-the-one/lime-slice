@@ -53,6 +53,7 @@ import { settingsMethods, settingsHandlers } from "./session/settings.ts";
 import { sliceMethods, sliceHandlers } from "./session/slice.ts";
 import { layersMethods, layersHandlers } from "./session/layers.ts";
 import { animationMethods, animationHandlers } from "./session/animation.ts";
+import { poseExportMethods, poseExportHandlers } from "./session/pose-export.ts";
 import { motionMethods, motionHandlers } from "./session/motion.ts";
 import { modelMethods, modelHandlers } from "./session/model.ts";
 import { placeMethods } from "./session/place.ts";
@@ -87,6 +88,7 @@ const HANDLERS: Record<string, ToolHandler> = {
   ...sliceHandlers,
   ...layersHandlers,
   ...animationHandlers,
+  ...poseExportHandlers,
   ...motionHandlers,
   ...modelHandlers,
   ...paintHandlers,
@@ -938,11 +940,11 @@ export class Session {
 
 }
 
-type Installed = typeof animationMethods & typeof motionMethods & typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods & typeof settingsMethods & typeof sliceMethods & typeof layersMethods & typeof modelMethods & typeof placeMethods & typeof probeMethods & typeof applyMethods & typeof paramsMethods & typeof historyMethods & typeof splitMethods & typeof paintMethods & typeof calibrationMethods & typeof stressMethods & typeof ribsMethods;
+type Installed = typeof animationMethods & typeof poseExportMethods & typeof motionMethods & typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods & typeof settingsMethods & typeof sliceMethods & typeof layersMethods & typeof modelMethods & typeof placeMethods & typeof probeMethods & typeof applyMethods & typeof paramsMethods & typeof historyMethods & typeof splitMethods & typeof paintMethods & typeof calibrationMethods & typeof stressMethods & typeof ribsMethods;
 
 /** The tool modules' methods run with this: Session; they are installed here, and typed through this merge. */
 export interface Session extends Installed {}
-Object.assign(Session.prototype, animationMethods, motionMethods, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods, calibrationMethods, stressMethods, ribsMethods);
+Object.assign(Session.prototype, animationMethods, poseExportMethods, motionMethods, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods, calibrationMethods, stressMethods, ribsMethods);
 
 export { blendOf };
 

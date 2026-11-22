@@ -12,7 +12,7 @@ import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { BoreShape } from "./model-gear.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
-import { heatRow, isPartKind, isShaftFit, type PartKind } from "./model-part.ts";
+import { heatRow, isPartKind, isShaftFit, vRow, type PartKind } from "./model-part.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
 import { draftOp } from "./model-request.ts";
@@ -310,6 +310,8 @@ export interface EditPanel {
   hollow?: boolean;
   /** A plate or L-bracket's Hole for select. */
   holeFor?: string;
+  /** A V-belt pulley's section select. */
+  section?: string;
   /**
    * A split's base axis, and whether its normal is that axis turned around: a face split on a face that points down an
    * axis keeps the other side, which the panel's X, Y and Z cannot say on their own.
@@ -375,7 +377,7 @@ export function draftPanelOp(
 }
 
 /** The panel's choices that are not numbers: a polygon's Flats or Corners, a gear's bore shape. */
-function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack" | "partKind" | "nominal" | "fit" | "article" | "hollow" | "holeFor"> {
+function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack" | "partKind" | "nominal" | "fit" | "article" | "hollow" | "holeFor" | "section"> {
   if (spec.primitive === "polygon") return { flats: spec.flats ?? false };
   if (spec.primitive === "gear") return { boreShape: spec.boreShape ?? "round", ...(spec.internal ? { ring: true } : {}), ...(spec.rack ? { rack: true } : {}) };
   if (spec.primitive === "part") {
@@ -387,6 +389,7 @@ function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape
       ...(partKind === "heat-set" ? { article: spec.article || "RX-M3x5,7" } : {}),
       ...(partKind === "spacer" ? { hollow: spec.hollow !== false } : {}),
       ...(partKind === "plate" || partKind === "bracket" ? { holeFor: spec.holeFor || "M4" } : {}),
+      ...(partKind === "v" ? { section: vRow(spec.section)?.section ?? "SPZ" } : {}),
     };
   }
   return {};
@@ -548,6 +551,10 @@ function sizeFields(spec: PrimitiveSpec): Record<string, number> {
       if (kind === "shaft") return { modelPartDiameter: spec.diameter ?? 8, modelPartLength: spec.height > 0 ? spec.height : 40, modelPartAllowance: spec.allowance ?? 0.1 };
       if (kind === "collar") return { modelPartBore: spec.bore ?? 8, modelPartDiameter: spec.diameter ?? 14, modelPartLength: spec.height > 0 ? spec.height : 6, modelPartScrew: spec.setScrew ?? 3 };
       if (kind === "gt2") return { modelPartTeeth: spec.teeth ?? 20, modelPartLength: spec.height > 0 ? spec.height : 6, modelPartBore: spec.bore ?? 5 };
+      if (kind === "v") {
+        const row = vRow(spec.section);
+        return { modelPartDiameter: spec.diameter ?? row?.ddDefault ?? 63, modelPartGrooves: spec.grooves ?? 1, modelPartBore: spec.bore ?? 8 };
+      }
       if (kind === "heat-set") {
         const row = heatRow(spec.article);
         const boss = row ? row.d1 + 2 * row.w : 7.8;

@@ -3053,6 +3053,84 @@ int lime_tree_write_step_many(const LimeShape* const* shapes, const char* const*
     }
 }
 
+/// --- Pose export E1. Writes a STEP AP242 assembly tree via XCAF: `part_count` distinct parts and `member_count`
+/// placed instances, nested by `parents` (-1 for root), each referencing `part_ids[i]` and optionally coloured by
+/// `colors` (3 doubles per member when `has_colors[i]` is non-zero).
+int lime_tree_write_step_assembly(
+    const char* assembly_name,
+    const LimeShape* const* parts,
+    const char* const* part_names,
+    int part_count,
+    const char* const* member_names,
+    const int* parents,
+    const int* part_ids,
+    const double* places,
+    const int* has_colors,
+    const double* colors,
+    int member_count,
+    const char* path,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<TopoDS_Shape> part_shapes;
+        std::vector<std::string> pnames;
+        part_shapes.reserve(part_count);
+        pnames.reserve(part_count);
+        for (int i = 0; i < part_count; ++i) {
+            part_shapes.push_back(parts[i]->held.shape);
+            pnames.emplace_back(part_names[i]);
+        }
+        std::vector<StepAssemblyMember> members;
+        members.reserve(member_count);
+        for (int i = 0; i < member_count; ++i) {
+            StepAssemblyMember m;
+            m.name = member_names[i];
+            m.parent = parents[i];
+            m.part_index = part_ids[i];
+            std::memcpy(m.place, places + 12 * i, 12 * sizeof(double));
+            if (has_colors != nullptr && colors != nullptr && has_colors[i] != 0) {
+                m.has_color = true;
+                m.color[0] = colors[3 * i];
+                m.color[1] = colors[3 * i + 1];
+                m.color[2] = colors[3 * i + 2];
+            }
+            members.push_back(std::move(m));
+        }
+        std::string message;
+        if (!write_step_assembly(assembly_name ? assembly_name : "Assembly", part_shapes, pnames, members, path, message)) {
+            set_error(error, message);
+            return 0;
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+
+/// --- Pose export E1. Reads a STEP assembly tree back via XCAF as JSON for kernel round-trip tests.
+char* lime_tree_read_step_assembly(const char* path, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        std::string json = read_step_assembly_json(path, message);
+        if (json.empty()) {
+            set_error(error, message.empty() ? "Open CASCADE could not read this STEP file" : message);
+            return nullptr;
+        }
+        return alloc(json);
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// --- Split to print (D12). The free shapes of a STEP file, up to `max`, each held on its own in `out`, and
 /// their product names, one per line, in `names`. The answer is how many there are, or -1 with `error`.
 int lime_tree_read_step_named(const char* path, LimeShape** out, int max, char** names, char** error) {

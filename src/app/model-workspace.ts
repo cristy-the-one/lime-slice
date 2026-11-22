@@ -26,6 +26,7 @@ export {
   commitModel,
   commonVolume,
   exportAssemblyStep,
+  tessellateSolidAtChord,
   followSelection,
   forgetModelTrees,
   frameInModel,

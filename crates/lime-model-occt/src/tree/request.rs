@@ -40,6 +40,10 @@ pub(super) enum Request {
         #[serde(default)]
         files: bool,
     },
+    /// Stateless (docs/plan-pose-export.md E1): reads back a STEP assembly's XCAF products, instances, placements and colours.
+    StepAssembly {
+        data_b64: String,
+    },
     /// Stateless, as `stepSolids`: the solids of a shape the engine wrote (`brep`) or of a STEP file, each on its own
     /// in the engine's binary format, with its volume and its geometric box. A committed compound is split this way,
     /// one solid per shell of its mesh.
@@ -378,7 +382,27 @@ pub(super) enum Request {
         /// from its own frame (an assembly member's pose in model space). Absent, each is written where it is.
         #[serde(default)]
         poses: Vec<Affine>,
+        /// --- Pose export E1: when set, writes a STEP AP242 assembly tree via XCAF (one product per distinct part,
+        /// nested sub-assemblies following `parents`, located instances, names and optional `#rrggbb` colours).
+        #[serde(default)]
+        assembly: Option<AssemblyStepSpec>,
     },
+}
+
+/// --- Pose export E1. Assembly structure for STEP AP242 XCAF export.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AssemblyStepSpec {
+    pub(super) name: String,
+    /// Parent member index for each member (-1 for root).
+    pub(super) parents: Vec<i32>,
+    /// Distinct part index for each member (0..parts.len()); members sharing one part index share one STEP product.
+    pub(super) part_ids: Vec<i32>,
+    /// Product name per distinct part.
+    pub(super) part_names: Vec<String>,
+    /// Optional `#rrggbb` sRGB colour per member (empty string for none).
+    #[serde(default)]
+    pub(super) colors: Vec<String>,
 }
 
 /// --- Split to print. A step of a tree by its key.

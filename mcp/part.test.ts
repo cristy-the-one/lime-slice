@@ -58,11 +58,10 @@ check(
   guideText.includes("RX-M3x5,7") && guideText.includes("RX-M8x12,7") && guideText.includes("centred on −Y") && guideText.includes("lime_recipe::horology::shaft"),
   guideText.slice(guideText.indexOf("Fittings"), guideText.indexOf("Fittings") + 400),
 );
-const V_PULLEY = "The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet.";
 check(
-  "guide {topic:ops, section:part} says approximate GT2 groove and names the V pulley",
-  guideText.includes("An approximate GT2 groove") && guideText.includes(V_PULLEY),
-  guideText.slice(guideText.indexOf("GT2"), guideText.indexOf("GT2") + 500),
+  "guide {topic:ops, section:part} says approximate GT2 groove and has the ISO 4183 V pulley table",
+  guideText.includes("An approximate GT2 groove") && guideText.includes("ISO 4183") && guideText.includes("SPZ 8.5 2.0 9 12 8 80 63"),
+  guideText.slice(guideText.indexOf("GT2"), guideText.indexOf("GT2") + 600),
 );
 check(
   "guide {topic:ops, section:part} has the ISO 273 table and the L-bracket",
@@ -261,14 +260,46 @@ check("gt2 bounds within 0.02 mm", nearBox(pulleyBounds, pulleyBox), show(pulley
 const pulleyChecked = await call("model_check", { object: pulleyObject });
 check("gt2 is closed", JSON.stringify(pulleyChecked.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show(pulleyChecked.edges));
 
-const vPulley = await call("solid_new", { primitive: "part", kind: "v", name: "v" });
-console.log(`part v: refused with ${show({ ok: vPulley.ok, code: vPulley.code, reason: vPulley.reason })}`);
-check("a V pulley is refused with its own code", vPulley.ok === false && vPulley.code === "v-pulley" && vPulley.reason === V_PULLEY, show(vPulley));
-const vCut = pulleyObject
-  ? await call("model_apply", { object: pulleyObject, probe: true, op: { kind: "boolean", op: "cut", primitive: "part", partKind: "v" } })
-  : { ok: false };
-console.log(`part v cut: refused with ${show({ ok: vCut.ok, code: vCut.code, reason: vCut.reason })}`);
-check("a V pulley used as a cut is refused with its own code", vCut.ok === false && vCut.code === "v-pulley" && vCut.reason === V_PULLEY, show(vCut));
+function vPulleyVolume(bw: number, c: number, h: number, e: number, f: number, ddBreak: number, dd: number, grooves: number, bore: number): number {
+  const alpha = dd <= ddBreak ? 34 : 38;
+  const t = Math.tan(((alpha / 2) * Math.PI) / 180);
+  const rd = dd / 2;
+  const re = rd + c;
+  const rb = rd - h;
+  const w = 2 * f + (grooves - 1) * e;
+  const vg = 2 * Math.PI * (0.5 * (bw - 2 * rd * t) * (re * re - rb * rb) + (2 * t / 3) * (re ** 3 - rb ** 3));
+  return Math.PI * re * re * w - grooves * vg - Math.PI * (bore / 2) ** 2 * w;
+}
+
+const vPulley = await call("solid_new", { primitive: "part", kind: "v", name: "v-spz" });
+const vObject = String(vPulley.object ?? "");
+const vDescribed = vObject ? await call("model_describe", { object: vObject, limit: 0 }) : {};
+const vVolume = Number(vDescribed.volumeMm3);
+const vBounds = vDescribed.bounds as { min?: number[]; max?: number[] } | undefined;
+const vWant = vPulleyVolume(8.5, 2.0, 9.0, 12.0, 8.0, 80, 63, 1, 8);
+const vBox: [[number, number, number], [number, number, number]] = [[-33.5, -33.5, 0], [33.5, 33.5, 16]];
+console.log(`part v SPZ 63: measured volume ${vVolume} mm3, analytic ${vWant} mm3, measured bounds ${show(vBounds)}, analytic bounds ${show(vBox)}`);
+check("solid_new v default SPZ 63", vPulley.ok === true, show(vPulley));
+check("v SPZ 63 volume within 0.5 mm3", Math.abs(vVolume - vWant) < 0.5, show(vDescribed));
+check("v SPZ 63 bounds within 0.02 mm", nearBox(vBounds, vBox), show(vBounds));
+const vChecked = await call("model_check", { object: vObject });
+check("v SPZ 63 is closed", JSON.stringify(vChecked.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), show(vChecked.edges));
+
+const vSpb = await call("solid_new", { primitive: "part", kind: "v", section: "SPB", diameter: 200, grooves: 3, bore: 25, name: "v-spb" });
+const vSpbObj = String(vSpb.object ?? "");
+const vSpbDesc = vSpbObj ? await call("model_describe", { object: vSpbObj, limit: 0 }) : {};
+const vSpbWant = vPulleyVolume(14.0, 3.5, 14.0, 19.0, 12.5, 190, 200, 3, 25);
+check("solid_new v SPB 200 3 grooves", vSpb.ok === true && Math.abs(Number(vSpbDesc.volumeMm3) - vSpbWant) < 0.5, show(vSpbDesc));
+
+let vBadErr = "";
+try {
+  await call("solid_new", { primitive: "part", kind: "v", section: "A" });
+} catch (err) {
+  vBadErr = err instanceof Error ? err.message : String(err);
+}
+check("unknown V pulley section is refused by schema", vBadErr.includes("SPZ") && vBadErr.includes("SPC"), vBadErr);
+const vBadBore = await call("solid_new", { primitive: "part", kind: "v", section: "SPZ", diameter: 63, bore: 42 });
+check("oversize V pulley bore is refused", vBadBore.ok === false && String(vBadBore.reason ?? "").includes("under the grooves"), show(vBadBore));
 
 if (failed > 0) {
   console.error(`part: ${failed} failed`);

@@ -1,13 +1,14 @@
-/** Assembly tools: the common volume of two parts and the STEP export of an assembly. */
+/** Assembly tools: the common volume of two parts, STEP export of an assembly, and custom-chord tessellation. */
 import { type Affine } from "../../model-space";
 import { decodeSolid } from "../../model-reply";
 import { type NodeId } from "../../model-tree";
-import { joinOp, probeRequest } from "../../model-request";
-import { modelPoseOf } from "../../plate";
+import { gotoRequest, joinOp, probeRequest, type StepAssemblyExport } from "../../model-request";
+import { meshTokenOf, modelPoseOf, type PlateObject } from "../../plate";
 import { livePlate } from "../files";
 import { state } from "../state";
 import { exportParts, type Assembly } from "../../assembly";
 import { exportStem, partStem } from "../../modeling/partition-export.ts";
+import { defaultMemberColor } from "../../pose-export.ts";
 import { restoreShared, treeCall } from "./engine";
 import { exportSolid, saveStepFile } from "./export";
 import { toolTreeOf } from "./join";
@@ -37,20 +38,55 @@ export async function commonVolume(aId: string, bId: string, poses?: [Affine, Af
   return shape && typeof shape !== "string" ? Math.abs(shape.volumeMm3) : 0;
 }
 
+export interface AssemblyStepOptions {
+  /** True writes the 7.0 flat STEP (one named solid per member); default false writes an AP242 assembly tree. */
+  flat?: boolean;
+  /** Poses to write at instead of the plate's kept `modelPose` (e.g. a stopped animation frame). */
+  poses?: ReadonlyMap<string, Affine>;
+  /** Per-member `#rrggbb` colours; absent falls back to the Pose palette. */
+  colors?: ReadonlyMap<string, string>;
+  /** Output file name; default `<assembly>.step`. */
+  fileName?: string;
+  /** Save through the app's save path (default true). False returns the bytes only. */
+  save?: boolean;
+}
+
+export interface AssemblyStepResult {
+  ok: boolean;
+  message: string;
+  bytes?: ArrayBuffer;
+  fileName?: string;
+  members?: number;
+  parts?: number;
+}
+
 /**
- * --- Assemblies M9. One STEP file of `assembly`: each member the step the plate holds, a solid named after its part at
- * its pose in model space, the root first. A tree Model never opened is opened first. Says what was saved, or why not.
+ * --- Assemblies M9 / Pose export E1. One STEP file of `assembly`: by default an AP242 assembly tree (one product per
+ * distinct part, nested sub-assemblies following the joint tree, member names, placements and colours); with `flat: true`,
+ * the 7.0 flat file of named solids. A tree Model never opened is opened first. Says what was saved, or why not.
  */
-export async function exportAssemblyStep(assembly: Assembly): Promise<{ ok: boolean; message: string }> {
+export async function exportAssemblyStep(assembly: Assembly, options: AssemblyStepOptions = {}): Promise<AssemblyStepResult> {
   const objects = livePlate();
-  const parts = exportParts(assembly, (id) => partStem(objects.find((obj) => obj.id === id)?.name ?? ""));
-  const held: { key: string; node: NodeId; name: string; pose: Affine }[] = [];
-  for (const row of parts) {
-    const obj = objects.find((item) => item.id === row.object);
+  const byId = new Map(objects.map((obj) => [obj.id, obj]));
+  const memberById = new Map(assembly.members.map((m) => [m.object, m]));
+  const parts = exportParts(assembly, (id) => partStem(byId.get(id)?.name ?? ""));
+  const held: { object: string; key: string; node: NodeId; name: string; pose: Affine; partKey: string; color: string }[] = [];
+  for (const [index, row] of parts.entries()) {
+    const obj = byId.get(row.object);
     if (!obj) continue;
     const at = await toolTreeOf(obj);
     if (typeof at === "string") return { ok: false, message: `${obj.name} has no closed solid, and a STEP assembly holds solids only.` };
-    held.push({ key: at.key, node: at.node, name: row.name, pose: modelPoseOf(obj) });
+    const token = obj.bytes.byteLength > 0 ? meshTokenOf(obj.bytes) : "";
+    const partKey = token || `${at.key}:${at.node}`;
+    held.push({
+      object: row.object,
+      key: at.key,
+      node: at.node,
+      name: row.name,
+      pose: options.poses?.get(row.object) ?? modelPoseOf(obj),
+      partKey,
+      color: options.colors?.get(row.object) ?? defaultMemberColor(index),
+    });
   }
   const [first, ...rest] = held;
   if (!first) return { ok: false, message: "This assembly has no part on the plate." };
@@ -61,9 +97,65 @@ export async function exportAssemblyStep(assembly: Assembly): Promise<{ ok: bool
     const problem = await restoreShared(row.key, row.node);
     if (problem) return { ok: false, message: `${row.name}: ${problem}` };
   }
-  const bytes = await exportSolid(first.key, first.node, "step", rest, held.map((row) => row.name), held.map((row) => row.pose));
+  let assemblySpec: StepAssemblyExport | undefined;
+  let distinctParts = held.length;
+  if (!options.flat) {
+    const indexByObject = new Map(held.map((row, index) => [row.object, index]));
+    const parents = held.map((row) => {
+      const parentId = memberById.get(row.object)?.parent ?? null;
+      return parentId !== null ? (indexByObject.get(parentId) ?? -1) : -1;
+    });
+    const partIdByKey = new Map<string, number>();
+    const partNames: string[] = [];
+    const partIds: number[] = [];
+    for (const row of held) {
+      let pid = partIdByKey.get(row.partKey);
+      if (pid === undefined) {
+        pid = partNames.length;
+        partIdByKey.set(row.partKey, pid);
+        partNames.push(row.name);
+      }
+      partIds.push(pid);
+    }
+    distinctParts = partNames.length;
+    assemblySpec = {
+      name: assembly.name,
+      parents,
+      partIds,
+      partNames,
+      colors: held.map((row) => row.color),
+    };
+  }
+  const bytes = await exportSolid(
+    first.key,
+    first.node,
+    "step",
+    rest,
+    held.map((row) => row.name),
+    held.map((row) => row.pose),
+    assemblySpec,
+  );
   if (typeof bytes === "string") return { ok: false, message: bytes };
-  const file = `${exportStem(assembly.name)}.step`;
-  await saveStepFile(bytes, file);
-  return { ok: true, message: `Saved ${file}: ${held.length} parts at their assembled poses, each a solid named after its part.` };
+  const file = options.fileName || `${exportStem(assembly.name)}.step`;
+  if (options.save !== false) await saveStepFile(bytes, file);
+  const kindText = options.flat
+    ? `${held.length} parts at their assembled poses, each a solid named after its part.`
+    : `${held.length} members (${distinctParts} ${distinctParts === 1 ? "part" : "parts"}) as a STEP AP242 assembly.`;
+  return { ok: true, message: `Saved ${file}: ${kindText}`, bytes, fileName: file, members: held.length, parts: distinctParts };
+}
+
+/**
+ * --- Pose export D4. Tessellate a solid plate object at `chordMm` for mesh export without altering the plate's own mesh.
+ * Returns null for a mesh-only (STL) part, which keeps its own triangles.
+ */
+export async function tessellateSolidAtChord(obj: PlateObject, chordMm: number): Promise<Float32Array | null> {
+  const at = await toolTreeOf(obj);
+  if (typeof at === "string") return null;
+  if (unopened.has(at.key)) {
+    const problem = await restoreShared(at.key, at.node);
+    if (problem) return null;
+  }
+  const body = await treeCall(at.key, at.node, gotoRequest(at.key, at.node, chordMm));
+  const solid = decodeSolid(body);
+  return typeof solid === "string" ? null : solid.positions;
 }

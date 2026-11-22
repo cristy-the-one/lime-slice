@@ -233,6 +233,26 @@ extern "C" {
         path: *const c_char,
         error: *mut *mut c_char,
     ) -> c_int;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_write_step_assembly(
+        assembly_name: *const c_char,
+        parts: *const *const RawShape,
+        part_names: *const *const c_char,
+        part_count: c_int,
+        member_names: *const *const c_char,
+        parents: *const c_int,
+        part_ids: *const c_int,
+        places: *const f64,
+        has_colors: *const c_int,
+        colors: *const f64,
+        member_count: c_int,
+        path: *const c_char,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    pub(super) fn lime_tree_read_step_assembly(
+        path: *const c_char,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
     pub(super) fn lime_tree_read_step_named(
         path: *const c_char,
         out: *mut *mut RawShape,

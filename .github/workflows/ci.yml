@@ -347,6 +347,7 @@ jobs:
           node --experimental-strip-types mcp/contact-occt.test.ts
           node --experimental-strip-types mcp/assembly-friction-occt.test.ts
           node --experimental-strip-types mcp/assembly-export.test.ts
+          node --experimental-strip-types mcp/pose-export.test.ts
           node --experimental-strip-types mcp/assembly-part-frame.test.ts
           # Tandem live shapes: a commit sends shape and Model history together, a fast-forward of what the window holds.
           node --experimental-strip-types mcp/tandem-history-occt.test.ts

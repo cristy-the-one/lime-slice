@@ -25,7 +25,7 @@ function isFeatureDrag(tool: ModelTool | null): tool is "pocket" | "boss" | "tex
 // --- end A3 ---
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
-const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack", "modelPartLength", "modelPartAllowance", "modelPartDiameter", "modelPartBore", "modelPartTaper", "modelPartScrew", "modelPartWidth", "modelPartDepth", "modelPartGauge", "modelPartHoles", "modelPartPitch", "modelPartTeeth"];
+const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack", "modelPartLength", "modelPartAllowance", "modelPartDiameter", "modelPartBore", "modelPartTaper", "modelPartScrew", "modelPartWidth", "modelPartDepth", "modelPartGauge", "modelPartHoles", "modelPartPitch", "modelPartTeeth", "modelPartGrooves"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
@@ -402,7 +402,13 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
           knob("part-bore", "modelPartBore", axes[0], "accent", "Bore ⌀", { rate: 2, min: 3, max: 20 }),
         ];
       }
-      if (kind === "v") return [];
+      if (kind === "v") {
+        return [
+          knob("part-diameter", "modelPartDiameter", axes[0], "accent", "Datum ⌀", { rate: 2, min: 25, max: 400 }),
+          knob("part-grooves", "modelPartGrooves", axes[2], "z", "Grooves", { min: 1, max: 6, whole: true, unit: "count" }),
+          knob("part-bore", "modelPartBore", axes[1], "accent", "Bore ⌀", { rate: 2, min: 3 }),
+        ];
+      }
       if (kind === "heat-set") {
         return [
           knob("part-diameter", "modelPartDiameter", axes[0], "accent", "Boss ⌀", { rate: 2, min: 0 }),
