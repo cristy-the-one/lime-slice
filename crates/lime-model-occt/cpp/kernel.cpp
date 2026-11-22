@@ -29,6 +29,7 @@
 
 #include <BinTools.hxx>
 #include <OSD_Parallel.hxx>
+#include <BRepAdaptor_CompCurve.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepLProp_SLProps.hxx>
@@ -62,6 +63,7 @@
 #include <ShapeFix_Face.hxx>
 #include <ShapeFix_Wire.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_BezierCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BezierSurface.hxx>
 #include <Geom_Circle.hxx>
@@ -69,6 +71,12 @@
 #include <Geom_Surface.hxx>
 #include <GeomAdaptor_Curve.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
+#include <BRepBuilderAPI_TransitionMode.hxx>
+#include <Law_Interpol.hxx>
+#include <TColgp_Array1OfPnt.hxx>
+#include <TColgp_Array1OfPnt2d.hxx>
+#include <TColStd_Array1OfReal.hxx>
+#include <TColStd_Array1OfInteger.hxx>
 #include <TColgp_HArray1OfPnt.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Circ.hxx>
@@ -6044,6 +6052,102 @@ void reverse_pairs(std::vector<double>& through) {
     through.swap(rev);
 }
 
+/// --- Organic surfaces S2: build an exact OCCT `Geom_BSplineCurve` edge from poles, optional rational weights,
+/// degree (default min(3, N-1)), and optional explicit knots/mults. Knot generation matches `src/modeling/nurbs-eval.ts`.
+TopoDS_Edge nurbs_edge(
+    const std::vector<gp_Pnt>& poles,
+    const std::vector<double>& weights,
+    int requested_degree,
+    const std::vector<double>& in_knots,
+    const std::vector<int>& in_mults,
+    bool periodic,
+    std::string& error) {
+    const int n = static_cast<int>(poles.size());
+    if (n < (periodic ? 3 : 2)) {
+        error = periodic ? "A periodic NURBS curve needs at least 3 poles." : "A NURBS curve needs at least 2 poles.";
+        return {};
+    }
+    const int deg = std::clamp(requested_degree > 0 ? requested_degree : 3, 1, periodic ? n : (n - 1));
+    TColgp_Array1OfPnt p_arr(1, n);
+    for (int i = 0; i < n; ++i) {
+        p_arr.SetValue(i + 1, poles[static_cast<size_t>(i)]);
+    }
+
+    const bool has_weights = !weights.empty();
+    if (has_weights && static_cast<int>(weights.size()) != n) {
+        error = "NURBS weights count must match the number of poles.";
+        return {};
+    }
+    TColStd_Array1OfReal w_arr(1, n);
+    if (has_weights) {
+        for (int i = 0; i < n; ++i) {
+            const double w = weights[static_cast<size_t>(i)];
+            if (!std::isfinite(w) || !(w > 1e-9)) {
+                error = "Every NURBS weight must be a positive number.";
+                return {};
+            }
+            w_arr.SetValue(i + 1, w);
+        }
+    }
+
+    std::vector<double> knots;
+    std::vector<int> mults;
+    if (!in_knots.empty() && in_knots.size() == in_mults.size()) {
+        knots = in_knots;
+        mults = in_mults;
+    } else if (periodic) {
+        knots.resize(static_cast<size_t>(n + 1));
+        mults.assign(static_cast<size_t>(n + 1), 1);
+        for (int i = 0; i <= n; ++i) {
+            knots[static_cast<size_t>(i)] = static_cast<double>(i);
+        }
+    } else {
+        const int spans = n - deg;
+        knots.resize(static_cast<size_t>(spans + 1));
+        mults.resize(static_cast<size_t>(spans + 1));
+        for (int i = 0; i <= spans; ++i) {
+            knots[static_cast<size_t>(i)] = static_cast<double>(i) / static_cast<double>(spans);
+            mults[static_cast<size_t>(i)] = (i == 0 || i == spans) ? (deg + 1) : 1;
+        }
+    }
+
+    const int nk = static_cast<int>(knots.size());
+    if (nk < 2) {
+        error = "A NURBS curve needs at least 2 distinct knots.";
+        return {};
+    }
+    TColStd_Array1OfReal k_arr(1, nk);
+    TColStd_Array1OfInteger m_arr(1, nk);
+    for (int i = 0; i < nk; ++i) {
+        if (i > 0 && !(knots[static_cast<size_t>(i)] > knots[static_cast<size_t>(i - 1)] + 1e-12)) {
+            error = "NURBS knots must be strictly increasing.";
+            return {};
+        }
+        if (mults[static_cast<size_t>(i)] < 1) {
+            error = "NURBS knot multiplicities must be at least 1.";
+            return {};
+        }
+        k_arr.SetValue(i + 1, knots[static_cast<size_t>(i)]);
+        m_arr.SetValue(i + 1, mults[static_cast<size_t>(i)]);
+    }
+
+    try {
+        Handle(Geom_BSplineCurve) curve = has_weights
+            ? new Geom_BSplineCurve(p_arr, w_arr, k_arr, m_arr, deg, periodic ? Standard_True : Standard_False)
+            : new Geom_BSplineCurve(p_arr, k_arr, m_arr, deg, periodic ? Standard_True : Standard_False);
+        BRepBuilderAPI_MakeEdge edge(curve);
+        if (!edge.IsDone()) {
+            error = "Open CASCADE did not build the NURBS curve edge.";
+            return {};
+        }
+        return edge.Edge();
+    } catch (const Standard_Failure& failure) {
+        const char* msg = failure.GetMessageString();
+        error = (msg != nullptr && msg[0] != '\0') ? std::string("NURBS curve failed: ") + msg : "Open CASCADE did not build the NURBS curve.";
+        return {};
+    }
+}
+
 /// Walk the loop backwards. An arc's through point stays, so the arc is the same curve.
 void reverse_loop(ProfileLoop& loop) {
     if (loop.segments.empty()) {
@@ -6060,18 +6164,36 @@ void reverse_loop(ProfileLoop& loop) {
         ProfileSeg seg = loop.segments[i];
         seg.to[0] = pts[i][0];
         seg.to[1] = pts[i][1];
-        if (seg.kind == ProfileSegKind::Spline) {
+        if (seg.kind == ProfileSegKind::Spline || seg.kind == ProfileSegKind::Nurbs) {
             reverse_pairs(seg.through);
+        }
+        if (seg.kind == ProfileSegKind::Nurbs) {
+            if (!seg.weights.empty()) {
+                const bool closed = loop.segments.size() == 1 && same_point(pts[i].data(), loop.segments[i].to);
+                if (closed && seg.weights.size() > 1) {
+                    std::reverse(seg.weights.begin() + 1, seg.weights.end());
+                } else {
+                    std::reverse(seg.weights.begin(), seg.weights.end());
+                }
+            }
+            if (!seg.knots.empty() && seg.knots.size() == seg.mults.size()) {
+                const double u_min = seg.knots.front();
+                const double u_max = seg.knots.back();
+                std::reverse(seg.knots.begin(), seg.knots.end());
+                std::reverse(seg.mults.begin(), seg.mults.end());
+                for (double& k : seg.knots) {
+                    k = u_min + u_max - k;
+                }
+            }
         }
         rev.push_back(std::move(seg));
     }
     loop.segments = std::move(rev);
 }
 
-/// A spline that ends where it starts, through at least two points between: the sketch's closed spline, one smooth
-/// periodic curve with no corner at its start.
+/// A spline or NURBS that ends where it starts, through at least two points between: one smooth periodic curve.
 bool closed_spline(const double* from, const ProfileSeg& seg) {
-    return seg.kind == ProfileSegKind::Spline && seg.through.size() >= 4 && same_point(from, seg.to);
+    return (seg.kind == ProfileSegKind::Spline || seg.kind == ProfileSegKind::Nurbs) && seg.through.size() >= 4 && same_point(from, seg.to);
 }
 
 double spline_area2(const double* from, const ProfileSeg& seg) {
@@ -6085,7 +6207,9 @@ double spline_area2(const double* from, const ProfileSeg& seg) {
         pts.emplace_back(seg.to[0], seg.to[1], 0.0);
     }
     std::string ignored;
-    const TopoDS_Edge edge = spline_edge(pts, closed, ignored);
+    const TopoDS_Edge edge = seg.kind == ProfileSegKind::Nurbs
+        ? nurbs_edge(pts, seg.weights, seg.degree, seg.knots, seg.mults, closed, ignored)
+        : spline_edge(pts, closed, ignored);
     if (edge.IsNull()) {
         return cross2(from[0], from[1], seg.to[0], seg.to[1]);
     }
@@ -6115,7 +6239,7 @@ double signed_area(const ProfileLoop& loop) {
                 const double theta = arc_sweep(circle, from, seg.through.data(), seg.to);
                 area2 += circle.r * circle.r * (theta - std::sin(theta));
             }
-        } else if (seg.kind == ProfileSegKind::Spline) {
+        } else if (seg.kind == ProfileSegKind::Spline || seg.kind == ProfileSegKind::Nurbs) {
             area2 += spline_area2(from, seg);
         } else {
             area2 += cross2(from[0], from[1], seg.to[0], seg.to[1]);
@@ -6242,6 +6366,18 @@ TopoDS_Edge loop_edge(const ProfileFrame& frame, const double* from, const Profi
             return {};
         }
         return edge.Edge();
+    }
+    if (seg.kind == ProfileSegKind::Nurbs) {
+        const bool closed = closed_spline(from, seg);
+        std::vector<gp_Pnt> poles;
+        poles.push_back(a);
+        for (size_t i = 0; i + 1 < seg.through.size(); i += 2) {
+            poles.push_back(frame.at(seg.through[i], seg.through[i + 1], lift));
+        }
+        if (!closed) {
+            poles.push_back(b);
+        }
+        return nurbs_edge(poles, seg.weights, seg.degree, seg.knots, seg.mults, closed, error);
     }
     const bool closed = closed_spline(from, seg);
     std::vector<gp_Pnt> pts;
@@ -6667,8 +6803,8 @@ bool decode_profile_loops(const double* data, int count, std::vector<ProfileLoop
             seg.to[0] = data[at++];
             seg.to[1] = data[at++];
             const int nthrough = static_cast<int>(std::llround(data[at++]));
-            if (kind < 0 || kind > 2) {
-                error = "A segment kind is line, arc, or spline.";
+            if (kind < 0 || kind > 3) {
+                error = "A segment kind is line, arc, spline, or nurbs.";
                 return false;
             }
             if (nthrough < 0 || nthrough > 200 || !take(static_cast<size_t>(nthrough) * 2)) {
@@ -6679,6 +6815,31 @@ bool decode_profile_loops(const double* data, int count, std::vector<ProfileLoop
             for (int t = 0; t < nthrough; ++t) {
                 seg.through.push_back(data[at++]);
                 seg.through.push_back(data[at++]);
+            }
+            if (seg.kind == ProfileSegKind::Nurbs) {
+                if (!take(3)) {
+                    error = "A NURBS segment is incomplete.";
+                    return false;
+                }
+                seg.degree = static_cast<int>(std::llround(data[at++]));
+                const int nw = static_cast<int>(std::llround(data[at++]));
+                const int nk = static_cast<int>(std::llround(data[at++]));
+                if (nw < 0 || nw > 204 || nk < 0 || nk > 220 || !take(static_cast<size_t>(nw) + static_cast<size_t>(nk) * 2)) {
+                    error = "A NURBS segment is incomplete.";
+                    return false;
+                }
+                seg.weights.reserve(static_cast<size_t>(nw));
+                for (int w = 0; w < nw; ++w) {
+                    seg.weights.push_back(data[at++]);
+                }
+                seg.knots.reserve(static_cast<size_t>(nk));
+                seg.mults.reserve(static_cast<size_t>(nk));
+                for (int k = 0; k < nk; ++k) {
+                    seg.knots.push_back(data[at++]);
+                }
+                for (int k = 0; k < nk; ++k) {
+                    seg.mults.push_back(static_cast<int>(std::llround(data[at++])));
+                }
             }
             if (seg.kind == ProfileSegKind::Line && nthrough != 0) {
                 error = "A line has no point between its ends.";
@@ -8995,6 +9156,34 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
                     if (ud > 5 || vd > 5) high_deg_faces += 1;
                     if (poles > 400) heavy_faces += 1;
                 }
+            } else if (kind == GeomAbs_SurfaceOfExtrusion || kind == GeomAbs_SurfaceOfRevolution) {
+                const Handle(Adaptor3d_Curve) basis = surf.BasisCurve();
+                if (!basis.IsNull()) {
+                    const GeomAbs_CurveType btype = basis->GetType();
+                    if (btype == GeomAbs_BSplineCurve) {
+                        const Handle(Geom_BSplineCurve) bc = basis->BSpline();
+                        if (!bc.IsNull()) {
+                            const int deg = bc->Degree();
+                            const int poles = bc->NbPoles();
+                            max_u_deg = std::max(max_u_deg, deg);
+                            max_poles = std::max(max_poles, poles);
+                            if (bc->IsRational()) rational_faces += 1;
+                            if (deg > 5) high_deg_faces += 1;
+                            if (poles > 400) heavy_faces += 1;
+                        }
+                    } else if (btype == GeomAbs_BezierCurve) {
+                        const Handle(Geom_BezierCurve) bz = basis->Bezier();
+                        if (!bz.IsNull()) {
+                            const int deg = bz->Degree();
+                            const int poles = bz->NbPoles();
+                            max_u_deg = std::max(max_u_deg, deg);
+                            max_poles = std::max(max_poles, poles);
+                            if (bz->IsRational()) rational_faces += 1;
+                            if (deg > 5) high_deg_faces += 1;
+                            if (poles > 400) heavy_faces += 1;
+                        }
+                    }
+                }
             }
 
             if (kind == GeomAbs_Plane) {
@@ -9252,6 +9441,465 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
     js << "}}";
     result.meta = js.str();
     return result;
+}
+
+/// --- Organic surfaces S2: decode `Curve3DSpec` and build exact 3D wire + real kernel `Op::Sweep` (`BRepOffsetAPI_MakePipeShell`).
+bool decode_curve3d(const double* data, int count, Curve3DSpec& out, int& used, std::string& error) {
+    used = 0;
+    out = Curve3DSpec{};
+    if (data == nullptr || count < 2) {
+        error = "A 3D curve specification is incomplete.";
+        return false;
+    }
+    size_t at = 0;
+    auto take = [&](size_t n) { return at + n <= static_cast<size_t>(count); };
+    out.kind = static_cast<int>(std::llround(data[at++]));
+    out.closed = std::llround(data[at++]) != 0;
+    if (out.kind == 0 || out.kind == 1) {
+        // Polyline or Spline: [npts, x0,y0,z0, ...]
+        if (!take(1)) { error = "A 3D curve is incomplete."; return false; }
+        const int npts = static_cast<int>(std::llround(data[at++]));
+        if (npts < 2 || npts > 1000 || !take(static_cast<size_t>(npts) * 3)) {
+            error = "A 3D curve needs between 2 and 1000 points.";
+            return false;
+        }
+        out.pts.reserve(static_cast<size_t>(npts) * 3);
+        for (int i = 0; i < npts * 3; ++i) {
+            if (!std::isfinite(data[at])) { error = "A 3D curve point is not a number."; return false; }
+            out.pts.push_back(data[at++]);
+        }
+    } else if (out.kind == 2) {
+        // Exact 3D NURBS: [degree, npoles, nw, nk, poles..., weights..., knots..., mults...]
+        if (!take(4)) { error = "A 3D NURBS curve is incomplete."; return false; }
+        out.degree = static_cast<int>(std::llround(data[at++]));
+        const int np = static_cast<int>(std::llround(data[at++]));
+        const int nw = static_cast<int>(std::llround(data[at++]));
+        const int nk = static_cast<int>(std::llround(data[at++]));
+        if (np < 2 || np > 500 || nw < 0 || nw > 500 || nk < 0 || nk > 520
+            || !take(static_cast<size_t>(np) * 3 + static_cast<size_t>(nw) + static_cast<size_t>(nk) * 2)) {
+            error = "A 3D NURBS curve is incomplete.";
+            return false;
+        }
+        out.pts.reserve(static_cast<size_t>(np) * 3);
+        for (int i = 0; i < np * 3; ++i) {
+            if (!std::isfinite(data[at])) { error = "A NURBS pole is not a number."; return false; }
+            out.pts.push_back(data[at++]);
+        }
+        for (int i = 0; i < nw; ++i) out.weights.push_back(data[at++]);
+        for (int i = 0; i < nk; ++i) out.knots.push_back(data[at++]);
+        for (int i = 0; i < nk; ++i) out.mults.push_back(static_cast<int>(std::llround(data[at++])));
+    } else if (out.kind == 3) {
+        // Mixed 3D segments: [start3, nseg, seg...]
+        if (!take(4)) { error = "A 3D segment chain is incomplete."; return false; }
+        out.start[0] = data[at++];
+        out.start[1] = data[at++];
+        out.start[2] = data[at++];
+        const int nseg = static_cast<int>(std::llround(data[at++]));
+        if (nseg < 1 || nseg > 500) { error = "A 3D curve needs at least one segment."; return false; }
+        out.segments.reserve(static_cast<size_t>(nseg));
+        for (int s = 0; s < nseg; ++s) {
+            if (!take(5)) { error = "A 3D segment is incomplete."; return false; }
+            Curve3DSeg seg;
+            const int sk = static_cast<int>(std::llround(data[at++]));
+            if (sk < 0 || sk > 3) { error = "Unknown 3D segment kind."; return false; }
+            seg.kind = static_cast<Curve3DSegKind>(sk);
+            seg.to[0] = data[at++];
+            seg.to[1] = data[at++];
+            seg.to[2] = data[at++];
+            const int npts = static_cast<int>(std::llround(data[at++]));
+            if (npts < 0 || npts > 200 || !take(static_cast<size_t>(npts) * 3)) {
+                error = "A 3D segment is incomplete.";
+                return false;
+            }
+            seg.pts.reserve(static_cast<size_t>(npts) * 3);
+            for (int i = 0; i < npts * 3; ++i) seg.pts.push_back(data[at++]);
+            if (seg.kind == Curve3DSegKind::Nurbs) {
+                if (!take(3)) { error = "A 3D NURBS segment is incomplete."; return false; }
+                seg.degree = static_cast<int>(std::llround(data[at++]));
+                const int nw = static_cast<int>(std::llround(data[at++]));
+                const int nk = static_cast<int>(std::llround(data[at++]));
+                if (nw < 0 || nw > 204 || nk < 0 || nk > 220 || !take(static_cast<size_t>(nw) + static_cast<size_t>(nk) * 2)) {
+                    error = "A 3D NURBS segment is incomplete.";
+                    return false;
+                }
+                for (int i = 0; i < nw; ++i) seg.weights.push_back(data[at++]);
+                for (int i = 0; i < nk; ++i) seg.knots.push_back(data[at++]);
+                for (int i = 0; i < nk; ++i) seg.mults.push_back(static_cast<int>(std::llround(data[at++])));
+            }
+            out.segments.push_back(std::move(seg));
+        }
+    } else if (out.kind == 4) {
+        // Solid edges: [nedges, e0, e1, ...]
+        if (!take(1)) { error = "Edge spine is incomplete."; return false; }
+        const int ne = static_cast<int>(std::llround(data[at++]));
+        if (ne < 1 || ne > 500 || !take(static_cast<size_t>(ne))) {
+            error = "An edge spine needs at least one edge.";
+            return false;
+        }
+        for (int i = 0; i < ne; ++i) out.edge_indices.push_back(static_cast<int>(std::llround(data[at++])));
+    } else {
+        error = "Unknown 3D curve kind.";
+        return false;
+    }
+    used = static_cast<int>(at);
+    return true;
+}
+
+namespace {
+
+TopoDS_Wire curve3d_wire(const Curve3DSpec& spec, const Held* held_for_edges, std::string& error) {
+    if (spec.kind == 0) {
+        BRepBuilderAPI_MakePolygon poly;
+        for (size_t i = 0; i + 2 < spec.pts.size(); i += 3) {
+            poly.Add(gp_Pnt(spec.pts[i], spec.pts[i + 1], spec.pts[i + 2]));
+        }
+        if (spec.closed) poly.Close();
+        if (!poly.IsDone()) {
+            error = "Open CASCADE could not build the polyline spine.";
+            return {};
+        }
+        return poly.Wire();
+    }
+    if (spec.kind == 1) {
+        std::vector<gp_Pnt> pts;
+        for (size_t i = 0; i + 2 < spec.pts.size(); i += 3) {
+            pts.emplace_back(spec.pts[i], spec.pts[i + 1], spec.pts[i + 2]);
+        }
+        const TopoDS_Edge edge = spline_edge(pts, spec.closed, error);
+        if (edge.IsNull()) return {};
+        BRepBuilderAPI_MakeWire mw(edge);
+        if (!mw.IsDone()) { error = "Open CASCADE could not build the spline spine wire."; return {}; }
+        return mw.Wire();
+    }
+    if (spec.kind == 2) {
+        std::vector<gp_Pnt> poles;
+        for (size_t i = 0; i + 2 < spec.pts.size(); i += 3) {
+            poles.emplace_back(spec.pts[i], spec.pts[i + 1], spec.pts[i + 2]);
+        }
+        const TopoDS_Edge edge = nurbs_edge(poles, spec.weights, spec.degree, spec.knots, spec.mults, spec.closed, error);
+        if (edge.IsNull()) return {};
+        BRepBuilderAPI_MakeWire mw(edge);
+        if (!mw.IsDone()) { error = "Open CASCADE could not build the NURBS spine wire."; return {}; }
+        return mw.Wire();
+    }
+    if (spec.kind == 3) {
+        std::vector<TopoDS_Edge> edges;
+        gp_Pnt from(spec.start[0], spec.start[1], spec.start[2]);
+        for (const Curve3DSeg& seg : spec.segments) {
+            const gp_Pnt to(seg.to[0], seg.to[1], seg.to[2]);
+            TopoDS_Edge edge;
+            if (seg.kind == Curve3DSegKind::Line) {
+                if (from.Distance(to) <= 1e-6) {
+                    error = "A 3D spine segment has zero length.";
+                    return {};
+                }
+                BRepBuilderAPI_MakeEdge me(from, to);
+                if (!me.IsDone()) { error = "Open CASCADE could not build a line segment in the spine."; return {}; }
+                edge = me.Edge();
+            } else if (seg.kind == Curve3DSegKind::Arc) {
+                if (seg.pts.size() != 3) { error = "A 3D arc segment needs one through point."; return {}; }
+                const gp_Pnt mid(seg.pts[0], seg.pts[1], seg.pts[2]);
+                GC_MakeArcOfCircle arc(from, mid, to);
+                if (!arc.IsDone()) { error = "Open CASCADE could not build an arc segment in the spine."; return {}; }
+                BRepBuilderAPI_MakeEdge me(arc.Value());
+                if (!me.IsDone()) { error = "Open CASCADE could not build an arc edge in the spine."; return {}; }
+                edge = me.Edge();
+            } else if (seg.kind == Curve3DSegKind::Spline) {
+                std::vector<gp_Pnt> pts;
+                pts.push_back(from);
+                for (size_t i = 0; i + 2 < seg.pts.size(); i += 3) {
+                    pts.emplace_back(seg.pts[i], seg.pts[i + 1], seg.pts[i + 2]);
+                }
+                const bool closed = spec.segments.size() == 1 && from.Distance(to) <= 1e-6 && pts.size() >= 3;
+                if (!closed) pts.push_back(to);
+                edge = spline_edge(pts, closed, error);
+            } else {
+                std::vector<gp_Pnt> poles;
+                poles.push_back(from);
+                for (size_t i = 0; i + 2 < seg.pts.size(); i += 3) {
+                    poles.emplace_back(seg.pts[i], seg.pts[i + 1], seg.pts[i + 2]);
+                }
+                const bool closed = spec.segments.size() == 1 && from.Distance(to) <= 1e-6 && poles.size() >= 3;
+                if (!closed) poles.push_back(to);
+                edge = nurbs_edge(poles, seg.weights, seg.degree, seg.knots, seg.mults, closed, error);
+            }
+            if (edge.IsNull()) return {};
+            edges.push_back(edge);
+            from = to;
+        }
+        return wire_of(edges, error);
+    }
+    if (spec.kind == 4) {
+        if (held_for_edges == nullptr) {
+            error = "An edge spine needs an existing solid.";
+            return {};
+        }
+        std::vector<TopoDS_Edge> edges;
+        for (const int idx : spec.edge_indices) {
+            if (idx < 0 || idx >= held_for_edges->edges.Extent()) {
+                error = "The spine names an edge that is not on this solid.";
+                return {};
+            }
+            edges.push_back(TopoDS::Edge(held_for_edges->edges(idx + 1)));
+        }
+        return wire_of(edges, error);
+    }
+    error = "Unknown 3D spine kind.";
+    return {};
+}
+
+/// Extract the outer wire and optional hole wires of one `LoftSection`.
+bool sweep_section_wires(const LoftSection& section, TopoDS_Wire& outer, std::vector<TopoDS_Wire>& holes, std::string& error) {
+    holes.clear();
+    if (!section.loops.empty()) {
+        const ProfileFrame frame = frame_of(section.profile);
+        std::vector<std::vector<ProfileLoop>> groups;
+        int deepest = 0;
+        if (!group_loops(frame, section.loops, groups, deepest, error)) {
+            return false;
+        }
+        if (groups.size() != 1) {
+            error = "A sweep section needs one closed outline (holes allowed).";
+            return false;
+        }
+        for (size_t i = 0; i < groups[0].size(); ++i) {
+            const std::vector<TopoDS_Edge> edges = loop_edges(frame, groups[0][i], 0.0, error);
+            if (edges.empty()) return false;
+            const TopoDS_Wire w = wire_of(edges, error);
+            if (w.IsNull()) return false;
+            if (i == 0) outer = w;
+            else holes.push_back(w);
+        }
+        return true;
+    }
+    outer = section_wire(section, error);
+    return !outer.IsNull();
+}
+
+/// Build an offset helical auxiliary spine wire rotating smoothly by `twist_deg` along `spine`.
+TopoDS_Wire twist_aux_wire(const TopoDS_Wire& spine, double twist_deg, std::string& error) {
+    BRepAdaptor_CompCurve cc(spine);
+    const double u0 = cc.FirstParameter();
+    const double u1 = cc.LastParameter();
+    if (!(u1 > u0 + 1e-9)) {
+        error = "The sweep spine is too short to twist.";
+        return {};
+    }
+    constexpr int kSamples = 32;
+    gp_Pnt p0;
+    gp_Vec t0;
+    cc.D1(u0, p0, t0);
+    if (t0.Magnitude() <= 1e-9) {
+        error = "The sweep spine has no tangent at its start.";
+        return {};
+    }
+    t0.Normalize();
+    gp_Vec up(0.0, 0.0, 1.0);
+    if (std::abs(t0.Dot(up)) > 0.92) up = gp_Vec(0.0, 1.0, 0.0);
+    gp_Vec u_dir = up.Crossed(t0);
+    u_dir.Normalize();
+
+    const double twist_rad = twist_deg * (kPi / 180.0);
+    const double offset = 5.0;
+    std::vector<gp_Pnt> pts;
+    pts.reserve(kSamples + 1);
+    for (int i = 0; i <= kSamples; ++i) {
+        const double frac = static_cast<double>(i) / kSamples;
+        const double u = u0 + (u1 - u0) * frac;
+        gp_Pnt p;
+        gp_Vec t;
+        cc.D1(u, p, t);
+        if (t.Magnitude() > 1e-9) {
+            t.Normalize();
+            // Parallel-transport u_dir smoothly before applying twist.
+            const double along = u_dir.Dot(t);
+            u_dir = u_dir - t * along;
+            if (u_dir.Magnitude() > 1e-9) u_dir.Normalize();
+            gp_Vec v_dir = t.Crossed(u_dir);
+            v_dir.Normalize();
+            const double a = twist_rad * frac;
+            gp_Vec radial = u_dir * std::cos(a) + v_dir * std::sin(a);
+            pts.push_back(p.Translated(radial * offset));
+        }
+    }
+    const TopoDS_Edge edge = spline_edge(pts, false, error);
+    if (edge.IsNull()) return {};
+    BRepBuilderAPI_MakeWire mw(edge);
+    if (!mw.IsDone()) { error = "Open CASCADE could not build the twist guide."; return {}; }
+    return mw.Wire();
+}
+
+TopoDS_Shape pipe_solid_from_wires(
+    const TopoDS_Wire& spine,
+    const std::vector<TopoDS_Wire>& section_wires,
+    const SweepSpec& spec,
+    const TopoDS_Wire& aux_wire,
+    std::string& error) {
+    BRepOffsetAPI_MakePipeShell pipe(spine);
+    if (!aux_wire.IsNull()) {
+        pipe.SetMode(aux_wire, Standard_True);
+    } else if (spec.mode == 2) {
+        const gp_Vec bv(spec.binormal[0], spec.binormal[1], spec.binormal[2]);
+        if (bv.Magnitude() <= 1e-9) {
+            error = "Fixed binormal direction cannot be zero.";
+            return {};
+        }
+        pipe.SetMode(gp_Dir(bv));
+    } else if (spec.mode == 1) {
+        pipe.SetMode(Standard_True);
+    } else {
+        pipe.SetMode(Standard_False);
+    }
+
+    if (spec.transition == 1) {
+        pipe.SetTransitionMode(BRepBuilderAPI_RightCorner);
+    } else if (spec.transition == 2) {
+        pipe.SetTransitionMode(BRepBuilderAPI_Transformed);
+    } else {
+        pipe.SetTransitionMode(BRepBuilderAPI_RoundCorner);
+    }
+
+    if (section_wires.size() == 1 && spec.scale_stations.size() >= 4) {
+        const int nst = static_cast<int>(spec.scale_stations.size() / 2);
+        BRepAdaptor_CompCurve cc(spine);
+        const double u0 = cc.FirstParameter();
+        const double u1 = cc.LastParameter();
+        TColgp_Array1OfPnt2d pts(1, nst);
+        for (int i = 0; i < nst; ++i) {
+            const double t = std::clamp(spec.scale_stations[static_cast<size_t>(i * 2)], 0.0, 1.0);
+            const double s = spec.scale_stations[static_cast<size_t>(i * 2 + 1)];
+            if (!std::isfinite(s) || !(s > 1e-4)) {
+                error = "Every sweep scale factor must be positive.";
+                return {};
+            }
+            pts.SetValue(i + 1, gp_Pnt2d(u0 + (u1 - u0) * t, s));
+        }
+        Handle(Law_Interpol) law = new Law_Interpol();
+        law->Set(pts, Standard_False);
+        pipe.SetLaw(section_wires[0], law, Standard_False, Standard_False);
+    } else {
+        for (const TopoDS_Wire& w : section_wires) {
+            pipe.Add(w, Standard_False, Standard_False);
+        }
+    }
+
+    TopoDS_Shape tool;
+    try {
+        Handle(Message_ProgressIndicator) watch;
+        pipe.Build(deadline_range(watch));
+        if (!pipe.IsDone() || !pipe.MakeSolid() || pipe.Shape().IsNull()) {
+            error = past_deadline() ? deadline_message()
+                                    : "Open CASCADE could not sweep this profile along the path. Make tight bends gentler or reduce the profile size.";
+            return {};
+        }
+        tool = pipe.Shape();
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not sweep this profile along the path. Make tight bends gentler or reduce the profile size.";
+        return {};
+    }
+    if (!has_solid(tool)) {
+        error = "The sweep did not close into a solid.";
+        return {};
+    }
+    tool = as_solid(tool);
+    GProp_GProps props;
+    integrate(tool, props);
+    if (std::abs(props.Mass()) <= 1e-6) {
+        error = "The sweep has no volume.";
+        return {};
+    }
+    if (props.Mass() < 0.0) {
+        tool.Reverse();
+    }
+    if (!BRepCheck_Analyzer(tool).IsValid()) {
+        ShapeFix_Solid fix;
+        fix.Init(TopoDS::Solid(tool));
+        fix.Perform();
+        tool = fix.Solid();
+        if (!BRepCheck_Analyzer(tool).IsValid()) {
+            error = "The swept solid intersects itself. Make bends gentler or use a smaller profile.";
+            return {};
+        }
+    }
+    return tool;
+}
+
+}  // namespace
+
+TopoDS_Shape build_sweep(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const SweepSpec& spec,
+    const Held* held_for_edges,
+    double& volume,
+    std::string& error) {
+    if (spec.sections.empty()) {
+        error = "A sweep needs at least one profile section.";
+        return {};
+    }
+    if (spec.sections.size() > 64) {
+        error = "A sweep takes at most 64 sections.";
+        return {};
+    }
+    const TopoDS_Wire spine = curve3d_wire(spec.spine, held_for_edges, error);
+    if (spine.IsNull()) {
+        return {};
+    }
+    TopoDS_Wire aux_wire;
+    if (spec.has_aux_spine) {
+        aux_wire = curve3d_wire(spec.aux_spine, held_for_edges, error);
+        if (aux_wire.IsNull()) return {};
+    } else if (std::abs(spec.twist_deg) > 1e-6) {
+        aux_wire = twist_aux_wire(spine, spec.twist_deg, error);
+        if (aux_wire.IsNull()) return {};
+    }
+
+    std::vector<TopoDS_Wire> outer_wires;
+    std::vector<std::vector<TopoDS_Wire>> hole_chains;
+    for (size_t i = 0; i < spec.sections.size(); ++i) {
+        TopoDS_Wire outer;
+        std::vector<TopoDS_Wire> holes;
+        if (!sweep_section_wires(spec.sections[i], outer, holes, error)) {
+            error = "Section " + std::to_string(i) + ": " + error;
+            return {};
+        }
+        outer_wires.push_back(outer);
+        if (i == 0) {
+            hole_chains.resize(holes.size());
+        } else if (holes.size() != hole_chains.size()) {
+            error = "Every sweep section needs the same number of holes.";
+            return {};
+        }
+        for (size_t h = 0; h < holes.size(); ++h) {
+            hole_chains[h].push_back(holes[h]);
+        }
+    }
+
+    TopoDS_Shape tool = pipe_solid_from_wires(spine, outer_wires, spec, aux_wire, error);
+    if (tool.IsNull()) {
+        return {};
+    }
+    for (const std::vector<TopoDS_Wire>& hole_wires : hole_chains) {
+        TopoDS_Shape hole_solid = pipe_solid_from_wires(spine, hole_wires, spec, aux_wire, error);
+        if (hole_solid.IsNull()) {
+            return {};
+        }
+        double cut_vol = 0.0;
+        tool = combine(tool, "cut", hole_solid, cut_vol, error);
+        if (tool.IsNull() || !error.empty()) {
+            if (error.empty()) error = "Open CASCADE could not hollow the swept pipe.";
+            return {};
+        }
+    }
+
+    if (current.IsNull()) {
+        GProp_GProps props;
+        integrate(tool, props);
+        volume = std::abs(props.Mass());
+        return tool;
+    }
+    return combine_profile_tools(current, before, which, {tool}, "sweep", volume, error);
 }
 
 }  // namespace lime_occt

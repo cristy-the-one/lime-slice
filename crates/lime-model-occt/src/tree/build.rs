@@ -26,7 +26,7 @@ use super::ffi::{
 };
 use super::group::{build_combined, build_group};
 use super::joints::{joined_of, keep_built, stored_joints, Joined};
-use super::k1::{build_k1_loops, k1_has_loops, push_shape};
+use super::k1::{build_k1_loops, build_sweep_shape, k1_has_loops, push_shape};
 use super::ops::{FacePick, Neutral, Op, Primitive};
 use super::outcome::Failure;
 use super::partition::{
@@ -503,6 +503,27 @@ pub(super) fn build(
                 )
             })
         }
+        Op::Sweep {
+            op: which,
+            sections,
+            spine,
+            mode,
+            transition,
+            scale,
+            twist_deg,
+            aux_spine,
+        } => build_sweep_shape(
+            Some(from),
+            *which,
+            sections,
+            spine,
+            *mode,
+            *transition,
+            scale,
+            *twist_deg,
+            aux_spine.as_deref(),
+            &picks,
+        ),
         Op::Shell { thickness, .. } => Shape::made(|error| unsafe {
             lime_tree_shell(
                 from.raw(),

@@ -331,3 +331,6 @@ src/model-view/edge-screen.test.ts
 src/closed-ahead.test.ts
 mcp/speed-ux.test.ts
 mcp/surface-inspect.test.ts
+src/modeling/nurbs-eval.test.ts
+src/sketch/nurbs.test.ts
+mcp/nurbs-sweep.test.ts

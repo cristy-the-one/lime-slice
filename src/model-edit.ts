@@ -475,6 +475,7 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "extrude":
     case "revolve":
     case "loft":
+    case "sweep":
     case "partition":
     case "transition":
     // --- Text with real fonts: a step of a text group; the group reopens the card.

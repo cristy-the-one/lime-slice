@@ -462,6 +462,96 @@ pub enum ProfileSegment {
     Line { to: [f64; 2] },
     Arc { through: [f64; 2], to: [f64; 2] },
     Spline { through: Vec<[f64; 2]>, to: [f64; 2] },
+    /// --- Organic surfaces S2: exact rational B-spline segment (interior `poles` between previous end and `to`).
+    Nurbs {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        poles: Vec<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree: Option<u8>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults: Vec<u32>,
+        to: [f64; 2],
+    },
+}
+
+/// --- Organic surfaces S2: one segment of a 3D mixed curve (`Curve3D::Segments`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Curve3DSegment {
+    Line { to: [f64; 3] },
+    Arc { through: [f64; 3], to: [f64; 3] },
+    Spline { through: Vec<[f64; 3]>, to: [f64; 3] },
+    Nurbs {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        poles: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree: Option<u8>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults: Vec<u32>,
+        to: [f64; 3],
+    },
+}
+
+/// --- Organic surfaces S2: exact 3D curve (used for `Sweep` spines & auxiliary spines, and later rails/patches).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Curve3D {
+    Polyline {
+        points: Vec<[f64; 3]>,
+    },
+    Spline {
+        points: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
+    },
+    Nurbs {
+        poles: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree: Option<u8>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults: Vec<u32>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        periodic: bool,
+    },
+    Segments {
+        start: [f64; 3],
+        segments: Vec<Curve3DSegment>,
+    },
+    Edges {
+        edges: Vec<EdgePick>,
+    },
+}
+
+/// Corner handling when a sweep spine has a C0 sharp bend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SweepTransition {
+    #[default]
+    Round,
+    Right,
+    Transformed,
+}
+
+/// Cross-section orientation along a sweep spine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SweepMode {
+    #[default]
+    CorrectedFrenet,
+    Frenet,
+    FixedBinormal { dir: [f64; 3] },
 }
 
 /// A closed loop on a profile's plane. A loop inside no other is an outline, and one inside an outline is its hole.
@@ -622,6 +712,25 @@ pub enum Op {
         sections: Vec<LoftSection>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         ruled: bool,
+    },
+    /// --- Organic surfaces S2: real kernel sweep (`BRepOffsetAPI_MakePipeShell`) of `sections` along exact 3D `spine`.
+    Sweep {
+        op: BooleanOp,
+        sections: Vec<LoftSection>,
+        spine: Curve3D,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<SweepMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transition: Option<SweepTransition>,
+        /// Optional `[t, scale]` stations along the spine (0..1), interpolated smoothly via `Law_Interpol`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scale: Vec<[f64; 2]>,
+        /// Optional smooth twist along the spine, in degrees.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        twist_deg: Option<f64>,
+        /// Optional auxiliary guide spine overriding section orientation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aux_spine: Option<Box<Curve3D>>,
     },
     /// The solid hollowed inward to walls `thickness` thick, with `openFaces` removed. None open leaves a closed void.
     Shell {

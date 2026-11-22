@@ -1731,6 +1731,78 @@ pub mod ops {
         Json::obj().set("kind", "hole").set("origin", origin).set("axis", axis).set("diameterMm", diameter).set("depth", depth)
     }
 
+    /// An exact 2D NURBS profile loop segment from the previous point through interior `poles` to `to`.
+    /// Optional `weights` cover all poles (start, interior poles, to); `degree` defaults to 3.
+    pub fn nurbs_seg(
+        poles: Vec<[f64; 2]>,
+        weights: Option<Vec<f64>>,
+        degree: Option<u32>,
+        knots: Option<Vec<f64>>,
+        mults: Option<Vec<u32>>,
+        to: [f64; 2],
+    ) -> Json {
+        let mut obj = Json::obj().set("kind", "nurbs").set("to", to);
+        if !poles.is_empty() {
+            obj = obj.set("poles", poles);
+        }
+        if let Some(w) = weights {
+            obj = obj.set("weights", w);
+        }
+        if let Some(d) = degree {
+            obj = obj.set("degree", d);
+        }
+        if let Some(k) = knots {
+            obj = obj.set("knots", k);
+        }
+        if let Some(m) = mults {
+            obj = obj.set("mults", Json::arr(m.into_iter().map(|v| v as f64).collect()));
+        }
+        obj
+    }
+
+    /// An exact 3D polyline spine curve for `sweep`.
+    pub fn curve3d_polyline(points: Vec<[f64; 3]>, closed: bool) -> Json {
+        let obj = Json::obj().set("kind", "polyline").set("points", points);
+        if closed { obj.set("closed", true) } else { obj }
+    }
+
+    /// An exact 3D rational NURBS spine curve for `sweep`.
+    pub fn curve3d_nurbs(
+        poles: Vec<[f64; 3]>,
+        weights: Option<Vec<f64>>,
+        degree: Option<u32>,
+        knots: Option<Vec<f64>>,
+        mults: Option<Vec<u32>>,
+        closed: bool,
+    ) -> Json {
+        let mut obj = Json::obj().set("kind", "nurbs").set("poles", poles);
+        if let Some(w) = weights {
+            obj = obj.set("weights", w);
+        }
+        if let Some(d) = degree {
+            obj = obj.set("degree", d);
+        }
+        if let Some(k) = knots {
+            obj = obj.set("knots", k);
+        }
+        if let Some(m) = mults {
+            obj = obj.set("mults", Json::arr(m.into_iter().map(|v| v as f64).collect()));
+        }
+        if closed {
+            obj = obj.set("closed", true);
+        }
+        obj
+    }
+
+    /// An exact kernel pipe-shell sweep (`BRepOffsetAPI_MakePipeShell`): `op` is "fuse", "cut", or "common".
+    pub fn sweep(op: &str, sections: Vec<Json>, spine: Json) -> Json {
+        Json::obj()
+            .set("kind", "sweep")
+            .set("op", op)
+            .set("sections", Json::arr(sections))
+            .set("spine", spine)
+    }
+
     /// A boolean with a primitive placed at `origin`: `op` is "fuse", "cut" or "common".
     pub fn boolean(op: &str, primitive: Json, origin: [f64; 3]) -> Json {
         let mut fields = match primitive {

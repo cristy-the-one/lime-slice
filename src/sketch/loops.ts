@@ -3,8 +3,9 @@
  * a loop drawn into a sketch, and a loop sampled for a ghost. One copy, so the four features cannot drift apart.
  */
 import type { ProfileLoop, ProfileSegment, Vec2 } from "../model-tree.ts";
+import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
 import { arcFrom3, arcPoint, sampleSpline } from "./geom.ts";
-import { addArc, addLine, addSpline, type Pt, type SketchData } from "./model.ts";
+import { addArc, addLine, addNurbs, addSpline, type Pt, type SketchData } from "./model.ts";
 
 /** A loop the engine owns: every point copied. */
 export function copyLoop(loop: ProfileLoop): ProfileLoop {
@@ -13,6 +14,17 @@ export function copyLoop(loop: ProfileLoop): ProfileLoop {
     segments: loop.segments.map((segment): ProfileSegment => {
       if (segment.kind === "line") return { kind: "line", to: [segment.to[0], segment.to[1]] };
       if (segment.kind === "arc") return { kind: "arc", through: [segment.through[0], segment.through[1]], to: [segment.to[0], segment.to[1]] };
+      if (segment.kind === "nurbs") {
+        return {
+          kind: "nurbs",
+          ...(segment.poles ? { poles: segment.poles.map((pt) => [pt[0], pt[1]] as Vec2) } : {}),
+          ...(segment.weights ? { weights: [...segment.weights] } : {}),
+          ...(segment.degree !== undefined ? { degree: segment.degree } : {}),
+          ...(segment.knots ? { knots: [...segment.knots] } : {}),
+          ...(segment.mults ? { mults: [...segment.mults] } : {}),
+          to: [segment.to[0], segment.to[1]],
+        };
+      }
       return { kind: "spline", through: segment.through.map((pt) => [pt[0], pt[1]] as Vec2), to: [segment.to[0], segment.to[1]] };
     }),
   };
@@ -40,7 +52,14 @@ export function drawLoop(sketch: SketchData, loop: ProfileLoop): SketchData {
     const to: Pt = [segment.to[0], segment.to[1]];
     if (segment.kind === "line") next = addLine(next, prev, to).sketch;
     else if (segment.kind === "arc") next = addArc(next, prev, to, [segment.through[0], segment.through[1]]).sketch;
-    else next = addSpline(next, [prev, ...segment.through.map((pt) => [pt[0], pt[1]] as Pt), to]).sketch;
+    else if (segment.kind === "nurbs") {
+      next = addNurbs(next, [prev, ...(segment.poles ?? []).map((pt) => [pt[0], pt[1]] as Pt), to], {
+        weights: segment.weights,
+        degree: segment.degree,
+        knots: segment.knots,
+        mults: segment.mults,
+      }).sketch;
+    } else next = addSpline(next, [prev, ...segment.through.map((pt) => [pt[0], pt[1]] as Pt), to]).sketch;
     prev = to;
   }
   return next;
@@ -62,6 +81,11 @@ export function sampleLoopPoints(loop: ProfileLoop): Pt[] {
       const arc = arcFrom3(prev, [segment.through[0], segment.through[1]], to);
       if (!arc) push(to);
       else for (let step = 1; step <= 8; step += 1) push(arcPoint(arc, step / 8));
+    } else if (segment.kind === "nurbs") {
+      const poles: Pt[] = [prev, ...(segment.poles ?? []).map((pt) => [pt[0], pt[1]] as Pt), to];
+      for (const point of sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8))) {
+        push(point);
+      }
     } else {
       for (const point of sampleSpline([prev, ...segment.through.map((pt) => [pt[0], pt[1]] as Pt), to], false, 1)) push(point);
     }

@@ -103,6 +103,7 @@ type ModelOpBase =
   | ExtrudeOp
   | RevolveOp
   | LoftOp
+  | SweepOp
   | ShellOp
   | GroupOp
   | FaceExtrudeOp
@@ -201,7 +202,49 @@ export interface PartitionModelOp {
 export type ProfileSegment =
   | { kind: "line"; to: Vec2 }
   | { kind: "arc"; through: Vec2; to: Vec2 }
-  | { kind: "spline"; through: Vec2[]; to: Vec2 };
+  | { kind: "spline"; through: Vec2[]; to: Vec2 }
+  | { kind: "nurbs"; poles?: Vec2[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[]; to: Vec2 };
+
+/** One segment of a 3D composite spine curve. */
+export type Curve3DSegment =
+  | { kind: "line"; to: Vec3 }
+  | { kind: "arc"; through: Vec3; to: Vec3 }
+  | { kind: "spline"; through: Vec3[]; to: Vec3 }
+  | { kind: "nurbs"; poles?: Vec3[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[]; to: Vec3 };
+
+/** Exact 3D spine / rail curve for real kernel sweeps and surface tools. */
+export type Curve3D =
+  | { kind: "polyline"; points: Vec3[]; closed?: true }
+  | { kind: "spline"; through: Vec3[]; closed?: true }
+  | { kind: "nurbs"; poles: Vec3[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[]; closed?: true }
+  | { kind: "segments"; start: Vec3; segments: Curve3DSegment[] }
+  | { kind: "edges"; edges: EdgePick[] };
+
+/** Frame evolution law along a swept spine. */
+export type SweepMode =
+  | { kind: "correctedFrenet" }
+  | { kind: "frenet" }
+  | { kind: "fixedBinormal"; dir: Vec3 }
+  | { kind: "auxSpine"; spine: Curve3D; curvilinear?: boolean; keepContact?: boolean };
+
+/** Corner transition at C0 / sharp joints along a swept spine. */
+export type SweepTransition = "round" | "right" | "transformed";
+
+/** Exact kernel pipe-shell sweep along a 3D spine curve (`BRepOffsetAPI_MakePipeShell`). */
+export interface SweepOp {
+  kind: "sweep";
+  op: BooleanKind;
+  sections: LoftSection[];
+  spine: Curve3D;
+  mode?: SweepMode;
+  transition?: SweepTransition;
+  /** `[u, factor]` scale stations along normalized spine parameter `u` in `[0, 1]`. */
+  scale?: [number, number][];
+  /** Total smooth twist along the spine, in degrees. */
+  twistDeg?: number;
+  /** Stripped before the engine sees the op. */
+  drawing?: LoftDrawing;
+}
 
 /** A closed loop on a profile's plane. A loop inside no other is an outline; one inside an outline is its hole. */
 export interface ProfileLoop {
@@ -503,11 +546,11 @@ export interface RunMark {
   n: number;
 }
 
-/** An extrude, a revolve, or a loft that can start a solid on its own (K2). */
-export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp;
+/** An extrude, a revolve, a loft, or a sweep that can start a solid on its own (K2 / S2). */
+export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp | SweepOp;
 
 export function isFeatureOp(op: ModelOp): op is FeatureOp {
-  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft";
+  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "sweep";
 }
 
 /**
@@ -887,7 +930,7 @@ function primitiveTitle(spec: PrimitiveSpec): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft" } as const;
+const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft", sweep: "Sweep" } as const;
 
 /**
  * --- F1/E1. A group of extrudes that came from one sketch: no composite `source`, so it is not a pocket,
@@ -984,6 +1027,12 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const verb = op.op === "fuse" ? "Loft" : `${BOOLEAN_VERB[op.op]} loft`;
       return `${verb} through ${op.sections.length} sections${op.ruled ? ", ruled" : ""}`;
     }
+    case "sweep": {
+      const verb = op.op === "fuse" ? "Sweep" : `${BOOLEAN_VERB[op.op]} sweep`;
+      const via = op.spine.kind === "nurbs" ? "NURBS spine" : op.spine.kind === "edges" ? `${op.spine.edges.length} edge${op.spine.edges.length === 1 ? "" : "s"}` : op.spine.kind === "segments" ? `${op.spine.segments.length}-segment spine` : `${op.spine.kind === "polyline" ? op.spine.points.length : op.spine.through.length}-point spine`;
+      const twist = op.twistDeg ? `, twist ${n(op.twistDeg)}°` : "";
+      return `${verb} along ${via}${twist}`;
+    }
     case "shell": {
       const open = op.openFaces?.length ?? 0;
       return `Shell ${n(op.thickness)}, ${open === 0 ? "closed" : open === 1 ? "1 face open" : `${open} faces open`}`;
@@ -1077,6 +1126,9 @@ export function historyCaption(op: ModelOp | null, fallback: string): string {
     return `Revolve ${sketchTitle(op.sketch, 1)}, ${n(op.angleDeg ?? 360)}°${featureMode(op.op)}`;
   }
   if (op.kind === "loft" && op.drawing?.sweep) {
+    return `Sweep ${sketchTitle(op.drawing.sweep.profile, 1)}${featureMode(op.op)}`;
+  }
+  if (op.kind === "sweep" && op.drawing?.sweep) {
     return `Sweep ${sketchTitle(op.drawing.sweep.profile, 1)}${featureMode(op.op)}`;
   }
   if (op.kind === "loft" && op.drawing?.sketches && op.drawing.sketches.length >= 2) {

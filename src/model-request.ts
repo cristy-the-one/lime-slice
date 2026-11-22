@@ -7,7 +7,7 @@ import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
 import { partitionNumbers } from "./modeling/partition.ts";
-import { savedNodes, type BooleanKind, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type SweepMode, type SweepOp, type SweepTransition, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project names its solids without loading these requests (./brep-file.ts).
 export { isBrep, solidFileName } from "./brep-file.ts";
@@ -125,7 +125,101 @@ function copyLoops(loops: readonly ProfileLoop[]): ProfileLoop[] {
 function copySegment(seg: ProfileSegment): ProfileSegment {
   if (seg.kind === "line") return { kind: "line", to: [seg.to[0], seg.to[1]] };
   if (seg.kind === "arc") return { kind: "arc", through: [seg.through[0], seg.through[1]], to: [seg.to[0], seg.to[1]] };
+  if (seg.kind === "nurbs") {
+    return {
+      kind: "nurbs",
+      ...(seg.poles ? { poles: seg.poles.map(([u, v]) => [u, v] as Vec2) } : {}),
+      ...(seg.weights ? { weights: [...seg.weights] } : {}),
+      ...(seg.degree !== undefined ? { degree: seg.degree } : {}),
+      ...(seg.knots ? { knots: [...seg.knots] } : {}),
+      ...(seg.mults ? { mults: [...seg.mults] } : {}),
+      to: [seg.to[0], seg.to[1]],
+    };
+  }
   return { kind: "spline", through: seg.through.map(([u, v]) => [u, v] as Vec2), to: [seg.to[0], seg.to[1]] };
+}
+
+function copyCurve3D(curve: Curve3D): Curve3D {
+  const v3 = (p: Vec3): Vec3 => [p[0], p[1], p[2]];
+  if (curve.kind === "polyline") return { kind: "polyline", points: curve.points.map(v3), ...(curve.closed ? { closed: true as const } : {}) };
+  if (curve.kind === "spline") return { kind: "spline", through: curve.through.map(v3), ...(curve.closed ? { closed: true as const } : {}) };
+  if (curve.kind === "nurbs") {
+    return {
+      kind: "nurbs",
+      poles: curve.poles.map(v3),
+      ...(curve.weights ? { weights: [...curve.weights] } : {}),
+      ...(curve.degree !== undefined ? { degree: curve.degree } : {}),
+      ...(curve.knots ? { knots: [...curve.knots] } : {}),
+      ...(curve.mults ? { mults: [...curve.mults] } : {}),
+      ...(curve.closed ? { closed: true as const } : {}),
+    };
+  }
+  if (curve.kind === "segments") {
+    return {
+      kind: "segments",
+      start: v3(curve.start),
+      segments: curve.segments.map((seg): Curve3DSegment => {
+        if (seg.kind === "line") return { kind: "line", to: v3(seg.to) };
+        if (seg.kind === "arc") return { kind: "arc", through: v3(seg.through), to: v3(seg.to) };
+        if (seg.kind === "nurbs") {
+          return {
+            kind: "nurbs",
+            ...(seg.poles ? { poles: seg.poles.map(v3) } : {}),
+            ...(seg.weights ? { weights: [...seg.weights] } : {}),
+            ...(seg.degree !== undefined ? { degree: seg.degree } : {}),
+            ...(seg.knots ? { knots: [...seg.knots] } : {}),
+            ...(seg.mults ? { mults: [...seg.mults] } : {}),
+            to: v3(seg.to),
+          };
+        }
+        return { kind: "spline", through: seg.through.map(v3), to: v3(seg.to) };
+      }),
+    };
+  }
+  return { kind: "edges", edges: [...curve.edges] };
+}
+
+function copySection(section: LoftSection): LoftSection {
+  return {
+    origin: [...section.origin],
+    turn: [...section.turn],
+    ...(section.loops && section.loops.length > 0
+      ? { loops: copyLoops(section.loops) }
+      : section.radius !== undefined
+        ? { radius: section.radius, ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}) }
+        : { profile: (section.profile ?? []).map(([u, v]) => [u, v] as Vec2), ...shapeFields({ smooth: section.smooth, corners: section.corners }) }),
+  };
+}
+
+/** Real kernel pipe-shell sweep along a 3D spine curve (`BRepOffsetAPI_MakePipeShell`). */
+export function sweepOp(
+  op: BooleanKind,
+  sections: readonly LoftSection[],
+  spine: Curve3D,
+  options: { mode?: SweepMode; transition?: SweepTransition; scale?: readonly [number, number][]; twistDeg?: number } = {},
+): SweepOp {
+  const mode = options.mode
+    ? options.mode.kind === "fixedBinormal"
+      ? { kind: "fixedBinormal" as const, dir: [...options.mode.dir] as Vec3 }
+      : options.mode.kind === "auxSpine"
+        ? {
+            kind: "auxSpine" as const,
+            spine: copyCurve3D(options.mode.spine),
+            ...(options.mode.curvilinear !== undefined ? { curvilinear: options.mode.curvilinear } : {}),
+            ...(options.mode.keepContact !== undefined ? { keepContact: options.mode.keepContact } : {}),
+          }
+        : { kind: options.mode.kind }
+    : undefined;
+  return {
+    kind: "sweep",
+    op,
+    sections: sections.map(copySection),
+    spine: copyCurve3D(spine),
+    ...(mode ? { mode } : {}),
+    ...(options.transition ? { transition: options.transition } : {}),
+    ...(options.scale && options.scale.length >= 2 ? { scale: options.scale.map(([u, f]) => [u, f] as [number, number]) } : {}),
+    ...(options.twistDeg !== undefined && options.twistDeg !== 0 ? { twistDeg: options.twistDeg } : {}),
+  };
 }
 
 /** Splines through a profile's points, sharp at `corners`. Each field is sent only when on, as the engine stores it. */
@@ -279,8 +373,8 @@ export function withoutSketch(op: ModelOp): ModelOp {
       const { sketch: _sketch, ...rest } = op;
       next = rest;
     }
-  } else if (op.kind === "loft") {
-    // --- F3. A loft's drawing is the same kind of client field. No drawing leaves the op as it was. ---
+  } else if (op.kind === "loft" || op.kind === "sweep") {
+    // --- F3/S2. A loft or sweep's drawing is the same kind of client field. No drawing leaves the op as it was. ---
     if (op.drawing) {
       const { drawing: _drawing, ...rest } = op;
       next = rest;
@@ -317,8 +411,8 @@ export function keepSketch(stored: ModelOp, source: ModelOp): ModelOp {
   // --- F2. The engine's echo of a revolve has no sketch either. ---
   if ((stored.kind === "extrude" || stored.kind === "revolve") && stored.kind === source.kind && source.sketch && !stored.sketch) {
     next = { ...stored, sketch: source.sketch };
-  } else if (stored.kind === "loft" && source.kind === "loft" && source.drawing && !stored.drawing) {
-    // --- F3. The engine's echo of a loft has no drawing either. ---
+  } else if ((stored.kind === "loft" || stored.kind === "sweep") && stored.kind === source.kind && source.drawing && !stored.drawing) {
+    // --- F3/S2. The engine's echo of a loft or sweep has no drawing either. ---
     next = { ...stored, drawing: source.drawing };
   } else if (stored.kind === "group" && source.kind === "group") {
     let changed = false;

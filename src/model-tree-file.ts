@@ -12,7 +12,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type SweepMode, type SweepTransition, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project file reads and writes a tree's body without loading the readers here (./saved-tree-body.ts).
 import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
@@ -204,7 +204,7 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   if (value.rootFeature != null) {
     if (value.rootPrimitive != null || value.rootStep !== undefined) return null;
     const op = readOp(value.rootFeature);
-    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft")) return null;
+    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft" && op.kind !== "sweep")) return null;
     return { ...body, rootFeature: op };
   }
   if (value.rootPrimitive != null) {
@@ -530,6 +530,42 @@ function readOpBody(value: unknown): SavedOp | undefined {
       const drawing = value.drawing === undefined ? undefined : readLoftDrawing(value.drawing);
       return { kind: "loft", op: value.op, sections, ...(value.ruled === true ? { ruled: true as const } : {}), ...(drawing ? { drawing } : {}) };
     }
+    case "sweep": {
+      if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
+      if (!Array.isArray(value.sections) || value.sections.length < 1) return undefined;
+      const sections: LoftSection[] = [];
+      for (const raw of value.sections) {
+        const section = readSectionItem(raw);
+        if (!section) return undefined;
+        sections.push(section);
+      }
+      const spine = readCurve3D(value.spine);
+      if (!spine) return undefined;
+      const mode = value.mode === undefined ? undefined : readSweepMode(value.mode);
+      if (value.mode !== undefined && !mode) return undefined;
+      const transition = value.transition === undefined ? undefined : value.transition === "round" || value.transition === "right" || value.transition === "transformed" ? (value.transition as SweepTransition) : null;
+      if (transition === null) return undefined;
+      let scale: [number, number][] | undefined;
+      if (value.scale !== undefined) {
+        if (!Array.isArray(value.scale) || value.scale.length < 2) return undefined;
+        const parsed = value.scale.map(pair);
+        if (parsed.some((p) => !p || !(p[1] > 0))) return undefined;
+        scale = parsed as [number, number][];
+      }
+      if (value.twistDeg !== undefined && !finite(value.twistDeg)) return undefined;
+      const drawing = value.drawing === undefined ? undefined : readLoftDrawing(value.drawing);
+      return {
+        kind: "sweep",
+        op: value.op,
+        sections,
+        spine,
+        ...(mode ? { mode } : {}),
+        ...(transition ? { transition } : {}),
+        ...(scale ? { scale } : {}),
+        ...(finite(value.twistDeg) ? { twistDeg: value.twistDeg } : {}),
+        ...(drawing ? { drawing } : {}),
+      };
+    }
     case "shell": {
       if (!finite(value.thickness)) return undefined;
       if (value.openFaces === undefined) return { kind: "shell", thickness: value.thickness };
@@ -817,6 +853,10 @@ function readLoops(value: unknown): ProfileLoop[] | null | undefined {
           through.push(at);
         }
         segments.push({ kind: "spline", through, to });
+      } else if (seg.kind === "nurbs") {
+        const nurbs = readNurbs2DFields(seg);
+        if (!nurbs) return null;
+        segments.push({ kind: "nurbs", ...nurbs, to });
       } else {
         return null;
       }
@@ -824,6 +864,188 @@ function readLoops(value: unknown): ProfileLoop[] | null | undefined {
     loops.push({ start, segments });
   }
   return loops;
+}
+
+function readSectionItem(raw: unknown): LoftSection | null {
+  if (!isRecord(raw)) return null;
+  const at = vec(raw.origin);
+  const turn = raw.turn === undefined ? ([0, 0, 0] as Vec3) : vec(raw.turn);
+  if (!at || !turn) return null;
+  const loops = readLoops(raw.loops);
+  if (loops === null) return null;
+  if (!loops && finite(raw.radius)) {
+    if (raw.radiusV !== undefined && !finite(raw.radiusV)) return null;
+    return { origin: at, turn, radius: raw.radius, ...(finite(raw.radiusV) ? { radiusV: raw.radiusV } : {}) };
+  }
+  if (!loops) {
+    const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
+    if (!profile || profile.length < 3 || profile.some((point) => !point)) return null;
+    const shape = readProfileShape(raw, profile.length);
+    if (!shape) return null;
+    return { origin: at, turn, profile: profile as Vec2[], ...shape };
+  }
+  const section: LoftSection = { origin: at, turn };
+  if (finite(raw.radius)) {
+    if (raw.radiusV !== undefined && !finite(raw.radiusV)) return null;
+    section.radius = raw.radius;
+    if (finite(raw.radiusV)) section.radiusV = raw.radiusV;
+  }
+  if (raw.profile !== undefined) {
+    const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
+    if (!profile || profile.length < 3 || profile.some((point) => !point)) return null;
+    const shape = readProfileShape(raw, profile.length);
+    if (!shape) return null;
+    section.profile = profile as Vec2[];
+    Object.assign(section, shape);
+  } else if (raw.smooth !== undefined || raw.corners !== undefined) {
+    const shape = readProfileShape(raw, 200);
+    if (!shape) return null;
+    Object.assign(section, shape);
+  }
+  section.loops = loops;
+  return section;
+}
+
+function readNurbsMeta(raw: Record<string, unknown>): { weights?: number[]; degree?: number; knots?: number[]; mults?: number[] } | null {
+  let weights: number[] | undefined;
+  if (raw.weights !== undefined) {
+    if (!Array.isArray(raw.weights) || raw.weights.some((w) => !finite(w) || !(w > 0))) return null;
+    weights = [...raw.weights];
+  }
+  let degree: number | undefined;
+  if (raw.degree !== undefined) {
+    if (!Number.isInteger(raw.degree) || (raw.degree as number) < 1 || (raw.degree as number) > 10) return null;
+    degree = raw.degree as number;
+  }
+  let knots: number[] | undefined;
+  if (raw.knots !== undefined) {
+    if (!Array.isArray(raw.knots) || raw.knots.some((k) => !finite(k))) return null;
+    knots = [...raw.knots];
+  }
+  let mults: number[] | undefined;
+  if (raw.mults !== undefined) {
+    if (!Array.isArray(raw.mults) || raw.mults.some((m) => !Number.isInteger(m) || (m as number) < 1)) return null;
+    mults = [...raw.mults] as number[];
+  }
+  return { ...(weights ? { weights } : {}), ...(degree !== undefined ? { degree } : {}), ...(knots ? { knots } : {}), ...(mults ? { mults } : {}) };
+}
+
+function readNurbs2DFields(raw: Record<string, unknown>): { poles?: Vec2[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[] } | null {
+  const meta = readNurbsMeta(raw);
+  if (!meta) return null;
+  let poles: Vec2[] | undefined;
+  if (raw.poles !== undefined) {
+    if (!Array.isArray(raw.poles) || raw.poles.length > SPLINE_THROUGH_MAX) return null;
+    const parsed = raw.poles.map(pair);
+    if (parsed.some((p) => !p)) return null;
+    poles = parsed as Vec2[];
+  }
+  return { ...(poles ? { poles } : {}), ...meta };
+}
+
+function readEdgePickList(value: unknown): EdgePick[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const edges: EdgePick[] = [];
+  for (const raw of value) {
+    if (isId(raw)) {
+      edges.push(raw);
+      continue;
+    }
+    if (isRecord(raw) && raw.fromNode !== undefined) {
+      if (!isId(raw.fromNode) || (raw.filter !== undefined && raw.filter !== "all" && raw.filter !== "convex" && raw.filter !== "concave")) return null;
+      edges.push({ fromNode: raw.fromNode, ...(raw.filter !== undefined ? { filter: raw.filter } : {}) });
+      continue;
+    }
+    const mid = isRecord(raw) ? vec(raw.mid) : null;
+    if (!isRecord(raw) || !isId(raw.index) || !mid || !finite(raw.lengthMm)) return null;
+    const sig = readEdgeSig(raw.sig);
+    if (sig === null) return null;
+    edges.push({ index: raw.index, mid, lengthMm: raw.lengthMm, ...(sig ? { sig } : {}) });
+  }
+  return edges;
+}
+
+function readCurve3D(value: unknown): Curve3D | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "polyline") {
+    if (!Array.isArray(value.points) || value.points.length < 2) return null;
+    const points = value.points.map(vec);
+    if (points.some((p) => !p)) return null;
+    return { kind: "polyline", points: points as Vec3[], ...(value.closed === true ? { closed: true as const } : {}) };
+  }
+  if (value.kind === "spline") {
+    if (!Array.isArray(value.through) || value.through.length < 2) return null;
+    const through = value.through.map(vec);
+    if (through.some((p) => !p)) return null;
+    return { kind: "spline", through: through as Vec3[], ...(value.closed === true ? { closed: true as const } : {}) };
+  }
+  if (value.kind === "nurbs") {
+    if (!Array.isArray(value.poles) || value.poles.length < 2) return null;
+    const poles = value.poles.map(vec);
+    if (poles.some((p) => !p)) return null;
+    const meta = readNurbsMeta(value);
+    if (!meta) return null;
+    return { kind: "nurbs", poles: poles as Vec3[], ...meta, ...(value.closed === true ? { closed: true as const } : {}) };
+  }
+  if (value.kind === "segments") {
+    const start = vec(value.start);
+    if (!start || !Array.isArray(value.segments) || value.segments.length < 1) return null;
+    const segments: Curve3DSegment[] = [];
+    for (const raw of value.segments) {
+      if (!isRecord(raw)) return null;
+      const to = vec(raw.to);
+      if (!to) return null;
+      if (raw.kind === "line") segments.push({ kind: "line", to });
+      else if (raw.kind === "arc") {
+        const through = vec(raw.through);
+        if (!through) return null;
+        segments.push({ kind: "arc", through, to });
+      } else if (raw.kind === "spline") {
+        if (!Array.isArray(raw.through) || raw.through.length < 1) return null;
+        const through = raw.through.map(vec);
+        if (through.some((p) => !p)) return null;
+        segments.push({ kind: "spline", through: through as Vec3[], to });
+      } else if (raw.kind === "nurbs") {
+        const meta = readNurbsMeta(raw);
+        if (!meta) return null;
+        let poles: Vec3[] | undefined;
+        if (raw.poles !== undefined) {
+          if (!Array.isArray(raw.poles)) return null;
+          const parsed = raw.poles.map(vec);
+          if (parsed.some((p) => !p)) return null;
+          poles = parsed as Vec3[];
+        }
+        segments.push({ kind: "nurbs", ...(poles ? { poles } : {}), ...meta, to });
+      } else return null;
+    }
+    return { kind: "segments", start, segments };
+  }
+  if (value.kind === "edges") {
+    const edges = readEdgePickList(value.edges);
+    return edges ? { kind: "edges", edges } : null;
+  }
+  return null;
+}
+
+function readSweepMode(value: unknown): SweepMode | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "correctedFrenet") return { kind: "correctedFrenet" };
+  if (value.kind === "frenet") return { kind: "frenet" };
+  if (value.kind === "fixedBinormal") {
+    const dir = vec(value.dir);
+    return dir ? { kind: "fixedBinormal", dir } : null;
+  }
+  if (value.kind === "auxSpine") {
+    const spine = readCurve3D(value.spine);
+    if (!spine) return null;
+    return {
+      kind: "auxSpine",
+      spine,
+      ...(typeof value.curvilinear === "boolean" ? { curvilinear: value.curvilinear } : {}),
+      ...(typeof value.keepContact === "boolean" ? { keepContact: value.keepContact } : {}),
+    };
+  }
+  return null;
 }
 
 function pair(value: unknown): Vec2 | null {

@@ -9,6 +9,7 @@
 import type { DragHandle, Vec3 } from "../model-drag.ts";
 import { revolveOp, type ProfilePlane } from "../model-request.ts";
 import { isSketchRevolveGroup, type BooleanKind, type GroupOp, type ModelOp, type RevolveOp } from "../model-tree.ts";
+import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
 import { arcFrom3, arcPoint, curveOf, dist, sampleSpline, unit } from "./geom.ts";
 import type { ArcGeom, Pt } from "./geom.ts";
 import { emptySketch, sketchJson, type SketchData } from "./model.ts";
@@ -462,6 +463,11 @@ function noteSides(from: Pt, segment: ProfileSegment, axis: RevolveAxis, note: (
       note([arc.centre[0] + arc.radius * Math.cos(theta), arc.centre[1] + arc.radius * Math.sin(theta)]);
     }
     for (let step = 1; step < 8; step += 1) note(arcPoint(arc, step / 8));
+    return;
+  }
+  if (segment.kind === "nurbs") {
+    const poles: Pt[] = [from, ...(segment.poles ?? []), segment.to];
+    for (const pt of sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8))) note(pt);
     return;
   }
   for (const pt of sampleSpline([from, ...segment.through, segment.to], false, 0.25)) note(pt);

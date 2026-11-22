@@ -5,6 +5,7 @@
  * margin the kernel uses to close a profile loop. A spline here is a centripetal Catmull-Rom
  * through the controls, close enough to draw; the kernel's own interpolant is what a feature builds.
  */
+import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
 import { sketchPoint, type Pt, type SketchData, type SketchEntity } from "./model.ts";
 
 export type { Pt };
@@ -394,11 +395,20 @@ export function projectToSpline(samples: readonly Pt[], pt: Pt, closed = false):
   return best;
 }
 
+export interface NurbsCurveMeta {
+  poles: Pt[];
+  weights?: number[];
+  degree?: number;
+  knots?: number[];
+  mults?: number[];
+  closed: boolean;
+}
+
 export type Curve =
   | { kind: "line"; a: Pt; b: Pt }
   | { kind: "arc"; arc: ArcGeom }
   | { kind: "circle"; centre: Pt; radius: number }
-  | { kind: "spline"; controls: Pt[]; closed: boolean; samples: Pt[] };
+  | { kind: "spline"; controls: Pt[]; closed: boolean; samples: Pt[]; nurbs?: NurbsCurveMeta };
 
 /** The drawable curve of an entity, or null when it has no length. A collinear arc is the straight line between its ends. */
 export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null {
@@ -435,6 +445,21 @@ export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null 
     ? controls.slice(0, -1)
     : controls;
   if (unique.length < 2) return null;
+  if (entity.mode === "cv") {
+    const poles = closed ? unique : controls;
+    const weights = entity.weights && entity.weights.length >= poles.length ? entity.weights.slice(0, poles.length) : undefined;
+    const nurbs: NurbsCurveMeta = {
+      poles,
+      ...(weights ? { weights } : {}),
+      ...(entity.degree !== undefined ? { degree: entity.degree } : {}),
+      ...(entity.knots ? { knots: [...entity.knots] } : {}),
+      ...(entity.mults ? { mults: [...entity.mults] } : {}),
+      closed,
+    };
+    const steps = Math.max(24, poles.length * 16);
+    const samples = sampleNurbsCurve2D(nurbs, steps);
+    return { kind: "spline", controls: unique, closed, samples, nurbs };
+  }
   return { kind: "spline", controls: unique, closed, samples: sampleSpline(unique, closed) };
 }
 

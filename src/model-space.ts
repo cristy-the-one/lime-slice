@@ -220,9 +220,45 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
         ...op,
         sections: op.sections.map((section) => {
           const turned = orientEuler(matMul(turn, eulerOrient(section.turn[0], section.turn[1], section.turn[2])));
-          return { ...section, origin: point(section.origin), turn: [turned.rx, turned.ry, turned.rz] };
+          return { ...section, origin: point(section.origin), turn: [turned.rx, turned.ry, turned.rz] as Vec3 };
         }),
       };
+    }
+    case "sweep": {
+      const s = poseScale(back);
+      const turn = back.m.map((value) => value / s) as Mat3;
+      const moveOnlyPose = moveOnly(back);
+      const moveCurve = (curve: typeof op.spine): typeof op.spine => {
+        if (curve.kind === "polyline") return { ...curve, points: curve.points.map(point) };
+        if (curve.kind === "spline") return { ...curve, through: curve.through.map(point) };
+        if (curve.kind === "nurbs") return { ...curve, poles: curve.poles.map(point) };
+        if (curve.kind === "segments") {
+          return {
+            kind: "segments",
+            start: point(curve.start),
+            segments: curve.segments.map((seg) => {
+              if (seg.kind === "line") return { kind: "line", to: point(seg.to) };
+              if (seg.kind === "arc") return { kind: "arc", through: point(seg.through), to: point(seg.to) };
+              if (seg.kind === "nurbs") return { ...seg, ...(seg.poles ? { poles: seg.poles.map(point) } : {}), to: point(seg.to) };
+              return { kind: "spline", through: seg.through.map(point), to: point(seg.to) };
+            }),
+          };
+        }
+        return curve;
+      };
+      const sections = op.sections.map((section) => {
+        if (moveOnlyPose) return { ...section, origin: point(section.origin) };
+        const turned = orientEuler(matMul(turn, eulerOrient(section.turn[0], section.turn[1], section.turn[2])));
+        return { ...section, origin: point(section.origin), turn: [turned.rx, turned.ry, turned.rz] as Vec3 };
+      });
+      const mode = op.mode
+        ? op.mode.kind === "fixedBinormal"
+          ? { kind: "fixedBinormal" as const, dir: turnDir(back, op.mode.dir) }
+          : op.mode.kind === "auxSpine"
+            ? { ...op.mode, spine: moveCurve(op.mode.spine) }
+            : op.mode
+        : undefined;
+      return { ...op, sections, spine: moveCurve(op.spine), ...(mode ? { mode } : {}) };
     }
     // --- Print transitions: the build direction turns with the pose; edges are picked on the solid.
     case "transition":

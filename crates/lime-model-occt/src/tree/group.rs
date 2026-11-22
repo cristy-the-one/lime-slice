@@ -139,6 +139,7 @@ fn group_step_refusal(step: &Op) -> Option<&'static str> {
         | Op::Extrude { .. }
         | Op::Revolve { .. }
         | Op::Loft { .. }
+        | Op::Sweep { .. }
         | Op::Hole { .. } => None,
         Op::Fillet { edges, .. } if edges.iter().any(|pick| matches!(pick, EdgePick::Index(_))) => {
             Some("A fillet inside a group needs edges named by their place, not by a number.")
@@ -366,10 +367,10 @@ pub(super) fn step_tool(step: &Op, which: BooleanOp) -> Result<Shape, String> {
     let wrong = || format!("A combined batch of {named} takes only {named} steps: boolean, extrude, revolve, or loft.");
     match step {
         Op::Boolean { op, tool, .. } if *op == which => Shape::primitive(tool),
-        Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } if *op == which => {
+        Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } | Op::Sweep { op, .. } if *op == which => {
             let mut alone = step.clone();
             match &mut alone {
-                Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } => *op = BooleanOp::Fuse,
+                Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } | Op::Sweep { op, .. } => *op = BooleanOp::Fuse,
                 _ => {}
             }
             Shape::feature(&alone)
@@ -478,8 +479,8 @@ pub(super) fn build_combined(from: &mut Shape, label: String, source: Value, ste
 /// before it holds the op back. The answer is `{min, max}`, or the sentence why the tool does not build.
 pub(super) fn tool_box_reply(op: &Op) -> Result<String, String> {
     let which = match op {
-        Op::Boolean { op, .. } | Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } => *op,
-        _ => return Err("Only a boolean, extrude, revolve, or loft has a tool of its own.".into()),
+        Op::Boolean { op, .. } | Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } | Op::Sweep { op, .. } => *op,
+        _ => return Err("Only a boolean, extrude, revolve, loft, or sweep has a tool of its own.".into()),
     };
     if !matches!(which, BooleanOp::Fuse | BooleanOp::Cut) {
         return Err("Only a fuse or a cut is queued.".into());

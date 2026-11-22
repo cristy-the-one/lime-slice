@@ -7,7 +7,7 @@
  * factor per path point, as the MCP field. A corner that turns more than `SHARP_DEG` is refused. A
  * kernel pipe along the real wire is a follow-up, noted in `docs/step-modeler.md`.
  */
-import type { LoftOp, LoftSection, ProfileLoop, Vec3 } from "../model-tree.ts";
+import type { Curve3D, Curve3DSegment, LoftOp, LoftSection, ProfileLoop, SweepMode, SweepOp, SweepTransition, Vec3 } from "../model-tree.ts";
 import { sweepSections } from "../modeling/sweep.ts";
 import { frameOf, planeOf, toWorld, type SketchFrame } from "./frame.ts";
 import { arcPoint, curveOf, sampleSpline, type Curve } from "./geom.ts";
@@ -64,15 +64,15 @@ export interface SweepPreset {
   edges: number[];
 }
 
-/** What History Edit reopens for a loft that was a sweep. Null for any other op. */
+/** What History Edit reopens for a loft or sweep op. Null for any other op. */
 export function sweepEditOf(op: { kind: string }, root: boolean): SweepPreset | null {
-  if (op.kind !== "loft") return null;
-  const loft = op as LoftOp;
-  const sweep = loft.drawing?.sweep;
+  if (op.kind !== "loft" && op.kind !== "sweep") return null;
+  const typed = op as LoftOp | SweepOp;
+  const sweep = typed.drawing?.sweep;
   if (!sweep) return null;
   return {
     kind: "sweep",
-    choice: root ? "new" : loft.op,
+    choice: root ? "new" : typed.op,
     profile: sketchJson(sweep.profile),
     pathSketch: sweep.pathSketch ? sketchJson(sweep.pathSketch) : null,
     path: sweep.path.map(copy),
@@ -395,6 +395,186 @@ function keepEntities(sketch: SketchData, ids: ReadonlySet<number>): SketchData 
   return { ...rest, points: sketch.points.filter((point) => used.has(point.id)), entities };
 }
 
+export interface KernelSweepDraft extends SweepDraft {
+  /** Exact 3D spine override (auto-built from `edges`, `pathSketch`, or `path` when absent). */
+  spine?: Curve3D;
+  sweepMode?: SweepMode;
+  transition?: SweepTransition;
+  twistDeg?: number;
+}
+
+/**
+ * --- S2. Exact kernel sweep (`BRepOffsetAPI_MakePipeShell`) ---
+ * Unlike legacy `buildSketchSweep`, this sends a real `Op::Sweep` with exact 3D spine geometry
+ * (lines, arcs, exact NURBS, or solid edges), handles sharp corners (Round / Right / Transformed),
+ * preserves hollow pipe hole loops, supports Law_Interpol scale stations and smooth twist,
+ * and never enforces the legacy 25° corner refusal or 16-sample cap.
+ */
+export function buildKernelSweep(draft: KernelSweepDraft): { op: SweepOp } | { error: string } {
+  if (draft.path.length < 2 && !draft.spine && !(draft.edges && draft.edges.length > 0)) {
+    return { error: PATH_REFUSAL };
+  }
+  if (sampleLoop(draft.profile.outer).length < 3) return { error: PROFILE_REFUSAL };
+  const spine: Curve3D = draft.spine
+    ?? (draft.edges && draft.edges.length > 0
+      ? { kind: "edges", edges: [...draft.edges] }
+      : (draft.pathSketch ? sketchChainToCurve3D(draft.pathSketch) : null)
+        ?? { kind: "polyline", points: draft.path.map(copy) });
+  const loops = toLoops(draft.profile);
+  const section: LoftSection = {
+    origin: [...draft.profileSketch.plane.origin] as Vec3,
+    turn: [...draft.profileSketch.plane.turn] as Vec3,
+    loops,
+  };
+  let scale: [number, number][] | undefined;
+  if (Array.isArray(draft.scale)) {
+    if (draft.scale.length >= 2) {
+      const n = draft.scale.length - 1;
+      scale = draft.scale.map((factor, i) => [i / n, factor] as [number, number]);
+    }
+  } else if (Number.isFinite(draft.scale) && Math.abs(draft.scale - 1) > 1e-6) {
+    scale = [[0, 1], [1, draft.scale]];
+  }
+  const op: SweepOp = {
+    kind: "sweep",
+    op: draft.mode === "new" ? "fuse" : draft.mode,
+    sections: [section],
+    spine,
+    ...(draft.sweepMode ? { mode: draft.sweepMode } : {}),
+    ...(draft.transition ? { transition: draft.transition } : {}),
+    ...(scale ? { scale } : {}),
+    ...(draft.twistDeg && Math.abs(draft.twistDeg) > 1e-6 ? { twistDeg: draft.twistDeg } : {}),
+    drawing: {
+      sweep: {
+        profile: sketchJson(draft.profileSketch),
+        ...(draft.pathSketch ? { pathSketch: sketchJson(draft.pathSketch) } : {}),
+        path: draft.path.map(copy),
+        scale: Array.isArray(draft.scale) ? [...draft.scale] : draft.scale,
+        ...(Array.isArray(draft.scale) ? {} : { scaleAtEnd: true as const }),
+        ...(draft.edges && draft.edges.length > 0 ? { edges: [...draft.edges] } : {}),
+      },
+    },
+  };
+  return { op };
+}
+
+/** Converts an open sketch chain into an exact 3D `Curve3D` (preserving exact NURBS, arcs, lines, and splines). */
+export function sketchChainToCurve3D(sketch: SketchData): Curve3D | null {
+  const frame = frameOf(sketch.plane);
+  const w3 = (pt: Pt): Vec3 => toWorld(frame, pt);
+  type Item = { start: Pt; end: Pt; forward: () => Curve3DSegment; backward: () => Curve3DSegment };
+  const items: Item[] = [];
+  for (const entity of sketch.entities) {
+    if (entity.construction || entity.kind === "circle") continue;
+    const curve = curveOf(sketch, entity);
+    if (!curve || curve.kind === "circle") continue;
+    if (curve.kind === "line") {
+      items.push({
+        start: curve.a,
+        end: curve.b,
+        forward: () => ({ kind: "line", to: w3(curve.b) }),
+        backward: () => ({ kind: "line", to: w3(curve.a) }),
+      });
+    } else if (curve.kind === "arc") {
+      const a = arcPoint(curve.arc, 0);
+      const mid = arcPoint(curve.arc, 0.5);
+      const b = arcPoint(curve.arc, 1);
+      items.push({
+        start: a,
+        end: b,
+        forward: () => ({ kind: "arc", through: w3(mid), to: w3(b) }),
+        backward: () => ({ kind: "arc", through: w3(mid), to: w3(a) }),
+      });
+    } else if (curve.kind === "spline" && !curve.closed) {
+      if (curve.nurbs && curve.nurbs.poles.length >= 2) {
+        const meta = curve.nurbs;
+        const revKnots = meta.knots && meta.knots.length >= 2
+          ? [...meta.knots].reverse().map((k) => meta.knots![0]! + meta.knots![meta.knots!.length - 1]! - k)
+          : undefined;
+        const revMults = meta.mults ? [...meta.mults].reverse() : undefined;
+        const start = meta.poles[0]!;
+        const end = meta.poles[meta.poles.length - 1]!;
+        items.push({
+          start,
+          end,
+          forward: () => ({
+            kind: "nurbs",
+            poles: meta.poles.slice(1, -1).map(w3),
+            ...(meta.weights ? { weights: [...meta.weights] } : {}),
+            ...(meta.degree !== undefined ? { degree: meta.degree } : {}),
+            ...(meta.knots ? { knots: [...meta.knots] } : {}),
+            ...(meta.mults ? { mults: [...meta.mults] } : {}),
+            to: w3(end),
+          }),
+          backward: () => ({
+            kind: "nurbs",
+            poles: [...meta.poles].reverse().slice(1, -1).map(w3),
+            ...(meta.weights ? { weights: [...meta.weights].reverse() } : {}),
+            ...(meta.degree !== undefined ? { degree: meta.degree } : {}),
+            ...(revKnots ? { knots: revKnots } : {}),
+            ...(revMults ? { mults: revMults } : {}),
+            to: w3(start),
+          }),
+        });
+      } else if (curve.controls.length >= 2) {
+        const start = curve.controls[0]!;
+        const end = curve.controls[curve.controls.length - 1]!;
+        items.push({
+          start,
+          end,
+          forward: () => ({ kind: "spline", through: curve.controls.slice(1, -1).map(w3), to: w3(end) }),
+          backward: () => ({ kind: "spline", through: [...curve.controls].reverse().slice(1, -1).map(w3), to: w3(start) }),
+        });
+      }
+    }
+  }
+  if (items.length === 0) return null;
+  if (items.length === 1) {
+    const only = items[0]!;
+    const seg = only.forward();
+    if (seg.kind === "nurbs") {
+      return {
+        kind: "nurbs",
+        poles: [w3(only.start), ...(seg.poles ?? []), seg.to],
+        ...(seg.weights ? { weights: seg.weights } : {}),
+        ...(seg.degree !== undefined ? { degree: seg.degree } : {}),
+        ...(seg.knots ? { knots: seg.knots } : {}),
+        ...(seg.mults ? { mults: seg.mults } : {}),
+      };
+    }
+    return { kind: "segments", start: w3(only.start), segments: [seg] };
+  }
+  const keyOf = (pt: Pt) => `${Math.round(pt[0] * 1e3)}_${Math.round(pt[1] * 1e3)}`;
+  const deg = new Map<string, number>();
+  const at = new Map<string, number[]>();
+  items.forEach((item, idx) => {
+    const ks = keyOf(item.start);
+    const ke = keyOf(item.end);
+    deg.set(ks, (deg.get(ks) ?? 0) + 1);
+    deg.set(ke, (deg.get(ke) ?? 0) + 1);
+    (at.get(ks) ?? (at.set(ks, []), at.get(ks)!)).push(idx);
+    (at.get(ke) ?? (at.set(ke, []), at.get(ke)!)).push(idx);
+  });
+  let seed = items.findIndex((item) => (deg.get(keyOf(item.start)) ?? 0) === 1 || (deg.get(keyOf(item.end)) ?? 0) === 1);
+  if (seed < 0) seed = 0;
+  const unused = new Set(items.map((_, i) => i));
+  let flip = (deg.get(keyOf(items[seed]!.end)) ?? 0) === 1 && (deg.get(keyOf(items[seed]!.start)) ?? 0) !== 1;
+  const startPt = flip ? items[seed]!.end : items[seed]!.start;
+  const segments: Curve3DSegment[] = [];
+  let cursor = seed;
+  for (;;) {
+    unused.delete(cursor);
+    const item = items[cursor]!;
+    segments.push(flip ? item.backward() : item.forward());
+    const tipKey = keyOf(flip ? item.start : item.end);
+    const next = (at.get(tipKey) ?? []).find((idx) => unused.has(idx));
+    if (next == null) break;
+    flip = keyOf(items[next]!.start) !== tipKey;
+    cursor = next;
+  }
+  return segments.length > 0 ? { kind: "segments", start: w3(startPt), segments } : null;
+}
+
 /** A loft through copies of the profile carried along `path`. A sharp corner is refused and nothing is sent. */
 export function buildSketchSweep(draft: SweepDraft): { op: LoftOp } | { error: string } {
   if (draft.path.length < 2) return { error: PATH_REFUSAL };
@@ -505,6 +685,15 @@ function carried(plane: SketchFrame, from: SketchFrame, to: SketchFrame, loops: 
       segments: loop.segments.map((segment) =>
         segment.kind === "line" ? { kind: "line", to: scale(segment.to) }
         : segment.kind === "arc" ? { kind: "arc", through: scale(segment.through), to: scale(segment.to) }
+        : segment.kind === "nurbs" ? {
+            kind: "nurbs",
+            ...(segment.poles ? { poles: segment.poles.map(scale) } : {}),
+            ...(segment.weights ? { weights: [...segment.weights] } : {}),
+            ...(segment.degree !== undefined ? { degree: segment.degree } : {}),
+            ...(segment.knots ? { knots: [...segment.knots] } : {}),
+            ...(segment.mults ? { mults: [...segment.mults] } : {}),
+            to: scale(segment.to),
+          }
         : { kind: "spline", through: segment.through.map(scale), to: scale(segment.to) },
       ),
     })),

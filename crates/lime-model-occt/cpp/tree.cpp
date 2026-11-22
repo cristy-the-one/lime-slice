@@ -2777,6 +2777,137 @@ SurfaceInspect* lime_tree_surface_inspect(
 
 void lime_tree_surface_inspect_free(SurfaceInspect* data) { delete data; }
 
+namespace {
+
+bool decode_sweep_sections(
+    const double* head,
+    int count,
+    const double* data,
+    const double* loop_blob,
+    int loop_count,
+    const int* loop_at,
+    std::vector<LoftSection>& sections,
+    std::string& error) {
+    if (count < 1 || count > 64) {
+        error = count < 1 ? "A sweep needs at least one section." : "A sweep takes at most 64 sections.";
+        return false;
+    }
+    sections.clear();
+    sections.reserve(static_cast<size_t>(count));
+    size_t pos = 0;
+    for (int i = 0; i < count; ++i) {
+        const double* h = head + i * 11;
+        LoftSection section;
+        for (int k = 0; k < 3; ++k) {
+            section.profile.origin[k] = h[k];
+            section.profile.turn[k] = h[k + 3];
+        }
+        section.radius = h[6];
+        section.radius_v = h[7];
+        section.profile.smooth = h[8] != 0.0;
+        const int npts = static_cast<int>(std::llround(h[9]));
+        const int ncorners = static_cast<int>(std::llround(h[10]));
+        if (loop_at != nullptr && loop_at[i] >= 0) {
+            int used = 0;
+            if (!decode_profile_loops(loop_blob + loop_at[i], loop_count - loop_at[i], section.loops, used, error)) {
+                return false;
+            }
+        } else {
+            if (npts > 0) {
+                section.profile.points.assign(data + pos, data + pos + static_cast<size_t>(npts) * 2);
+                pos += static_cast<size_t>(npts) * 2;
+            }
+            if (ncorners > 0) {
+                section.profile.corners.reserve(static_cast<size_t>(ncorners));
+                for (int c = 0; c < ncorners; ++c) {
+                    section.profile.corners.push_back(static_cast<int>(std::llround(data[pos++])));
+                }
+            }
+        }
+        sections.push_back(std::move(section));
+    }
+    return true;
+}
+
+}  // namespace
+
+/// --- Organic surfaces S2: real kernel sweep (`BRepOffsetAPI_MakePipeShell`), optionally combined with `from` (null = feature root).
+LimeShape* lime_tree_sweep(
+    const LimeShape* from,
+    const char* op,
+    const double* head,
+    int section_count,
+    const double* data,
+    const double* loop_blob,
+    int loop_count,
+    const int* loop_at,
+    const double* spine_blob,
+    int spine_count,
+    const double* aux_blob,
+    int aux_count,
+    int mode,
+    const double* binormal,
+    int transition,
+    const double* scale_stations,
+    int scale_count,
+    double twist_deg,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        SweepSpec spec;
+        std::string message;
+        if (!decode_sweep_sections(head, section_count, data, loop_blob, loop_count, loop_at, spec.sections, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        int used = 0;
+        if (!decode_curve3d(spine_blob, spine_count, spec.spine, used, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        if (aux_blob != nullptr && aux_count > 0) {
+            int aux_used = 0;
+            if (!decode_curve3d(aux_blob, aux_count, spec.aux_spine, aux_used, message)) {
+                set_error(error, message);
+                return nullptr;
+            }
+            spec.has_aux_spine = true;
+        }
+        spec.mode = mode;
+        if (binormal != nullptr) {
+            spec.binormal[0] = binormal[0];
+            spec.binormal[1] = binormal[1];
+            spec.binormal[2] = binormal[2];
+        }
+        spec.transition = transition;
+        if (scale_stations != nullptr && scale_count >= 4) {
+            spec.scale_stations.assign(scale_stations, scale_stations + scale_count);
+        }
+        spec.twist_deg = twist_deg;
+
+        double volume = 0.0;
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const double before = from != nullptr ? from->held.volume : 0.0;
+        const Held* held_edges = from != nullptr ? &from->held : nullptr;
+        const TopoDS_Shape shape = build_sweep(base, before, op != nullptr ? op : "fuse", spec, held_edges, volume, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not build the sweep" : message);
+            return nullptr;
+        }
+        auto made = hold(shape, volume);
+        if (from != nullptr) {
+            inherit_about(made->held, from->held);
+        }
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// 1 and `out` set, or 0 and `error` set.
 int lime_tree_distance(
     const LimeShape* shape,

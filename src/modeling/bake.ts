@@ -15,12 +15,12 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
-import { draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, revolveOp, shellOp, stepEdges, type ProfileShape } from "../model-request.ts";
+import { draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, revolveOp, shellOp, stepEdges, sweepOp, type ProfileShape } from "../model-request.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
 import type { BeltSettings } from "../belt.ts";
-import type { DraftNeutral, EdgePick, LoftSection, ModelOp, ProfileLoop, ProfileSegment, Vec2 } from "../model-tree.ts";
+import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SweepMode, SweepTransition, Vec2, Vec3 } from "../model-tree.ts";
 import { drillDown, isGlobalFrame, planePoint, planePrimitive, type Workplane } from "../workplane.ts";
 
 /** A baked op: as stored, as typed with its defaults filled, and any notes. */
@@ -175,13 +175,152 @@ export function readLoopsField(value: unknown): { loops?: ProfileLoop[] } | { re
           through.push(at);
         }
         segments.push({ kind: "spline", through, to });
+      } else if (piece.kind === "nurbs") {
+        let poles: Vec2[] | undefined;
+        if (piece.poles !== undefined) {
+          if (!Array.isArray(piece.poles) || piece.poles.length > 200) return { reason: "NURBS poles must be an array of [u, v] points." };
+          poles = [];
+          for (const point of piece.poles) {
+            const at = pairOf(point);
+            if (!at) return { reason: "NURBS poles are [u, v]." };
+            poles.push(at);
+          }
+        }
+        const meta = readNurbsMetaField(piece);
+        if ("reason" in meta) return meta;
+        segments.push({ kind: "nurbs", ...(poles ? { poles } : {}), ...meta, to });
       } else {
-        return { reason: "A segment kind is line, arc, or spline." };
+        return { reason: "A segment kind is line, arc, spline, or nurbs." };
       }
     }
     loops.push({ start, segments });
   }
   return { loops };
+}
+
+function readNurbsMetaField(piece: Record<string, unknown>): { weights?: number[]; degree?: number; knots?: number[]; mults?: number[] } | { reason: string } {
+  let weights: number[] | undefined;
+  if (piece.weights !== undefined) {
+    if (!Array.isArray(piece.weights) || piece.weights.some((w) => typeof w !== "number" || !Number.isFinite(w) || !(w > 0))) {
+      return { reason: "NURBS weights must be positive numbers." };
+    }
+    weights = [...piece.weights];
+  }
+  let degree: number | undefined;
+  if (piece.degree !== undefined) {
+    if (typeof piece.degree !== "number" || !Number.isInteger(piece.degree) || piece.degree < 1 || piece.degree > 10) {
+      return { reason: "NURBS degree must be an integer from 1 to 10." };
+    }
+    degree = piece.degree;
+  }
+  let knots: number[] | undefined;
+  if (piece.knots !== undefined) {
+    if (!Array.isArray(piece.knots) || piece.knots.some((k) => typeof k !== "number" || !Number.isFinite(k))) {
+      return { reason: "NURBS knots must be numbers." };
+    }
+    knots = [...piece.knots];
+  }
+  let mults: number[] | undefined;
+  if (piece.mults !== undefined) {
+    if (!Array.isArray(piece.mults) || piece.mults.some((m) => typeof m !== "number" || !Number.isInteger(m) || m < 1)) {
+      return { reason: "NURBS mults must be positive integers." };
+    }
+    mults = [...piece.mults];
+  }
+  return { ...(weights ? { weights } : {}), ...(degree !== undefined ? { degree } : {}), ...(knots ? { knots } : {}), ...(mults ? { mults } : {}) };
+}
+
+function vec3Of(value: unknown): Vec3 | null {
+  if (!Array.isArray(value) || value.length !== 3 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  return [value[0] as number, value[1] as number, value[2] as number];
+}
+
+function readCurve3DField(value: unknown, ctx: BakeContext): Curve3D | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "spine must be a Curve3D object." };
+  const raw = value as Record<string, unknown>;
+  if (raw.kind === "polyline") {
+    if (!Array.isArray(raw.points) || raw.points.length < 2) return { reason: "A polyline spine needs at least 2 points." };
+    const points = raw.points.map(vec3Of);
+    if (points.some((p) => !p)) return { reason: "Polyline spine points are [x, y, z]." };
+    return { kind: "polyline", points: points as Vec3[], ...(raw.closed === true ? { closed: true as const } : {}) };
+  }
+  if (raw.kind === "spline") {
+    if (!Array.isArray(raw.through) || raw.through.length < 2) return { reason: "A spline spine needs at least 2 points." };
+    const through = raw.through.map(vec3Of);
+    if (through.some((p) => !p)) return { reason: "Spline spine points are [x, y, z]." };
+    return { kind: "spline", through: through as Vec3[], ...(raw.closed === true ? { closed: true as const } : {}) };
+  }
+  if (raw.kind === "nurbs") {
+    if (!Array.isArray(raw.poles) || raw.poles.length < 2) return { reason: "A NURBS spine needs at least 2 poles." };
+    const poles = raw.poles.map(vec3Of);
+    if (poles.some((p) => !p)) return { reason: "NURBS spine poles are [x, y, z]." };
+    const meta = readNurbsMetaField(raw);
+    if ("reason" in meta) return meta;
+    return { kind: "nurbs", poles: poles as Vec3[], ...meta, ...(raw.closed === true ? { closed: true as const } : {}) };
+  }
+  if (raw.kind === "segments") {
+    const start = vec3Of(raw.start);
+    if (!start) return { reason: "A segments spine starts at [x, y, z]." };
+    if (!Array.isArray(raw.segments) || raw.segments.length < 1) return { reason: "A segments spine needs at least 1 segment." };
+    const segments: Curve3DSegment[] = [];
+    for (const item of raw.segments) {
+      if (!item || typeof item !== "object") return { reason: "A spine segment is incomplete." };
+      const seg = item as Record<string, unknown>;
+      const to = vec3Of(seg.to);
+      if (!to) return { reason: "A spine segment ends at [x, y, z]." };
+      if (seg.kind === "line") segments.push({ kind: "line", to });
+      else if (seg.kind === "arc") {
+        const through = vec3Of(seg.through);
+        if (!through) return { reason: "An arc spine segment needs through: [x, y, z]." };
+        segments.push({ kind: "arc", through, to });
+      } else if (seg.kind === "spline") {
+        if (!Array.isArray(seg.through) || seg.through.length < 1) return { reason: "A spline spine segment needs through points." };
+        const through = seg.through.map(vec3Of);
+        if (through.some((p) => !p)) return { reason: "Spline spine segment points are [x, y, z]." };
+        segments.push({ kind: "spline", through: through as Vec3[], to });
+      } else if (seg.kind === "nurbs") {
+        let poles: Vec3[] | undefined;
+        if (seg.poles !== undefined) {
+          if (!Array.isArray(seg.poles)) return { reason: "NURBS spine segment poles must be [x, y, z][]." };
+          const parsed = seg.poles.map(vec3Of);
+          if (parsed.some((p) => !p)) return { reason: "NURBS spine segment poles are [x, y, z]." };
+          poles = parsed as Vec3[];
+        }
+        const meta = readNurbsMetaField(seg);
+        if ("reason" in meta) return meta;
+        segments.push({ kind: "nurbs", ...(poles ? { poles } : {}), ...meta, to });
+      } else return { reason: "Spine segment kind must be line, arc, spline, or nurbs." };
+    }
+    return { kind: "segments", start, segments };
+  }
+  if (raw.kind === "edges") {
+    const picked = resolveEdges({ edges: raw.edges }, ctx);
+    if ("reason" in picked) return picked;
+    return { kind: "edges", edges: picked };
+  }
+  return { reason: "spine.kind must be polyline, spline, nurbs, segments, or edges." };
+}
+
+function readSweepModeField(value: unknown, ctx: BakeContext): SweepMode | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "sweep mode must be an object." };
+  const raw = value as Record<string, unknown>;
+  if (raw.kind === "correctedFrenet" || raw.kind === "frenet") return { kind: raw.kind };
+  if (raw.kind === "fixedBinormal") {
+    const dir = vec3Of(raw.dir);
+    if (!dir) return { reason: "fixedBinormal needs dir: [x, y, z]." };
+    return { kind: "fixedBinormal", dir };
+  }
+  if (raw.kind === "auxSpine") {
+    const spine = readCurve3DField(raw.spine, ctx);
+    if ("reason" in spine) return spine;
+    return {
+      kind: "auxSpine",
+      spine,
+      ...(typeof raw.curvilinear === "boolean" ? { curvilinear: raw.curvilinear } : {}),
+      ...(typeof raw.keepContact === "boolean" ? { keepContact: raw.keepContact } : {}),
+    };
+  }
+  return { reason: "sweep mode.kind must be correctedFrenet, frenet, fixedBinormal, or auxSpine." };
 }
 
 function pairOf(value: unknown): Vec2 | null {
@@ -401,6 +540,45 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
   }
   if (kind === "loft" || kind === "sweep") {
     const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
+    // S2: Real kernel pipe-shell sweep when `spine` is supplied (`BRepOffsetAPI_MakePipeShell`).
+    if (kind === "sweep" && spec.spine !== undefined) {
+      if (!Array.isArray(spec.sections) || spec.sections.length < 1) return { reason: "A kernel sweep needs at least 1 section." };
+      const sections: LoftSection[] = [];
+      for (const [index, value] of (spec.sections as unknown[]).entries()) {
+        const section = readSection(value);
+        if ("reason" in section) return { reason: `sections[${index}]: ${section.reason}` };
+        sections.push(section);
+      }
+      const spine = readCurve3DField(spec.spine, ctx);
+      if ("reason" in spine) return spine;
+      let mode: SweepMode | undefined;
+      if (spec.mode !== undefined) {
+        const parsed = readSweepModeField(spec.mode, ctx);
+        if ("reason" in parsed) return parsed;
+        mode = parsed;
+      }
+      let transition: SweepTransition | undefined;
+      if (spec.transition !== undefined) {
+        if (spec.transition !== "round" && spec.transition !== "right" && spec.transition !== "transformed") {
+          return { reason: "sweep transition must be round, right, or transformed." };
+        }
+        transition = spec.transition;
+      }
+      let scale: [number, number][] | undefined;
+      if (spec.scale !== undefined) {
+        if (!Array.isArray(spec.scale) || spec.scale.length < 2) return { reason: "Kernel sweep scale needs at least two [u, factor] stations." };
+        const parsed = spec.scale.map(pairOf);
+        if (parsed.some((p) => !p || !(p[1] > 0))) return { reason: "Kernel sweep scale stations are [u, factor] with factor > 0." };
+        scale = parsed as [number, number][];
+      }
+      let twistDeg: number | undefined;
+      if (spec.twistDeg !== undefined) {
+        if (typeof spec.twistDeg !== "number" || !Number.isFinite(spec.twistDeg)) return { reason: "twistDeg must be a finite number." };
+        twistDeg = spec.twistDeg;
+      }
+      const made = sweepOp(booleanOp, sections, spine, { mode, transition, scale, twistDeg });
+      return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+    }
     let sections: LoftSection[];
     if (kind === "sweep") {
       const made = sweepSections(spec as unknown as SweepSpec);

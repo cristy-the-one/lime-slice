@@ -10,6 +10,7 @@
  * also its own region, so a washer is the ring and the hole, both selectable. `toLoops` writes
  * profile v2: the outer loop counter-clockwise, holes clockwise, arcs kept as arcs.
  */
+import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
 import {
   EPS,
   arcFrom3,
@@ -21,6 +22,7 @@ import {
   pointOn,
   samePt,
   type Curve,
+  type NurbsCurveMeta,
   type Pt,
   SPLINE_THROUGH_MAX,
   throughPoints,
@@ -34,7 +36,8 @@ const AREA_EPS = 1e-8;
 export type ProfileSegment =
   | { kind: "line"; to: Pt }
   | { kind: "arc"; through: Pt; to: Pt }
-  | { kind: "spline"; through: Pt[]; to: Pt };
+  | { kind: "spline"; through: Pt[]; to: Pt }
+  | { kind: "nurbs"; poles?: Pt[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[]; to: Pt };
 
 /** One closed outline of profile v2: `start`, then each segment's `to`, the last back at `start`. */
 export interface ProfileLoop {
@@ -54,7 +57,7 @@ export interface Region {
 type Piece =
   | { kind: "line"; a: Pt; b: Pt }
   | { kind: "arc"; centre: Pt; radius: number; a0: number; sweep: number; a: Pt; b: Pt }
-  | { kind: "spline"; points: Pt[]; emit?: Pt[] };
+  | { kind: "spline"; points: Pt[]; emit?: Pt[]; nurbs?: Omit<NurbsCurveMeta, "closed"> };
 
 interface Vertex {
   id: number;
@@ -126,7 +129,10 @@ export function loopSignedArea(loop: ProfileLoop): number {
   for (const segment of loop.segments) {
     if (segment.kind === "line") area += shoelace(prev, segment.to);
     else if (segment.kind === "arc") area += arcSegmentArea(prev, segment.through, segment.to);
-    else area += polylineArea([prev, ...segment.through, segment.to]);
+    else if (segment.kind === "nurbs") {
+      const poles: Pt[] = [prev, ...(segment.poles ?? []), segment.to];
+      area += polylineArea(sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8)));
+    } else area += polylineArea([prev, ...segment.through, segment.to]);
     prev = segment.to;
   }
   return area;
@@ -279,6 +285,18 @@ function emitLoop(pieces: Piece[], ccw: boolean): ProfileLoop {
         if (segment.kind === "line") pushLine(segment.to);
         else segments.push(segment);
       }
+    } else if (piece.nurbs && piece.nurbs.poles.length >= 2) {
+      const interior = piece.nurbs.poles.slice(1, -1).map(clonePt);
+      const to = clonePt(piece.nurbs.poles[piece.nurbs.poles.length - 1]!);
+      segments.push({
+        kind: "nurbs",
+        ...(interior.length > 0 ? { poles: interior } : {}),
+        ...(piece.nurbs.weights ? { weights: [...piece.nurbs.weights] } : {}),
+        ...(piece.nurbs.degree !== undefined ? { degree: piece.nurbs.degree } : {}),
+        ...(piece.nurbs.knots ? { knots: [...piece.nurbs.knots] } : {}),
+        ...(piece.nurbs.mults ? { mults: [...piece.nurbs.mults] } : {}),
+        to,
+      });
     } else {
       // A cut piece of a spline is its 0.5 mm samples. The engine takes few points between a segment's ends, so the
       // piece is sent as the samples a smooth curve needs to stay within 0.01 mm of it.
@@ -328,6 +346,22 @@ function makePiece(curve: Curve, t0: number, t1: number, v0: Pt, v1: Pt): Piece 
   points[0] = clonePt(v0);
   points[points.length - 1] = clonePt(v1);
   if (t1 - t0 >= 1 - 1e-8 && curve.controls.length >= 2) {
+    if (curve.nurbs && !curve.closed) {
+      const poles = curve.nurbs.poles.map(clonePt);
+      poles[0] = clonePt(v0);
+      poles[poles.length - 1] = clonePt(v1);
+      return {
+        kind: "spline",
+        points,
+        nurbs: {
+          poles,
+          ...(curve.nurbs.weights ? { weights: [...curve.nurbs.weights] } : {}),
+          ...(curve.nurbs.degree !== undefined ? { degree: curve.nurbs.degree } : {}),
+          ...(curve.nurbs.knots ? { knots: [...curve.nurbs.knots] } : {}),
+          ...(curve.nurbs.mults ? { mults: [...curve.nurbs.mults] } : {}),
+        },
+      };
+    }
     const emit = curve.closed ? [...curve.controls.map(clonePt), clonePt(curve.controls[0]!)] : curve.controls.map(clonePt);
     emit[0] = clonePt(v0);
     emit[emit.length - 1] = clonePt(v1);
@@ -425,12 +459,37 @@ function pushHedge(hedges: Hedge[], v0: number, v1: number, piece: Piece) {
   hedges.push({ id: id1, from: v1, to: v0, angle: departure(reverse), curvature: curvatureOf(reverse), piece: reverse, twin: id0 });
 }
 
+function reverseNurbs(nurbs: Omit<NurbsCurveMeta, "closed">): Omit<NurbsCurveMeta, "closed"> {
+  const poles = [...nurbs.poles].reverse().map(clonePt);
+  const weights = nurbs.weights ? [...nurbs.weights].reverse() : undefined;
+  let knots: number[] | undefined;
+  let mults: number[] | undefined;
+  if (nurbs.knots && nurbs.knots.length >= 2) {
+    const u0 = nurbs.knots[0]!;
+    const u1 = nurbs.knots[nurbs.knots.length - 1]!;
+    knots = [...nurbs.knots].reverse().map((k) => u0 + u1 - k);
+    mults = nurbs.mults ? [...nurbs.mults].reverse() : undefined;
+  }
+  return {
+    poles,
+    ...(weights ? { weights } : {}),
+    ...(nurbs.degree !== undefined ? { degree: nurbs.degree } : {}),
+    ...(knots ? { knots } : {}),
+    ...(mults ? { mults } : {}),
+  };
+}
+
 function reversePiece(piece: Piece): Piece {
   if (piece.kind === "line") return { kind: "line", a: piece.b, b: piece.a };
   if (piece.kind === "arc") {
     return { kind: "arc", centre: piece.centre, radius: piece.radius, a0: piece.a0 + piece.sweep, sweep: -piece.sweep, a: piece.b, b: piece.a };
   }
-  return { kind: "spline", points: [...piece.points].reverse(), emit: piece.emit ? [...piece.emit].reverse() : undefined };
+  return {
+    kind: "spline",
+    points: [...piece.points].reverse(),
+    emit: piece.emit ? [...piece.emit].reverse() : undefined,
+    nurbs: piece.nurbs ? reverseNurbs(piece.nurbs) : undefined,
+  };
 }
 
 function departure(piece: Piece): number {
@@ -515,7 +574,11 @@ function sampleLoop(loop: ProfileLoop): Pt[] {
   for (const segment of loop.segments) {
     if (segment.kind === "line") out.push(clonePt(segment.to));
     else if (segment.kind === "arc") sampleProfileArc(prev, segment.through, segment.to, out);
-    else {
+    else if (segment.kind === "nurbs") {
+      const poles: Pt[] = [prev, ...(segment.poles ?? []), segment.to];
+      const sampled = sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8));
+      for (let i = 1; i < sampled.length; i += 1) out.push(clonePt(sampled[i]!));
+    } else {
       for (const point of segment.through) out.push(clonePt(point));
       out.push(clonePt(segment.to));
     }
@@ -705,6 +768,17 @@ function cloneLoop(loop: ProfileLoop): ProfileLoop {
     segments: loop.segments.map((segment) => {
       if (segment.kind === "line") return { kind: "line", to: clonePt(segment.to) };
       if (segment.kind === "arc") return { kind: "arc", through: clonePt(segment.through), to: clonePt(segment.to) };
+      if (segment.kind === "nurbs") {
+        return {
+          kind: "nurbs",
+          ...(segment.poles ? { poles: segment.poles.map(clonePt) } : {}),
+          ...(segment.weights ? { weights: [...segment.weights] } : {}),
+          ...(segment.degree !== undefined ? { degree: segment.degree } : {}),
+          ...(segment.knots ? { knots: [...segment.knots] } : {}),
+          ...(segment.mults ? { mults: [...segment.mults] } : {}),
+          to: clonePt(segment.to),
+        };
+      }
       return { kind: "spline", through: segment.through.map(clonePt), to: clonePt(segment.to) };
     }),
   };

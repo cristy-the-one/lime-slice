@@ -96,6 +96,22 @@ pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolv
             }
             Ok(Resolved { op, picks })
         }
+        // --- Organic surfaces S2: resolve solid edges when a sweep uses an edge spine.
+        Op::Sweep {
+            spine: super::ops::Curve3D::Edges { edges },
+            ..
+        } => {
+            let (refs, picks) = resolve_blend(from, edges, "sweep along", steps)?;
+            let mut op = op.clone();
+            if let Op::Sweep {
+                spine: super::ops::Curve3D::Edges { edges },
+                ..
+            } = &mut op
+            {
+                *edges = refs;
+            }
+            Ok(Resolved { op, picks })
+        }
         // K3. A plain extrude has no face to resolve and falls through below.
         Op::Extrude {
             up_to: Some(_), ..

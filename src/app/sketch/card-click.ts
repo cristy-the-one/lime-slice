@@ -14,7 +14,7 @@ import { armSweepProbe, beginSweep, commitSweep, endSweep, madeSweep, roundedSwe
 import { enterNamed, publish, showMarks } from "./view";
 import { pushToast } from "../../ui/toasts";
 import { DEMO_KINDS, EDIT_DEMO_KINDS, type DemoKind } from "../../sketch/demos";
-import { withWall, withTool, applyConstraint, withLook, activeSketch, finishSketch, sketchKey, reopenSketch, discardSketch } from "../../sketch/session";
+import { withWall, withTool, withSplineMode, withCurvatureComb, setSelectedSplineWeight, creaseSelectedSplinePoint, insertSelectedSplineKnot, applyConstraint, withLook, activeSketch, finishSketch, sketchKey, reopenSketch, discardSketch } from "../../sketch/session";
 import { isDrawTool } from "../../sketch/tools";
 import { namesOpenEnds } from "../../sketch/reasons";
 import { isConstrainTool } from "../../sketch/constrain";
@@ -59,6 +59,41 @@ export function installCardClicks(): void {
     if (wall === "both" || wall === "close" || wall === "helper") {
       S.editor = withWall(S.editor, wall);
       S.cardFocus = [`[data-sketch-wall="${wall}"]`];
+      publish("values");
+      return;
+    }
+    // S2 (U3): NURBS spline mode, curvature comb, and CV weight / crease / knot insertion.
+    const splineMode = target.dataset.sketchSplineMode;
+    if (splineMode === "cv" || splineMode === "through") {
+      S.editor = withSplineMode(S.editor, splineMode);
+      S.cardFocus = [`[data-sketch-spline-mode="${splineMode}"]`];
+      publish("values");
+      return;
+    }
+    if (target.dataset.sketchComb != null) {
+      S.editor = withCurvatureComb(S.editor, target.dataset.sketchComb === "1");
+      S.cardFocus = ["[data-sketch-comb]"];
+      publish("values");
+      return;
+    }
+    const cvWeight = target.dataset.sketchCvWeight;
+    if (cvWeight === "up" || cvWeight === "down" || cvWeight === "reset") {
+      const sketch = activeSketch(S.editor);
+      const ptId = S.editor.selection.points[0];
+      const spline = sketch && ptId != null ? sketch.entities.find((e) => e.kind === "spline" && e.through.includes(ptId)) : null;
+      const cur = spline && spline.kind === "spline" ? (spline.weights?.[spline.through.indexOf(ptId!)] ?? 1) : 1;
+      const nextW = cvWeight === "reset" ? 1 : cvWeight === "up" ? Math.min(20, +(cur * 1.25).toFixed(3)) : Math.max(0.1, +(cur / 1.25).toFixed(3));
+      S.editor = setSelectedSplineWeight(S.editor, nextW);
+      publish("values");
+      return;
+    }
+    if (target.dataset.sketchCvCrease != null) {
+      S.editor = creaseSelectedSplinePoint(S.editor);
+      publish("values");
+      return;
+    }
+    if (target.dataset.sketchCvKnot != null) {
+      S.editor = insertSelectedSplineKnot(S.editor, 0.5);
       publish("values");
       return;
     }

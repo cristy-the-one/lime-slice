@@ -8,9 +8,20 @@ use super::ffi::{
     lime_tree_extrude_loops_extent,
     lime_tree_loft_loops,
     lime_tree_revolve_loops,
+    lime_tree_sweep,
 };
 use super::group::extrude_cells;
-use super::ops::{Op, ProfileLoop, ProfileSegment};
+use super::ops::{
+    BooleanOp,
+    Curve3D,
+    Curve3DSegment,
+    LoftSection,
+    Op,
+    ProfileLoop,
+    ProfileSegment,
+    SweepMode,
+    SweepTransition,
+};
 use super::resolve::Resolved;
 use super::shape::Shape;
 
@@ -45,9 +56,221 @@ pub(super) fn encode_loops(loops: &[ProfileLoop], out: &mut Vec<f64>) {
                         out.push(point[1]);
                     }
                 }
+                ProfileSegment::Nurbs {
+                    poles,
+                    weights,
+                    degree,
+                    knots,
+                    mults,
+                    to,
+                } => {
+                    out.extend([3.0, to[0], to[1], poles.len() as f64]);
+                    for point in poles {
+                        out.push(point[0]);
+                        out.push(point[1]);
+                    }
+                    out.push(f64::from(degree.unwrap_or(0)));
+                    out.push(weights.len() as f64);
+                    out.push(knots.len().min(mults.len()) as f64);
+                    out.extend_from_slice(weights);
+                    let nk = knots.len().min(mults.len());
+                    out.extend_from_slice(&knots[..nk]);
+                    for &m in &mults[..nk] {
+                        out.push(f64::from(m));
+                    }
+                }
             }
         }
     }
+}
+
+/// --- Organic surfaces S2: encode `Curve3D` for `decode_curve3d` in kernel.cpp.
+pub(super) fn encode_curve3d(curve: &Curve3D, resolved_edges: &[c_int], out: &mut Vec<f64>) -> Result<(), String> {
+    match curve {
+        Curve3D::Polyline { points } => {
+            out.extend([0.0, 0.0, points.len() as f64]);
+            for p in points {
+                out.extend_from_slice(p);
+            }
+        }
+        Curve3D::Spline { points, closed } => {
+            out.extend([1.0, if *closed { 1.0 } else { 0.0 }, points.len() as f64]);
+            for p in points {
+                out.extend_from_slice(p);
+            }
+        }
+        Curve3D::Nurbs {
+            poles,
+            weights,
+            degree,
+            knots,
+            mults,
+            periodic,
+        } => {
+            let nk = knots.len().min(mults.len());
+            out.extend([
+                2.0,
+                if *periodic { 1.0 } else { 0.0 },
+                f64::from(degree.unwrap_or(0)),
+                poles.len() as f64,
+                weights.len() as f64,
+                nk as f64,
+            ]);
+            for p in poles {
+                out.extend_from_slice(p);
+            }
+            out.extend_from_slice(weights);
+            out.extend_from_slice(&knots[..nk]);
+            for &m in &mults[..nk] {
+                out.push(f64::from(m));
+            }
+        }
+        Curve3D::Segments { start, segments } => {
+            out.extend([3.0, 0.0, start[0], start[1], start[2], segments.len() as f64]);
+            for seg in segments {
+                match seg {
+                    Curve3DSegment::Line { to } => {
+                        out.extend([0.0, to[0], to[1], to[2], 0.0]);
+                    }
+                    Curve3DSegment::Arc { through, to } => {
+                        out.extend([1.0, to[0], to[1], to[2], 1.0, through[0], through[1], through[2]]);
+                    }
+                    Curve3DSegment::Spline { through, to } => {
+                        out.extend([2.0, to[0], to[1], to[2], through.len() as f64]);
+                        for p in through {
+                            out.extend_from_slice(p);
+                        }
+                    }
+                    Curve3DSegment::Nurbs {
+                        poles,
+                        weights,
+                        degree,
+                        knots,
+                        mults,
+                        to,
+                    } => {
+                        let nk = knots.len().min(mults.len());
+                        out.extend([3.0, to[0], to[1], to[2], poles.len() as f64]);
+                        for p in poles {
+                            out.extend_from_slice(p);
+                        }
+                        out.extend([f64::from(degree.unwrap_or(0)), weights.len() as f64, nk as f64]);
+                        out.extend_from_slice(weights);
+                        out.extend_from_slice(&knots[..nk]);
+                        for &m in &mults[..nk] {
+                            out.push(f64::from(m));
+                        }
+                    }
+                }
+            }
+        }
+        Curve3D::Edges { edges } => {
+            if resolved_edges.is_empty() && !edges.is_empty() {
+                return Err("An edge spine needs an existing solid.".into());
+            }
+            out.extend([4.0, 0.0, resolved_edges.len() as f64]);
+            for &idx in resolved_edges {
+                out.push(f64::from(idx));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// --- Organic surfaces S2: build `Op::Sweep` via `lime_tree_sweep` (standalone when `from` is `None`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_sweep_shape(
+    from: Option<&Shape>,
+    which: BooleanOp,
+    sections: &[LoftSection],
+    spine: &Curve3D,
+    mode: Option<SweepMode>,
+    transition: Option<SweepTransition>,
+    scale: &[[f64; 2]],
+    twist_deg: Option<f64>,
+    aux_spine: Option<&Curve3D>,
+    resolved_edges: &[c_int],
+) -> Result<Shape, String> {
+    if sections.is_empty() {
+        return Err("A sweep needs at least one profile section.".into());
+    }
+    let shape_note = "smooth and corners are for a point profile. A loop uses arc, spline, and nurbs segments.";
+    let mut head = Vec::with_capacity(sections.len() * 11);
+    let mut data = Vec::new();
+    let mut blob = Vec::new();
+    let mut loop_at = Vec::with_capacity(sections.len());
+    for (index, section) in sections.iter().enumerate() {
+        let has_radius = section.radius.unwrap_or(0.0) > 0.0;
+        let has_profile = !section.profile.is_empty();
+        let has_loops = !section.loops.is_empty();
+        let kinds = usize::from(has_radius) + usize::from(has_profile) + usize::from(has_loops);
+        let prefix = format!("Section {index}: ");
+        if kinds > 1 {
+            return Err(format!("{prefix}A section takes a radius, a profile, or loops, not more than one."));
+        }
+        if kinds == 0 {
+            return Err(format!("{prefix}A section needs a radius, a profile, or loops."));
+        }
+        if has_loops && (section.smooth || !section.corners.is_empty()) {
+            return Err(format!("{prefix}{shape_note}"));
+        }
+        head.extend_from_slice(&section.origin);
+        head.extend_from_slice(&section.turn);
+        head.push(section.radius.unwrap_or(0.0));
+        head.push(section.radius_v.unwrap_or(0.0));
+        head.push(f64::from(u8::from(section.smooth)));
+        head.push(section.profile.len() as f64);
+        head.push(section.corners.len() as f64);
+        if has_loops {
+            loop_at.push(blob.len() as c_int);
+            encode_loops(&section.loops, &mut blob);
+        } else {
+            loop_at.push(-1);
+            data.extend(section.profile.iter().flatten().copied());
+            data.extend(section.corners.iter().map(|&c| f64::from(c)));
+        }
+    }
+    let mut spine_blob = Vec::new();
+    encode_curve3d(spine, resolved_edges, &mut spine_blob)?;
+    let mut aux_blob = Vec::new();
+    if let Some(aux) = aux_spine {
+        encode_curve3d(aux, &[], &mut aux_blob)?;
+    }
+    let (mode_id, binormal) = match mode.unwrap_or_default() {
+        SweepMode::CorrectedFrenet => (0, [0.0, 0.0, 1.0]),
+        SweepMode::Frenet => (1, [0.0, 0.0, 1.0]),
+        SweepMode::FixedBinormal { dir } => (2, dir),
+    };
+    let trans_id = match transition.unwrap_or_default() {
+        SweepTransition::Round => 0,
+        SweepTransition::Right => 1,
+        SweepTransition::Transformed => 2,
+    };
+    let scale_flat: Vec<f64> = scale.iter().flatten().copied().collect();
+    let raw_from = from.map_or(std::ptr::null(), Shape::raw);
+    Shape::made(|error| unsafe {
+        lime_tree_sweep(
+            raw_from,
+            which.name().as_ptr(),
+            head.as_ptr(),
+            sections.len() as c_int,
+            if data.is_empty() { std::ptr::null() } else { data.as_ptr() },
+            if blob.is_empty() { std::ptr::null() } else { blob.as_ptr() },
+            blob.len() as c_int,
+            loop_at.as_ptr(),
+            spine_blob.as_ptr(),
+            spine_blob.len() as c_int,
+            if aux_blob.is_empty() { std::ptr::null() } else { aux_blob.as_ptr() },
+            aux_blob.len() as c_int,
+            mode_id,
+            binormal.as_ptr(),
+            trans_id,
+            if scale_flat.is_empty() { std::ptr::null() } else { scale_flat.as_ptr() },
+            scale_flat.len() as c_int,
+            twist_deg.unwrap_or(0.0),
+            error,
+        )
+    })
 }
 
 /// K3 bits for the C side: bit 0 a second depth, bit 1 a draft, bit 2 a face to stop at. 0 is a plain extrude.

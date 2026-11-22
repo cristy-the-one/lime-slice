@@ -433,9 +433,14 @@ const loopsField = {
           additionalProperties: false,
           required: ["kind", "to"],
           properties: {
-            kind: { enum: ["line", "arc", "spline"], description: "line, arc, or spline." },
+            kind: { enum: ["line", "arc", "spline", "nurbs"], description: "line, arc, spline, or exact nurbs." },
             to: { ...point2, description: "End." },
             through: { description: "Arc: one point. Spline: points.", oneOf: [point2, { type: "array", minItems: 1, maxItems: 200, items: point2 }] },
+            poles: { type: "array", maxItems: 200, items: point2, description: "NURBS interior control points." },
+            weights: { type: "array", minItems: 2, maxItems: 202, items: { type: "number", exclusiveMinimum: 0 }, description: "NURBS rational weights (all poles incl. start & to)." },
+            degree: { type: "integer", minimum: 1, maximum: 10, description: "NURBS degree (default 3)." },
+            knots: { type: "array", minItems: 2, maxItems: 210, items: { type: "number" }, description: "Distinct NURBS knot values." },
+            mults: { type: "array", minItems: 2, maxItems: 210, items: { type: "integer", minimum: 1 }, description: "NURBS knot multiplicities." },
           },
         },
       },
@@ -443,9 +448,121 @@ const loopsField = {
   },
 };
 
+const curve3dSeg = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "to"],
+  properties: {
+    kind: { enum: ["line", "arc", "spline", "nurbs"], description: "Segment kind." },
+    to: { ...vec3, description: "Segment end point." },
+    through: { description: "Arc mid point or spline through points.", oneOf: [vec3, { type: "array", minItems: 1, maxItems: 200, items: vec3 }] },
+    poles: { type: "array", maxItems: 200, items: vec3, description: "NURBS interior control points." },
+    weights: { type: "array", minItems: 2, maxItems: 202, items: { type: "number", exclusiveMinimum: 0 }, description: "NURBS rational weights." },
+    degree: { type: "integer", minimum: 1, maximum: 10, description: "NURBS degree." },
+    knots: { type: "array", minItems: 2, maxItems: 210, items: { type: "number" }, description: "Distinct NURBS knot values." },
+    mults: { type: "array", minItems: 2, maxItems: 210, items: { type: "integer", minimum: 1 }, description: "NURBS knot multiplicities." },
+  },
+};
+
+const curve3dField = {
+  type: "object",
+  description: "Exact 3D spine: polyline, spline, nurbs, segments, or solid edges.",
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "points"],
+      properties: {
+        kind: { const: "polyline", description: "Polyline spine." },
+        points: { type: "array", minItems: 2, maxItems: 500, items: vec3, description: "3D vertices." },
+        closed: { type: "boolean", description: "Close loop." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "through"],
+      properties: {
+        kind: { const: "spline", description: "Interpolated 3D spline spine." },
+        through: { type: "array", minItems: 2, maxItems: 200, items: vec3, description: "3D interpolation points." },
+        closed: { type: "boolean", description: "Close periodic loop." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "poles"],
+      properties: {
+        kind: { const: "nurbs", description: "Exact 3D rational NURBS spine." },
+        poles: { type: "array", minItems: 2, maxItems: 200, items: vec3, description: "3D control points." },
+        weights: { type: "array", minItems: 2, maxItems: 200, items: { type: "number", exclusiveMinimum: 0 }, description: "Positive rational weights." },
+        degree: { type: "integer", minimum: 1, maximum: 10, description: "Polynomial degree." },
+        knots: { type: "array", minItems: 2, maxItems: 210, items: { type: "number" }, description: "Distinct knot values." },
+        mults: { type: "array", minItems: 2, maxItems: 210, items: { type: "integer", minimum: 1 }, description: "Knot multiplicities." },
+        closed: { type: "boolean", description: "Close periodic loop." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "start", "segments"],
+      properties: {
+        kind: { const: "segments", description: "Composite 3D curve segments." },
+        start: { ...vec3, description: "Start point." },
+        segments: { type: "array", minItems: 1, maxItems: 200, items: curve3dSeg, description: "Connected 3D segments." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "edges"],
+      properties: {
+        kind: { const: "edges", description: "Existing solid edges as spine." },
+        edges: edgeList,
+      },
+    },
+  ],
+};
+
 const profileShape = {
   smooth: { type: "boolean", description: "Spline through points." },
   corners: { type: "array", maxItems: 1000, items: { type: "integer", minimum: 0 }, description: "Sharp corners when smooth." },
+};
+
+const sweepSectionItem = {
+  type: "object",
+  additionalProperties: false,
+  required: ["origin"],
+  properties: {
+    origin: { ...vec3, description: "Plane origin; a circle's centre." },
+    turn: { ...vec3, description: "Plane turn, degrees X, Y, Z; W is the plane's normal." },
+    radius: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Circle, or ellipse along U." },
+    radiusV: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Ellipse along V." },
+    profile,
+    loops: loopsField,
+    ...profileShape,
+  },
+};
+
+const sweepModeField = {
+  type: "object",
+  description: "Sweep frame law along the spine.",
+  oneOf: [
+    { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "correctedFrenet", description: "Rotation-minimizing frame (default)." } } },
+    { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "frenet", description: "Classical Frenet frame." } } },
+    { type: "object", additionalProperties: false, required: ["kind", "dir"], properties: { kind: { const: "fixedBinormal", description: "Fixed binormal direction." }, dir: { ...vec3, description: "Binormal vector." } } },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "spine"],
+      properties: {
+        kind: { const: "auxSpine", description: "Guide rail auxiliary spine." },
+        spine: curve3dField,
+        curvilinear: { type: "boolean", description: "Match by arc length." },
+        keepContact: { type: "boolean", description: "Keep section touching aux spine." },
+      },
+    },
+  ],
 };
 const perPoint = (what: string) => ({ description: `${what}: one number, or one per path point.` });
 
@@ -525,15 +642,20 @@ const sketchOps = [
   {
     type: "object",
     additionalProperties: false,
-    required: ["kind", "path"],
+    required: ["kind"],
     properties: {
       kind: { const: "sweep" },
       op: booleanKind,
       path: { type: "array", minItems: 2, maxItems: 100, items: vec3, description: "[x, y, z] points; a smooth curve runs through them." },
+      sections: { type: "array", minItems: 1, maxItems: 50, items: sweepSectionItem, description: "Exact pipe-shell cross-sections (with spine)." },
+      spine: curve3dField,
+      mode: sweepModeField,
+      transition: { enum: ["round", "right", "transformed"], description: "Corner transition at sharp spine bends: round (default), right (miter), transformed." },
+      twistDeg: { type: "number", minimum: -3600, maximum: 3600, description: "Smooth twist along the spine, degrees." },
       radius: perPoint("Circle radius, mm"),
       radiusV: perPoint("Ellipse radius toward up, mm"),
       profile: { ...profile, description: "Section outline instead of a circle, [u, v] mm about the path; V toward up." },
-      scale: perPoint("Profile size factor"),
+      scale: { description: "Profile size factor: number, per-point list, or [[u, factor], ...] stations for kernel spine sweep." },
       ...profileShape,
       up: { ...vec3, description: "Where V points at the start. Default +Z." },
       steps: { type: "integer", minimum: 1, maximum: 12, description: "Sections per span (default 3); 1 is only the points." },

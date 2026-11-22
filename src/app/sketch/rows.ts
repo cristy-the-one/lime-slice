@@ -88,7 +88,88 @@ function editTools(): Node[] {
   if (!S.demo) out.push(...editHow());
   // O1: Offset's wall options, under the row while Offset is on.
   if (S.editor.tool === "offset") out.push(wallRow());
+  // S2 (U3): NURBS spline mode, curvature comb, and per-CV weight/crease/knot controls.
+  if (S.editor.tool === "spline" || selectedSplineInfo() != null) out.push(splineRow());
   return out;
+}
+
+function selectedSplineInfo(): { entityId: number; mode: "cv" | "through"; cvIndex: number | null; weight: number; canCrease: boolean } | null {
+  const sketch = activeSketch(S.editor);
+  if (!sketch) return null;
+  const ptId = S.editor.selection.points[0];
+  if (ptId != null) {
+    const spline = sketch.entities.find((e) => e.kind === "spline" && e.through.includes(ptId));
+    if (spline && spline.kind === "spline") {
+      const idx = spline.through.indexOf(ptId);
+      const weight = spline.weights?.[idx] ?? 1;
+      return {
+        entityId: spline.id,
+        mode: spline.mode === "cv" ? "cv" : "through",
+        cvIndex: idx,
+        weight,
+        canCrease: idx > 0 && idx < spline.through.length - 1,
+      };
+    }
+  }
+  const entId = S.editor.selection.entities[0];
+  if (entId != null) {
+    const spline = sketch.entities.find((e) => e.id === entId && e.kind === "spline");
+    if (spline && spline.kind === "spline") {
+      return { entityId: spline.id, mode: spline.mode === "cv" ? "cv" : "through", cvIndex: null, weight: 1, canCrease: false };
+    }
+  }
+  return null;
+}
+
+/** S2 (U3): Exact NURBS spline mode toggle, curvature comb, and CV weight / crease / knot controls. */
+function splineRow(): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "sketch-wall sketch-nurbs-row";
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", "Spline options");
+  const info = selectedSplineInfo();
+  const mode = info?.mode ?? S.editor.draw.splineMode;
+  const modeBtn = (value: "cv" | "through", label: string, tip: string) => {
+    const btn = textButton(label, { sketchSplineMode: value });
+    btn.setAttribute("aria-pressed", mode === value ? "true" : "false");
+    btn.dataset.tip = tip;
+    btn.title = tip;
+    return btn;
+  };
+  row.append(
+    modeBtn("cv", "Control points (NURBS)", "Exact rational NURBS curve shaped by its control cage"),
+    modeBtn("through", "Through points", "Smooth curve passing directly through each click"),
+  );
+  const comb = textButton("Curvature comb", { sketchComb: S.editor.showCurvatureComb ? "0" : "1" });
+  comb.setAttribute("aria-pressed", S.editor.showCurvatureComb ? "true" : "false");
+  comb.dataset.tip = "Show curvature needles along NURBS curves so flat spots and kinks jump out";
+  comb.title = comb.dataset.tip;
+  row.append(comb);
+  if (info) {
+    if (info.cvIndex != null) {
+      const wDown = textButton("W−", { sketchCvWeight: "down" });
+      wDown.dataset.tip = `Decrease control point weight (current ${info.weight.toFixed(2)})`;
+      wDown.title = wDown.dataset.tip;
+      const wVal = textButton(`W ${info.weight.toFixed(2)}`, { sketchCvWeight: "reset" });
+      wVal.dataset.tip = "Reset control point weight to 1.00";
+      wVal.title = wVal.dataset.tip;
+      const wUp = textButton("W+", { sketchCvWeight: "up" });
+      wUp.dataset.tip = `Increase control point weight — pulls the curve closer (current ${info.weight.toFixed(2)})`;
+      wUp.title = wUp.dataset.tip;
+      row.append(wDown, wVal, wUp);
+      if (info.canCrease) {
+        const crease = textButton("Sharp crease", { sketchCvCrease: "1" });
+        crease.dataset.tip = "Raise knot multiplicity at this point for an exact C0 sharp corner";
+        crease.title = crease.dataset.tip;
+        row.append(crease);
+      }
+    }
+    const knot = textButton("Insert knot", { sketchCvKnot: "1" });
+    knot.dataset.tip = "Add an extra control point without changing the curve shape (Boehm refinement)";
+    knot.title = knot.dataset.tip;
+    row.append(knot);
+  }
+  return row;
 }
 
 /** O1: Both sides, Close the ends, and Keep the line as a helper, each pressed while on. */

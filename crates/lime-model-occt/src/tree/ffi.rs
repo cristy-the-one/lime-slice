@@ -579,6 +579,29 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut RawSurfaceInspect;
     pub(super) fn lime_tree_surface_inspect_free(inspect: *mut RawSurfaceInspect);
+    /// --- Organic surfaces S2: real kernel sweep (`BRepOffsetAPI_MakePipeShell`), standalone when `from` is null.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_sweep(
+        from: *const RawShape,
+        op: *const c_char,
+        head: *const f64,
+        section_count: c_int,
+        data: *const f64,
+        loop_blob: *const f64,
+        loop_count: c_int,
+        loop_at: *const c_int,
+        spine_blob: *const f64,
+        spine_count: c_int,
+        aux_blob: *const f64,
+        aux_count: c_int,
+        mode: c_int,
+        binormal: *const f64,
+        transition: c_int,
+        scale_stations: *const f64,
+        scale_count: c_int,
+        twist_deg: f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     pub(super) fn lime_tree_distance(
         shape: *const RawShape,
         a_kind: *const c_char,

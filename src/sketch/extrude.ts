@@ -6,6 +6,7 @@
  * stop at is sent as a point profile, as it always was. An arc, a spline, or a hole sends its
  * loops with those fields: the kernel builds them on the same face.
  */
+import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
 import { arcFrom3, arcPoint, curveOf, dist, pointOn, projectToArc, projectToSegment, projectToSpline, sampleSpline } from "./geom.ts";
 import { frameOf, toPlane, type SketchFrame } from "./frame.ts";
 import { emptySketch, sketchEntity, sketchJson, type Pt, type SketchData, type Vec3 } from "./model.ts";
@@ -357,6 +358,9 @@ export function sampleLoop(loop: ProfileLoop): Pt[] {
       const arc = arcFrom3(prev, segment.through, segment.to);
       if (!arc) push(segment.to);
       else for (let step = 1; step <= 8; step += 1) push(arcPoint(arc, step / 8));
+    } else if (segment.kind === "nurbs") {
+      const poles: Pt[] = [prev, ...(segment.poles ?? []), segment.to];
+      for (const pt of sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8))) push(pt);
     } else {
       for (const pt of sampleSpline([prev, ...segment.through, segment.to], false, 1)) push(pt);
     }
@@ -371,6 +375,17 @@ export function sampleLoop(loop: ProfileLoop): Pt[] {
 function copySegment(segment: EngineSegment): ProfileSegment {
   if (segment.kind === "line") return { kind: "line", to: [segment.to[0], segment.to[1]] };
   if (segment.kind === "arc") return { kind: "arc", through: [segment.through[0], segment.through[1]], to: [segment.to[0], segment.to[1]] };
+  if (segment.kind === "nurbs") {
+    return {
+      kind: "nurbs",
+      ...(segment.poles ? { poles: segment.poles.map((pt) => [pt[0], pt[1]] as Pt) } : {}),
+      ...(segment.weights ? { weights: [...segment.weights] } : {}),
+      ...(segment.degree !== undefined ? { degree: segment.degree } : {}),
+      ...(segment.knots ? { knots: [...segment.knots] } : {}),
+      ...(segment.mults ? { mults: [...segment.mults] } : {}),
+      to: [segment.to[0], segment.to[1]],
+    };
+  }
   return { kind: "spline", through: segment.through.map((pt) => [pt[0], pt[1]] as Pt), to: [segment.to[0], segment.to[1]] };
 }
 
@@ -429,6 +444,11 @@ function distToSegment(from: Pt, segment: ProfileSegment, pt: Pt): number {
   if (segment.kind === "arc") {
     const arc = arcFrom3(from, segment.through, segment.to);
     return arc ? projectToArc(arc, pt).distance : (projectToSegment(from, segment.to, pt)?.distance ?? dist(pt, from));
+  }
+  if (segment.kind === "nurbs") {
+    const poles: Pt[] = [from, ...(segment.poles ?? []), segment.to];
+    const samples = sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8));
+    return projectToSpline(samples, pt)?.distance ?? dist(pt, from);
   }
   const samples = sampleSpline([from, ...segment.through, segment.to], false, 0.5);
   return projectToSpline(samples, pt)?.distance ?? dist(pt, from);

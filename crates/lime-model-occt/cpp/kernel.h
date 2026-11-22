@@ -530,13 +530,18 @@ struct ProfileSpec {
 // --- K1 profile v2 (loops, arcs, holes). Distinct from ProfileSpec so other packages can edit that struct. ---
 
 /// One edge of a loop, from the previous end (the loop's start, for the first) to `to`.
-enum class ProfileSegKind { Line, Arc, Spline };
+enum class ProfileSegKind { Line, Arc, Spline, Nurbs };
 
 struct ProfileSeg {
     ProfileSegKind kind = ProfileSegKind::Line;
     double to[2] = {0, 0};
-    /// u, v pairs. One pair for an arc, one or more for a spline, none for a line.
+    /// u, v pairs. One pair for an arc, one or more for a spline/nurbs (interior control poles), none for a line.
     std::vector<double> through;
+    /// --- Organic surfaces S2: optional NURBS parameters (used when kind == ProfileSegKind::Nurbs).
+    int degree = 0;
+    std::vector<double> weights;
+    std::vector<double> knots;
+    std::vector<int> mults;
 };
 
 /// A closed loop on the profile plane. The last segment's `to` meets `start`.
@@ -658,6 +663,63 @@ TopoDS_Shape combine_profile_tools(
     const std::string& which,
     const std::vector<TopoDS_Shape>& tools,
     const char* noun,
+    double& volume,
+    std::string& error);
+
+/// --- Organic surfaces S2: exact 3D curve specification (`Curve3D`) for `build_sweep` (and later S3–S5 rails/patches).
+enum class Curve3DSegKind { Line, Arc, Spline, Nurbs };
+
+struct Curve3DSeg {
+    Curve3DSegKind kind = Curve3DSegKind::Line;
+    double to[3] = {0, 0, 0};
+    /// x, y, z triples between previous end and `to` (1 for Arc, 1+ for Spline, 0+ for Nurbs interior poles).
+    std::vector<double> pts;
+    int degree = 0;
+    std::vector<double> weights;
+    std::vector<double> knots;
+    std::vector<int> mults;
+};
+
+struct Curve3DSpec {
+    /// 0 = Polyline, 1 = Spline, 2 = Nurbs, 3 = Segments, 4 = Solid edge indices.
+    int kind = 0;
+    bool closed = false;
+    int degree = 0;
+    double start[3] = {0, 0, 0};
+    std::vector<double> pts;
+    std::vector<double> weights;
+    std::vector<double> knots;
+    std::vector<int> mults;
+    std::vector<Curve3DSeg> segments;
+    std::vector<int> edge_indices;
+};
+
+struct SweepSpec {
+    std::vector<LoftSection> sections;
+    Curve3DSpec spine;
+    /// 0 = CorrectedFrenet (default), 1 = Frenet, 2 = FixedBinormal.
+    int mode = 0;
+    double binormal[3] = {0, 0, 1};
+    /// 0 = RoundCorner (default), 1 = RightCorner (mitred), 2 = Transformed.
+    int transition = 0;
+    /// Optional [t, scale] pairs along normalized spine 0..1 (Law_Interpol).
+    std::vector<double> scale_stations;
+    /// Optional smooth total twist along spine in degrees.
+    double twist_deg = 0.0;
+    bool has_aux_spine = false;
+    Curve3DSpec aux_spine;
+};
+
+/// Decode a `Curve3DSpec` blob written by Rust `encode_curve3d`.
+bool decode_curve3d(const double* data, int count, Curve3DSpec& out, int& used, std::string& error);
+
+/// True kernel sweep (`BRepOffsetAPI_MakePipeShell`) combined with `current` by `which` (or standalone when `current` is null).
+TopoDS_Shape build_sweep(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const SweepSpec& spec,
+    const Held* held_for_edges,
     double& volume,
     std::string& error);
 
