@@ -86,8 +86,5 @@ export default defineConfig({
     target: "es2022",
     outDir: "dist",
     emptyOutDir: true,
-    // Lightning CSS, Vite 8's default, shortens #ffffff to #fff. hexToThree() reads that as
-    // 0x0fff, so a white gizmo turns blue. esbuild is Vite 6's minifier and keeps six digits.
-    cssMinify: "esbuild",
   },
 });
