@@ -52,7 +52,7 @@ const baseEngine = fakeEngine();
 let inspectCalls = 0;
 const engine = {
   ...baseEngine,
-  modelTree(request: string): string {
+  modelTree(request: string): string | Promise<string> {
     const parsed = JSON.parse(request) as { call?: string; node?: number };
     if (parsed.call === "surfaceInspect") {
       inspectCalls += 1;

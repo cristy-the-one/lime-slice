@@ -667,7 +667,7 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
   if (input.surfaces !== true || base.ok !== true || !obj.tree) return base;
   const raw = await this.treeCall({
     call: "surfaceInspect",
-    key: obj.key,
+    key: obj.tree.key,
     node: obj.tree.current,
     chordMm: CHORD,
     curvature: false,

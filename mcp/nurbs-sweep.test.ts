@@ -28,14 +28,14 @@ const sentOps: Record<string, unknown>[] = [];
 const baseEngine = fakeEngine();
 const engine = {
   ...baseEngine,
-  modelTree(request: string): string {
+  async modelTree(request: string): Promise<string> {
     const parsed = JSON.parse(request) as { call?: string; op?: Record<string, unknown> };
     if (parsed.call === "apply" && parsed.op) {
       sentOps.push(parsed.op);
       // Fake engine handles unknown op kinds by returning a valid box-like solid reply if we fall back to probe/apply.
       if (parsed.op.kind === "sweep") {
         const fake = JSON.parse(
-          baseEngine.modelTree(JSON.stringify({ ...parsed, op: { kind: "unify" } })),
+          await baseEngine.modelTree(JSON.stringify({ ...parsed, op: { kind: "unify" } })),
         ) as Record<string, unknown>;
         return JSON.stringify({ ...fake, op: parsed.op });
       }
