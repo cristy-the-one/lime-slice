@@ -1,4 +1,4 @@
-# Unit tests for `npm run test:unit`, one file per line, in the order they run.
+# Unit tests for `npm run test:unit`, one file per line. tools/run-unit.mjs starts them in this order, several at once.
 # The list lives here because one npm script of every file is longer than Windows allows (8191).
 # A trailing `# serial` runs that file alone, after the others, when it cannot share the machine.
 src/slice-action.test.ts
@@ -103,6 +103,7 @@ src/mesh-edges.test.ts
 src/ui/flat-view.test.ts
 src/settings-rules.test.ts
 src/colors.test.ts
+src/theme.test.ts
 src/print-meta.test.ts
 src/measure.test.ts
 src/app/model-error.test.ts
@@ -200,7 +201,7 @@ mcp/ribs-load-request.test.ts
 mcp/numbers.test.ts
 mcp/render.test.ts
 mcp/native-load.test.ts
-mcp/stdio.test.ts
+mcp/stdio.test.ts # serial — each new server's first reply must come within 4 s, and that missed once with 8 files on the cores
 mcp/part-a.test.ts
 mcp/project-v4.test.ts
 mcp/batch1.test.ts

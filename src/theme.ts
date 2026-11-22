@@ -1,3 +1,4 @@
+import { hexRgb } from "./colors.ts";
 import { prefs } from "./prefs.ts";
 
 export type ThemeChoice = "system" | "dark" | "light";
@@ -81,9 +82,10 @@ export function themeColors(): ThemeColors {
   };
 }
 
+/** A CSS hex color as a three.js 0xrrggbb. Short forms such as #fff read as #ffffff; anything else is black. */
 export function hexToThree(hex: string): number {
-  const n = parseInt(hex.replace("#", ""), 16);
-  return Number.isFinite(n) ? n : 0;
+  const [r, g, b] = hexRgb(hex);
+  return (r << 16) | (g << 8) | b;
 }
 
 export function onSchemeChange(cb: () => void) {
