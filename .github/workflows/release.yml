@@ -38,7 +38,7 @@ jobs:
             tag="v$(jq -r .version src-tauri/tauri.conf.json)"
           fi
           prerelease=false
-          [[ "$tag" == *-tandem-beta.* ]] && prerelease=true
+          [[ "$tag" == *-beta.* ]] && prerelease=true
           # The tags endpoint does not return drafts, so search the list.
           id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
             --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)"

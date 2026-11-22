@@ -12,18 +12,39 @@ pub(super) struct RawMesh {
     _opaque: [u8; 0],
 }
 
+#[repr(C)]
+pub(super) struct RawSurfaceInspect {
+    _opaque: [u8; 0],
+}
+
 /// `LimeMeshView` in tree.cpp: a mesh's arrays as bytes, until the mesh is freed, and the shape's
 /// description as JSON, for as long as the shape lives.
 #[repr(C)]
 pub(super) struct MeshView {
     pub(super) positions: *const u8,
     pub(super) positions_bytes: usize,
+    pub(super) normals: *const u8,
+    pub(super) normals_bytes: usize,
     pub(super) triangles: *const u8,
     pub(super) triangles_bytes: usize,
     pub(super) edge_points: *const u8,
     pub(super) edge_points_bytes: usize,
     pub(super) edge_offsets: *const u8,
     pub(super) edge_offsets_bytes: usize,
+    pub(super) meta: *const c_char,
+}
+
+/// `LimeSurfaceInspectView` in tree.cpp: lazy curvature & isoparm arrays plus JSON continuity & surface health.
+#[repr(C)]
+pub(super) struct SurfaceInspectView {
+    pub(super) min_radius_mm: *const u8,
+    pub(super) min_radius_bytes: usize,
+    pub(super) gaussian: *const u8,
+    pub(super) gaussian_bytes: usize,
+    pub(super) mean: *const u8,
+    pub(super) mean_bytes: usize,
+    pub(super) iso_points: *const u8,
+    pub(super) iso_points_bytes: usize,
     pub(super) meta: *const c_char,
 }
 
@@ -548,6 +569,16 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut RawMesh;
     pub(super) fn lime_tree_mesh_free(mesh: *mut RawMesh);
+    pub(super) fn lime_tree_surface_inspect(
+        shape: *mut RawShape,
+        chord: f64,
+        want_curvature: c_int,
+        want_isoparms: c_int,
+        iso_count: c_int,
+        view: *mut SurfaceInspectView,
+        error: *mut *mut c_char,
+    ) -> *mut RawSurfaceInspect;
+    pub(super) fn lime_tree_surface_inspect_free(inspect: *mut RawSurfaceInspect);
     pub(super) fn lime_tree_distance(
         shape: *const RawShape,
         a_kind: *const c_char,

@@ -4,7 +4,18 @@
  * The menu sits in the model foot, beside Reset view. It changes only how the solid is drawn.
  * The settings belong to the open object: opening another one, or a new plate, starts them over.
  */
-import { idleLook, offsetAfterDrag, stepHex, type LookState, type Plane, type SectionAxis } from "../model-look.ts";
+import {
+  idleLook,
+  offsetAfterDrag,
+  stepHex,
+  withShading,
+  type CurvatureMode,
+  type LookState,
+  type Plane,
+  type SectionAxis,
+  type ShadingMode,
+  type ZebraAxis,
+} from "../model-look.ts";
 import { EXPLODE_GAP_MM } from "../model-explode.ts";
 import { syncStepColours } from "./model-history.ts";
 
@@ -46,6 +57,69 @@ function push() {
 }
 
 let paintedColours: boolean | null = null;
+let surfaceNeedChanged: (need: { curvature: boolean; isoparms: boolean }) => void = () => {};
+
+/** Current View look state (read by Model when a new solid arrives to know if curvature/isoparms should load). */
+export function lookState(): LookState {
+  return state;
+}
+
+/** Register a callback fired whenever Curvature or Surface grid (Isoparms) inspection data is needed. */
+export function onSurfaceNeed(cb: (need: { curvature: boolean; isoparms: boolean }) => void) {
+  surfaceNeedChanged = cb;
+}
+
+function paintSurfaceControls() {
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#modelShading [data-shading]")) {
+    button.setAttribute("aria-pressed", button.dataset.shading === state.shading ? "true" : "false");
+  }
+  const stepBox = byId<HTMLInputElement>("#modelColourSteps");
+  if (stepBox) stepBox.checked = state.shading === "step";
+  const isoBox = byId<HTMLInputElement>("#modelIsoparms");
+  if (isoBox) isoBox.checked = state.isoparms;
+  const zebraRow = byId<HTMLElement>("#modelZebraRow");
+  if (zebraRow) zebraRow.hidden = state.shading !== "zebra";
+  const curvRow = byId<HTMLElement>("#modelCurvatureRow");
+  if (curvRow) curvRow.hidden = state.shading !== "curvature";
+  const warnRow = byId<HTMLElement>("#modelCurvatureWarnRow");
+  if (warnRow) warnRow.hidden = state.curvatureMode !== "radius";
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#modelZebraAxis [data-zebra-axis]")) {
+    button.setAttribute("aria-pressed", button.dataset.zebraAxis === state.zebraAxis ? "true" : "false");
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#modelCurvatureMode [data-curvature-mode]")) {
+    button.setAttribute("aria-pressed", button.dataset.curvatureMode === state.curvatureMode ? "true" : "false");
+  }
+  const stripes = byId<HTMLInputElement>("#modelZebraStripes");
+  if (stripes && document.activeElement !== stripes) stripes.value = String(state.zebraStripes);
+  const warn = byId<HTMLInputElement>("#modelCurvatureWarn");
+  if (warn && document.activeElement !== warn) warn.value = String(state.curvatureWarnMm);
+}
+
+function setShading(shading: ShadingMode) {
+  state = withShading(state, shading);
+  paintSurfaceControls();
+  push();
+  if (state.shading === "curvature" || state.isoparms) {
+    surfaceNeedChanged({ curvature: state.shading === "curvature", isoparms: state.isoparms });
+  }
+}
+
+export function toggleZebra() {
+  setShading(state.shading === "zebra" ? "normal" : "zebra");
+}
+
+export function toggleCurvature() {
+  setShading(state.shading === "curvature" ? "normal" : "curvature");
+}
+
+export function toggleIsoparms() {
+  state = { ...state, isoparms: !state.isoparms };
+  paintSurfaceControls();
+  push();
+  if (state.isoparms || state.shading === "curvature") {
+    surfaceNeedChanged({ curvature: state.shading === "curvature", isoparms: state.isoparms });
+  }
+}
 
 // --- Split to print, Explode (D12). A view of a split to print's pieces, off with each new object and never saved.
 let explode = { on: false, gapMm: EXPLODE_GAP_MM };
@@ -145,8 +219,46 @@ export function mountModelLook(next: ModelLookView) {
     push();
   });
   byId<HTMLInputElement>("#modelColourSteps")?.addEventListener("change", (ev) => {
-    state = { ...state, colourByStep: (ev.target as HTMLInputElement).checked };
+    setShading((ev.target as HTMLInputElement).checked ? "step" : "normal");
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#modelShading [data-shading]")) {
+    button.addEventListener("click", () => setShading(button.dataset.shading as ShadingMode));
+  }
+  const stripes = byId<HTMLInputElement>("#modelZebraStripes");
+  stripes?.addEventListener("input", () => {
+    const value = Number(stripes.value);
+    if (!Number.isFinite(value)) return;
+    state = { ...state, zebraStripes: Math.max(4, Math.min(40, value)) };
     push();
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#modelZebraAxis [data-zebra-axis]")) {
+    button.addEventListener("click", () => {
+      state = { ...state, zebraAxis: button.dataset.zebraAxis as ZebraAxis };
+      paintSurfaceControls();
+      push();
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#modelCurvatureMode [data-curvature-mode]")) {
+    button.addEventListener("click", () => {
+      state = { ...state, curvatureMode: button.dataset.curvatureMode as CurvatureMode };
+      paintSurfaceControls();
+      push();
+    });
+  }
+  const warn = byId<HTMLInputElement>("#modelCurvatureWarn");
+  warn?.addEventListener("input", () => {
+    const value = Number(warn.value);
+    if (!Number.isFinite(value) || value <= 0) return;
+    state = { ...state, curvatureWarnMm: value };
+    push();
+  });
+  byId<HTMLInputElement>("#modelIsoparms")?.addEventListener("change", (ev) => {
+    state = { ...state, isoparms: (ev.target as HTMLInputElement).checked };
+    paintSurfaceControls();
+    push();
+    if (state.isoparms || state.shading === "curvature") {
+      surfaceNeedChanged({ curvature: state.shading === "curvature", isoparms: state.isoparms });
+    }
   });
   byId<HTMLInputElement>("#modelExplode")?.addEventListener("change", (ev) => {
     explode = { ...explode, on: (ev.target as HTMLInputElement).checked };
@@ -163,6 +275,24 @@ export function mountModelLook(next: ModelLookView) {
     if (ev.key === "Escape" && panel && !panel.hidden) {
       closePanel();
       open.focus();
+      return;
+    }
+    // --- Organic surfaces S1 (U1): Alt+Z (Zebra), Alt+C (Curvature), Alt+I (Surface grid / Isoparms) in Model view.
+    if (!ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    const target = ev.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+    const modelCanvas = byId<HTMLElement>("#model");
+    if (!modelCanvas || modelCanvas.getBoundingClientRect().width === 0) return;
+    const key = ev.key.toLowerCase();
+    if (key === "z") {
+      ev.preventDefault();
+      toggleZebra();
+    } else if (key === "c") {
+      ev.preventDefault();
+      toggleCurvature();
+    } else if (key === "i") {
+      ev.preventDefault();
+      toggleIsoparms();
     }
   });
   document.addEventListener("pointerdown", (ev) => {
@@ -190,7 +320,7 @@ export function resetModelLook() {
   faceArmed = false;
   dragOffset = 0;
   note = "";
-  for (const id of ["#modelSection", "#modelSectionFlip", "#modelColourSteps", "#modelExplode"]) {
+  for (const id of ["#modelSection", "#modelSectionFlip", "#modelColourSteps", "#modelIsoparms", "#modelExplode"]) {
     const box = byId<HTMLInputElement>(id);
     if (box) box.checked = false;
   }
@@ -200,6 +330,7 @@ export function resetModelLook() {
   if (gap) gap.value = String(EXPLODE_GAP_MM);
   if (wasExploded) queueMicrotask(() => explodeChanged());
   paintAxis(state.axis);
+  paintSurfaceControls();
   closePanel();
   push();
 }

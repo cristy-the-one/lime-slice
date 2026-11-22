@@ -104,9 +104,13 @@ export function installSplit(ctx: ViewCtx): void {
     sectionCapMaterial.clippingPlanes = keep.slice(0, plane ? 1 : 0);
     // A new count of planes compiles the shader again; new planes of the same count are only new numbers.
     if ((solidMaterial.clippingPlanes?.length ?? 0) !== solidPlanes.length) solidMaterial.needsUpdate = true;
+    if ((ctx.zebraMaterial.clippingPlanes?.length ?? 0) !== solidPlanes.length) ctx.zebraMaterial.needsUpdate = true;
     if ((edgeMaterial.clippingPlanes?.length ?? 0) !== keep.length) edgeMaterial.needsUpdate = true;
+    if ((ctx.isoMaterial.clippingPlanes?.length ?? 0) !== keep.length) ctx.isoMaterial.needsUpdate = true;
     solidMaterial.clippingPlanes = solidPlanes;
+    ctx.zebraMaterial.clippingPlanes = solidPlanes;
     edgeMaterial.clippingPlanes = keep;
+    ctx.isoMaterial.clippingPlanes = keep;
     if ((stressMaterial.clippingPlanes?.length ?? 0) !== keep.length) stressMaterial.needsUpdate = true;
     stressMaterial.clippingPlanes = keep;
     ctx.publishStressClip();

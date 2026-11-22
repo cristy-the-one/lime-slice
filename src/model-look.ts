@@ -6,6 +6,11 @@ import { mixHex } from "./model-select.ts";
 
 export type Vec3 = [number, number, number];
 export type SectionAxis = "x" | "y" | "z" | "face";
+/** --- Organic surfaces S1 (U1): shading modes in the View menu. */
+export type ShadingMode = "normal" | "step" | "zebra" | "curvature";
+export type ZebraAxis = "view" | "horizontal" | "vertical";
+/** --- Organic surfaces S1 (U2): Bend tightness (Radius in mm) is the default; Gaussian & Mean are sub-modes. */
+export type CurvatureMode = "radius" | "gaussian" | "mean";
 
 export interface Plane {
   origin: Vec3;
@@ -20,6 +25,18 @@ export interface LookState {
   offset: number;
   flip: boolean;
   colourByStep: boolean;
+  /** --- Organic surfaces S1: active shading mode (`colourByStep` is true iff `shading === "step"`). */
+  shading: ShadingMode;
+  /** --- Organic surfaces S1: independent UV surface grid (isoparms) overlay on curved/freeform faces. */
+  isoparms: boolean;
+  /** Zebra reflection stripe frequency (4..40). */
+  zebraStripes: number;
+  /** Zebra band direction: locked to the camera view, horizontal, or vertical. */
+  zebraAxis: ZebraAxis;
+  /** Curvature heatmap mode: bend tightness radius (default), Gaussian K, or Mean H. */
+  curvatureMode: CurvatureMode;
+  /** In `radius` mode, bends tighter than this many millimetres highlight red. */
+  curvatureWarnMm: number;
   /** The picked face, in model space. Used while `axis` is `face`. */
   face: Plane | null;
 }
@@ -28,7 +45,96 @@ const IDLE = 0x5c6750;
 const IDLE_LIFT = 0x7d8870;
 
 export function idleLook(): LookState {
-  return { section: false, axis: "z", offset: 0, flip: false, colourByStep: false, face: null };
+  return {
+    section: false,
+    axis: "z",
+    offset: 0,
+    flip: false,
+    colourByStep: false,
+    shading: "normal",
+    isoparms: false,
+    zebraStripes: 12,
+    zebraAxis: "view",
+    curvatureMode: "radius",
+    curvatureWarnMm: 2.0,
+    face: null,
+  };
+}
+
+/** Keep `shading` and legacy `colourByStep` strictly in sync. */
+export function withShading(state: LookState, shading: ShadingMode): LookState {
+  return { ...state, shading, colourByStep: shading === "step" };
+}
+
+/**
+ * Pure per-vertex curvature colormap (Organic surfaces S1, U2).
+ * - `radius`: flat faces (> 1e4 mm) are calm slate; gentle bends fade blue → cyan → green → amber;
+ *   bends tighter than `warnMm` highlight vivid red to flag Shell/Thicken/Fillet pinches early.
+ * - `gaussian`: saddle (K < 0) blue, developable/flat (K ≈ 0) neutral green-grey, dome/bowl (K > 0) warm orange-red.
+ * - `mean`: concave (H > 0) blue, flat (H ≈ 0) neutral grey, convex (H < 0) warm orange-red.
+ */
+export function curvatureColorRgb(
+  value: number,
+  mode: CurvatureMode,
+  warnMm: number,
+): [number, number, number] {
+  if (!Number.isFinite(value)) return [0.46, 0.49, 0.45];
+  if (mode === "radius") {
+    if (value >= 1e4) return [0.44, 0.47, 0.44];
+    const limit = Math.max(0.05, warnMm);
+    if (value < limit) {
+      // Tighter than warning threshold: vivid warning red (deeper red as radius approaches 0).
+      const severity = Math.max(0, Math.min(1, value / limit));
+      return [0.92, 0.14 + 0.14 * severity, 0.14 + 0.08 * severity];
+    }
+    // Smooth logarithmic ramp from warnMm (amber) up to 20x warnMm (cool blue-slate).
+    const t = Math.max(0, Math.min(1, Math.log(value / limit) / Math.log(20)));
+    if (t < 0.33) {
+      const u = t / 0.33;
+      return [0.95 - 0.35 * u, 0.65 + 0.17 * u, 0.18 + 0.17 * u];
+    }
+    if (t < 0.66) {
+      const u = (t - 0.33) / 0.33;
+      return [0.60 - 0.40 * u, 0.82 - 0.10 * u, 0.35 + 0.43 * u];
+    }
+    const u = (t - 0.66) / 0.34;
+    return [0.20 + 0.16 * u, 0.72 - 0.24 * u, 0.78 - 0.22 * u];
+  }
+  // Signed diverging map for Gaussian (K) and Mean (H).
+  const scale = mode === "gaussian" ? 0.04 : 0.25;
+  const signed = mode === "mean" ? -value : value;
+  const n = Math.tanh(signed / scale);
+  const neutral: [number, number, number] = [0.46, 0.52, 0.48];
+  if (n >= 0) {
+    return [
+      neutral[0] + (0.93 - neutral[0]) * n,
+      neutral[1] + (0.34 - neutral[1]) * n,
+      neutral[2] + (0.16 - neutral[2]) * n,
+    ];
+  }
+  const m = -n;
+  return [
+    neutral[0] + (0.16 - neutral[0]) * m,
+    neutral[1] + (0.48 - neutral[1]) * m,
+    neutral[2] + (0.92 - neutral[2]) * m,
+  ];
+}
+
+/** Write curvature vertex colours (3 floats per vertex) into `into` from per-vertex scalar array `values`. */
+export function fillCurvatureColors(
+  into: Float32Array,
+  values: ArrayLike<number>,
+  mode: CurvatureMode,
+  warnMm: number,
+): void {
+  const count = Math.min(values.length, Math.floor(into.length / 3));
+  for (let i = 0; i < count; i += 1) {
+    const [r, g, b] = curvatureColorRgb(values[i]!, mode, warnMm);
+    const o = i * 3;
+    into[o] = r;
+    into[o + 1] = g;
+    into[o + 2] = b;
+  }
 }
 
 function axisNormal(axis: "x" | "y" | "z"): Vec3 {

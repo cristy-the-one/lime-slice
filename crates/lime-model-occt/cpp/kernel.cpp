@@ -62,7 +62,13 @@
 #include <ShapeFix_Face.hxx>
 #include <ShapeFix_Wire.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <Geom_BezierSurface.hxx>
 #include <Geom_Circle.hxx>
+#include <Geom_Curve.hxx>
+#include <Geom_Surface.hxx>
+#include <GeomAdaptor_Curve.hxx>
+#include <BRepTopAdaptor_FClass2d.hxx>
 #include <TColgp_HArray1OfPnt.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Circ.hxx>
@@ -624,10 +630,24 @@ std::atomic<bool> g_no_mesher_fallback{false};
 /// the faces still meet point for point. Delabella gives up on some faces of some parts and leaves them with no
 /// triangles (239 of a 1,900-face STEP cover, which then had 8,917 open edges): when any face of `shape` is left so,
 /// the shape is meshed again with Watson, which keeps every face that has its triangles and meshes the rest.
+/// Curvature-aware angular deflection (radians) from linear chord: finer on smooth/organic inspection chords
+/// (~0.20 rad at chord <= 0.05 mm) and faster on coarse preview chords (~0.35 rad at chord >= 0.15 mm).
+/// Planar faces are unaffected by Angle and keep minimal triangles.
+double mesh_angle_of(double chord) {
+    if (chord <= 0.05) {
+        return 0.20;
+    }
+    if (chord >= 0.15) {
+        return 0.35;
+    }
+    const double t = (chord - 0.05) / 0.10;
+    return 0.20 + t * (0.35 - 0.20);
+}
+
 void mesh_faces(const TopoDS_Shape& shape, double chord) {
     IMeshTools_Parameters parameters;
     parameters.Deflection = chord;
-    parameters.Angle = 0.5;
+    parameters.Angle = mesh_angle_of(chord);
     parameters.Relative = Standard_False;
     parameters.InParallel = Standard_True;
     parameters.MeshAlgo = g_watson_mesher.load() ? IMeshTools_MeshAlgoType_Watson : IMeshTools_MeshAlgoType_Delabella;
@@ -705,6 +725,11 @@ Mesh tessellate(Held& held, double chord) {
         Handle(Poly_Triangulation) tri;
         gp_Trsf trsf;
         bool reversed;
+        /// Exact outward unit normals for each triangulation node (1-based indexed at i-1), when available.
+        std::vector<std::array<float, 3>> node_normals;
+        std::vector<uint8_t> node_ok;
+        bool constant_normal = false;
+        std::array<float, 3> plane_normal = {0.0f, 0.0f, 1.0f};
     };
     std::vector<Piece> pieces(static_cast<size_t>(held.faces.Extent()));
     size_t count = 0;
@@ -720,8 +745,60 @@ Mesh tessellate(Held& held, double chord) {
         }
     }
 
+    // --- Organic surfaces S1: compute exact outward analytic surface normals per triangulation node in parallel.
+    // Planar faces use their exact plane axis (O(1)); curved faces evaluate BRepLProp_SLProps once per UV node.
+    OSD_Parallel::For(0, static_cast<int>(pieces.size()), [&held, &pieces](int idx) {
+        Piece& piece = pieces[static_cast<size_t>(idx)];
+        if (piece.tri.IsNull() || piece.tri->NbTriangles() == 0) {
+            return;
+        }
+        const TopoDS_Face face = TopoDS::Face(held.faces(idx + 1));
+        const double sign = piece.reversed ? -1.0 : 1.0;
+        try {
+            BRepAdaptor_Surface surf(face);
+            if (surf.GetType() == GeomAbs_Plane) {
+                gp_Dir d = surf.Plane().Axis().Direction();
+                if (piece.reversed) {
+                    d.Reverse();
+                }
+                piece.constant_normal = true;
+                piece.plane_normal = {static_cast<float>(d.X()), static_cast<float>(d.Y()), static_cast<float>(d.Z())};
+                return;
+            }
+            if (!piece.tri->HasUVNodes()) {
+                return;
+            }
+            const int nb_nodes = piece.tri->NbNodes();
+            piece.node_normals.resize(static_cast<size_t>(nb_nodes));
+            piece.node_ok.assign(static_cast<size_t>(nb_nodes), 0);
+            BRepLProp_SLProps props(surf, 1, 1e-9);
+            for (int n = 1; n <= nb_nodes; ++n) {
+                const gp_Pnt2d uv = piece.tri->UVNode(n);
+                props.SetParameters(uv.X(), uv.Y());
+                if (props.IsNormalDefined()) {
+                    const gp_Dir d = props.Normal();
+                    const double nx = d.X() * sign;
+                    const double ny = d.Y() * sign;
+                    const double nz = d.Z() * sign;
+                    if (std::isfinite(nx) && std::isfinite(ny) && std::isfinite(nz)) {
+                        piece.node_normals[static_cast<size_t>(n - 1)] = {
+                            static_cast<float>(nx),
+                            static_cast<float>(ny),
+                            static_cast<float>(nz),
+                        };
+                        piece.node_ok[static_cast<size_t>(n - 1)] = 1;
+                    }
+                }
+            }
+        } catch (const Standard_Failure&) {
+            piece.constant_normal = false;
+            piece.node_ok.clear();
+        }
+    });
+
     Mesh out;
     out.positions.reserve(count * 9);
+    out.normals.reserve(count * 9);
     out.triangles.reserve(count);
     for (size_t at = 0; at < pieces.size(); ++at) {
         const size_t face = held.order.empty() ? at : static_cast<size_t>(held.order[at] - 1);
@@ -729,6 +806,7 @@ Mesh tessellate(Held& held, double chord) {
         if (piece.tri.IsNull()) {
             continue;
         }
+        const bool has_nodes = !piece.node_ok.empty();
         for (int triangle_index = 1; triangle_index <= piece.tri->NbTriangles(); ++triangle_index) {
             int n1 = 0;
             int n2 = 0;
@@ -737,10 +815,54 @@ Mesh tessellate(Held& held, double chord) {
             if (piece.reversed) {
                 std::swap(n2, n3);
             }
-            push_point(out.positions, piece.tri->Node(n1).Transformed(piece.trsf));
-            push_point(out.positions, piece.tri->Node(n2).Transformed(piece.trsf));
-            push_point(out.positions, piece.tri->Node(n3).Transformed(piece.trsf));
+            const gp_Pnt p1 = piece.tri->Node(n1).Transformed(piece.trsf);
+            const gp_Pnt p2 = piece.tri->Node(n2).Transformed(piece.trsf);
+            const gp_Pnt p3 = piece.tri->Node(n3).Transformed(piece.trsf);
+            push_point(out.positions, p1);
+            push_point(out.positions, p2);
+            push_point(out.positions, p3);
             out.triangles.push_back(static_cast<uint32_t>(face));
+
+            if (piece.constant_normal) {
+                for (int k = 0; k < 3; ++k) {
+                    out.normals.push_back(piece.plane_normal[0]);
+                    out.normals.push_back(piece.plane_normal[1]);
+                    out.normals.push_back(piece.plane_normal[2]);
+                }
+            } else {
+                const int nodes[3] = {n1, n2, n3};
+                bool need_tri = false;
+                for (int k = 0; k < 3; ++k) {
+                    const size_t ni = static_cast<size_t>(nodes[k] - 1);
+                    if (!has_nodes || ni >= piece.node_ok.size() || piece.node_ok[ni] == 0) {
+                        need_tri = true;
+                        break;
+                    }
+                }
+                std::array<float, 3> fallback = {0.0f, 0.0f, 1.0f};
+                if (need_tri) {
+                    const gp_Vec e1(p1, p2);
+                    const gp_Vec e2(p1, p3);
+                    const gp_Vec cross = e1.Crossed(e2);
+                    const double len = cross.Magnitude();
+                    if (len > 1e-20) {
+                        fallback = {
+                            static_cast<float>(cross.X() / len),
+                            static_cast<float>(cross.Y() / len),
+                            static_cast<float>(cross.Z() / len),
+                        };
+                    }
+                }
+                for (int k = 0; k < 3; ++k) {
+                    const size_t ni = static_cast<size_t>(nodes[k] - 1);
+                    const auto& n = (has_nodes && ni < piece.node_ok.size() && piece.node_ok[ni] != 0)
+                        ? piece.node_normals[ni]
+                        : fallback;
+                    out.normals.push_back(n[0]);
+                    out.normals.push_back(n[1]);
+                    out.normals.push_back(n[2]);
+                }
+            }
         }
     }
 
@@ -8615,6 +8737,521 @@ std::string face_loops_json(const TopoDS_Face& face, std::string& error) {
     }
     out << "]}";
     return out.str();
+}
+
+/// --- Organic surfaces S1: lazy surface inspection (per-vertex curvature buffers, trimmed UV isoparms,
+/// shared-edge G0/G1/G2 continuity, and per-face NURBS & bend-radius health).
+SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count) {
+    SurfaceInspect result;
+    chord = chord_of(chord);
+    const int n_faces = held.faces.Extent();
+    const int n_edges = held.edges.Extent();
+
+    // Ensure the faces are meshed at `chord` when curvature buffers are requested so vertex ordering
+    // matches `tessellate(held, chord)` 1-to-1.
+    if (want_curvature && held.meshed != chord) {
+        if (g_whole_meshes.load() || !mesh_around_made(held, chord)) {
+            mesh_faces(held.shape, chord);
+        }
+        held.meshed = chord;
+    }
+
+    static constexpr float kFlatRadius = 1.0e9f;
+    static constexpr double kCurvEps = 1.0e-9;
+
+    // 1) Per-vertex curvature scalars (minRadiusMm, gaussian, mean) matching `tessellate()` corner order.
+    if (want_curvature) {
+        struct CurvPiece {
+            Handle(Poly_Triangulation) tri;
+            bool reversed = false;
+            bool constant = false;
+            float const_r = kFlatRadius;
+            float const_k = 0.0f;
+            float const_h = 0.0f;
+            std::vector<float> r_nodes;
+            std::vector<float> k_nodes;
+            std::vector<float> h_nodes;
+        };
+        std::vector<CurvPiece> pieces(static_cast<size_t>(n_faces));
+        size_t total_tris = 0;
+        for (int f = 1; f <= n_faces; ++f) {
+            const TopoDS_Face face = TopoDS::Face(held.faces(f));
+            TopLoc_Location loc;
+            CurvPiece& p = pieces[static_cast<size_t>(f - 1)];
+            p.tri = BRep_Tool::Triangulation(face, loc);
+            p.reversed = face.Orientation() == TopAbs_REVERSED;
+            if (!p.tri.IsNull()) {
+                total_tris += static_cast<size_t>(p.tri->NbTriangles());
+            }
+        }
+        OSD_Parallel::For(0, n_faces, [&held, &pieces](int idx) {
+            CurvPiece& p = pieces[static_cast<size_t>(idx)];
+            if (p.tri.IsNull() || p.tri->NbTriangles() == 0) {
+                return;
+            }
+            const TopoDS_Face face = TopoDS::Face(held.faces(idx + 1));
+            const double outward = p.reversed ? -1.0 : 1.0;
+            try {
+                BRepAdaptor_Surface surf(face);
+                const GeomAbs_SurfaceType kind = surf.GetType();
+                if (kind == GeomAbs_Plane) {
+                    p.constant = true;
+                    p.const_r = kFlatRadius;
+                    p.const_k = 0.0f;
+                    p.const_h = 0.0f;
+                    return;
+                }
+                if (kind == GeomAbs_Sphere) {
+                    const double rad = surf.Sphere().Radius();
+                    const double k = rad > kCurvEps ? (-outward / rad) : 0.0;
+                    p.constant = true;
+                    p.const_r = rad > kCurvEps ? static_cast<float>(rad) : kFlatRadius;
+                    p.const_k = static_cast<float>(k * k);
+                    p.const_h = static_cast<float>(k);
+                    return;
+                }
+                if (kind == GeomAbs_Cylinder) {
+                    const double rad = surf.Cylinder().Radius();
+                    const double k = rad > kCurvEps ? (-outward / rad) : 0.0;
+                    p.constant = true;
+                    p.const_r = rad > kCurvEps ? static_cast<float>(rad) : kFlatRadius;
+                    p.const_k = 0.0f;
+                    p.const_h = static_cast<float>(0.5 * k);
+                    return;
+                }
+                if (!p.tri->HasUVNodes()) {
+                    p.constant = true;
+                    return;
+                }
+                const int nb = p.tri->NbNodes();
+                p.r_nodes.assign(static_cast<size_t>(nb), kFlatRadius);
+                p.k_nodes.assign(static_cast<size_t>(nb), 0.0f);
+                p.h_nodes.assign(static_cast<size_t>(nb), 0.0f);
+                BRepLProp_SLProps props(surf, 2, 1e-9);
+                for (int n = 1; n <= nb; ++n) {
+                    const gp_Pnt2d uv = p.tri->UVNode(n);
+                    props.SetParameters(uv.X(), uv.Y());
+                    if (!props.IsCurvatureDefined()) {
+                        continue;
+                    }
+                    const double k1 = props.MaxCurvature() * outward;
+                    const double k2 = props.MinCurvature() * outward;
+                    if (!std::isfinite(k1) || !std::isfinite(k2)) {
+                        continue;
+                    }
+                    const double kmax = std::max(std::abs(k1), std::abs(k2));
+                    const double rmin = kmax > kCurvEps ? std::min(1.0 / kmax, static_cast<double>(kFlatRadius)) : static_cast<double>(kFlatRadius);
+                    const size_t slot = static_cast<size_t>(n - 1);
+                    p.r_nodes[slot] = static_cast<float>(rmin);
+                    p.k_nodes[slot] = static_cast<float>(k1 * k2);
+                    p.h_nodes[slot] = static_cast<float>(0.5 * (k1 + k2));
+                }
+            } catch (const Standard_Failure&) {
+                p.constant = true;
+            }
+        });
+
+        result.min_radius_mm.reserve(total_tris * 3);
+        result.gaussian.reserve(total_tris * 3);
+        result.mean.reserve(total_tris * 3);
+        for (size_t at = 0; at < pieces.size(); ++at) {
+            const size_t face_idx = held.order.empty() ? at : static_cast<size_t>(held.order[at] - 1);
+            const CurvPiece& p = pieces[face_idx];
+            if (p.tri.IsNull()) {
+                continue;
+            }
+            for (int ti = 1; ti <= p.tri->NbTriangles(); ++ti) {
+                int n1 = 0, n2 = 0, n3 = 0;
+                p.tri->Triangle(ti).Get(n1, n2, n3);
+                if (p.reversed) {
+                    std::swap(n2, n3);
+                }
+                if (p.constant || p.r_nodes.empty()) {
+                    for (int k = 0; k < 3; ++k) {
+                        result.min_radius_mm.push_back(p.const_r);
+                        result.gaussian.push_back(p.const_k);
+                        result.mean.push_back(p.const_h);
+                    }
+                } else {
+                    const int nodes[3] = {n1, n2, n3};
+                    for (int k = 0; k < 3; ++k) {
+                        const size_t slot = static_cast<size_t>(nodes[k] - 1);
+                        result.min_radius_mm.push_back(slot < p.r_nodes.size() ? p.r_nodes[slot] : kFlatRadius);
+                        result.gaussian.push_back(slot < p.k_nodes.size() ? p.k_nodes[slot] : 0.0f);
+                        result.mean.push_back(slot < p.h_nodes.size() ? p.h_nodes[slot] : 0.0f);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) Real UV isoparametric curves on curved and freeform faces, trimmed to each face via FClass2d.
+    if (want_isoparms) {
+        const int lines = std::clamp(iso_count <= 0 ? 6 : iso_count, 2, 24);
+        const int samples_per_iso = 28;
+        for (int f = 1; f <= n_faces; ++f) {
+            const TopoDS_Face face = TopoDS::Face(held.faces(f));
+            try {
+                BRepAdaptor_Surface adaptor(face);
+                const GeomAbs_SurfaceType kind = adaptor.GetType();
+                if (kind == GeomAbs_Plane) {
+                    continue;
+                }
+                double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+                BRepTools::UVBounds(face, u0, u1, v0, v1);
+                if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0) || !std::isfinite(v1)
+                    || !(u1 > u0 + 1e-9) || !(v1 > v0 + 1e-9)) {
+                    continue;
+                }
+                TopLoc_Location loc;
+                const Handle(Geom_Surface) gsurf = BRep_Tool::Surface(face, loc);
+                if (gsurf.IsNull()) {
+                    continue;
+                }
+                const gp_Trsf trsf = loc.Transformation();
+                BRepTopAdaptor_FClass2d classifier(face, 1e-6);
+
+                auto emit_iso = [&](bool is_u, double fixed_param, double t0, double t1) {
+                    Handle(Geom_Curve) iso = is_u ? gsurf->UIso(fixed_param) : gsurf->VIso(fixed_param);
+                    if (iso.IsNull()) {
+                        return;
+                    }
+                    bool have_prev = false;
+                    gp_Pnt prev_pt;
+                    for (int s = 0; s <= samples_per_iso; ++s) {
+                        const double t = t0 + (t1 - t0) * (static_cast<double>(s) / samples_per_iso);
+                        const double u = is_u ? fixed_param : t;
+                        const double v = is_u ? t : fixed_param;
+                        const TopAbs_State st = classifier.Perform(gp_Pnt2d(u, v));
+                        if (st == TopAbs_IN || st == TopAbs_ON) {
+                            const gp_Pnt pt = iso->Value(t).Transformed(trsf);
+                            if (have_prev) {
+                                push_point(result.iso_points, prev_pt);
+                                push_point(result.iso_points, pt);
+                            }
+                            prev_pt = pt;
+                            have_prev = true;
+                        } else {
+                            have_prev = false;
+                        }
+                    }
+                };
+
+                for (int i = 1; i <= lines; ++i) {
+                    const double frac = static_cast<double>(i) / (lines + 1);
+                    emit_iso(true, u0 + (u1 - u0) * frac, v0, v1);
+                    emit_iso(false, v0 + (v1 - v0) * frac, u0, u1);
+                }
+            } catch (const Standard_Failure&) {
+            }
+        }
+    }
+
+    // 3) Per-face NURBS & tightest-bend health summary.
+    int kind_plane = 0, kind_cyl = 0, kind_cone = 0, kind_sphere = 0, kind_torus = 0, kind_bspline = 0, kind_bezier = 0, kind_other = 0;
+    int max_u_deg = 0, max_v_deg = 0, max_poles = 0, rational_faces = 0, high_deg_faces = 0, heavy_faces = 0;
+    double tightest_radius = std::numeric_limits<double>::infinity();
+    int tightest_face = -1;
+    gp_Pnt tightest_at(0.0, 0.0, 0.0);
+
+    for (int f = 1; f <= n_faces; ++f) {
+        const TopoDS_Face face = TopoDS::Face(held.faces(f));
+        try {
+            BRepAdaptor_Surface surf(face);
+            const GeomAbs_SurfaceType kind = surf.GetType();
+            switch (kind) {
+                case GeomAbs_Plane: kind_plane += 1; break;
+                case GeomAbs_Cylinder: kind_cyl += 1; break;
+                case GeomAbs_Cone: kind_cone += 1; break;
+                case GeomAbs_Sphere: kind_sphere += 1; break;
+                case GeomAbs_Torus: kind_torus += 1; break;
+                case GeomAbs_BSplineSurface: kind_bspline += 1; break;
+                case GeomAbs_BezierSurface: kind_bezier += 1; break;
+                default: kind_other += 1; break;
+            }
+            if (kind == GeomAbs_BSplineSurface) {
+                const Handle(Geom_BSplineSurface) bs = surf.BSpline();
+                if (!bs.IsNull()) {
+                    const int ud = bs->UDegree();
+                    const int vd = bs->VDegree();
+                    const int poles = bs->NbUPoles() * bs->NbVPoles();
+                    max_u_deg = std::max(max_u_deg, ud);
+                    max_v_deg = std::max(max_v_deg, vd);
+                    max_poles = std::max(max_poles, poles);
+                    if (bs->IsURational() || bs->IsVRational()) rational_faces += 1;
+                    if (ud > 5 || vd > 5) high_deg_faces += 1;
+                    if (poles > 400) heavy_faces += 1;
+                }
+            } else if (kind == GeomAbs_BezierSurface) {
+                const Handle(Geom_BezierSurface) bz = surf.Bezier();
+                if (!bz.IsNull()) {
+                    const int ud = bz->UDegree();
+                    const int vd = bz->VDegree();
+                    const int poles = bz->NbUPoles() * bz->NbVPoles();
+                    max_u_deg = std::max(max_u_deg, ud);
+                    max_v_deg = std::max(max_v_deg, vd);
+                    max_poles = std::max(max_poles, poles);
+                    if (bz->IsURational() || bz->IsVRational()) rational_faces += 1;
+                    if (ud > 5 || vd > 5) high_deg_faces += 1;
+                    if (poles > 400) heavy_faces += 1;
+                }
+            }
+
+            if (kind == GeomAbs_Plane) {
+                continue;
+            }
+            double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+            BRepTools::UVBounds(face, u0, u1, v0, v1);
+            if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0) || !std::isfinite(v1)) {
+                continue;
+            }
+            if (kind == GeomAbs_Cylinder) {
+                const double r = surf.Cylinder().Radius();
+                if (r > kCurvEps && r < tightest_radius) {
+                    tightest_radius = r;
+                    tightest_face = f - 1;
+                    tightest_at = surf.Value(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+                }
+                continue;
+            }
+            if (kind == GeomAbs_Sphere) {
+                const double r = surf.Sphere().Radius();
+                if (r > kCurvEps && r < tightest_radius) {
+                    tightest_radius = r;
+                    tightest_face = f - 1;
+                    tightest_at = surf.Value(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+                }
+                continue;
+            }
+            BRepLProp_SLProps props(surf, 2, 1e-9);
+            const int grid = 6;
+            for (int iu = 1; iu < grid; ++iu) {
+                const double u = u0 + (u1 - u0) * (static_cast<double>(iu) / grid);
+                for (int iv = 1; iv < grid; ++iv) {
+                    const double v = v0 + (v1 - v0) * (static_cast<double>(iv) / grid);
+                    props.SetParameters(u, v);
+                    if (!props.IsCurvatureDefined()) continue;
+                    const double kmax = std::max(std::abs(props.MaxCurvature()), std::abs(props.MinCurvature()));
+                    if (std::isfinite(kmax) && kmax > kCurvEps) {
+                        const double r = 1.0 / kmax;
+                        if (r < tightest_radius) {
+                            tightest_radius = r;
+                            tightest_face = f - 1;
+                            tightest_at = props.Value();
+                        }
+                    }
+                }
+            }
+        } catch (const Standard_Failure&) {
+        }
+    }
+
+    // 4) Shared-edge G0 / G1 / G2 continuity analysis across all 2-face non-seam edges.
+    TopTools_IndexedDataMapOfShapeListOfShape edge_to_faces;
+    TopExp::MapShapesAndAncestors(held.shape, TopAbs_EDGE, TopAbs_FACE, edge_to_faces);
+
+    struct SeamRow {
+        int edge = 0;
+        int face_a = 0;
+        int face_b = 0;
+        const char* kind = "G0";
+        double gap_mm = 0.0;
+        double angle_deg = 0.0;
+        double curvature_jump = 0.0;
+        gp_Pnt mid;
+    };
+    int shared_total = 0, cnt_g2 = 0, cnt_g1 = 0, cnt_g0 = 0, cnt_gaps = 0;
+    double max_gap_mm = 0.0;
+    double worst_smooth_angle_deg = 0.0;
+    double worst_curvature_jump = 0.0;
+    std::vector<SeamRow> notable;
+
+    auto normal_curvature_perp = [](BRepLProp_SLProps& props, double outward, const gp_Vec& edge_tan) -> double {
+        if (!props.IsCurvatureDefined() || !props.IsNormalDefined()) {
+            return 0.0;
+        }
+        gp_Dir n = props.Normal();
+        if (outward < 0.0) n.Reverse();
+        gp_Vec perp = gp_Vec(n).Crossed(edge_tan);
+        const double plen = perp.Magnitude();
+        if (!(plen > 1e-12)) {
+            return 0.5 * (props.MaxCurvature() + props.MinCurvature()) * outward;
+        }
+        perp.Divide(plen);
+        gp_Dir dmax, dmin;
+        props.CurvatureDirections(dmax, dmin);
+        const double c = perp.Dot(gp_Vec(dmax));
+        const double s = perp.Dot(gp_Vec(dmin));
+        return (props.MaxCurvature() * c * c + props.MinCurvature() * s * s) * outward;
+    };
+
+    for (int e = 1; e <= n_edges; ++e) {
+        const TopoDS_Edge edge = TopoDS::Edge(held.edges(e));
+        if (BRep_Tool::Degenerated(edge)) {
+            continue;
+        }
+        const int map_idx = edge_to_faces.FindIndex(edge);
+        if (map_idx <= 0) {
+            continue;
+        }
+        const TopTools_ListOfShape& flist = edge_to_faces(map_idx);
+        TopoDS_Face fa, fb;
+        int ia = -1, ib = -1;
+        for (TopTools_ListIteratorOfListOfShape it(flist); it.More(); it.Next()) {
+            const TopoDS_Face cand = TopoDS::Face(it.Value());
+            const int fi = held.faces.FindIndex(cand);
+            if (fi <= 0) continue;
+            if (ia < 0) {
+                fa = cand;
+                ia = fi - 1;
+            } else if (fi - 1 != ia) {
+                fb = cand;
+                ib = fi - 1;
+                break;
+            }
+        }
+        if (ia < 0 || ib < 0) {
+            continue;
+        }
+        shared_total += 1;
+        try {
+            Standard_Real p1a = 0.0, p2a = 0.0, p1b = 0.0, p2b = 0.0;
+            const Handle(Geom2d_Curve) ca = BRep_Tool::CurveOnSurface(edge, fa, p1a, p2a);
+            const Handle(Geom2d_Curve) cb = BRep_Tool::CurveOnSurface(edge, fb, p1b, p2b);
+            if (ca.IsNull() || cb.IsNull() || !(p2a > p1a + 1e-9) || !(p2b > p1b + 1e-9)) {
+                continue;
+            }
+            BRepAdaptor_Surface sa(fa);
+            BRepAdaptor_Surface sb(fb);
+            BRepAdaptor_Curve ec(edge);
+            BRepLProp_SLProps pa(sa, 2, 1e-9);
+            BRepLProp_SLProps pb(sb, 2, 1e-9);
+            const double out_a = fa.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+            const double out_b = fb.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+
+            double edge_gap = 0.0;
+            double edge_ang = 0.0;
+            double edge_kjump = 0.0;
+            bool ok_samples = false;
+            constexpr int kStations = 5;
+            for (int s = 0; s < kStations; ++s) {
+                const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kStations - 1));
+                const double ta = p1a + (p2a - p1a) * frac;
+                const double tb = p1b + (p2b - p1b) * frac;
+                const gp_Pnt2d uva = ca->Value(ta);
+                const gp_Pnt2d uvb = cb->Value(tb);
+                pa.SetParameters(uva.X(), uva.Y());
+                pb.SetParameters(uvb.X(), uvb.Y());
+                if (!pa.IsNormalDefined() || !pb.IsNormalDefined()) {
+                    continue;
+                }
+                ok_samples = true;
+                edge_gap = std::max(edge_gap, pa.Value().Distance(pb.Value()));
+                gp_Dir na = pa.Normal();
+                gp_Dir nb = pb.Normal();
+                if (out_a < 0.0) na.Reverse();
+                if (out_b < 0.0) nb.Reverse();
+                const double dot = std::clamp(na.Dot(nb), -1.0, 1.0);
+                const double ang = std::acos(dot) * (180.0 / M_PI);
+                edge_ang = std::max(edge_ang, ang);
+                if (ang <= 1.0) {
+                    gp_Pnt ep;
+                    gp_Vec et;
+                    ec.D1(ec.FirstParameter() + (ec.LastParameter() - ec.FirstParameter()) * frac, ep, et);
+                    const double ka = normal_curvature_perp(pa, out_a, et);
+                    const double kb = normal_curvature_perp(pb, out_b, et);
+                    if (std::isfinite(ka) && std::isfinite(kb)) {
+                        edge_kjump = std::max(edge_kjump, std::abs(ka - kb));
+                    }
+                }
+            }
+            if (!ok_samples) {
+                continue;
+            }
+            max_gap_mm = std::max(max_gap_mm, edge_gap);
+            const char* cls = "G0";
+            if (edge_gap > 0.01) {
+                cls = "gap";
+                cnt_gaps += 1;
+            } else if (edge_ang > 1.0) {
+                cls = "G0";
+                cnt_g0 += 1;
+            } else if (edge_kjump > 1e-3) {
+                cls = "G1";
+                cnt_g1 += 1;
+                worst_smooth_angle_deg = std::max(worst_smooth_angle_deg, edge_ang);
+                worst_curvature_jump = std::max(worst_curvature_jump, edge_kjump);
+            } else {
+                cls = "G2";
+                cnt_g2 += 1;
+                worst_smooth_angle_deg = std::max(worst_smooth_angle_deg, edge_ang);
+                worst_curvature_jump = std::max(worst_curvature_jump, edge_kjump);
+            }
+            if (cls[0] != 'G' || cls[1] == '1') {
+                // Report gaps and G1-only smooth transitions (where G2 curvature breaks).
+                const gp_Pnt mid = ec.Value(0.5 * (ec.FirstParameter() + ec.LastParameter()));
+                notable.push_back(SeamRow{e - 1, ia, ib, cls, edge_gap, edge_ang, edge_kjump, mid});
+            }
+        } catch (const Standard_Failure&) {
+        }
+    }
+
+    std::sort(notable.begin(), notable.end(), [](const SeamRow& a, const SeamRow& b) {
+        if ((a.kind[0] == 'g') != (b.kind[0] == 'g')) return a.kind[0] == 'g';
+        return a.curvature_jump > b.curvature_jump;
+    });
+    if (notable.size() > 16) {
+        notable.resize(16);
+    }
+
+    std::ostringstream js;
+    js.imbue(std::locale::classic());
+    js.precision(6);
+    js << "{\"continuity\":{"
+       << "\"sharedEdges\":" << shared_total
+       << ",\"g2\":" << cnt_g2
+       << ",\"g1\":" << cnt_g1
+       << ",\"g0\":" << cnt_g0
+       << ",\"gaps\":" << cnt_gaps
+       << ",\"maxGapMm\":" << max_gap_mm
+       << ",\"worstSmoothAngleDeg\":" << worst_smooth_angle_deg
+       << ",\"worstCurvatureJump\":" << worst_curvature_jump
+       << ",\"notable\":[";
+    for (size_t i = 0; i < notable.size(); ++i) {
+        if (i > 0) js << ',';
+        const SeamRow& r = notable[i];
+        js << "{\"edge\":" << r.edge
+           << ",\"faces\":[" << r.face_a << ',' << r.face_b << ']'
+           << ",\"kind\":\"" << r.kind << '"'
+           << ",\"gapMm\":" << r.gap_mm
+           << ",\"angleDeg\":" << r.angle_deg
+           << ",\"curvatureJump\":" << r.curvature_jump
+           << ",\"mid\":[" << r.mid.X() << ',' << r.mid.Y() << ',' << r.mid.Z() << "]}";
+    }
+    js << "]},\"surfaceHealth\":{"
+       << "\"faces\":" << n_faces
+       << ",\"kinds\":{\"plane\":" << kind_plane
+       << ",\"cylinder\":" << kind_cyl
+       << ",\"cone\":" << kind_cone
+       << ",\"sphere\":" << kind_sphere
+       << ",\"torus\":" << kind_torus
+       << ",\"bspline\":" << kind_bspline
+       << ",\"bezier\":" << kind_bezier
+       << ",\"other\":" << kind_other << '}'
+       << ",\"maxUDegree\":" << max_u_deg
+       << ",\"maxVDegree\":" << max_v_deg
+       << ",\"maxPoles\":" << max_poles
+       << ",\"rationalFaces\":" << rational_faces
+       << ",\"highDegreeFaces\":" << high_deg_faces
+       << ",\"heavyFaces\":" << heavy_faces;
+    if (std::isfinite(tightest_radius) && tightest_face >= 0) {
+        js << ",\"minRadiusMm\":" << tightest_radius
+           << ",\"tightestFace\":" << tightest_face
+           << ",\"tightestAt\":[" << tightest_at.X() << ',' << tightest_at.Y() << ',' << tightest_at.Z() << ']';
+    }
+    js << "}}";
+    result.meta = js.str();
+    return result;
 }
 
 }  // namespace lime_occt

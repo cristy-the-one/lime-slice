@@ -45,10 +45,18 @@ export function buildApi(ctx: ViewCtx): ModelView {
       geometry.setAttribute("position", new THREE.BufferAttribute(next.positions, 3));
       const color = new Float32Array(next.positions.length);
       geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-      const smooth = smoothNormalsOf(next.positions, next.triangles);
-      geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
-      canvas.dataset.solidPoints = `${smooth.points}/${next.positions.length / 3}`;
-      ctx.mesh = new THREE.Mesh(geometry, solidMaterial);
+      if (next.normals && next.normals.length === next.positions.length) {
+        geometry.setAttribute("normal", new THREE.BufferAttribute(next.normals, 3));
+        canvas.dataset.normalsSource = "analytic";
+        canvas.dataset.solidPoints = `${next.positions.length / 3}/${next.positions.length / 3}`;
+      } else {
+        const smooth = smoothNormalsOf(next.positions, next.triangles);
+        geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
+        canvas.dataset.normalsSource = "smooth";
+        canvas.dataset.solidPoints = `${smooth.points}/${next.positions.length / 3}`;
+      }
+      const activeMat: THREE.Material = ctx.look.shading === "zebra" ? ctx.zebraMaterial : solidMaterial;
+      ctx.mesh = new THREE.Mesh(geometry, activeMat);
       // Every ray at the solid (hover, press, pick, Measure, the hidden-line samples) asks a box tree, not every triangle.
       ctx.mesh.raycast = treeRaycast;
       body.add(ctx.mesh);
@@ -62,6 +70,7 @@ export function buildApi(ctx: ViewCtx): ModelView {
         body.add(ctx.edgeLines);
       }
       ctx.paintFaces();
+      ctx.syncSurfaceLook();
       ctx.measureSolid(next.positions);
       ctx.drawDatum();
       ctx.rebuildGhost();
@@ -279,12 +288,19 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.paintLines();
       ctx.kick();
     },
-    // --- A10.
+    // --- A10 & Organic surfaces S1.
     setLook(state) {
       ctx.look = state;
       ctx.rebuildGhost();
+      ctx.syncSurfaceLook();
       ctx.paintFaces();
       ctx.repaintPreview();
+      ctx.kick();
+    },
+    setSurfaceInspect(data) {
+      ctx.surfaceInspect = data;
+      ctx.syncSurfaceLook();
+      ctx.paintFaces();
       ctx.kick();
     },
     onSectionDrag(cb) {
@@ -387,6 +403,7 @@ export function buildApi(ctx: ViewCtx): ModelView {
       solidMaterial.transparent = on;
       solidMaterial.opacity = on ? 0.35 : 1;
       solidMaterial.needsUpdate = true;
+      ctx.syncSurfaceLook();
       edgeMaterial.transparent = on;
       edgeMaterial.opacity = on ? 0.35 : 1;
       edgeMaterial.needsUpdate = true;

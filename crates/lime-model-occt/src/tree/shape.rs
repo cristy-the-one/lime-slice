@@ -16,8 +16,10 @@ use super::ffi::{
     lime_tree_mesh_free,
     lime_tree_mesh_order,
     lime_tree_solids,
+    lime_tree_surface_inspect_free,
     RawMesh,
     RawShape,
+    RawSurfaceInspect,
 };
 #[cfg(lime_occt_test_hooks)]
 use super::ffi::{lime_tree_test_fault, lime_tree_test_mesh, lime_tree_test_nurbs, lime_tree_test_text};
@@ -44,6 +46,28 @@ impl Mesh {
 impl Drop for Mesh {
     fn drop(&mut self) {
         unsafe { lime_tree_mesh_free(self.0.as_ptr()) };
+    }
+}
+
+/// One lazy surface inspection owned by the kernel, while its reply is written.
+pub(super) struct SurfaceInspect(pub(super) NonNull<RawSurfaceInspect>);
+
+impl SurfaceInspect {
+    /// Bytes the inspection view points at, borrowed for as long as the inspection lives.
+    ///
+    /// # Safety
+    /// `ptr` and `len` are one array of the `SurfaceInspectView` filled by `lime_tree_surface_inspect`.
+    pub(super) unsafe fn bytes(&self, ptr: *const u8, len: usize) -> &[u8] {
+        if len == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+}
+
+impl Drop for SurfaceInspect {
+    fn drop(&mut self) {
+        unsafe { lime_tree_surface_inspect_free(self.0.as_ptr()) };
     }
 }
 

@@ -9,6 +9,7 @@ import { disjointBoolean } from "../../src/model-feasibility.ts";
 import { facePlane, formatMm } from "../../src/model-plane.ts";
 import { gearOf, rootSpec, type PrimitiveSpec } from "../../src/model-primitive.ts";
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
+import { decodeSurfaceInspect } from "../../src/model-reply.ts";
 import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, solidView, stepGuard } from "../../src/modeling/model-calls.ts";
 import { onFaceIndex } from "../../src/modeling/bake.ts";
 import { checkReply } from "../../src/modeling/part-reads.ts";
@@ -662,7 +663,32 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid || obj.solid.positions.length < 9) return refuse("solid-unreadable", "This solid could not be read.");
   const printer = this.printer();
-  return checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm, belt: printer.kind === "belt" ? printer.belt : null }, input, obj.solid.triangles);
+  const base = checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm, belt: printer.kind === "belt" ? printer.belt : null }, input, obj.solid.triangles);
+  if (input.surfaces !== true || base.ok !== true || !obj.tree) return base;
+  const raw = await this.treeCall({
+    call: "surfaceInspect",
+    key: obj.key,
+    node: obj.tree.current,
+    chordMm: CHORD,
+    curvature: false,
+    isoparms: false,
+  }, "check");
+  const decoded = decodeSurfaceInspect(raw);
+  if (typeof decoded === "string") return base;
+  const warnings = Array.isArray(base.warnings) ? [...(base.warnings as string[])] : [];
+  if (decoded.continuity.gaps > 0) {
+    warnings.push(`${decoded.continuity.gaps} shared edge${decoded.continuity.gaps === 1 ? "" : "s"} have a surface gap (max ${decoded.continuity.maxGapMm.toFixed(3)} mm).`);
+  }
+  const minWall = typeof input.minWallMm === "number" && input.minWallMm > 0 ? input.minWallMm : this.library.nozzleMm * 2;
+  if (decoded.surfaceHealth.minRadiusMm !== undefined && decoded.surfaceHealth.minRadiusMm < minWall) {
+    warnings.push(`Tightest surface bend radius is ${decoded.surfaceHealth.minRadiusMm.toFixed(2)} mm (face ${decoded.surfaceHealth.tightestFace ?? "?"}), tighter than ${minWall.toFixed(2)} mm: Shell or thick offsets may self-intersect.`);
+  }
+  return {
+    ...base,
+    continuity: decoded.continuity,
+    surfaceHealth: decoded.surfaceHealth,
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
 }
 
 /** A probe, and what the edit would do to the solid when the modeler sent the result back. */

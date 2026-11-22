@@ -9,9 +9,10 @@ import type { ModelSolid } from "./types";
 import { boxEdges, boxList, dashSegments } from "./helpers";
 import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
 import { colourRuns, fillFace, fillFaces } from "./face-colours";
-import { facePaint } from "../model-look";
+import { facePaint, fillCurvatureColors } from "../model-look";
 import { faceTriangles } from "../model-select";
 import { hexToThree } from "../theme";
+import { createIsoMaterial, createZebraMaterial, syncZebraMaterial } from "./analysis-shaders";
 import type { ViewCtx } from "./ctx";
 
 export function installMesh(ctx: ViewCtx): void {
@@ -29,6 +30,7 @@ export function installMesh(ctx: ViewCtx): void {
   ctx.repaintPreview = repaintPreview;
   ctx.showPreview = showPreview;
   ctx.syncLineResolution = syncLineResolution;
+  ctx.syncSurfaceLook = syncSurfaceLook;
 
   // --- A7 model check ---
   let locatedLines: LineSegments2 | null = null;
@@ -60,9 +62,39 @@ export function installMesh(ctx: ViewCtx): void {
     polygonOffsetUnits: 1,
   });
   ctx.solidMaterial = solidMaterial;
+  const zebraMaterial = createZebraMaterial();
+  ctx.zebraMaterial = zebraMaterial;
+  const isoMaterial = createIsoMaterial();
+  ctx.isoMaterial = isoMaterial;
   canvas.dataset.solidOpacity = "1";
   const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
   ctx.edgeMaterial = edgeMaterial;
+
+  /** --- Organic surfaces S1: switch active solid material (Standard vs Zebra) and UV isoparm overlay. */
+  function syncSurfaceLook() {
+    syncZebraMaterial(zebraMaterial, ctx.look, ctx.solidDimmed);
+    const activeMat: THREE.Material = ctx.look.shading === "zebra" ? zebraMaterial : solidMaterial;
+    if (ctx.mesh && ctx.mesh.material !== activeMat) ctx.mesh.material = activeMat;
+    if (ctx.preview && ctx.preview.mesh.material !== activeMat) ctx.preview.mesh.material = activeMat;
+    canvas.dataset.shading = ctx.look.shading;
+    canvas.dataset.isoparms = ctx.look.isoparms ? "1" : "0";
+    // Rebuild or hide the trimmed UV isoparm overlay.
+    if (ctx.isoLines) {
+      body.remove(ctx.isoLines);
+      ctx.isoLines.geometry.dispose();
+      ctx.isoLines = null;
+    }
+    const pts = ctx.look.isoparms ? ctx.surfaceInspect?.isoPoints : undefined;
+    if (pts && pts.length >= 6 && !ctx.preview) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pts, 3));
+      const lines = new THREE.LineSegments(geo, isoMaterial);
+      lines.raycast = () => undefined;
+      lines.renderOrder = 1;
+      ctx.isoLines = lines;
+      body.add(lines);
+    }
+  }
 
   function clearPreview() {
     if (!ctx.preview) return;
@@ -92,9 +124,14 @@ export function installMesh(ctx: ViewCtx): void {
     const used = paintColours(shape, color, new Set(), null);
     publishFaceColours(used);
     geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-    const smooth = smoothNormalsOf(shape.positions, shape.triangles);
-    geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
-    const shaded = new THREE.Mesh(geometry, solidMaterial);
+    if (shape.normals && shape.normals.length === shape.positions.length) {
+      geometry.setAttribute("normal", new THREE.BufferAttribute(shape.normals, 3));
+    } else {
+      const smooth = smoothNormalsOf(shape.positions, shape.triangles);
+      geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
+    }
+    const activeMat: THREE.Material = ctx.look.shading === "zebra" ? zebraMaterial : solidMaterial;
+    const shaded = new THREE.Mesh(geometry, activeMat);
     shaded.raycast = () => undefined;
     body.add(shaded);
     const { segments } = drawnEdgeSegments(shape.edges, shape.seams);
@@ -116,7 +153,7 @@ export function installMesh(ctx: ViewCtx): void {
   function clearBody() {
     clearPreview();
     ctx.clearSectionCap();
-    for (const object of [ctx.mesh, ctx.edgeLines]) {
+    for (const object of [ctx.mesh, ctx.edgeLines, ctx.isoLines]) {
       if (!object) continue;
       body.remove(object);
       object.geometry.dispose();
@@ -128,6 +165,8 @@ export function installMesh(ctx: ViewCtx): void {
     }
     ctx.mesh = null;
     ctx.edgeLines = null;
+    ctx.isoLines = null;
+    ctx.surfaceInspect = null;
     ctx.faceOutline = null;
     ctx.selectedEdges = null;
     ctx.hoverEdges = null;
@@ -145,9 +184,38 @@ export function installMesh(ctx: ViewCtx): void {
     }
   }
 
-  /** --- A10. One colour for a face of `shape`: its step, the accent when it is selected, or the idle grey. */
+  /** --- A10 & S1. One colour per vertex: curvature heatmap when active (keeping selection visible), else per-face step/idle colour. */
+  function curvatureValues(shape: ModelSolid): Float32Array | null {
+    if (shape !== ctx.solid || ctx.look.shading !== "curvature" || !ctx.surfaceInspect) return null;
+    const raw =
+      ctx.look.curvatureMode === "gaussian"
+        ? ctx.surfaceInspect.gaussian
+        : ctx.look.curvatureMode === "mean"
+          ? ctx.surfaceInspect.mean
+          : ctx.surfaceInspect.minRadiusMm;
+    if (!raw || raw.length * 3 !== shape.positions.length) return null;
+    return raw;
+  }
+
   function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null): Set<string> {
     const used = new Set<string>();
+    const curv = curvatureValues(shape);
+    if (curv) {
+      fillCurvatureColors(into, curv, ctx.look.curvatureMode, ctx.look.curvatureWarnMm);
+      if (selected.size > 0 || pickHover != null) {
+        const tint = tintNow();
+        const byFace = faceTriangles(shape.triangles);
+        for (const face of selected) {
+          const tris = byFace.get(face);
+          if (tris) fillFace(into, tris, tint);
+        }
+        if (pickHover != null && !selected.has(pickHover)) {
+          const tris = byFace.get(pickHover);
+          if (tris) fillFace(into, tris, tint);
+        }
+      }
+      return used;
+    }
     const paintOf = painter(shape, selected, pickHover);
     fillFaces(into, shape.triangles, (face) => {
       const painted = paintOf(face);
@@ -209,11 +277,16 @@ export function installMesh(ctx: ViewCtx): void {
 
   /** Everything a face's colour is worked out from, but the face under the pointer: `painter` and `stressTint` read these and no more. */
   function paintKey(selected: Set<number>): string {
+    const curv = ctx.solid ? curvatureValues(ctx.solid) : null;
     return [
       [...selected].sort((a, b) => a - b).join(","),
       tintNow(),
       ctx.highlightStep ?? "",
       ctx.look.colourByStep ? 1 : 0,
+      ctx.look.shading,
+      ctx.look.curvatureMode,
+      ctx.look.curvatureWarnMm,
+      curv ? curv.length : 0,
       [...ctx.stressLoad].join(","),
       [...ctx.stressHold].join(","),
       hexToThree(ctx.colors.paintEnforce),
@@ -232,7 +305,7 @@ export function installMesh(ctx: ViewCtx): void {
     const attribute = ctx.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
     const key = paintKey(selected);
-    if (painted && painted.attribute === attribute && painted.solid === ctx.solid && painted.key === key) {
+    if (painted && painted.attribute === attribute && painted.solid === ctx.solid && painted.key === key && !curvatureValues(ctx.solid)) {
       if (painted.hover !== hoverFace) {
         const paintOf = painter(ctx.solid, selected, hoverFace);
         const byFace = faceTriangles(ctx.solid.triangles);

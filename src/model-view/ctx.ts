@@ -1,6 +1,6 @@
 /** The view's shared context: every binding more than one module reads, written by the module that owns it. */
 import type * as THREE from "three";
-import type { ActiveDrag, EdgeKnobEvent, FaceHit, FacePointer, Grab, HandleDrag, HandlePart, ModelGhost, ModelGrabHooks, ModelPick, ModelSolid, SketchViewPointer, StressDraw } from "./types";
+import type { ActiveDrag, EdgeKnobEvent, FaceHit, FacePointer, Grab, HandleDrag, HandlePart, ModelGhost, ModelGrabHooks, ModelPick, ModelSolid, SketchViewPointer, StressDraw, SurfaceInspectBuffers } from "./types";
 import type { Affine } from "../model-space";
 import type { BedReference, BuildVolume } from "../viewport-chrome";
 import type { Bounds } from "../mesh-place";
@@ -152,6 +152,11 @@ export interface ViewCtx {
   borrowed: WeakSet<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>>;
   disposeObject: (object: THREE.Object3D) => void;
   solidMaterial: THREE.MeshStandardMaterial;
+  zebraMaterial: THREE.ShaderMaterial;
+  isoMaterial: THREE.LineBasicMaterial;
+  isoLines: THREE.LineSegments | null;
+  surfaceInspect: SurfaceInspectBuffers | null;
+  syncSurfaceLook: () => void;
   edgeMaterial: THREE.LineBasicMaterial;
   clearPreview: () => void;
   showPreview: (shape: ModelSolid) => void;

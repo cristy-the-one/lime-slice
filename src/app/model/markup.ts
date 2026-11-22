@@ -115,6 +115,31 @@ const RAIL = `
         <label class="model-look-offset">Offset <input id="modelSectionOffset" type="number" step="0.1" value="0" aria-label="Section offset"></label>
         <label class="model-keep"><input id="modelSectionFlip" type="checkbox"> Flip</label>
         <label class="model-keep"><input id="modelColourSteps" type="checkbox"> Colour by step</label>
+        <!-- --- Organic surfaces S1 (U1–U2): Shading analysis modes & UV surface grid. --- -->
+        <span class="model-look-label">Shading</span>
+        <div class="model-look-axis" id="modelShading" role="group" aria-label="Surface shading">
+          <button type="button" data-shading="normal" aria-pressed="true" data-tip="Standard solid shading">Normal</button>
+          <button type="button" data-shading="step" aria-pressed="false" data-tip="Colour each face by the step that made it">Step</button>
+          <button type="button" data-shading="zebra" aria-pressed="false" data-tip="Zebra reflection stripes to inspect G0 / G1 / G2 smoothness (Alt+Z)">Zebra</button>
+          <button type="button" data-shading="curvature" aria-pressed="false" data-tip="Bend tightness &amp; curvature heatmap (Alt+C)">Curv</button>
+        </div>
+        <div class="model-look-sub" id="modelZebraRow" hidden>
+          <label class="model-look-offset">Stripes <input id="modelZebraStripes" class="model-look-range" type="range" min="4" max="32" step="2" value="12" aria-label="Zebra stripe count"></label>
+          <div class="model-look-axis" id="modelZebraAxis" role="group" aria-label="Zebra band direction">
+            <button type="button" data-zebra-axis="view" aria-pressed="true">View</button>
+            <button type="button" data-zebra-axis="horizontal" aria-pressed="false">Horiz</button>
+            <button type="button" data-zebra-axis="vertical" aria-pressed="false">Vert</button>
+          </div>
+        </div>
+        <div class="model-look-sub" id="modelCurvatureRow" hidden>
+          <div class="model-look-axis" id="modelCurvatureMode" role="group" aria-label="Curvature readout">
+            <button type="button" data-curvature-mode="radius" aria-pressed="true" data-tip="Tightest bend radius in mm — red highlights bends tighter than the threshold">Radius</button>
+            <button type="button" data-curvature-mode="gaussian" aria-pressed="false" data-tip="Gaussian curvature K: dome (warm), flat/cylinder (neutral), saddle (blue)">Gauss</button>
+            <button type="button" data-curvature-mode="mean" aria-pressed="false" data-tip="Mean curvature H: convex ridge (warm) vs concave valley (blue)">Mean</button>
+          </div>
+          <label class="model-look-offset" id="modelCurvatureWarnRow">Warn &lt; <input id="modelCurvatureWarn" type="number" min="0.1" max="100" step="0.2" value="2" aria-label="Bend radius warning threshold, millimetres"> mm</label>
+        </div>
+        <label class="model-keep" data-tip="Show real UV isoparametric grid lines on curved faces (Alt+I)"><input id="modelIsoparms" type="checkbox"> Surface grid (Isoparms)</label>
         <p class="model-note" id="modelSectionNote" hidden></p>
         <!-- --- Split to print, Explode (D12): a view of the pieces, never saved. Shown when the part has pieces. --- -->
         <div class="model-explode" id="modelExplodeRow" hidden>

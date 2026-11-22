@@ -22,12 +22,14 @@ use super::ffi::{
     lime_tree_mesh,
     lime_tree_section,
     lime_tree_set_face_from,
+    lime_tree_surface_inspect,
     MeshView,
+    SurfaceInspectView,
 };
 use super::ops::{EdgeRef, EdgeSig, FaceRef, CHAIN_DEG, FLAT_MM};
 use super::outcome::Failure;
 use super::same::{same_edge, same_face};
-use super::shape::{take_text, Mesh, Shape};
+use super::shape::{take_text, Mesh, Shape, SurfaceInspect};
 
 impl Shape {
     pub(super) fn edge(&mut self, index: i32) -> Option<EdgeRef> {
@@ -297,6 +299,8 @@ impl Shape {
         let mut view = MeshView {
             positions: std::ptr::null(),
             positions_bytes: 0,
+            normals: std::ptr::null(),
+            normals_bytes: 0,
             triangles: std::ptr::null(),
             triangles_bytes: 0,
             edge_points: std::ptr::null(),
@@ -322,6 +326,10 @@ impl Shape {
                 (
                     "positions",
                     mesh.bytes(view.positions, view.positions_bytes),
+                ),
+                (
+                    "normals",
+                    mesh.bytes(view.normals, view.normals_bytes),
                 ),
                 (
                     "triangles",
@@ -350,6 +358,76 @@ impl Shape {
             out,
             "{{\"id\":{id},\"format\":\"{SOLID_FORMAT}\",{meta},\"fingerprint\":{fingerprint}"
         );
+        for (name, bytes) in arrays {
+            let _ = write!(out, ",\"{name}\":\"");
+            base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut out);
+            out.push('"');
+        }
+        out.push('}');
+        Ok(out)
+    }
+
+    /// --- Organic surfaces S1: lazy curvature buffers, UV isoparms, shared-edge continuity, and NURBS health.
+    pub(super) fn surface_inspect(
+        &mut self,
+        id: NodeId,
+        chord: f64,
+        curvature: bool,
+        isoparms: bool,
+        iso_count: i32,
+    ) -> Result<String, Failure> {
+        let mut view = SurfaceInspectView {
+            min_radius_mm: std::ptr::null(),
+            min_radius_bytes: 0,
+            gaussian: std::ptr::null(),
+            gaussian_bytes: 0,
+            mean: std::ptr::null(),
+            mean_bytes: 0,
+            iso_points: std::ptr::null(),
+            iso_points_bytes: 0,
+            meta: std::ptr::null(),
+        };
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let raw = unsafe {
+            lime_tree_surface_inspect(
+                self.0.as_ptr(),
+                chord,
+                if curvature { 1 } else { 0 },
+                if isoparms { 1 } else { 0 },
+                iso_count,
+                &mut view,
+                &mut error,
+            )
+        };
+        let message = take_text(error);
+        let inspect = NonNull::new(raw).map(SurfaceInspect).ok_or_else(|| {
+            Failure::Message(message.unwrap_or_else(|| "Open CASCADE failed".into()))
+        })?;
+        let meta = unsafe { CStr::from_ptr(view.meta) }
+            .to_str()
+            .ok()
+            .and_then(|meta| meta.strip_prefix('{')?.strip_suffix('}'))
+            .ok_or_else(|| Failure::Message("Open CASCADE returned a damaged surface inspection".into()))?;
+        let mut arrays: Vec<(&str, &[u8])> = Vec::new();
+        // SAFETY: `lime_tree_surface_inspect` filled `view` with `inspect`'s own arrays, valid until drop.
+        unsafe {
+            if curvature {
+                arrays.push(("minRadiusMm", inspect.bytes(view.min_radius_mm, view.min_radius_bytes)));
+                arrays.push(("gaussian", inspect.bytes(view.gaussian, view.gaussian_bytes)));
+                arrays.push(("mean", inspect.bytes(view.mean, view.mean_bytes)));
+            }
+            if isoparms {
+                arrays.push(("isoPoints", inspect.bytes(view.iso_points, view.iso_points_bytes)));
+            }
+        }
+        let size = arrays
+            .iter()
+            .map(|(name, bytes)| name.len() + bytes.len().div_ceil(3) * 4 + 6)
+            .sum::<usize>()
+            + meta.len()
+            + 64;
+        let mut out = String::with_capacity(size);
+        let _ = write!(out, "{{\"id\":{id},{meta}");
         for (name, bytes) in arrays {
             let _ = write!(out, ",\"{name}\":\"");
             base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut out);

@@ -21,6 +21,8 @@ export function installState(ctx: ViewCtx): void {
   ctx.mode = "face";
   ctx.mesh = null;
   ctx.edgeLines = null;
+  ctx.isoLines = null;
+  ctx.surfaceInspect = null;
   /** A dry-run's shape in the solid's place, and its edges. The solid stays, hidden, for picks. */
   ctx.preview = null;
   ctx.faceOutline = null;

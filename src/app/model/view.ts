@@ -12,7 +12,7 @@ import {
   type Affine,
 } from "../../model-space";
 import { unionBox } from "../../measure";
-import { type ParsedSolid } from "../../model-reply";
+import { decodeSurfaceInspect, type DecodedSurfaceInspect, type ParsedSolid } from "../../model-reply";
 import { contextParts } from "../../model-context";
 import { isHidden, isolate, pruneHidden, setHidden, showAll, visibleParts } from "../../model-hidden";
 import { extentAlong } from "../../model-plane";
@@ -30,7 +30,7 @@ import {
   syncPlaceFields,
   syncWorkplaneFields,
 } from "../../ui/model-chrome";
-import { explodeLook, showExplode } from "../../ui/model-look";
+import { explodeLook, lookState, mountModelLook, onExplode, onSurfaceNeed, showExplode } from "../../ui/model-look";
 import { canExplode, explodeContext, heldParts } from "../model-explode";
 import { meshSeat, meshTokenOf, modelPoseOf, setMeshSeat, type PlateObject } from "../../plate";
 import { centreOf, usingCustomPivot } from "../../pivot.ts";
@@ -47,19 +47,71 @@ import { S } from "./shared";
 import { warmMesh } from "./commit";
 import { hideEmpty } from "./create";
 import { treeOf } from "./edges";
-import { mm } from "./engine";
+import { mm, treeCall } from "./engine";
 import { readout } from "./pick";
 import type { Lens } from "./shared";
 import { runQueuedReaim } from "./transition";
 import { showEdits, syncUndo } from "./undo";
 import { openObject } from "./workplane";
 import { mountModelInspect } from "../../ui/model-inspect";
-import { mountModelLook, onExplode } from "../../ui/model-look";
 import { plateObjectSizes } from "../settings";
 import { posedFace } from "./workplane";
 
 /** Each solid's, and each plate mesh's, box in its own frame. */
 const ownBoxes = new WeakMap<Float32Array, Bounds>();
+
+/** --- Organic surfaces S1: lazy surface inspection cache per `<key>#<node>@<chord>`. */
+const surfaceInspectCache = new Map<string, DecodedSurfaceInspect>();
+let surfaceInspectTicket = 0;
+
+async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolean }) {
+  if (!need.curvature && !need.isoparms) return;
+  const open = S.open;
+  const tree = treeOf(open);
+  if (!open || !tree) return;
+  const key = S.lens?.key ?? open.key;
+  const node = S.lens?.node ?? tree.current;
+  const chord = state.stepTolerance;
+  const cacheKey = `${key}#${node}@${chord}`;
+  const cached = surfaceInspectCache.get(cacheKey);
+  const hasCurv = !need.curvature || !!cached?.minRadiusMm;
+  const hasIso = !need.isoparms || cached?.isoPoints !== undefined;
+  if (cached && hasCurv && hasIso) {
+    fx.model?.setSurfaceInspect({
+      ...(cached.minRadiusMm ? { minRadiusMm: cached.minRadiusMm } : {}),
+      ...(cached.gaussian ? { gaussian: cached.gaussian } : {}),
+      ...(cached.mean ? { mean: cached.mean } : {}),
+      ...(cached.isoPoints ? { isoPoints: cached.isoPoints } : {}),
+    });
+    return;
+  }
+  const mine = ++surfaceInspectTicket;
+  const wantCurv = need.curvature || !!cached?.minRadiusMm;
+  const wantIso = need.isoparms || cached?.isoPoints !== undefined;
+  const body = await treeCall(key, node, {
+    call: "surfaceInspect",
+    key,
+    node,
+    chordMm: chord,
+    curvature: wantCurv,
+    isoparms: wantIso,
+    isoCount: 6,
+  });
+  if (mine !== surfaceInspectTicket) return;
+  const decoded = decodeSurfaceInspect(body);
+  if (typeof decoded === "string") return;
+  if (surfaceInspectCache.size > 24) {
+    const oldest = surfaceInspectCache.keys().next().value;
+    if (oldest !== undefined) surfaceInspectCache.delete(oldest);
+  }
+  surfaceInspectCache.set(cacheKey, decoded);
+  fx.model?.setSurfaceInspect({
+    ...(decoded.minRadiusMm ? { minRadiusMm: decoded.minRadiusMm } : {}),
+    ...(decoded.gaussian ? { gaussian: decoded.gaussian } : {}),
+    ...(decoded.mean ? { mean: decoded.mean } : {}),
+    ...(decoded.isoPoints ? { isoPoints: decoded.isoPoints } : {}),
+  });
+}
 
 let refreshingContext = false;
 
@@ -108,6 +160,11 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   if (S.reaimQueued) runQueuedReaim();
   // The plate takes this solid's mesh when Model is left: its cracks are closed meanwhile, off the UI's path.
   if (!view) warmMesh(parsed);
+  // --- Organic surfaces S1: if Curvature or Surface grid (Isoparms) is active, fetch buffers lazily for this solid.
+  const look = lookState();
+  if (look.shading === "curvature" || look.isoparms) {
+    void ensureSurfaceInspect({ curvature: look.shading === "curvature", isoparms: look.isoparms });
+  }
 }
 
 export function requestModelCheck(objectId: string) {
@@ -359,5 +416,6 @@ export function bindLook() {
       },
     });
     onExplode(() => refreshModelContext());
+    onSurfaceNeed((need) => void ensureSurfaceInspect(need));
   }
 }

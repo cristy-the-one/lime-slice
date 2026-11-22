@@ -83,12 +83,27 @@ struct LimeShape {
 struct LimeMeshView {
     const unsigned char* positions;
     size_t positions_bytes;
+    const unsigned char* normals;
+    size_t normals_bytes;
     const unsigned char* triangles;
     size_t triangles_bytes;
     const unsigned char* edge_points;
     size_t edge_points_bytes;
     const unsigned char* edge_offsets;
     size_t edge_offsets_bytes;
+    const char* meta;
+};
+
+/// --- Organic surfaces S1: lazy surface inspection arrays as bytes, plus JSON `continuity` & `surfaceHealth`.
+struct LimeSurfaceInspectView {
+    const unsigned char* min_radius_mm;
+    size_t min_radius_bytes;
+    const unsigned char* gaussian;
+    size_t gaussian_bytes;
+    const unsigned char* mean;
+    size_t mean_bytes;
+    const unsigned char* iso_points;
+    size_t iso_points_bytes;
     const char* meta;
 };
 
@@ -2706,6 +2721,8 @@ Mesh* lime_tree_mesh(LimeShape* shape, double chord, LimeMeshView* view, char** 
         }
         view->positions = reinterpret_cast<const unsigned char*>(mesh->positions.data());
         view->positions_bytes = mesh->positions.size() * sizeof(float);
+        view->normals = reinterpret_cast<const unsigned char*>(mesh->normals.data());
+        view->normals_bytes = mesh->normals.size() * sizeof(float);
         view->triangles = reinterpret_cast<const unsigned char*>(mesh->triangles.data());
         view->triangles_bytes = mesh->triangles.size() * sizeof(uint32_t);
         view->edge_points = reinterpret_cast<const unsigned char*>(mesh->edge_points.data());
@@ -2724,6 +2741,41 @@ Mesh* lime_tree_mesh(LimeShape* shape, double chord, LimeMeshView* view, char** 
 }
 
 void lime_tree_mesh_free(Mesh* mesh) { delete mesh; }
+
+/// --- Organic surfaces S1: lazy surface inspection (per-vertex curvature buffers, UV isoparms,
+/// shared-edge G0/G1/G2 continuity, and NURBS surface health).
+SurfaceInspect* lime_tree_surface_inspect(
+    LimeShape* shape,
+    double chord,
+    int want_curvature,
+    int want_isoparms,
+    int iso_count,
+    LimeSurfaceInspectView* view,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        auto data = std::make_unique<SurfaceInspect>(
+            surface_inspect(shape->held, chord, want_curvature != 0, want_isoparms != 0, iso_count));
+        view->min_radius_mm = reinterpret_cast<const unsigned char*>(data->min_radius_mm.data());
+        view->min_radius_bytes = data->min_radius_mm.size() * sizeof(float);
+        view->gaussian = reinterpret_cast<const unsigned char*>(data->gaussian.data());
+        view->gaussian_bytes = data->gaussian.size() * sizeof(float);
+        view->mean = reinterpret_cast<const unsigned char*>(data->mean.data());
+        view->mean_bytes = data->mean.size() * sizeof(float);
+        view->iso_points = reinterpret_cast<const unsigned char*>(data->iso_points.data());
+        view->iso_points_bytes = data->iso_points.size() * sizeof(float);
+        view->meta = data->meta.c_str();
+        return data.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+void lime_tree_surface_inspect_free(SurfaceInspect* data) { delete data; }
 
 /// 1 and `out` set, or 0 and `error` set.
 int lime_tree_distance(

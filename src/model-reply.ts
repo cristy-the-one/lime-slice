@@ -56,6 +56,7 @@ export interface ParsedSolid extends ModelSolid {
 export interface SolidArrays {
   volumeMm3: number;
   positions: ArrayLike<number>;
+  normals?: ArrayLike<number>;
   triangles: ArrayLike<number>;
   faces: FaceRow[];
   edges: { lengthMm: number; points: ArrayLike<number> }[];
@@ -63,6 +64,62 @@ export interface SolidArrays {
   solid?: boolean;
   /** The node that made each face, or null for a face the step being previewed has not applied yet. */
   stepFaces?: (number | null)[];
+}
+
+/** --- Organic surfaces S1: shared-edge G0/G1/G2 continuity and NURBS health from `surfaceInspect`. */
+export interface SeamContinuityRow {
+  edge: number;
+  faces: [number, number];
+  kind: "gap" | "G0" | "G1" | "G2";
+  gapMm: number;
+  angleDeg: number;
+  curvatureJump: number;
+  mid: Vec3;
+}
+
+export interface ContinuitySummary {
+  sharedEdges: number;
+  g2: number;
+  g1: number;
+  g0: number;
+  gaps: number;
+  maxGapMm: number;
+  worstSmoothAngleDeg: number;
+  worstCurvatureJump: number;
+  notable: SeamContinuityRow[];
+}
+
+export interface SurfaceHealthSummary {
+  faces: number;
+  kinds: {
+    plane: number;
+    cylinder: number;
+    cone: number;
+    sphere: number;
+    torus: number;
+    bspline: number;
+    bezier: number;
+    other: number;
+  };
+  maxUDegree: number;
+  maxVDegree: number;
+  maxPoles: number;
+  rationalFaces: number;
+  highDegreeFaces: number;
+  heavyFaces: number;
+  minRadiusMm?: number;
+  tightestFace?: number;
+  tightestAt?: Vec3;
+}
+
+export interface DecodedSurfaceInspect {
+  id: number;
+  minRadiusMm?: Float32Array;
+  gaussian?: Float32Array;
+  mean?: Float32Array;
+  isoPoints?: Float32Array;
+  continuity: ContinuitySummary;
+  surfaceHealth: SurfaceHealthSummary;
 }
 
 /**
@@ -75,11 +132,13 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
   const { faces: faceRows, edgeLengths } = body;
   if (typeof body.volumeMm3 !== "number" || !Array.isArray(faceRows) || !Array.isArray(edgeLengths)) return DAMAGED;
   const positions = words(body.positions, Float32Array);
+  const rawNormals = body.normals === undefined ? null : words(body.normals, Float32Array);
   const triangles = words(body.triangles, Uint32Array);
   const points = words(body.edgePoints, Float32Array);
   const offsets = words(body.edgeOffsets, Uint32Array);
   if (!positions || !triangles || !points || !offsets) return DAMAGED;
   if (positions.length !== triangles.length * 9 || offsets.length !== edgeLengths.length + 1 || offsets[0] !== 0) return DAMAGED;
+  const normals = rawNormals && rawNormals.length === positions.length ? rawNormals : undefined;
   for (const face of triangles) if (face >= faceRows.length) return DAMAGED;
   const faces: ParsedSolid["faces"] = [];
   for (const row of faceRows as { [K in keyof FaceRow]?: unknown }[]) {
@@ -112,6 +171,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
     id: typeof body.id === "number" ? body.id : 0,
     volumeMm3: body.volumeMm3,
     positions,
+    ...(normals ? { normals } : {}),
     triangles,
     faces,
     edges,
@@ -140,6 +200,7 @@ export type SolidWire = {
   edgeLengths: number[];
   edgeSeams?: number[];
   positions: string;
+  normals?: string;
   triangles: string;
   edgePoints: string;
   edgeOffsets: string;
@@ -168,10 +229,32 @@ export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (numb
     edgeLengths: solid.edges.map((edge) => edge.lengthMm),
     ...(solid.seams && solid.seams.length > 0 ? { edgeSeams: solid.seams } : {}),
     positions: wordsBase64(Float32Array.from(solid.positions)),
+    ...(solid.normals && solid.normals.length === solid.positions.length ? { normals: wordsBase64(Float32Array.from(solid.normals)) } : {}),
     triangles: wordsBase64(Uint32Array.from(solid.triangles)),
     edgePoints: wordsBase64(Float32Array.from(points)),
     edgeOffsets: wordsBase64(Uint32Array.from(offsets)),
     ...(solid.stepFaces && solid.stepFaces.length === solid.faces.length ? { stepFaces: solid.stepFaces } : {}),
+  };
+}
+
+/** Decode a `surfaceInspect` engine reply into typed curvature/isoparm buffers plus continuity & health summaries. */
+export function decodeSurfaceInspect(body: Record<string, unknown>): DecodedSurfaceInspect | string {
+  if (typeof body.error === "string" && body.error) return body.error;
+  if (!body.continuity || typeof body.continuity !== "object" || !body.surfaceHealth || typeof body.surfaceHealth !== "object") {
+    return DAMAGED;
+  }
+  const minRadiusMm = body.minRadiusMm === undefined ? undefined : (words(body.minRadiusMm, Float32Array) ?? undefined);
+  const gaussian = body.gaussian === undefined ? undefined : (words(body.gaussian, Float32Array) ?? undefined);
+  const mean = body.mean === undefined ? undefined : (words(body.mean, Float32Array) ?? undefined);
+  const isoPoints = body.isoPoints === undefined ? undefined : (words(body.isoPoints, Float32Array) ?? undefined);
+  return {
+    id: typeof body.id === "number" ? body.id : 0,
+    ...(minRadiusMm ? { minRadiusMm } : {}),
+    ...(gaussian ? { gaussian } : {}),
+    ...(mean ? { mean } : {}),
+    ...(isoPoints ? { isoPoints } : {}),
+    continuity: body.continuity as ContinuitySummary,
+    surfaceHealth: body.surfaceHealth as SurfaceHealthSummary,
   };
 }
 

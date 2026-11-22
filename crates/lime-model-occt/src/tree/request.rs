@@ -192,6 +192,20 @@ pub(super) enum Request {
         node: NodeId,
         face: FacePick,
     },
+    /// --- Organic surfaces S1: lazy surface inspection (per-vertex curvature buffers, trimmed UV isoparms,
+    /// shared-edge G0/G1/G2 continuity, and NURBS surface health).
+    SurfaceInspect {
+        key: String,
+        node: NodeId,
+        #[serde(default = "default_chord")]
+        chord_mm: f64,
+        #[serde(default)]
+        curvature: bool,
+        #[serde(default)]
+        isoparms: bool,
+        #[serde(default = "default_iso_count")]
+        iso_count: i32,
+    },
     // --- Recipe reads (docs/plan-recipe-ingredients.md I5–I7). Keep these together. ---
     /// I5: a flat face's outline inset `insetMm`, in `frame` (origin, U, V: nine numbers) or the face's own: the frame,
     /// the extrude `origin` and `turn` that draw in it, `loops`, `regions` sampled to `chordMm`, and `areaMm2`.
@@ -478,6 +492,10 @@ pub(super) struct SavedNode {
 
 fn default_chord() -> f64 {
     0.1
+}
+
+fn default_iso_count() -> i32 {
+    6
 }
 
 /// I5–I6: how closely an outline's curves are sampled into points, unless the request says.

@@ -36,6 +36,7 @@ export function solidView(body: Record<string, unknown>) {
     editable: solid.editable,
     fingerprint: solid.fingerprint,
     positions: Float32Array.from(solid.positions),
+    ...(solid.normals ? { normals: Float32Array.from(solid.normals) } : {}),
     triangles: Uint32Array.from(solid.triangles),
     faces: faceRows(solid.positions, solid.triangles, solid.faces),
     edges: solid.edges.map((edge) => ({ index: edge.id, lengthMm: edge.lengthMm, ...edgeGeometry(edge.points, edge.lengthMm) })),

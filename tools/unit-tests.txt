@@ -330,3 +330,4 @@ src/model-view/face-colours.test.ts
 src/model-view/edge-screen.test.ts
 src/closed-ahead.test.ts
 mcp/speed-ux.test.ts
+mcp/surface-inspect.test.ts

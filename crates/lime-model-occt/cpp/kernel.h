@@ -87,12 +87,29 @@ struct Held {
 struct Mesh {
     /// Nine per triangle: the corners of a triangle soup, wound outward.
     std::vector<float> positions;
+    /// Nine per triangle: exact outward unit surface normals at each corner (`BRepLProp_SLProps`).
+    std::vector<float> normals;
     /// The face index of each triangle.
     std::vector<uint32_t> triangles;
     /// Every edge's polyline, one after another, three per point.
     std::vector<float> edge_points;
     /// Edge `i` is points `edge_offsets[i]` up to `edge_offsets[i + 1]`.
     std::vector<uint32_t> edge_offsets;
+};
+
+/// --- Organic surfaces S1: lazy surface inspection (per-vertex curvature scalars, UV isoparms,
+/// shared-edge G0/G1/G2 continuity, and NURBS surface health).
+struct SurfaceInspect {
+    /// One per triangle corner (same order as Mesh::positions / 3): minimum bend radius in mm (1e9 when flat).
+    std::vector<float> min_radius_mm;
+    /// One per triangle corner: Gaussian curvature K = k1 * k2 (1/mm²).
+    std::vector<float> gaussian;
+    /// One per triangle corner: signed Mean curvature H = (k1 + k2)/2 (1/mm; negative convex, positive concave).
+    std::vector<float> mean;
+    /// Line-segment pairs (6 floats per segment) of UV isoparametric curves on curved/freeform faces.
+    std::vector<float> iso_points;
+    /// JSON object holding `continuity` and `surfaceHealth`.
+    std::string meta;
 };
 
 char* alloc(const std::string& text);
@@ -117,6 +134,8 @@ double volume_of(const TopoDS_Shape& shape);
 double faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& about);
 /// Mesh the faces unless they are meshed at this chord already, and read the mesh out.
 Mesh tessellate(Held& held, double chord);
+/// --- Organic surfaces S1: lazy curvature buffers, UV isoparms, shared-edge G0/G1/G2 continuity, and NURBS health.
+SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count);
 /// What a reply says of the shape whatever the chord, as a JSON object: `volumeMm3`, `solid`,
 /// `faces` (area and outward normal), and `edgeLengths`.
 std::string describe(Held& held);

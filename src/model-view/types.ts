@@ -24,6 +24,8 @@ export interface ModelSolid {
   id: number;
   volumeMm3: number;
   positions: Float32Array;
+  /** --- Organic surfaces S1: exact OCCT outward unit normals (nine per triangle), when provided by the kernel. */
+  normals?: Float32Array;
   /** The face of each triangle. */
   triangles: Uint32Array;
   edges: { id: number; lengthMm: number; points: Float32Array }[];
@@ -31,6 +33,14 @@ export interface ModelSolid {
   seams?: number[];
   /** The history node that made each face. Null is a preview face with no step yet. */
   stepFaces?: (number | null)[];
+}
+
+/** --- Organic surfaces S1: lazy per-vertex curvature buffers & UV isoparm segments for the open solid. */
+export interface SurfaceInspectBuffers {
+  minRadiusMm?: Float32Array;
+  gaussian?: Float32Array;
+  mean?: Float32Array;
+  isoPoints?: Float32Array;
 }
 
 /**
@@ -186,8 +196,10 @@ export interface ModelView {
   setWorkplane(plane: Workplane | null): void;
   /** While on, a picked face is teal, so it is not the ordinary accent selection. */
   setDatumPick(on: boolean): void;
-  /** --- A10. Section plane and colour by step. View only: the solid and the probe are unchanged. */
+  /** --- A10. Section plane, colour by step, and S1 surface analysis modes. View only: the solid and the probe are unchanged. */
   setLook(state: LookState): void;
+  /** --- Organic surfaces S1: supply lazy per-vertex curvature buffers and/or UV isoparms for the open solid. */
+  setSurfaceInspect(data: SurfaceInspectBuffers | null): void;
   /** A drag of the section arrow, in millimetres along the cut normal from where the drag began. */
   onSectionDrag(cb: (mm: number, phase: "start" | "move" | "end") => void): void;
   /** The history row under the pointer, or null. Its faces tint. */

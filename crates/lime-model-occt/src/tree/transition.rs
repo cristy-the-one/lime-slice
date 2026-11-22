@@ -1072,6 +1072,8 @@ fn soup(shape: &mut Shape) -> Vec<f64> {
     let mut view = MeshView {
         positions: std::ptr::null(),
         positions_bytes: 0,
+        normals: std::ptr::null(),
+        normals_bytes: 0,
         triangles: std::ptr::null(),
         triangles_bytes: 0,
         edge_points: std::ptr::null(),

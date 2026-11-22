@@ -387,6 +387,20 @@ impl Store {
                 }
                 Ok(Answer::Plain(body.to_string()))
             }
+            // --- Organic surfaces S1: lazy surface inspection (curvatures, isoparms, continuity, NURBS health).
+            Request::SurfaceInspect {
+                key,
+                node,
+                chord_mm,
+                curvature,
+                isoparms,
+                iso_count,
+            } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let text = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count)?;
+                Ok(Answer::Plain(text))
+            }
             // --- I5, I6: read from the solid the node already holds.
             Request::FaceOutline { key, node, face, inset_mm, chord_mm, frame } => {
                 self.ensure(&key, node)?;
