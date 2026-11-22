@@ -22,17 +22,8 @@ void main() {
 }
 `;
 
-const ZEBRA_FRAGMENT = `
-#include <common>
-#include <clipping_planes_pars_fragment>
-uniform float uStripes;
-uniform int uAxis;
-uniform float uOpacity;
-varying vec3 vViewNormal;
-varying vec3 vViewPos;
-varying vec3 vWorldNormal;
-void main() {
-  #include <clipping_planes_fragment>
+/** The stripe body, shared by the viewport shader and the continuity test. */
+export const ZEBRA_STRIPE_BODY = `
   vec3 N = normalize(vViewNormal);
   if (!gl_FrontFacing) N = -N;
   vec3 V = normalize(vViewPos);
@@ -61,6 +52,54 @@ void main() {
   vec3 lightBand = vec3(0.95, 0.96, 0.94) * key;
   vec3 col = mix(darkBand, lightBand, stripe);
   gl_FragColor = vec4(col, uOpacity);
+`;
+
+const ZEBRA_FRAGMENT = `
+#include <common>
+#include <clipping_planes_pars_fragment>
+uniform float uStripes;
+uniform int uAxis;
+uniform float uOpacity;
+varying vec3 vViewNormal;
+varying vec3 vViewPos;
+varying vec3 vWorldNormal;
+void main() {
+  #include <clipping_planes_fragment>
+  ${ZEBRA_STRIPE_BODY}
+}
+`;
+
+/** The same stripe shader in GLSL 300, so a test can read its pixels on WebGL2. */
+export const ZEBRA_FRAGMENT_TEST = `#version 300 es
+precision highp float;
+uniform float uStripes;
+uniform int uAxis;
+uniform float uOpacity;
+in vec3 vViewNormal;
+in vec3 vViewPos;
+in vec3 vWorldNormal;
+out vec4 fragColor;
+void main() {
+  ${ZEBRA_STRIPE_BODY.replaceAll("gl_FragColor", "fragColor")}
+}
+`;
+
+export const ZEBRA_VERTEX_TEST = `#version 300 es
+in vec3 position;
+in vec3 normal;
+uniform mat4 modelViewMatrix;
+uniform mat4 projectionMatrix;
+uniform mat3 normalMatrix;
+uniform mat4 modelMatrix;
+out vec3 vViewNormal;
+out vec3 vViewPos;
+out vec3 vWorldNormal;
+void main() {
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vViewPos = -mvPosition.xyz;
+  vViewNormal = normalize(normalMatrix * normal);
+  vWorldNormal = normalize(mat3(modelMatrix) * normal);
+  gl_Position = projectionMatrix * mvPosition;
 }
 `;
 

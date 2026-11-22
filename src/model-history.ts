@@ -243,6 +243,8 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
   };
   const isSheet = (ofTree: ModelTree, node: ModelNode): boolean =>
     node.op?.kind === "sheet"
+    || node.op?.kind === "patch"
+    || node.op?.kind === "blendSurface"
     || (node.id === ROOT && ofTree.root.kind === "feature" && ofTree.root.op.kind === "sheet")
     || (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0);
 

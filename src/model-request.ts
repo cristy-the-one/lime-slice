@@ -7,7 +7,7 @@ import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
 import { partitionNumbers } from "./modeling/partition.ts";
-import { savedNodes, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftBoundary, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type ReplaceFaceOp, type RevolveOp, type SewOp, type SheetOp, type SheetSpec, type ShellOp, type SplitFaceOp, type SweepMode, type SweepOp, type SweepTransition, type ThickenDirection, type ThickenOp, type TrimKeep, type TrimSplitOp, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BlendSurfaceOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftBoundary, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type PatchOp, type ProfileLoop, type ProfileSegment, type ReplaceFaceOp, type RevolveOp, type SewOp, type SheetOp, type SheetSpec, type ShellOp, type SplitFaceOp, type SurfaceBoundary, type SurfaceContinuity, type SweepMode, type SweepOp, type SweepTransition, type ThickenDirection, type ThickenOp, type TrimKeep, type TrimSplitOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project names its solids without loading these requests (./brep-file.ts).
 export { isBrep, solidFileName } from "./brep-file.ts";
@@ -345,6 +345,43 @@ export function splitFaceOp(faces: readonly (number | FaceRef)[], curve: Curve3D
     faces: faces.map((f) => (typeof f === "number" ? f : { ...f, mid: [...f.mid] })),
     curve: copyCurve3D(curve),
     ...(direction ? { direction: [...direction] as Vec3 } : {}),
+  };
+}
+
+function copyBoundary(bound: SurfaceBoundary): SurfaceBoundary {
+  return {
+    ...(bound.curve ? { curve: copyCurve3D(bound.curve) } : {}),
+    ...(bound.edges && bound.edges.length > 0 ? { edges: bound.edges.map((edge) => (typeof edge === "number" ? edge : { ...edge })) } : {}),
+    ...(bound.face !== undefined ? { face: typeof bound.face === "number" ? bound.face : { ...bound.face, mid: [...bound.face.mid] } } : {}),
+    ...(bound.continuity ? { continuity: bound.continuity } : {}),
+  };
+}
+
+/** S5: Fill an opening. The result is a sheet. */
+export function patchOp(boundaries: readonly SurfaceBoundary[], options: { guides?: readonly Curve3D[]; points?: readonly Vec3[]; tolerance?: number } = {}): PatchOp {
+  return {
+    kind: "patch",
+    boundaries: boundaries.map(copyBoundary),
+    ...(options.guides && options.guides.length > 0 ? { guides: options.guides.map(copyCurve3D) } : {}),
+    ...(options.points && options.points.length > 0 ? { points: options.points.map((point) => [...point] as Vec3) } : {}),
+    ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
+  };
+}
+
+/** S5: Bridge two open edges or chains at G1 or G2. */
+export function blendSurfaceOp(
+  a: SurfaceBoundary,
+  b: SurfaceBoundary,
+  options: { continuity?: SurfaceContinuity; tensionA?: number; tensionB?: number; tolerance?: number } = {},
+): BlendSurfaceOp {
+  return {
+    kind: "blendSurface",
+    a: copyBoundary(a),
+    b: copyBoundary(b),
+    ...(options.continuity ? { continuity: options.continuity } : {}),
+    ...(options.tensionA !== undefined ? { tensionA: options.tensionA } : {}),
+    ...(options.tensionB !== undefined ? { tensionB: options.tensionB } : {}),
+    ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
   };
 }
 

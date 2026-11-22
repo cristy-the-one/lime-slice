@@ -10,7 +10,7 @@ import { edgeReport, nonManifoldSegments, type EdgeReport, type Vec3 } from "../
 type Box = { min: Vec3 | number[]; max: Vec3 | number[] };
 
 /** Kinds that remove on purpose and may leave little: a shell hollows, a split or a common keeps part, a scale shrinks. */
-const MAY_SHRINK = new Set(["shell", "split", "scale", "root", "draft", "sheet", "sew", "thicken", "trimSplit", "replaceFace", "splitFace"]);
+const MAY_SHRINK = new Set(["shell", "split", "scale", "root", "draft", "sheet", "sew", "thicken", "trimSplit", "replaceFace", "splitFace", "patch", "blendSurface"]);
 const ADDS = new Set(["boolean", "join", "extrude", "revolve", "loft", "sweep"]);
 
 const mm3 = (value: number) => `${Math.round(value * 10) / 10} mm³`;
@@ -162,7 +162,7 @@ export function damagedReason(count: number, at: Vec3 | null): string {
 }
 
 /** Kinds that move or rebuild the whole part, so every touching edge it had is somewhere new: not judged by edges. */
-const MOVES_ALL = new Set(["scale", "root", "sheet", "sew", "thicken", "trimSplit"]);
+const MOVES_ALL = new Set(["scale", "root", "sheet", "sew", "thicken", "trimSplit", "patch", "blendSurface"]);
 
 /**
  * What a step's result says about the step, by the meshes before and after: null, or the refusal with `touching` when

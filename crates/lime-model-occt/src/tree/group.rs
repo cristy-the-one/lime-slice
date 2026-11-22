@@ -171,6 +171,8 @@ fn group_step_refusal(step: &Op) -> Option<&'static str> {
         Op::TrimSplit { .. } => Some("A group cannot contain a trim/split step."),
         Op::ReplaceFace { .. } => Some("A group cannot contain a replace-face step."),
         Op::SplitFace { .. } => Some("A group cannot contain a split-face step."),
+        Op::Patch { .. } => Some("A group cannot contain a patch."),
+        Op::BlendSurface { .. } => Some("A group cannot contain a blend."),
     }
 }
 

@@ -32,7 +32,7 @@ export const ROOT_BROKEN = "This solid's primitive builds differently in this mo
 
 /** Ops that name edges or faces by the solid's own numbering: they build only on a step the history built. */
 // --- P1: a face pull names faces, so a seed solid is rebuilt before the step, as a fillet is. ---
-export const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces", "draft", "transition"]);
+export const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces", "draft", "transition", "patch", "blendSurface"]);
 
 export const solids = new Map<string, ParsedSolid>();
 

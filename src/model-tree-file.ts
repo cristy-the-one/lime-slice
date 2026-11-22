@@ -12,7 +12,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type FilletContinuity, type Fingerprint, type JoinTool, type LoftBoundary, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type SheetMode, type SheetSpec, type SweepMode, type SweepTransition, type ThickenDirection, type TrimKeep, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type FilletContinuity, type Fingerprint, type JoinTool, type LoftBoundary, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type SheetMode, type SheetSpec, type SurfaceBoundary, type SurfaceContinuity, type SweepMode, type SweepTransition, type ThickenDirection, type TrimKeep, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project file reads and writes a tree's body without loading the readers here (./saved-tree-body.ts).
 import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
@@ -766,6 +766,41 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(up ? { up } : {}),
       };
     }
+    case "patch": {
+      const boundaries = readBoundaries(value.boundaries);
+      if (!boundaries) return undefined;
+      const guides = value.guides === undefined ? undefined : readCurves(value.guides);
+      if (value.guides !== undefined && !guides) return undefined;
+      const points = value.points === undefined ? undefined : readPoints(value.points);
+      if (value.points !== undefined && !points) return undefined;
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      return {
+        kind: "patch",
+        boundaries,
+        ...(guides ? { guides } : {}),
+        ...(points ? { points } : {}),
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+      };
+    }
+    case "blendSurface": {
+      const a = readBoundary(value.a);
+      const b = readBoundary(value.b);
+      if (!a || !b) return undefined;
+      const continuity = readContinuity(value.continuity);
+      if (continuity === null || continuity === "g0") return undefined;
+      if (value.tensionA !== undefined && !finite(value.tensionA)) return undefined;
+      if (value.tensionB !== undefined && !finite(value.tensionB)) return undefined;
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      return {
+        kind: "blendSurface",
+        a,
+        b,
+        ...(continuity ? { continuity } : {}),
+        ...(finite(value.tensionA) ? { tensionA: value.tensionA } : {}),
+        ...(finite(value.tensionB) ? { tensionB: value.tensionB } : {}),
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+      };
+    }
     default:
       return undefined;
   }
@@ -1185,6 +1220,72 @@ function readNeutral(value: unknown): DraftNeutral | undefined {
     return { origin, normal };
   }
   return readFacePick(value);
+}
+
+function readContinuity(value: unknown): SurfaceContinuity | undefined | null {
+  if (value === undefined) return undefined;
+  if (value === "g0" || value === "g1" || value === "g2") return value;
+  return null;
+}
+
+function readBoundary(value: unknown): SurfaceBoundary | undefined {
+  if (!isRecord(value)) return undefined;
+  const continuity = readContinuity(value.continuity);
+  if (continuity === null) return undefined;
+  let edges: EdgePick[] | undefined;
+  if (value.edges !== undefined) {
+    const read = readEdgePickList(value.edges);
+    if (!read) return undefined;
+    edges = read;
+  }
+  let curve: Curve3D | undefined;
+  if (value.curve !== undefined) {
+    const read = readCurve3D(value.curve);
+    if (!read) return undefined;
+    curve = read;
+  }
+  if (!edges && !curve) return undefined;
+  const face = value.face === undefined ? undefined : readFacePick(value.face);
+  if (value.face !== undefined && face === undefined) return undefined;
+  return {
+    ...(curve ? { curve } : {}),
+    ...(edges ? { edges } : {}),
+    ...(face !== undefined ? { face } : {}),
+    ...(continuity ? { continuity } : {}),
+  };
+}
+
+function readBoundaries(value: unknown): SurfaceBoundary[] | undefined {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 20) return undefined;
+  const boundaries: SurfaceBoundary[] = [];
+  for (const raw of value) {
+    const bound = readBoundary(raw);
+    if (!bound) return undefined;
+    boundaries.push(bound);
+  }
+  return boundaries;
+}
+
+function readCurves(value: unknown): Curve3D[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 20) return undefined;
+  const curves: Curve3D[] = [];
+  for (const raw of value) {
+    const curve = readCurve3D(raw);
+    if (!curve) return undefined;
+    curves.push(curve);
+  }
+  return curves;
+}
+
+function readPoints(value: unknown): Vec3[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 50) return undefined;
+  const points: Vec3[] = [];
+  for (const raw of value) {
+    const point = vec(raw);
+    if (!point) return undefined;
+    points.push(point);
+  }
+  return points;
 }
 
 /** K4. A face index, or the reference a stored step keeps. Undefined when the value is damaged. */

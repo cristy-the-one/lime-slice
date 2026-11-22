@@ -41,6 +41,8 @@ import { repeatNow } from "./repeat";
 import { editJoinGhost } from "./run-edit";
 import { userFontIdsOfTrees } from "./save";
 import { S, surfacesOnly } from "./shared";
+import { selectedEdges } from "../../model-blend";
+import { syncEdgeBadges } from "./surface-tools";
 import { setMode, step } from "./tree";
 import { syncUndo } from "./undo";
 import { boxOf, frameModel, ghostId, inView, objectPose, openBox, openPose, pivotOf, present, refreshModelContext, viewFrame, viewed } from "./view";
@@ -125,6 +127,7 @@ export function bindChrome() {
       }
       S.picks = [];
       paintBlendHighlight();
+      syncEdgeBadges([]);
       syncModelChrome([]);
       const solid = viewed();
       if (solid) readout(`${about(solid)} Pick a face or an edge.`);
@@ -139,6 +142,7 @@ export function bindChrome() {
       return userFontIdsOfTrees();
     },
     paramsChanged(typed) {
+      syncEdgeBadges(selectedEdges(S.picks));
       if (openModelTool()) endStressPick();
       // --- F4. The draft lives only while the Hole panel is the points layout. ---
       if (S.sketchHoleDraft && openModelTool() !== "hole" && !S.holdSketchHoles) S.sketchHoleDraft = null;

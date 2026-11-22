@@ -19,6 +19,8 @@ const RAIL = `
             <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive">New solid</button>
             <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
             <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
+            <button class="model-tool" id="modelToolPatch" type="button" data-tool="patch" aria-pressed="false" data-tip="Patch: fill an opening. Each edge shows G0, G1, or G2.">Patch</button>
+            <button class="model-tool" id="modelToolBlend" type="button" data-tool="blend" aria-pressed="false" data-tip="Blend: bridge two open edges. G1 or G2, with a tension on each side.">Blend</button>
           </div>
         </div>
         <div class="rail-group" data-group="shape" data-solid-only role="group" aria-label="Shape">
@@ -47,7 +49,7 @@ const RAIL = `
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
               <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, plugins, stress, split to print, print transition"></button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, patch, blend, parameters, plugins, stress, split to print, print transition"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -55,6 +57,8 @@ const RAIL = `
                 <button class="model-tool" type="button" role="menuitem" data-tool="array">Array</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="patch">Patch</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="blend">Blend</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
                 <!-- --- Plugins (docs/plan-recipe-plugins.md D13): the library's card, beside Parameters. No rail button. --- -->
@@ -178,6 +182,10 @@ const DOCK = `
                 <button class="btn mode" id="modelEdgesStep" type="button" data-edge-mode="step" aria-pressed="false" data-tip="Every sharp edge a history step made that is still on this solid">A step</button>
               </div>
               <!-- S3 (U5): Fillet profile: circular arc (G1, default), curvature-continuous (G2), or conic rho. -->
+              <div class="modes" id="modelBlendContinuity" data-for="blend" role="group" aria-label="Blend continuity">
+                <button class="btn mode on" type="button" data-blend-continuity="g1" aria-pressed="true" data-tip="The blend leaves each edge with the same tangent as the sheet.">G1</button>
+                <button class="btn mode" type="button" data-blend-continuity="g2" aria-pressed="false" data-tip="The blend also matches curvature across each edge.">G2</button>
+              </div>
               <div class="modes" id="modelFilletProfile" data-for="fillet" role="group" aria-label="Fillet profile">
                 <button class="btn mode on" type="button" data-fillet-profile="g1" aria-pressed="true" data-tip="Circular arc cross-section (G1, default)">Circular G1</button>
                 <button class="btn mode" type="button" data-fillet-profile="g2" aria-pressed="false" data-tip="Curvature-continuous smooth blend (G2)">Smooth G2</button>
@@ -272,6 +280,8 @@ const DOCK = `
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
                 <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
+                <label data-for="blend">Side A tension<input id="modelBlendTensionA" type="range" min="0.2" max="3" step="0.05" value="1" aria-label="Side A tension"></label>
+                <label data-for="blend">Side B tension<input id="modelBlendTensionB" type="range" min="0.2" max="3" step="0.05" value="1" aria-label="Side B tension"></label>
                 <!-- S3 (U5): Conic fullness rho and variable-radius stations along the edge. -->
                 <label data-for="fillet" data-fillet-profile="conic" data-snap="0.05" data-tip="Conic fullness ρ: 0.05 flat, 0.5 parabolic, 0.95 very full."><span class="scrub-label" data-scrub>Conic ρ</span><input id="modelFilletRho" type="number" step="0.05" min="0.05" max="0.95" value="0.5" aria-label="Conic fullness rho"></label>
                 <label data-for="fillet" data-fillet-var="1" data-snap="0.5" data-tip="Radius at the start of the edge (u = 0)."><span class="scrub-label" data-scrub>Start r</span><input id="modelFilletStart" type="number" step="0.1" min="0.05" value="1" aria-label="Variable fillet start radius"></label>
@@ -714,6 +724,7 @@ const DOCK = `
 
 const BODY = `
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
+          <div id="modelEdgeBadges" hidden></div>
           <div id="stressLegend" class="stress-legend" hidden>
             <div class="stress-ramp-col">
               <span class="stress-ramp-end" id="stressLegendHigh"></span>

@@ -740,6 +740,19 @@ extern "C" {
         dir: *const f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    /// --- Organic surfaces S5: fill an opening, or bridge two open edges.
+    pub(super) fn lime_tree_patch(
+        from: *const RawShape,
+        blob: *const f64,
+        len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    pub(super) fn lime_tree_blend_surface(
+        from: *const RawShape,
+        blob: *const f64,
+        len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     pub(super) fn lime_tree_distance(
         shape: *const RawShape,
         a_kind: *const c_char,

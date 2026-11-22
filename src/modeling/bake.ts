@@ -15,12 +15,12 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
-import { draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
+import { blendSurfaceOp, draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, patchOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
 import type { BeltSettings } from "../belt.ts";
-import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, FilletContinuity, LoftBoundary, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SheetSpec, SweepMode, SweepTransition, ThickenDirection, TrimKeep, Vec2, Vec3 } from "../model-tree.ts";
+import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, FilletContinuity, LoftBoundary, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SheetSpec, SurfaceBoundary, SurfaceContinuity, SweepMode, SweepTransition, ThickenDirection, TrimKeep, Vec2, Vec3 } from "../model-tree.ts";
 import { drillDown, isGlobalFrame, planePoint, planePrimitive, type Workplane } from "../workplane.ts";
 
 /** A baked op: as stored, as typed with its defaults filled, and any notes. */
@@ -233,6 +233,69 @@ function readNurbsMetaField(piece: Record<string, unknown>): { weights?: number[
 function vec3Of(value: unknown): Vec3 | null {
   if (!Array.isArray(value) || value.length !== 3 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
   return [value[0] as number, value[1] as number, value[2] as number];
+}
+
+function readContinuityField(value: unknown, what: string): SurfaceContinuity | undefined | { reason: string } {
+  if (value === undefined) return undefined;
+  if (value === "g0" || value === "g1" || value === "g2") return value;
+  return { reason: `${what} continuity is g0, g1, or g2.` };
+}
+
+function readTension(value: unknown, side: string): number | undefined | { reason: string } {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0.15 || value > 4) {
+    return { reason: `${side} tension is from 0.15 to 4.` };
+  }
+  return value;
+}
+
+function readBoundaryField(value: unknown, ctx: BakeContext, what: string): SurfaceBoundary | { reason: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { reason: `${what} needs a curve or an edge of the sheet.` };
+  }
+  const raw = value as Record<string, unknown>;
+  const continuity = readContinuityField(raw.continuity, what);
+  if (continuity !== undefined && typeof continuity !== "string") return continuity;
+  let edges: EdgePick[] | undefined;
+  if (raw.edges !== undefined) {
+    const resolved = resolveEdges({ edges: raw.edges, kind: "patch" }, ctx);
+    if ("reason" in resolved) {
+      return { reason: resolved.reason.startsWith("Pick an edge") ? `${what} needs a curve or an edge of the sheet.` : resolved.reason };
+    }
+    edges = resolved;
+  }
+  let curve: Curve3D | undefined;
+  if (raw.curve !== undefined) {
+    const read = readCurve3DField(raw.curve, ctx);
+    if ("reason" in read) return read;
+    curve = read;
+  }
+  if (!edges && !curve) return { reason: `${what} needs a curve or an edge of the sheet.` };
+  let face: number | undefined;
+  if (raw.face !== undefined) {
+    const picked = bakedFace(raw.face, ctx);
+    if (typeof picked !== "number") return picked;
+    face = picked;
+  }
+  return {
+    ...(curve ? { curve } : {}),
+    ...(edges ? { edges } : {}),
+    ...(face !== undefined ? { face } : {}),
+    ...(typeof continuity === "string" ? { continuity } : {}),
+  };
+}
+
+function readBoundariesField(value: unknown, ctx: BakeContext): SurfaceBoundary[] | { reason: string } {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 20) {
+    return { reason: "A patch needs between 2 and 20 boundary curves or edges." };
+  }
+  const boundaries: SurfaceBoundary[] = [];
+  for (const raw of value) {
+    const bound = readBoundaryField(raw, ctx, "A patch side");
+    if ("reason" in bound) return bound;
+    boundaries.push(bound);
+  }
+  return boundaries;
 }
 
 function readCurve3DField(value: unknown, ctx: BakeContext): Curve3D | { reason: string } {
@@ -942,6 +1005,64 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
       direction = v;
     }
     const made = splitFaceOp(faces, curve, direction);
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "patch") {
+    const boundaries = readBoundariesField(spec.boundaries, ctx);
+    if ("reason" in boundaries) return boundaries;
+    const guides: Curve3D[] = [];
+    if (spec.guides !== undefined) {
+      if (!Array.isArray(spec.guides)) return { reason: "A patch guide is a 3D curve." };
+      for (const raw of spec.guides) {
+        const curve = readCurve3DField(raw, ctx);
+        if ("reason" in curve) return curve;
+        guides.push(curve);
+      }
+    }
+    const points: Vec3[] = [];
+    if (spec.points !== undefined) {
+      if (!Array.isArray(spec.points)) return { reason: "A patch guide point is [x, y, z] in millimetres." };
+      for (const raw of spec.points) {
+        const point = vec3Of(raw);
+        if (!point) return { reason: "A patch guide point is [x, y, z] in millimetres." };
+        points.push(point);
+      }
+    }
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0) || spec.tolerance > 1e-4) {
+        return { reason: "Patch tolerance is the gap the fill aims for, above 0 and at most 0.0001 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const made = patchOp(boundaries, { ...(guides.length > 0 ? { guides } : {}), ...(points.length > 0 ? { points } : {}), ...(tolerance !== undefined ? { tolerance } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "blendSurface") {
+    const a = readBoundaryField(spec.a, ctx, "Side A");
+    if ("reason" in a) return a;
+    const b = readBoundaryField(spec.b, ctx, "Side B");
+    if ("reason" in b) return b;
+    const continuity = readContinuityField(spec.continuity, "A blend");
+    if (typeof continuity !== "string" && continuity !== undefined) return continuity;
+    if (continuity === "g0") return { reason: "A blend is G1 or G2. Set the seam to G1 or G2." };
+    const tensionA = readTension(spec.tensionA, "Side A");
+    if (typeof tensionA !== "number" && tensionA !== undefined) return tensionA;
+    const tensionB = readTension(spec.tensionB, "Side B");
+    if (typeof tensionB !== "number" && tensionB !== undefined) return tensionB;
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0) || spec.tolerance > 1e-4) {
+        return { reason: "Blend tolerance is the gap the bridge aims for, above 0 and at most 0.0001 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const made = blendSurfaceOp(a, b, {
+      ...(continuity ? { continuity } : {}),
+      ...(tensionA !== undefined ? { tensionA } : {}),
+      ...(tensionB !== undefined ? { tensionB } : {}),
+      ...(tolerance !== undefined ? { tolerance } : {}),
+    });
     return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
   }
   // --- A gear (src/model-gear.ts): a boolean whose tool is the gear primitive, placed as a cylinder is. Fuse by default.

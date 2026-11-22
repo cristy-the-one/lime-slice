@@ -16,6 +16,27 @@ fn ok(request: Value) -> Value {
     reply
 }
 
+/// The worst normal angle and curvature jump on edges the kernel already classed as G2.
+/// The jump bound is the classifier's own G2 threshold, 1e-3 mm^-1.
+fn g2_edge_bounds(inspect: &Value) -> (f64, f64) {
+    let mut angle: f64 = 0.0;
+    let mut jump: f64 = 0.0;
+    let mut seen = 0;
+    let rows = inspect["continuity"]["edges"].as_array().cloned().unwrap_or_default();
+    for row in rows {
+        if row["kind"].as_str() != Some("G2") {
+            continue;
+        }
+        seen += 1;
+        angle = angle.max(row["angleDeg"].as_f64().unwrap_or(99.0));
+        jump = jump.max(row["curvatureJump"].as_f64().unwrap_or(99.0));
+    }
+    if seen < 2 {
+        return (99.0, 99.0);
+    }
+    (angle, jump)
+}
+
 fn has_occt() -> bool {
     let caps = call(json!({ "call": "capabilities" }));
     if caps["stepMeshing"].as_bool() == Some(true) {
@@ -153,9 +174,15 @@ fn g2_smooth_fillet_achieves_exact_g2_continuity_on_constant_and_variable_edges(
     let worst_angle = inspect["continuity"]["worstSmoothAngleDeg"]
         .as_f64()
         .unwrap_or(99.0);
+    let (g2_angle, g2_jump) = g2_edge_bounds(&inspect);
+    println!("S5 fillet constant g2Edges={g2_edges} worstSmoothAngleDeg={worst_angle} g2AngleDeg={g2_angle} g2CurvatureJump={g2_jump}");
     assert!(
         worst_angle < 0.1,
         "G2 seam normal angle expected < 0.1°, got {worst_angle}"
+    );
+    assert!(
+        g2_angle < 0.1 && g2_jump <= 1e-3,
+        "constant G2 fillet curvature jump must stay within 1e-3 mm^-1 and the normal angle under 0.1°, got angle={g2_angle} jump={g2_jump}"
     );
     ok(json!({ "call": "close", "key": key }));
 
@@ -188,9 +215,17 @@ fn g2_smooth_fillet_achieves_exact_g2_continuity_on_constant_and_variable_edges(
         "isoparms": false
     }));
     assert_eq!(inspect_v["continuity"]["gaps"].as_u64(), Some(0));
+    let g2_var = inspect_v["continuity"]["g2"].as_u64().unwrap_or(0);
+    let worst_var = inspect_v["continuity"]["worstSmoothAngleDeg"].as_f64().unwrap_or(99.0);
+    let (g2_angle_v, g2_jump_v) = g2_edge_bounds(&inspect_v);
+    println!("S5 fillet variable g2Edges={g2_var} worstSmoothAngleDeg={worst_var} g2AngleDeg={g2_angle_v} g2CurvatureJump={g2_jump_v}");
     assert!(
-        inspect_v["continuity"]["g2"].as_u64().unwrap_or(0) >= 2,
+        g2_var >= 2,
         "variable G2 fillet should preserve G2 continuity along both seams: {inspect_v}"
+    );
+    assert!(
+        worst_var < 0.1 && g2_angle_v < 0.1 && g2_jump_v <= 1e-3,
+        "variable G2 fillet must keep the normal angle under 0.1° and the curvature jump within 1e-3 mm^-1, got angle={g2_angle_v} jump={g2_jump_v}"
     );
     ok(json!({ "call": "close", "key": key_v }));
 }

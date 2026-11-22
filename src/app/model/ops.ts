@@ -9,6 +9,7 @@ import { moveFacesOp, shellOp, stepEdges } from "../../model-request";
 import { draftPanelOp } from "../../model-edit";
 import {
   fieldPrimitive,
+  blendChoice,
   filletChoice,
   holeBoxes,
   chamferChoice,
@@ -35,6 +36,7 @@ import { withPanelExprs } from "./parameters";
 import { repeatNow } from "./repeat";
 import type { Editing } from "./shared";
 import { openPose } from "./view";
+import { continuityOf } from "./surface-tools";
 
 /** What the open panel would build: an edited step's op while one is edited, else the open tool's. */
 export function panelOp(): ModelOp | null {
@@ -175,6 +177,28 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const prism = S.editing?.op.kind === "faceExtrude" ? S.editing.op : null;
       if (prism && faces.length === 1) return { ...prism, face: faces[0]!.index, distance };
       return moveFacesOp(faces.map((pick) => ({ face: pick.index, distance })));
+    }
+    case "patch": {
+      const edges = selectedEdges(S.picks);
+      if (edges.length < 2) return null;
+      return {
+        kind: "patch",
+        boundaries: edges.map((index) => ({ edges: [index], continuity: continuityOf(index) })),
+      };
+    }
+    case "blend": {
+      const edges = selectedEdges(S.picks);
+      if (edges.length < 2) return null;
+      const mid = Math.max(1, Math.floor(edges.length / 2));
+      const continuity = blendChoice();
+      return {
+        kind: "blendSurface",
+        a: { edges: edges.slice(0, mid), continuity },
+        b: { edges: edges.slice(mid), continuity },
+        continuity,
+        tensionA: num("#modelBlendTensionA"),
+        tensionB: num("#modelBlendTensionB"),
+      };
     }
     case "draft": {
       // Model space, as the fields show it; `toolOp` turns it into the solid's frame. An edited step keeps its neutral.

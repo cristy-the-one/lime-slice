@@ -982,6 +982,30 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         direction: Option<[f64; 3]>,
     },
+    /// Fill an opening. A clean boundary of 2 to 4 curves at G0 uses GeomFill. An N-sided opening,
+    /// or any side that asks for G1 or G2, uses GeomPlate. Interior guides go to GeomPlate too.
+    Patch {
+        boundaries: Vec<SurfaceBoundary>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guides: Vec<Curve3D>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        points: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
+    /// Bridge two open edges or chains at G1 or G2, with a tension on each side.
+    BlendSurface {
+        a: SurfaceBoundary,
+        b: SurfaceBoundary,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuity: Option<SurfaceContinuity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension_a: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension_b: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
 }
 
 fn default_true() -> bool {
@@ -1002,9 +1026,35 @@ impl Op {
                 | Op::Thicken { .. }
                 | Op::TrimSplit { .. }
                 | Op::SplitFace { .. }
+                | Op::Patch { .. }
+                | Op::BlendSurface { .. }
                 | Op::Unify
         )
     }
+}
+
+/// How a patch or blend side meets the face beside it. Absent on an edge that touches a face means G1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SurfaceContinuity {
+    G0,
+    G1,
+    G2,
+}
+
+/// One side of a patch, or one side of a blend. A side is a curve, a chain of edges, or both.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfaceBoundary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<Curve3D>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<EdgePick>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<FacePick>,
+    /// Absent: G1 when the side touches a face, otherwise G0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity: Option<SurfaceContinuity>,
 }
 
 /// S4: How an open sheet is built from 3D curves.

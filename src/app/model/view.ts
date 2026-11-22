@@ -24,6 +24,7 @@ import {
   refreshModelCheck,
   refreshModelGhost,
   setModelEditable,
+  setSheetMode,
   setModelLocked,
   syncModelChrome,
   syncModelSolid,
@@ -141,11 +142,12 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   syncWorkplaneFields();
   refreshModelContext();
   fx.model?.highlight([]);
+  const isSheet = !parsed.editable && parsed.faces.length > 0 && !view;
+  setSheetMode(isSheet);
   setModelEditable(parsed.editable);
   // --- Organic surfaces S4 (U6): show open-sheet banner with one-click Thicken & Cap & Sew when open.
   const sheetBar = document.querySelector<HTMLElement>("#modelSheetBar");
   if (sheetBar) {
-    const isSheet = !parsed.editable && parsed.faces.length > 0 && !view;
     sheetBar.hidden = !isSheet;
     if (isSheet) {
       const n = parsed.nakedEdges?.length ?? 0;

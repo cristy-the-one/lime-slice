@@ -4,10 +4,12 @@ use std::os::raw::c_int;
 
 use super::build::{BuildFail, Built};
 use super::ffi::{
+    lime_tree_blend_surface,
     lime_tree_extrude_loops,
     lime_tree_extrude_loops_extent,
     lime_tree_loft_loops,
     lime_tree_loft_v2,
+    lime_tree_patch,
     lime_tree_replace_face,
     lime_tree_revolve_loops,
     lime_tree_sew,
@@ -23,6 +25,8 @@ use super::ops::{
     BooleanOp,
     Curve3D,
     Curve3DSegment,
+    EdgePick,
+    FacePick,
     LoftBoundary,
     LoftSection,
     Op,
@@ -30,6 +34,8 @@ use super::ops::{
     ProfileSegment,
     SheetMode,
     SheetSpec,
+    SurfaceBoundary,
+    SurfaceContinuity,
     SweepMode,
     SweepTransition,
     ThickenDirection,
@@ -613,6 +619,121 @@ pub(super) fn build_split_face_shape(
             dir.as_ptr(),
             error,
         )
+    })
+}
+
+fn continuity_code(continuity: Option<SurfaceContinuity>) -> f64 {
+    match continuity {
+        None => -1.0,
+        Some(SurfaceContinuity::G0) => 0.0,
+        Some(SurfaceContinuity::G1) => 1.0,
+        Some(SurfaceContinuity::G2) => 2.0,
+    }
+}
+
+fn boundary_edges(bound: &SurfaceBoundary) -> Vec<c_int> {
+    bound
+        .edges
+        .iter()
+        .filter_map(|pick| match pick {
+            EdgePick::Ref(edge) => Some(edge.index),
+            EdgePick::Index(index) => Some(*index),
+            EdgePick::Step(_) => None,
+        })
+        .collect()
+}
+
+fn boundary_face(face: &Option<FacePick>) -> c_int {
+    match face {
+        Some(FacePick::Ref(face)) => face.index,
+        Some(FacePick::Index(index)) => *index,
+        None => -1,
+    }
+}
+
+fn encode_boundary(bound: &SurfaceBoundary, out: &mut Vec<f64>) -> Result<(), String> {
+    let edges = boundary_edges(bound);
+    out.push(continuity_code(bound.continuity));
+    out.push(f64::from(boundary_face(&bound.face)));
+    out.push(edges.len() as f64);
+    for index in edges {
+        out.push(f64::from(index));
+    }
+    match &bound.curve {
+        Some(curve) => {
+            out.push(1.0);
+            encode_curve3d(curve, &[], out)?;
+        }
+        None => out.push(0.0),
+    }
+    Ok(())
+}
+
+/// The blob `decode_surface_blob` reads: seven header numbers, then each side, then guides, then points.
+fn encode_surface_blob(
+    bounds: &[SurfaceBoundary],
+    guides: &[Curve3D],
+    points: &[[f64; 3]],
+    tolerance: Option<f64>,
+    tension_a: Option<f64>,
+    tension_b: Option<f64>,
+    continuity: Option<SurfaceContinuity>,
+) -> Result<Vec<f64>, String> {
+    let mut out = vec![
+        bounds.len() as f64,
+        guides.len() as f64,
+        points.len() as f64,
+        tolerance.unwrap_or(0.0),
+        tension_a.unwrap_or(0.0),
+        tension_b.unwrap_or(0.0),
+        continuity_code(continuity),
+    ];
+    for bound in bounds {
+        encode_boundary(bound, &mut out)?;
+    }
+    for guide in guides {
+        encode_curve3d(guide, &[], &mut out)?;
+    }
+    for point in points {
+        out.extend_from_slice(point);
+    }
+    Ok(out)
+}
+
+/// --- Organic surfaces S5: fill an opening. `from` is None when the patch starts a part from curves.
+pub(super) fn build_patch_shape(
+    from: Option<&Shape>,
+    boundaries: &[SurfaceBoundary],
+    guides: &[Curve3D],
+    points: &[[f64; 3]],
+    tolerance: Option<f64>,
+) -> Result<Shape, String> {
+    let blob = encode_surface_blob(boundaries, guides, points, tolerance, None, None, None)?;
+    let raw_from = from.map_or(std::ptr::null(), Shape::raw);
+    Shape::made(|error| unsafe { lime_tree_patch(raw_from, blob.as_ptr(), blob.len() as c_int, error) })
+}
+
+/// --- Organic surfaces S5: bridge two open edges or chains.
+pub(super) fn build_blend_shape(
+    from: &Shape,
+    a: &SurfaceBoundary,
+    b: &SurfaceBoundary,
+    continuity: Option<SurfaceContinuity>,
+    tension_a: Option<f64>,
+    tension_b: Option<f64>,
+    tolerance: Option<f64>,
+) -> Result<Shape, String> {
+    let blob = encode_surface_blob(
+        &[a.clone(), b.clone()],
+        &[],
+        &[],
+        tolerance,
+        tension_a,
+        tension_b,
+        continuity,
+    )?;
+    Shape::made(|error| unsafe {
+        lime_tree_blend_surface(from.raw(), blob.as_ptr(), blob.len() as c_int, error)
     })
 }
 

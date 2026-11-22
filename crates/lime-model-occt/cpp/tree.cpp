@@ -3384,6 +3384,161 @@ LimeShape* lime_tree_split_face(
     }
 }
 
+// --- Organic surfaces S5: Patch and BlendSurface. The blob is the one Rust `encode_surface_blob` writes.
+
+static bool decode_bound(const double* data, int len, int& at, PatchBoundSpec& bound, std::string& message) {
+    if (data == nullptr || at + 3 > len) {
+        message = "A patch side needs a curve or an edge of the sheet.";
+        return false;
+    }
+    bound.continuity = static_cast<int>(std::llround(data[at++]));
+    bound.face = static_cast<int>(std::llround(data[at++]));
+    const int n_edges = static_cast<int>(std::llround(data[at++]));
+    if (n_edges < 0 || n_edges > 64 || at + n_edges >= len) {
+        message = "A patch side needs a curve or an edge of the sheet.";
+        return false;
+    }
+    bound.edges.reserve(static_cast<size_t>(n_edges));
+    for (int i = 0; i < n_edges; ++i) bound.edges.push_back(static_cast<int>(std::llround(data[at++])));
+    if (at >= len) {
+        message = "A patch side needs a curve or an edge of the sheet.";
+        return false;
+    }
+    const int has_curve = static_cast<int>(std::llround(data[at++]));
+    if (has_curve != 0) {
+        int used = 0;
+        if (!decode_curve3d(data + at, len - at, bound.curve, used, message)) return false;
+        at += used;
+        bound.has_curve = true;
+    }
+    return true;
+}
+
+static bool decode_surface_blob(const double* data, int len, PatchBuildSpec& patch, BlendBuildSpec& blend, bool as_blend, std::string& message) {
+    if (data == nullptr || len < 7) {
+        message = as_blend
+            ? "A blend needs two open edges or chains. Pick one chain on each sheet."
+            : "A patch needs between 2 and 20 boundary curves or edges.";
+        return false;
+    }
+    int at = 0;
+    const int n_bounds = static_cast<int>(std::llround(data[at++]));
+    const int n_guides = static_cast<int>(std::llround(data[at++]));
+    const int n_points = static_cast<int>(std::llround(data[at++]));
+    const double tolerance = data[at++];
+    const double tension_a = data[at++];
+    const double tension_b = data[at++];
+    const int op_continuity = static_cast<int>(std::llround(data[at++]));
+    if (n_bounds < 0 || n_bounds > 20 || n_guides < 0 || n_guides > 20 || n_points < 0 || n_points > 50) {
+        message = "A patch needs between 2 and 20 boundary curves or edges.";
+        return false;
+    }
+    std::vector<PatchBoundSpec> bounds;
+    bounds.reserve(static_cast<size_t>(n_bounds));
+    for (int i = 0; i < n_bounds; ++i) {
+        PatchBoundSpec bound;
+        if (!decode_bound(data, len, at, bound, message)) return false;
+        bounds.push_back(std::move(bound));
+    }
+    std::vector<Curve3DSpec> guides;
+    guides.reserve(static_cast<size_t>(n_guides));
+    for (int i = 0; i < n_guides; ++i) {
+        Curve3DSpec curve;
+        int used = 0;
+        if (at >= len || !decode_curve3d(data + at, len - at, curve, used, message)) return false;
+        at += used;
+        guides.push_back(std::move(curve));
+    }
+    if (at + n_points * 3 > len) {
+        message = "A patch side needs a curve or an edge of the sheet.";
+        return false;
+    }
+    std::vector<std::array<double, 3>> points;
+    points.reserve(static_cast<size_t>(n_points));
+    for (int i = 0; i < n_points; ++i) {
+        points.push_back({data[at], data[at + 1], data[at + 2]});
+        at += 3;
+    }
+    if (as_blend) {
+        if (bounds.size() != 2) {
+            message = "A blend needs two open edges or chains. Pick one chain on each sheet.";
+            return false;
+        }
+        blend.a = std::move(bounds[0]);
+        blend.b = std::move(bounds[1]);
+        blend.continuity = op_continuity;
+        blend.tension_a = tension_a;
+        blend.tension_b = tension_b;
+        blend.tolerance = tolerance;
+        return true;
+    }
+    patch.bounds = std::move(bounds);
+    patch.guides = std::move(guides);
+    patch.points = std::move(points);
+    patch.tolerance = tolerance;
+    return true;
+}
+
+LimeShape* lime_tree_patch(const LimeShape* from, const double* blob, int len, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        PatchBuildSpec spec;
+        BlendBuildSpec unused;
+        if (!decode_surface_blob(blob, len, spec, unused, false, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const Held* held = from != nullptr ? &from->held : nullptr;
+        const TopoDS_Shape shape = build_patch(base, held, spec, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides." : message);
+            return nullptr;
+        }
+        auto made = hold(shape, 0.0);
+        if (from != nullptr) inherit_about(made->held, from->held);
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+LimeShape* lime_tree_blend_surface(const LimeShape* from, const double* blob, int len, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (from == nullptr) {
+            set_error(error, "A blend needs two open edges or chains. Pick one chain on each sheet.");
+            return nullptr;
+        }
+        std::string message;
+        PatchBuildSpec unused;
+        BlendBuildSpec spec;
+        if (!decode_surface_blob(blob, len, unused, spec, true, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        const TopoDS_Shape shape = build_blend(from->held.shape, &from->held, spec, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not bridge these edges. Move them closer, or lower the tension." : message);
+            return nullptr;
+        }
+        auto made = hold(shape, 0.0);
+        inherit_about(made->held, from->held);
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// 1 and `out` set, or 0 and `error` set.
 int lime_tree_distance(
     const LimeShape* shape,

@@ -119,6 +119,6 @@ fn a_feature_root_refuses_a_cut_and_a_second_source() {
     }));
     assert_eq!(
         hole["error"],
-        "A new solid starts from an extrude, a revolve, a loft, a sweep, or a sheet."
+        "A new solid starts from an extrude, a revolve, a loft, a sweep, a sheet, or a patch."
     );
 }
