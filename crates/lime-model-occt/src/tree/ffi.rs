@@ -554,6 +554,40 @@ extern "C" {
         point: *const f64,
         error: *mut *mut c_char,
     ) -> *mut c_char;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_eval_nurbs_curve(
+        poles: *const f64,
+        npoles: c_int,
+        weights: *const f64,
+        degree: c_int,
+        knots: *const f64,
+        mults: *const c_int,
+        nknots: c_int,
+        periodic: c_int,
+        params: *const f64,
+        nparams: c_int,
+        out: *mut f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_eval_nurbs_surface(
+        poles: *const f64,
+        nu: c_int,
+        nv: c_int,
+        weights: *const f64,
+        degree_u: c_int,
+        degree_v: c_int,
+        knots_u: *const f64,
+        mults_u: *const c_int,
+        nknots_u: c_int,
+        knots_v: *const f64,
+        mults_v: *const c_int,
+        nknots_v: c_int,
+        params: *const f64,
+        nparams: c_int,
+        out: *mut f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
     pub(super) fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
     // --- A10.
     pub(super) fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;

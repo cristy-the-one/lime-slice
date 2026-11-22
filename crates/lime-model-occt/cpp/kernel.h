@@ -1048,6 +1048,42 @@ TopoDS_Shape build_split_face(
 /// Debug builds only, for tests: the cheap checks of a text build next to the exact calls they stand in for, on the face nearest
 /// `point`, as JSON.
 std::string text_checks_json(const TopoDS_Shape& shape, const double point[3]);
+
+/// Debug builds only. Points of the same `Geom_BSplineCurve` a profile NURBS edge is built from, one xyz per parameter.
+/// Empty knots mean the clamped or periodic vector `nurbs-eval.ts` builds. Not an MCP tool.
+bool eval_nurbs_curve(
+    const double* poles_xyz,
+    int npoles,
+    const double* weights,
+    int degree,
+    const double* knots,
+    const int* mults,
+    int nknots,
+    bool periodic,
+    const double* params,
+    int nparams,
+    double* out_xyz,
+    std::string& error);
+
+/// Debug builds only. Points of a tensor-product `Geom_BSplineSurface`. Poles are u-major, `nu` by `nv`.
+/// Empty knots mean the clamped vector `nurbs-eval.ts` builds. Not an MCP tool.
+bool eval_nurbs_surface(
+    const double* poles_xyz,
+    int nu,
+    int nv,
+    const double* weights,
+    int degree_u,
+    int degree_v,
+    const double* knots_u,
+    const int* mults_u,
+    int nknots_u,
+    const double* knots_v,
+    const int* mults_v,
+    int nknots_v,
+    const double* params_uv,
+    int nparams,
+    double* out_xyz,
+    std::string& error);
 #endif
 
 }  // namespace lime_occt

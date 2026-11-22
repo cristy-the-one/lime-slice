@@ -6,7 +6,7 @@
 import { readSavedTree } from "../model-tree-file.ts";
 import { toSolidOp } from "../model-space.ts";
 import { withoutSketch } from "../model-request.ts";
-import { evalNurbsCurve2D } from "../modeling/nurbs-eval.ts";
+import { evalNurbsCurve2D, sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
 import { sketchMesh } from "./draw.ts";
 import { frameOf } from "./frame.ts";
 import { curveOf } from "./geom.ts";
@@ -165,6 +165,48 @@ if ("op" in elbowBuilt) {
 const spineSketch = addNurbs(emptySketch({ origin: [0, 0, 0], turn: [90, 0, 0] }), [[0, 0], [0, 15], [15, 30], [30, 30]], { degree: 3 }).sketch;
 const curve3d = sketchChainToCurve3D(spineSketch);
 check("sketchChainToCurve3D emits exact Curve3D::Nurbs", !!curve3d && curve3d.kind === "nurbs" && curve3d.poles.length === 4);
+
+// 6. A closed control-point spline with custom knots is sampled as the kernel's periodic curve.
+const closedPoles: [number, number][] = [[0, 0], [12, 3], [16, 14], [4, 18], [-6, 11], [-4, 2]];
+const closedKnots = [0, 0.35, 0.8, 1.15, 1.7, 2.4, 3.1];
+const closedMults = [1, 1, 1, 1, 1, 1, 1];
+const closedSteps = Math.max(24, closedPoles.length * 16);
+const closedAdded = addNurbs(emptySketch(), [...closedPoles, closedPoles[0]!], {
+  degree: 3,
+  knots: closedKnots,
+  mults: closedMults,
+});
+const closedCurve = curveOf(closedAdded.sketch, closedAdded.sketch.entities.find((entity) => entity.id === closedAdded.id)!);
+const periodicSamples = sampleNurbsCurve2D(
+  { poles: closedPoles, degree: 3, knots: closedKnots, mults: closedMults, periodic: true },
+  closedSteps,
+);
+const openSamples = sampleNurbsCurve2D(
+  { poles: closedPoles, degree: 3, knots: closedKnots, mults: closedMults },
+  closedSteps,
+);
+const sampleGap = (a: readonly [number, number][], b: readonly [number, number][]) => {
+  if (a.length !== b.length) return Infinity;
+  let worst = 0;
+  for (let i = 0; i < a.length; i += 1) worst = Math.max(worst, Math.hypot(a[i]![0] - b[i]![0], a[i]![1] - b[i]![1]));
+  return worst;
+};
+const preview = closedCurve && closedCurve.kind === "spline" ? closedCurve.samples : [];
+const periodicGap = sampleGap(preview, periodicSamples);
+// The old path (custom knots, not periodic) has a different span count, so the arrays differ in length.
+// Compare each preview point to the nearest sample of that open curve.
+const openGap = preview.reduce((worst, point) => {
+  let nearest = Infinity;
+  for (const other of openSamples) nearest = Math.min(nearest, Math.hypot(point[0] - other[0], point[1] - other[1]));
+  return Math.max(worst, nearest);
+}, 0);
+const seam = preview.length >= 2 ? Math.hypot(preview[0]![0] - preview[preview.length - 1]![0], preview[0]![1] - preview[preview.length - 1]![1]) : Infinity;
+console.log(`closed-custom-knots preview periodicGapMm=${periodicGap} openGapMm=${openGap} seamMm=${seam} samples=${preview.length}`);
+check(
+  "a closed spline with custom knots is sampled as the periodic curve, seam closed",
+  !!closedCurve && closedCurve.kind === "spline" && closedCurve.closed && periodicGap < 1e-9 && openGap > 0.1 && seam < 1e-9,
+  `periodicGap=${periodicGap} openGap=${openGap} seam=${seam} samples=${preview.length}`,
+);
 
 if (failed) {
   console.error(`${failed} checks failed`);

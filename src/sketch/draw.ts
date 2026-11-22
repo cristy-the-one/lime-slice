@@ -79,14 +79,14 @@ export function sketchMesh(editor: SketchEditor, frame: SketchFrame | null, grid
         if (poly.length >= 2) strokes.push({ xyz: flat(frame, poly), role: "hint" });
         if (editor.showCurvatureComb) {
           const meta = curve.nurbs;
-          const periodic = meta.closed && !meta.knots?.length;
+          const periodic = meta.closed;
           const comb = curvatureComb2D(
             {
               poles: meta.poles,
               ...(meta.weights ? { weights: meta.weights } : {}),
               ...(meta.degree !== undefined ? { degree: meta.degree } : {}),
-              ...(!periodic && meta.knots ? { knots: meta.knots } : {}),
-              ...(!periodic && meta.mults ? { mults: meta.mults } : {}),
+              ...(meta.knots && meta.knots.length > 0 ? { knots: meta.knots } : {}),
+              ...(meta.mults && meta.mults.length > 0 ? { mults: meta.mults } : {}),
               ...(periodic ? { periodic: true } : {}),
             },
             { samplesPerSpan: 12 },

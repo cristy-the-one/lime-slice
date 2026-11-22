@@ -373,6 +373,23 @@ impl Store {
                 let text = shape.test_text(point).map_err(Failure::Message)?;
                 Ok(Answer::Plain(text))
             }
+            #[cfg(lime_occt_test_hooks)]
+            Request::EvalNurbs { curve, surface } => {
+                let points = match (curve, surface) {
+                    (Some(curve), None) => {
+                        super::shape::eval_nurbs_curve_points(&curve).map_err(Failure::Message)?
+                    }
+                    (None, Some(surface)) => {
+                        super::shape::eval_nurbs_surface_points(&surface).map_err(Failure::Message)?
+                    }
+                    _ => {
+                        return Err(Failure::Message(
+                            "evalNurbs takes either a curve or a surface.".into(),
+                        ))
+                    }
+                };
+                Ok(Answer::Plain(json!({ "points": points }).to_string()))
+            }
             // --- A5. Edges step `node` made, found on the solid the tree is showing. ---
             Request::StepEdges { key, node, filter } => self.step_edge_indexes(key, node, filter),
             // K4: the face's loops, read from the solid the node already holds.
