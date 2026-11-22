@@ -37,7 +37,7 @@ sources:
 | --- | --- |
 | `dev` | `vite --port 43117` |
 | `build` | `tsc --noEmit && vite build` |
-| `test:unit` | `node tools/run-unit.mjs` |
+| `test:unit` | `node tools/run-unit.mjs` (a pool: `LIME_UNIT_JOBS`, else the smaller of the cores and 8; a `# serial` line runs alone afterwards; failures are listed at the end) |
 | `test:smoke` | Playwright, `--grep-invert @perf`, over the spec list in that script |
 | `test:perf` | Playwright `--grep @perf` on `e2e/model-speed.spec.ts` |
 | `test:engine` | Playwright against a release `lime-slice serve`, workers 1 |

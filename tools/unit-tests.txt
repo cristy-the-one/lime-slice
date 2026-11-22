@@ -1,5 +1,6 @@
 # Unit tests for `npm run test:unit`, one file per line, in the order they run.
 # The list lives here because one npm script of every file is longer than Windows allows (8191).
+# A trailing `# serial` runs that file alone, after the others, when it cannot share the machine.
 src/slice-action.test.ts
 src/ui/commands.test.ts
 src/prefs.test.ts
@@ -185,7 +186,7 @@ mcp/recipe-horology.test.ts
 mcp/graham-port.test.ts
 mcp/clock-parts.test.ts
 mcp/clock-couple.test.ts
-mcp/mesh-section.test.ts
+mcp/mesh-section.test.ts # serial — 200k triangles x 45 planes must finish under 2000 ms, and that misses when other files share the cores
 mcp/sections.test.ts
 src/sim/recipe.test.ts
 src/sim/study.test.ts
