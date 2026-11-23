@@ -11,11 +11,13 @@ import { gearOf, rootSpec, type PrimitiveSpec } from "../../src/model-primitive.
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
 import { decodeSurfaceInspect } from "../../src/model-reply.ts";
 import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, solidView, stepGuard } from "../../src/modeling/model-calls.ts";
-import { onFaceIndex } from "../../src/modeling/bake.ts";
+import { bakeOp, onFaceIndex } from "../../src/modeling/bake.ts";
 import { checkReply } from "../../src/modeling/part-reads.ts";
 import { exprLeaves } from "../../src/modeling/links.ts";
 import { type Affine, IDENTITY_POSE, isIdentity, posedBounds, seatLift, thenPose, typedPoseOf } from "../../src/model-space.ts";
-import { newTree, pathTo, type ModelOp, type ModelTree, type NodeId } from "../../src/model-tree.ts";
+import { featureObjectName, isFeatureOp, newTree, pathTo, type ModelOp, type ModelTree, type NodeId } from "../../src/model-tree.ts";
+import { OP_SCHEMA, validate } from "../schema.ts";
+import { nurbsSurfaceProblem } from "../nurbs-surface-checks.ts";
 import { sketchOutline, type PickReads } from "../../src/recipe/picks.ts";
 import { transitionStaleBy } from "../../src/model-transition.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, workplaneOwn, isGlobalFrame, workplaneOnBed, workplaneOnFace } from "../../src/workplane.ts";
@@ -955,7 +957,75 @@ function fastenerArgs(input: Record<string, unknown>): { ok: true; args: Record<
   return { ok: true, args: next };
 }
 
+/**
+ * --- Organic surfaces S6. A part whose root is a surface: `solid_new {feature}` with a nurbsSurface or a sheet op, as
+ * the app's NURBS tool makes one (src/app/model/create.ts createFeatureSolid: an `open` of a feature root). A model_apply
+ * of either kind needs a part that is not a closed solid, and a sheet op on a solid keeps the solid's faces, so this is
+ * the way to start from a surface. The feature is baked as model_apply bakes it, in the part's own frame.
+ */
+async function featureSolidNew(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (input.primitive !== undefined || input.gear !== undefined || input.coupon !== undefined || input.kind !== undefined) {
+    return refuse("conflicting-arguments", "Give a feature or a primitive, gear, part or coupon, not both.");
+  }
+  const feature = input.feature as Record<string, unknown>;
+  if (feature.kind !== "nurbsSurface" && feature.kind !== "sheet") {
+    return refuse("bad-op", "solid_new's feature is a nurbsSurface or a sheet. Start other parts from a primitive.");
+  }
+  const problem = validate(OP_SCHEMA, feature, "feature") ?? nurbsSurfaceProblem(feature, "feature");
+  if (problem) return refuse("bad-op", problem);
+  const ctx = { pose: IDENTITY_POSE, solid: null, plane: GLOBAL_WORKPLANE, expand: () => ({ faces: [], faceBy: () => ({ reason: "A part that starts from a surface has no faces to pick yet." }) }) as never, nodeOf: () => null, hasNode: () => false };
+  const baked = bakeOp(feature, ctx);
+  if ("reason" in baked) return refusePartReason(baked.reason, "bad-op");
+  if (!isFeatureOp(baked.op)) return refuse("bad-op", "solid_new's feature is a nurbsSurface or a sheet.");
+  this.seq += 1;
+  const id = `obj_${this.seq}`;
+  const key = `mcp-${id}`;
+  const root = { kind: "feature" as const, op: baked.op };
+  const reply = await this.treeCall(openRequest(key, root, CHORD));
+  const error = typeof reply.error === "string" ? reply.error : "";
+  if (error) return refuse("kernel-refused", plainModelError(error, "create"));
+  const name = this.givenName(input.name) ?? featureObjectName(this.objects.map((row) => row.name), baked.op.kind);
+  const obj: PlateObject = {
+    id,
+    name,
+    fileName: `${baked.op.kind}.step`,
+    bytes: new Uint8Array(),
+    source: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    triangles: 1,
+    orient: [...ID_MATRIX],
+    scale: 1,
+    centered: true,
+    offset: { x: 0, y: 0, z: 0 },
+    seatMm: 0,
+    stepTolerance: STEP,
+    modelPose: IDENTITY_POSE,
+    workplane: GLOBAL_WORKPLANE,
+    tree: newTree(key, root, name, null),
+    solid: solidView(reply),
+    probes: new Map(),
+    supportEdits: [],
+    supportPaint: [],
+    seamPaint: [],
+    reinforcement: [],
+    objectSettings: {},
+    platedNode: null,
+  };
+  this.objects.push(obj);
+  this.selected = obj.id;
+  const open = Array.isArray(reply.nakedEdges) ? reply.nakedEdges.length : 0;
+  return {
+    ok: true,
+    object: obj.id,
+    fingerprint: obj.solid?.fingerprint ?? null,
+    bounds: obj.solid?.bounds ?? null,
+    frame: "part",
+    root: baked.op.kind,
+    ...(open > 0 ? { openEdges: open, note: "An open sheet: thicken it or sew it shut before it can be printed." } : {}),
+  };
+}
+
 async function solidNew(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (input.feature !== undefined) return this.featureSolidNew(input);
   // A gear: the gear op's fields (guide {kind:"gear"}), its base on Z = 0, centred on its axis.
   const gear = input.gear && typeof input.gear === "object" ? (input.gear as Record<string, unknown>) : null;
   if (gear && input.primitive !== undefined) return refuse("bad-argument", "Give a primitive or a gear, not both.");
@@ -1223,6 +1293,7 @@ export const modelMethods = {
   ensureTree,
   rebuildStale,
   solidNew,
+  featureSolidNew,
   meshBlock,
   opened,
   describe,
@@ -1238,7 +1309,7 @@ export const modelMethods = {
 
 export const modelHandlers: Record<string, ToolHandler> = {
   assembly_merge: (s, input) => s.assemblyMerge(input),
-  solid_new: (s, input) => input.coupon !== undefined ? s.fitCouponNew(input) : s.solidNew(input),
+  solid_new: (s, input) => input.coupon !== undefined && input.feature === undefined ? s.fitCouponNew(input) : s.solidNew(input),
   model_build: (s, input) => s.build(input),
   model_params: (s, input) => input.rebuild === true ? s.paramsRebuild(input) : s.paramsTool(input),
   model_define: (s, input) => s.defineTool(input),
