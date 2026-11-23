@@ -285,6 +285,7 @@ impl Store {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn open(
         &mut self,
         key: String,
