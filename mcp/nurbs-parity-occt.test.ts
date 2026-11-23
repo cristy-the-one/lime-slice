@@ -245,10 +245,10 @@ try {
 // --- S6: grids the TS side bakes (src/modeling/bake.ts applyRefinements: knot insertion and degree elevation) before
 // the kernel sees them. The evalNurbs hook builds a Geom_BSplineSurface from poles, weights, degrees, knots and mults,
 // so the baked grid goes to it as it is, and the kernel's evaluation of that grid is compared with the TS one. The
-// baked grid is also compared with the grid it came from, in TS: the refinement must not move the surface. The hook has
-// no periodic fields and does not evaluate the surface the kernel commits (where OCCT's own InsertUKnots and
-// IncreaseDegree run), so neither is covered here.
-async function kernelPoints(spec: NurbsSurface3D, params: [number, number][]): Promise<Xyz[]> {
+// baked grid is also compared with the grid it came from, in TS: the refinement must not move the surface. With
+// periodicU/V, insertU/V or elevateU/V the hook evaluates the surface the kernel commits (build_nurbs_surface: OCCT's own
+// periodic knots, InsertUKnots and IncreaseDegree), which the cases after these compare with the TS side.
+async function kernelPoints(spec: NurbsSurface3D, params: [number, number][], extra: Record<string, unknown> = {}): Promise<Xyz[]> {
   const text = await engine.modelTree(JSON.stringify({
     call: "evalNurbs",
     surface: {
@@ -258,6 +258,9 @@ async function kernelPoints(spec: NurbsSurface3D, params: [number, number][]): P
       degreeV: spec.degreeV ?? 3,
       ...(spec.knotsU ? { knotsU: spec.knotsU, multsU: spec.multsU } : {}),
       ...(spec.knotsV ? { knotsV: spec.knotsV, multsV: spec.multsV } : {}),
+      ...(spec.periodicU ? { periodicU: true } : {}),
+      ...(spec.periodicV ? { periodicV: true } : {}),
+      ...extra,
       params,
     },
   }));
@@ -301,6 +304,67 @@ for (const { name, ask } of refinements) {
     console.log(`NURBS_PARITY ${name} ${grid} kernelMaxMm=${kernelWorst.toExponential(12)} shapeMaxMm=${shapeWorst.toExponential(12)} samples=${params.length}`);
     check(`${name}: the kernel evaluates the TS-baked grid within 1e-6 mm`, kernelWorst < TOL_MM && params.length >= 50, `max=${kernelWorst} ${grid}`);
     check(`${name}: the baked grid is the original surface within 1e-6 mm`, shapeWorst < TOL_MM, `max=${shapeWorst} ${grid}`);
+  } catch (err) {
+    check(name, false, err instanceof Error ? err.message : String(err));
+  }
+}
+
+// --- S6: the kernel applying insert and elevate itself (build_nurbs_surface) against the grid the TS side bakes.
+for (const { name, ask } of refinements) {
+  try {
+    const baked = applyRefinements(weighted, ask);
+    if (typeof baked === "string") throw new Error(baked);
+    const params = refinedParams(baked);
+    const points = await kernelPoints(weighted, params, ask as Record<string, unknown>);
+    let worst = 0;
+    for (let i = 0; i < params.length; i += 1) {
+      const [u, v] = params[i]!;
+      worst = Math.max(worst, dist3(evalNurbsSurface3D(baked, u, v).point, points[i]!));
+    }
+    console.log(`NURBS_PARITY ${name} kernel-applied maxDistanceMm=${worst.toExponential(12)} samples=${params.length}`);
+    check(`${name}: the kernel's own refinement is the TS-baked grid within 1e-6 mm`, worst < TOL_MM && params.length >= 50, `max=${worst}`);
+  } catch (err) {
+    check(`${name} (kernel-applied)`, false, err instanceof Error ? err.message : String(err));
+  }
+}
+
+// --- S6: periodic surfaces, TS against the kernel's committed surface (periodic knots built by the op).
+function periodicParams(spec: NurbsSurface3D): [number, number][] {
+  const ku = resolveCurveKnots(spec.poles.length, spec.degreeU ?? 3, spec.knotsU, spec.multsU, spec.periodicU === true);
+  const kv = resolveCurveKnots(spec.poles[0]!.length, spec.degreeV ?? 3, spec.knotsV, spec.multsV, spec.periodicV === true);
+  const out: [number, number][] = [];
+  for (let i = 0; i < 12; i += 1) {
+    for (let j = 0; j < 12; j += 1) out.push([ku.uMin + ((ku.uMax - ku.uMin) * i) / 11, kv.uMin + ((kv.uMax - kv.uMin) * j) / 11]);
+  }
+  return out;
+}
+const ringPoles: Xyz[][] = [0, 1, 2, 3, 4, 5].map((iu) => {
+  const a = (Math.PI * 2 * iu) / 6;
+  return [0, 1, 2, 3].map((iv) => [12 * Math.cos(a), 12 * Math.sin(a), iv * 6 + (iu % 2) * 1.5] as Xyz);
+});
+const torusPoles: Xyz[][] = [0, 1, 2, 3, 4, 5].map((iu) => {
+  const a = (Math.PI * 2 * iu) / 6;
+  return [0, 1, 2, 3, 4, 5].map((iv) => {
+    const b = (Math.PI * 2 * iv) / 6;
+    const r = 20 + 6 * Math.cos(b);
+    return [r * Math.cos(a), r * Math.sin(a), 6 * Math.sin(b) + (iv === 2 ? 1 : 0)] as Xyz;
+  });
+});
+const periodicCases: { name: string; spec: NurbsSurface3D }[] = [
+  { name: "periodic-u-surface", spec: { poles: ringPoles, degreeU: 3, degreeV: 3, periodicU: true } },
+  { name: "periodic-both-surface", spec: { poles: torusPoles, degreeU: 3, degreeV: 3, periodicU: true, periodicV: true } },
+];
+for (const { name, spec } of periodicCases) {
+  try {
+    const params = periodicParams(spec);
+    const points = await kernelPoints(spec, params);
+    let worst = 0;
+    for (let i = 0; i < params.length; i += 1) {
+      const [u, v] = params[i]!;
+      worst = Math.max(worst, dist3(evalNurbsSurface3D(spec, u, v).point, points[i]!));
+    }
+    console.log(`NURBS_PARITY ${name} maxDistanceMm=${worst.toExponential(12)} samples=${params.length}`);
+    check(`${name} within 1e-6 mm`, worst < TOL_MM && params.length >= 50, `max=${worst}`);
   } catch (err) {
     check(name, false, err instanceof Error ? err.message : String(err));
   }
