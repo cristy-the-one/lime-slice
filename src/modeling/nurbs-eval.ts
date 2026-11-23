@@ -741,6 +741,9 @@ export const DEFAULT_PREVIEW_DENSITY = 4;
 /** The highest degree a NURBS surface takes: the schema's cap. */
 export const MAX_SURFACE_DEGREE = 8;
 
+/** The most poles a NURBS surface takes in each direction: the schema's cap. */
+export const MAX_SURFACE_POLES = 64;
+
 /** How far a pole may sit from its mirror image, in millimetres, for the grid to count as symmetric. */
 export const SYMMETRY_TOLERANCE_MM = 1e-6;
 
@@ -783,6 +786,7 @@ export function surfaceRefusal(spec: NurbsSurface3D): string | null {
   const degreeV = spec.degreeV ?? 3;
   if (!Number.isInteger(degreeU) || degreeU < 1 || !Number.isInteger(degreeV) || degreeV < 1) return "This NURBS surface could not be built.";
   if (degreeU > MAX_SURFACE_DEGREE || degreeV > MAX_SURFACE_DEGREE) return `A NURBS surface's degree is at most ${MAX_SURFACE_DEGREE}.`;
+  if (nu > MAX_SURFACE_POLES || nv > MAX_SURFACE_POLES) return `A NURBS surface has at most ${MAX_SURFACE_POLES} poles in each direction.`;
   if (nu < degreeU + 1) return `This surface needs at least ${degreeU + 1} poles in U for degree ${degreeU}.`;
   if (nv < degreeV + 1) return `This surface needs at least ${degreeV + 1} poles in V for degree ${degreeV}.`;
   if (spec.periodicU === true && nu < 3) return "A surface closed in U needs at least 3 poles in U.";
@@ -939,6 +943,7 @@ export function createSurfaceMesher() {
   }
 
   function evaluate(spec: NurbsSurface3D) {
+    let degenerate = false;
     const ur = uRows!;
     const vr = vRows!;
     const nu = spec.poles.length;
@@ -1020,13 +1025,16 @@ export function createSurfaceMesher() {
           normals64[at + 1] = ny / nlen;
           normals64[at + 2] = nz / nlen;
         } else {
-          normals64[at] = 0;
-          normals64[at + 1] = 0;
-          normals64[at + 2] = 1;
+          // A collapsed row or column (an apex): no normal here; it takes its neighbour's below.
+          normals64[at] = Number.NaN;
+          normals64[at + 1] = Number.NaN;
+          normals64[at + 2] = Number.NaN;
+          degenerate = true;
         }
         at += 3;
       }
     }
+    if (degenerate) fillDegenerateNormals(normals64, ur.count, vr.count);
   }
 
   return {
@@ -1051,6 +1059,32 @@ export function createSurfaceMesher() {
       return { positions, normals, indices, rows: uRows!.count, cols: vRows!.count };
     },
   };
+}
+
+/**
+ * A sample with no normal (NaN: the surface collapses to a point there, as at an apex) takes the normal of the nearest
+ * sample along U, then along V, that has one, so Zebra does not stripe the apex. +Z only when no sample has one.
+ */
+function fillDegenerateNormals(normals: Float64Array, rows: number, cols: number) {
+  const has = (i: number, j: number) => i >= 0 && i < rows && j >= 0 && j < cols && !Number.isNaN(normals[(i * cols + j) * 3]!);
+  const holes: number[] = [];
+  for (let i = 0; i < rows; i += 1) for (let j = 0; j < cols; j += 1) if (!has(i, j)) holes.push(i * cols + j);
+  for (const hole of holes) {
+    const i = Math.floor(hole / cols);
+    const j = hole % cols;
+    let from = -1;
+    for (let d = 1; d < Math.max(rows, cols) && from < 0; d += 1) {
+      for (const [a, b] of [[i + d, j], [i - d, j], [i, j + d], [i, j - d]] as const) {
+        if (has(a, b)) {
+          from = a * cols + b;
+          break;
+        }
+      }
+    }
+    normals[hole * 3] = from < 0 ? 0 : normals[from * 3]!;
+    normals[hole * 3 + 1] = from < 0 ? 0 : normals[from * 3 + 1]!;
+    normals[hole * 3 + 2] = from < 0 ? 1 : normals[from * 3 + 2]!;
+  }
 }
 
 /** Positions, normals and triangle indexes at `samplesPerSpan` samples along each span, in fresh arrays. */
@@ -1346,6 +1380,11 @@ function resolvedBoth(spec: NurbsSurface3D): { u: ResolvedKnots; v: ResolvedKnot
   };
 }
 
+/** A refined grid, or the sentence when it breaks a cap (more than 64 poles in a direction). */
+function checkedSurface(spec: NurbsSurface3D): NurbsSurface3D | string {
+  return surfaceRefusal(spec) ?? spec;
+}
+
 /** Insert `times` copies of `param` along U (every column) or V (every row). The surface does not move. */
 export function insertSurfaceKnot(spec: NurbsSurface3D, axis: "u" | "v", param: number, times = 1): NurbsSurface3D | string {
   const refusal = surfaceRefusal(spec);
@@ -1368,7 +1407,7 @@ export function insertSurfaceKnot(spec: NurbsSurface3D, axis: "u" | "v", param: 
         weights[iu]![iv] = made.weights[iu]!;
       }
     }
-    return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: rk.degree, degreeV: both.v.degree, knotsU: collapsed.knots, multsU: collapsed.mults, knotsV: both.v.knots, multsV: both.v.mults };
+    return checkedSurface({ poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: rk.degree, degreeV: both.v.degree, knotsU: collapsed.knots, multsU: collapsed.mults, knotsV: both.v.knots, multsV: both.v.mults });
   }
   const rk = both.v;
   const rows = Array.from({ length: nu }, (_, iu) => insertHom(rk.flat, rowPoles(spec, iu), rk.degree, param, count));
@@ -1380,7 +1419,7 @@ export function insertSurfaceKnot(spec: NurbsSurface3D, axis: "u" | "v", param: 
     poles.push(made.poles);
     weights.push(made.weights);
   }
-  return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: both.u.degree, degreeV: rk.degree, knotsU: both.u.knots, multsU: both.u.mults, knotsV: collapsed.knots, multsV: collapsed.mults };
+  return checkedSurface({ poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: both.u.degree, degreeV: rk.degree, knotsU: both.u.knots, multsU: both.u.mults, knotsV: collapsed.knots, multsV: collapsed.mults });
 }
 
 /** Raise the multiplicity at `param` to the degree, a sharp crease that does not move the surface. */
@@ -1551,7 +1590,7 @@ export function elevateSurfaceDegree(spec: NurbsSurface3D, axis: "u" | "v", step
         weights[iu]![iv] = made.weights[iu]!;
       }
     }
-    return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: columns[0]!.degree, degreeV: both.v.degree, knotsU: collapsed.knots, multsU: collapsed.mults, knotsV: both.v.knots, multsV: both.v.mults };
+    return checkedSurface({ poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: columns[0]!.degree, degreeV: both.v.degree, knotsU: collapsed.knots, multsU: collapsed.mults, knotsV: both.v.knots, multsV: both.v.mults });
   }
   const rk = both.v;
   const rows = Array.from({ length: nu }, (_, iu) => elevateCurve(rk.flat, rowPoles(spec, iu), rk.degree, count));
@@ -1563,5 +1602,102 @@ export function elevateSurfaceDegree(spec: NurbsSurface3D, axis: "u" | "v", step
     poles.push(made.poles);
     weights.push(made.weights);
   }
-  return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: both.u.degree, degreeV: rows[0]!.degree, knotsU: both.u.knots, multsU: both.u.mults, knotsV: collapsed.knots, multsV: collapsed.mults };
+  return checkedSurface({ poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: both.u.degree, degreeV: rows[0]!.degree, knotsU: both.u.knots, multsU: both.u.mults, knotsV: collapsed.knots, multsV: collapsed.mults });
+}
+
+/**
+ * Why a grid does not pair across the part's X = 0 plane, for the sentence beside the Symmetry box: "closed" (a closed
+ * direction), "knots" (the knots are not spaced the same from both ends, which Make symmetric cannot fix without moving
+ * the surface), "weights", or "poles". Null when it pairs.
+ */
+export function symmetryReason(spec: NurbsSurface3D, tolerance = SYMMETRY_TOLERANCE_MM): "closed" | "knots" | "weights" | "poles" | null {
+  if (symmetryPairing(spec, tolerance)) return null;
+  if (surfaceRefusal(spec)) return "poles";
+  const along = mirrorDirection(spec);
+  if (along === "u" ? spec.periodicU === true : spec.periodicV === true) return "closed";
+  if (along === "u" ? !knotsMirror(spec.knotsU, spec.multsU) : !knotsMirror(spec.knotsV, spec.multsV)) return "knots";
+  const flat = { ...spec, weights: undefined };
+  if (spec.weights && symmetryPairing(flat, tolerance)) return "weights";
+  return "poles";
+}
+
+/** The index direction that runs most along the part's X: the one Make symmetric pairs by. */
+export function mirrorDirection(spec: NurbsSurface3D): SymmetryPairing {
+  const nu = spec.poles.length;
+  const nv = spec.poles[0]?.length ?? 0;
+  if (nu < 1 || nv < 1) return "u";
+  const alongU = Math.abs(spec.poles[nu - 1]![0]![0] - spec.poles[0]![0]![0]);
+  const alongV = Math.abs(spec.poles[0]![nv - 1]![0] - spec.poles[0]![0]![0]);
+  return alongV > alongU ? "v" : "u";
+}
+
+/** An axis shorter on screen than this share of the longest part axis points too much at the camera to drag along. */
+export const FORESHORTENED_SHARE = 0.2;
+
+/**
+ * The screen motion of one millimetre along the dragged axis, as `{px, py}` pixels, or null when the axis points so
+ * nearly at the camera that a pixel would move the pole more than `1 / (FORESHORTENED_SHARE × longest)` millimetres:
+ * `want` is that axis on screen, `others` the on-screen lengths (pixels per millimetre) of the part's three axes.
+ */
+export function axisDragScale(want: { px: number; py: number }, others: readonly number[]): { px: number; py: number } | null {
+  const longest = Math.max(0, ...others.filter(Number.isFinite));
+  const length = Math.hypot(want.px, want.py);
+  if (!(longest > 0) || !(length >= FORESHORTENED_SHARE * longest)) return null;
+  return want;
+}
+
+/** The grid as one canonical string: the same surface gives the same text whatever order its fields were written in. */
+export function surfaceKey(spec: NurbsSurface3D & { insertU?: readonly (readonly number[])[]; insertV?: readonly (readonly number[])[]; elevateU?: number; elevateV?: number }): string {
+  const weights = spec.weights && spec.weights.some((row) => row.some((w) => w !== 1)) ? spec.weights : null;
+  return JSON.stringify([
+    spec.poles,
+    weights,
+    spec.degreeU ?? 3,
+    spec.degreeV ?? 3,
+    spec.knotsU ?? null,
+    spec.multsU ?? null,
+    spec.knotsV ?? null,
+    spec.multsV ?? null,
+    spec.periodicU === true,
+    spec.periodicV === true,
+    spec.insertU?.length ? spec.insertU : null,
+    spec.insertV?.length ? spec.insertV : null,
+    spec.elevateU ?? null,
+    spec.elevateV ?? null,
+  ]);
+}
+
+/**
+ * Apply the refinements the schema lets a NURBS op ask for (`insertU`/`insertV` as `[parameter, times]`, then
+ * `elevateU`/`elevateV` as the degree to raise to), in the kernel's order, with the same exact maths the sculpt tool
+ * uses: the result is the grid the kernel would build, as plain poles, weights, knots and degrees. A sentence when the
+ * grid cannot be refined here (a closed direction) or the result is not a valid surface.
+ */
+export function applyRefinements(
+  spec: NurbsSurface3D,
+  refine: { insertU?: readonly (readonly number[])[]; insertV?: readonly (readonly number[])[]; elevateU?: number; elevateV?: number },
+): NurbsSurface3D | string {
+  const asks = (refine.insertU?.length ?? 0) + (refine.insertV?.length ?? 0) > 0 || refine.elevateU !== undefined || refine.elevateV !== undefined;
+  const refusal = surfaceRefusal(spec);
+  if (refusal) return refusal;
+  if (!asks) return spec;
+  if (spec.periodicU || spec.periodicV) return "Knot insertion and degree elevation are for a clamped NURBS surface, not a closed one.";
+  let out: NurbsSurface3D | string = spec;
+  for (const [axis, list] of [["u", refine.insertU], ["v", refine.insertV]] as const) {
+    for (const pair of list ?? []) {
+      if (typeof out === "string") return out;
+      const [param, times] = [pair[0], pair[1]];
+      if (!Number.isFinite(param) || !Number.isInteger(times) || (times ?? 0) < 1) return `The ${axis.toUpperCase()} knots do not match this surface. They must increase, and their multiplicities must add up to the poles and the degree.`;
+      out = insertSurfaceKnot(out, axis, param!, times!);
+    }
+  }
+  for (const [axis, want] of [["u", refine.elevateU], ["v", refine.elevateV]] as const) {
+    if (typeof out === "string") return out;
+    if (want === undefined) continue;
+    if (!Number.isInteger(want) || want < 1 || want > MAX_SURFACE_DEGREE) return `A NURBS surface's degree is at most ${MAX_SURFACE_DEGREE}.`;
+    const now = axis === "u" ? out.degreeU ?? 3 : out.degreeV ?? 3;
+    if (want > now) out = elevateSurfaceDegree(out, axis, want - now);
+  }
+  if (typeof out === "string") return out;
+  return surfaceRefusal(out) ?? out;
 }

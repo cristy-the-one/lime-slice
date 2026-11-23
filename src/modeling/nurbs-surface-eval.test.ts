@@ -16,6 +16,10 @@ import {
   surfaceRefusal,
   symmetryError,
   symmetryPairing,
+  axisDragScale,
+  surfaceKey,
+  symmetryReason,
+  MAX_SURFACE_POLES,
   type NurbsSurface3D,
   type Vec3,
 } from "./nurbs-eval.ts";
@@ -295,6 +299,46 @@ function moved(before: readonly (readonly Vec3[])[], after: readonly (readonly V
   const box = opBox({ kind: "nurbsSurface", poles: [[[-5, 0, 1], [-5, 10, 2]], [[5, 0, 3], [5, 10, -4]]], degreeU: 1, degreeV: 1 });
   check("a NURBS step's box is its poles' box", JSON.stringify(box) === JSON.stringify({ min: [-5, 0, -4], max: [5, 10, 3] }), JSON.stringify(box));
   check("a NURBS step's box anchors its centre", JSON.stringify(box && boxPoint(box, "centre")) === JSON.stringify([0, 5, -0.5]));
+}
+
+// --- Review fixes: the grid cap, the foreshortened axis, why symmetry is off, comparing by value, apex normals.
+{
+  check("65 poles in a direction is refused", surfaceRefusal({ poles: bicubicGrid(65, 4) }) === `A NURBS surface has at most ${MAX_SURFACE_POLES} poles in each direction.`);
+  check("insert past 64 poles is refused", typeof insertSurfaceKnot({ poles: bicubicGrid(64, 4) }, "u", 0.5, 1) === "string");
+  check("raise degree past 64 poles is refused", typeof elevateSurfaceDegree({ poles: bicubicGrid(60, 4) }, "u", 1) === "string");
+  // An axis at 40 % of the longest moves; at 10 % it is too foreshortened; 1 px never moves more than 1 / (0.2 × longest) mm.
+  check("a visible axis drags", JSON.stringify(axisDragScale({ px: 2, py: 0 }, [5, 3, 2])) === JSON.stringify({ px: 2, py: 0 }));
+  check("an axis pointing at the camera does not drag", axisDragScale({ px: 0.5, py: 0 }, [5, 3, 0.5]) === null);
+  check("just above the old 0.05 px/mm it still refuses", axisDragScale({ px: 0.06, py: 0 }, [5, 3, 0.06]) === null);
+  check("nothing on screen does not drag", axisDragScale({ px: 0, py: 0 }, [0, 0, 0]) === null);
+  const asymKnots = { poles: bicubicGrid(), knotsU: [0, 0.1, 0.2, 0.5, 0.7, 1], multsU: [4, 1, 1, 1, 1, 4] };
+  check("knots that do not mirror are named as the reason", symmetryReason(asymKnots) === "knots" && typeof makeSymmetric(asymKnots) === "string");
+  const crease = creaseSurface({ poles: bicubicGrid() }, "u", 0.3);
+  check("a crease off the middle breaks symmetry by its knots", typeof crease !== "string" && symmetryReason(crease) === "knots");
+  const heavy = bicubicGrid().map((row) => row.map(() => 1));
+  heavy[1]![2] = 2;
+  check("an uneven weight is named as the reason", symmetryReason({ poles: bicubicGrid(), weights: heavy }) === "weights");
+  check("a symmetric grid has no reason", symmetryReason({ poles: bicubicGrid() }) === null);
+  const a = { poles: bicubicGrid(4, 4), degreeU: 3, degreeV: 3 };
+  const b = { degreeV: 3, degreeU: 3, poles: bicubicGrid(4, 4), weights: bicubicGrid(4, 4).map((row) => row.map(() => 1)) };
+  check("the same surface written in another order compares equal", surfaceKey(a) === surfaceKey(b));
+  check("a moved pole compares different", surfaceKey(a) !== surfaceKey({ ...a, poles: sculptGrid(a.poles, { iu: 1, iv: 1, mode: "pole" }, "z", 1e-9, [0, 0, 1], 0, false) }));
+  // An apex: the first U row collapses to one point. Its samples take the next row's normals, not +Z.
+  const cone: NurbsSurface3D = { poles: Array.from({ length: 5 }, (_, iu) => Array.from({ length: 5 }, (_, iv) => [iu === 0 ? 0 : iu * 4, iu === 0 ? 0 : (iv - 2) * 6, iu === 0 ? 0 : iu * 3] as Vec3)) };
+  const s = createSurfaceMesher().samples(cone, 4);
+  if (typeof s === "string") check("the apex surface samples", false, s);
+  else {
+    let plusZ = 0;
+    let unit = true;
+    for (let j = 0; j < s.cols; j += 1) {
+      const n = [s.normals[j * 3]!, s.normals[j * 3 + 1]!, s.normals[j * 3 + 2]!];
+      if (n[0] === 0 && n[1] === 0 && n[2] === 1) plusZ += 1;
+      if (Math.abs(Math.hypot(n[0]!, n[1]!, n[2]!) - 1) > 1e-9) unit = false;
+      const next = [s.normals[(s.cols + j) * 3]!, s.normals[(s.cols + j) * 3 + 1]!, s.normals[(s.cols + j) * 3 + 2]!];
+      if (Math.hypot(n[0]! - next[0]!, n[1]! - next[1]!, n[2]! - next[2]!) > 1e-12) unit = false;
+    }
+    check("apex samples take the neighbouring row's normal, not +Z", plusZ === 0 && unit, `plusZ=${plusZ}`);
+  }
 }
 
 if (failed) throw new Error(`${failed} nurbs surface checks failed`);
