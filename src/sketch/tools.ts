@@ -30,6 +30,8 @@ import {
   addCircle,
   addLine,
   addNurbs,
+  fitSplineArrays,
+  splineEndsClosed,
   addPoint,
   addSpline,
   pointNear,
@@ -1058,7 +1060,8 @@ function ensurePoint(sketch: SketchData, at: Pt): { sketch: SketchData; id: numb
 }
 
 function retargetSpline(sketch: SketchData, id: number, through: number[]): SketchData {
-  return { ...sketch, entities: sketch.entities.map((entity) => (entity.id === id && entity.kind === "spline" ? { ...entity, through: [...through] } : entity)) };
+  // Weights and knots name the old points; any that no longer fit are dropped.
+  return { ...sketch, entities: sketch.entities.map((entity) => (entity.id === id && entity.kind === "spline" ? fitSplineArrays({ ...entity, through: [...through] }, splineEndsClosed(sketch, { ...entity, through })) : entity)) };
 }
 
 /** The tangent arc's start: the end of the last line, and that line's direction. */
