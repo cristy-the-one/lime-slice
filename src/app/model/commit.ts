@@ -10,8 +10,7 @@ import { syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
 import { S } from "./shared";
-import { pushToast } from "../../ui/toasts";
-import { isOpenSheet, SHEET_NOT_PRINTABLE } from "../../model-sheet";
+import { isOpenSheet } from "../../model-sheet";
 import { recentSolid } from "./apply";
 import { placePiece } from "./create";
 import { treeOf } from "./edges";
@@ -36,12 +35,6 @@ export function commitModel() {
   if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || S.parked === at.key) return;
   // --- D12. A part cut for an export target stays as the plate had it: `exportedPart` says why, where it matters.
   if (exportCutTo(tree, plan.to)) return;
-  // --- Organic surfaces S4 (U6): a sheet a step built does not go to the plate. A surfaces-only STEP is no sheet
-  // (`isOpenSheet`): it commits as it always did.
-  if (isOpenSheet(solid, tree.root, plan.to)) {
-    pushToast(SHEET_NOT_PRINTABLE, "info");
-    return;
-  }
   const node = tree.nodes.get(plan.to);
   const mesh = solid?.id === plan.to ? node?.mesh ?? meshOf(solid) : held != null ? node?.mesh : null;
   if (!node || !mesh) return;
@@ -57,7 +50,14 @@ export function commitModel() {
   if (keep) state.partScale = keep.partScale;
   else if (plan.resetScale) state.partScale = 1;
   setBrep(at.objectId, mesh.step);
-  modelTrees.set(at.key, { ...withNode(tree, plan.to, { mesh }), committed: plan.to });
+  // --- Organic surfaces S4: an open sheet goes to the plate like any part, so its mesh there follows Model (a sculpt or
+  // an edit shows in Prepare) and it saves and reopens. The node keeps the kernel's verdict (`isOpenSheet`: not a solid,
+  // open borders, never a surfaces-only STEP root): Prepare marks the part, and Slice and Export stop on it
+  // (`sheetPartNote`). A node shown from its stored mesh alone keeps the mark it had.
+  const sheet = solid?.id === plan.to ? isOpenSheet(solid, tree.root, plan.to) : node.sheet === true;
+  const { sheet: _was, ...plain } = tree.nodes.get(plan.to) ?? node;
+  const nodes = new Map(tree.nodes).set(plan.to, { ...plain, mesh, ...(sheet ? { sheet: true as const } : {}) });
+  modelTrees.set(at.key, { ...tree, nodes, committed: plan.to });
   // A Prepare undo can have taken off the piece of a split this commit crosses on its way down: the
   // plate gets it back. A piece removed by hand stays removed while the plate stays below its split.
   syncPlateFromState();

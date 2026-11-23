@@ -43,6 +43,8 @@ interface SavedNode {
   run?: RunMark;
   /** --- docs/plan-native-recipes.md 7.1. A recipe's queued step: the first step it was built with. */
   builtWith?: NodeId;
+  /** --- S4: the step's shape is an open sheet (see `ModelNode.sheet`). */
+  sheet?: true;
 }
 
 /**
@@ -94,6 +96,7 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
         ...(node.plugin ? { plugin: node.plugin } : {}),
         ...(node.run ? { run: node.run } : {}),
         ...(node.builtWith !== undefined ? { builtWith: node.builtWith } : {}),
+        ...(node.sheet ? { sheet: true as const } : {}),
       };
     });
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
@@ -168,6 +171,7 @@ export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, f
       ...(node.plugin ? { plugin: node.plugin } : {}),
       ...(node.run ? { run: node.run } : {}),
       ...(node.builtWith !== undefined ? { builtWith: node.builtWith } : {}),
+      ...(node.sheet ? { sheet: true as const } : {}),
       ...(mesh && node.id === saved.committed ? { mesh } : {}),
     });
   }
@@ -247,6 +251,7 @@ function readNode(value: unknown): SavedNode | null {
     ...(plugin ? { plugin } : {}),
     ...(run ? { run } : {}),
     ...(isId(value.builtWith) ? { builtWith: value.builtWith } : {}),
+    ...(value.sheet === true ? { sheet: true as const } : {}),
   };
 }
 

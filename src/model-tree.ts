@@ -626,6 +626,11 @@ export interface ModelNode {
    * its own. An app that does not know the mark reads it as an ordinary step.
    */
   builtWith?: NodeId;
+  /**
+   * --- Organic surfaces S4: the kernel answered this node with an open sheet (`isOpenSheet`: not a solid, open borders,
+   * not a surfaces-only STEP root). Set when the node is committed to the plate; the slice and export gates read it.
+   */
+  sheet?: true;
 }
 
 /**
@@ -983,6 +988,20 @@ export function renumberedSteps(op: ModelOp, ids: ReadonlyMap<NodeId, NodeId>): 
     default:
       return op;
   }
+}
+
+/**
+ * `tree` with everything a build left on its nodes dropped: fingerprints, plate meshes and sheet marks. A root edit
+ * rebuilds every node under the same ids, so a node's old plate mesh must not go back to the plate (`commitModel` takes
+ * a node's stored mesh first). The Prepare state (`keep`) stays.
+ */
+export function withoutBuilds(tree: ModelTree): ModelTree {
+  const nodes = new Map(tree.nodes);
+  for (const [id, node] of nodes) {
+    const { mesh: _mesh, sheet: _sheet, ...rest } = node;
+    nodes.set(id, { ...rest, fingerprint: null });
+  }
+  return { ...tree, nodes };
 }
 
 /** The node whose plate mesh is `token`: how a plate restored by Prepare undo finds its place in the tree. */

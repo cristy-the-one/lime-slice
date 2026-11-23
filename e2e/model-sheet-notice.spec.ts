@@ -96,10 +96,30 @@ test("a STEP that opens as surfaces only is no sheet: no notice, and leaving Mod
   await expect(page.locator("#toasts")).not.toContainText("open sheet");
 });
 
-test("a step that leaves an open sheet is held off the plate, with a toast", async ({ page }) => {
+test("a step that leaves an open sheet stays on the plate as a sheet: Prepare marks it and Slice stops with the prompt", async ({ page }) => {
+  let slices = 0;
+  await page.route("**/api/slice**", (route) => {
+    slices += 1;
+    return route.fulfill({ status: 500, json: { error: "no slicer in this spec" } });
+  });
   await openSheet(page);
   await page.locator("#tabPrepare").click();
-  await expect(page.locator("#toasts")).toContainText("This part is an open sheet.");
+  // The part stays on the plate, and its row says it is a sheet.
+  await expect(page.locator("#objectList .obj-sheet")).toHaveText("Open sheet: not printed. Thicken or Cap & Sew it in Model to make a solid.");
+  await page.locator("#slice").click();
+  await expect(page.locator("#banner")).toContainText("is an open sheet, not a solid. Thicken or Cap & Sew it in Model before slicing or exporting.");
+  expect(slices, "nothing was sent to the slicer").toBe(0);
+});
+
+test("a sheet thickened in Model is a part again: no mark, and Slice goes ahead", async ({ page }) => {
+  await openSheet(page);
+  await page.locator("#modelSheetThickenMm").fill("2");
+  await page.locator("#modelSheetThickenGo").click();
+  await expect(page.locator("#modelSheetBar")).toBeHidden();
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj-sheet")).toHaveCount(0);
+  await page.locator("#slice").click();
+  await expect(page.locator("#banner")).not.toContainText("open sheet");
 });
 
 test("an open sheet thickens from the notice", async ({ page }) => {

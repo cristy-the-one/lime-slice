@@ -116,13 +116,6 @@ async function finishNewSolid(made: {
     if (mine === S.ticket && state.stage === "model" && typeof parsed === "string") readout(parsed);
     return false;
   }
-  // --- Organic surfaces S4: an open sheet is no plate object (its open mesh would slice as STL). Same rule as the
-  // commit gate (`isOpenSheet`). It is refused, with what to do instead.
-  if (isOpenSheet(parsed, made.root, ROOT)) {
-    void post({ call: "close", key });
-    readout("This would be an open sheet, and an open sheet cannot be a part on the plate. Build it on a part, then thicken or cap & sew it there.");
-    return false;
-  }
   // The open object's edits reach the plate first. The new object then joins the visit's Prepare step, as an edit does.
   const others = plateBoxes();
   commitModel();
@@ -143,7 +136,11 @@ async function finishNewSolid(made: {
   const { bedX, bedY } = state.profile;
   state.plate = addedSolid(state.plate, { name, fileName, bytes, sourcePos: positions, stepTolerance: chord }, id, key, pose, bedX, bedY);
   applySelectedToState(state.plate);
-  modelTrees.set(key, withNode(newTree(key, made.root, rootLabel(made.root, name), parsed.fingerprint), ROOT, { mesh }));
+  // --- Organic surfaces S4: a new object that is an open sheet goes on the plate like any part (so it saves, reopens
+  // and thickens later), marked from the kernel's reply (`isOpenSheet`); Prepare shows it as a sheet, and Slice and
+  // Export stop on it (`sheetPartNote` in ./sheet-gate.ts).
+  const sheet = isOpenSheet(parsed, made.root, ROOT);
+  modelTrees.set(key, withNode(newTree(key, made.root, rootLabel(made.root, name), parsed.fingerprint), ROOT, { mesh, ...(sheet ? { sheet: true as const } : {}) }));
   keepSolid(key, ROOT, chord, parsed);
   place(first ? "load" : "transform");
   flushEdit();
