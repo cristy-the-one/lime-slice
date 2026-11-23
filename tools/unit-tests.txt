@@ -342,6 +342,7 @@ src/sketch/nurbs.test.ts
 src/sketch/nurbs-closed.test.ts
 src/sketch/nurbs-edits.test.ts
 src/model-sheet.test.ts
+src/model-mesh-quality.test.ts
 src/model-tree-renumber.test.ts
 src/app/model/names-topology.test.ts
 mcp/nurbs-sweep.test.ts
