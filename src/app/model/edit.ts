@@ -281,6 +281,8 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   }
   S.sketchRootEdit = false;
   rootEditFrom = null;
+  // Every node was rebuilt under its own id, the committed one too: the plate takes the new solid at the next commit.
+  S.plateStale.add(at.key);
   syncUndo();
   return null;
 }
