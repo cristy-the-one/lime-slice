@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -84,6 +85,7 @@
 #include <Geom_Curve.hxx>
 #include <Geom_Surface.hxx>
 #include <GeomAdaptor_Curve.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRepBuilderAPI_TransitionMode.hxx>
 #include <Law_Interpol.hxx>
@@ -9654,6 +9656,97 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
     }
     std::sort(edges_all.begin(), edges_all.end(), [](const SeamRow& a, const SeamRow& b) { return a.edge < b.edge; });
 
+    struct SharpVertex {
+        gp_Pnt at;
+        int face_a = -1;
+        int face_b = -1;
+        double angle_deg = 0.0;
+    };
+    std::vector<SharpVertex> sharp_vertices;
+    {
+        TopTools_IndexedMapOfShape smooth_verts;
+        for (const SeamRow& row : edges_all) {
+            if (std::strcmp(row.kind, "G1") != 0 && std::strcmp(row.kind, "G2") != 0) continue;
+            if (row.edge < 0 || row.edge >= held.edges.Extent()) continue;
+            const TopoDS_Edge edge = TopoDS::Edge(held.edges(row.edge + 1));
+            for (TopExp_Explorer vx(edge, TopAbs_VERTEX); vx.More(); vx.Next()) smooth_verts.Add(vx.Current());
+        }
+        TopTools_IndexedDataMapOfShapeListOfShape vert_to_faces;
+        TopExp::MapShapesAndAncestors(held.shape, TopAbs_VERTEX, TopAbs_FACE, vert_to_faces);
+        for (int vi = 1; vi <= smooth_verts.Extent(); ++vi) {
+            const TopoDS_Vertex vertex = TopoDS::Vertex(smooth_verts(vi));
+            const int map_i = vert_to_faces.FindIndex(vertex);
+            if (map_i <= 0) continue;
+            const gp_Pnt at = BRep_Tool::Pnt(vertex);
+            struct FaceN {
+                int index;
+                gp_Dir normal;
+            };
+            std::vector<FaceN> locals;
+            for (TopTools_ListIteratorOfListOfShape it(vert_to_faces(map_i)); it.More(); it.Next()) {
+                const TopoDS_Face face = TopoDS::Face(it.Value());
+                const int fi = held.faces.FindIndex(face);
+                if (fi <= 0) continue;
+                try {
+                    double u = 0.0;
+                    double v = 0.0;
+                    TopLoc_Location loc;
+                    const Handle(Geom_Surface) surf = BRep_Tool::Surface(face, loc);
+                    if (surf.IsNull()) continue;
+                    gp_Pnt local = at;
+                    if (!loc.IsIdentity()) local.Transform(loc.Transformation().Inverted());
+                    GeomAPI_ProjectPointOnSurf proj(local, surf);
+                    if (proj.NbPoints() < 1) continue;
+                    proj.LowerDistanceParameters(u, v);
+                    BRepAdaptor_Surface adapt(face);
+                    BRepLProp_SLProps props(adapt, u, v, 1, 1e-9);
+                    if (!props.IsNormalDefined()) continue;
+                    gp_Dir n = props.Normal();
+                    if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+                    locals.push_back(FaceN{fi - 1, n});
+                } catch (const Standard_Failure&) {
+                }
+            }
+            auto joined_smooth = [&](int a, int b) {
+                for (const SeamRow& row : edges_all) {
+                    if (std::strcmp(row.kind, "G1") != 0 && std::strcmp(row.kind, "G2") != 0) continue;
+                    if ((row.face_a == a && row.face_b == b) || (row.face_a == b && row.face_b == a)) return true;
+                }
+                return false;
+            };
+            double worst = 0.0;
+            int ba = -1;
+            int bb = -1;
+            for (size_t a = 0; a < locals.size(); ++a) {
+                for (size_t b = a + 1; b < locals.size(); ++b) {
+                    // A G1 or G2 seam is the edge the fill was asked to smooth. The sharp
+                    // corner is the other pair: the two support faces meeting at Vi.
+                    if (joined_smooth(locals[a].index, locals[b].index)) continue;
+                    const double ang = std::acos(std::clamp(locals[a].normal.Dot(locals[b].normal), -1.0, 1.0)) * (180.0 / M_PI);
+                    if (ang > worst) {
+                        worst = ang;
+                        ba = locals[a].index;
+                        bb = locals[b].index;
+                    }
+                }
+            }
+            if (!(worst > 0.1) || ba < 0) continue;
+            if (ba > bb) std::swap(ba, bb);
+            bool merged = false;
+            for (SharpVertex& existing : sharp_vertices) {
+                if (existing.face_a == ba && existing.face_b == bb && existing.at.Distance(at) < 1e-5) {
+                    existing.angle_deg = std::max(existing.angle_deg, worst);
+                    merged = true;
+                    break;
+                }
+            }
+            if (merged) continue;
+            sharp_vertices.push_back(SharpVertex{at, ba, bb, worst});
+            std::fprintf(stderr, "S5 sharpVertex at=%.6g,%.6g,%.6g faces=%d,%d angleDeg=%.6g\n",
+                         at.X(), at.Y(), at.Z(), ba, bb, worst);
+        }
+    }
+
     std::ostringstream js;
     js.imbue(std::locale::classic());
     js.precision(6);
@@ -9689,6 +9782,14 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
            << ",\"angleDeg\":" << r.angle_deg
            << ",\"curvatureJump\":" << r.curvature_jump
            << ",\"mid\":[" << r.mid.X() << ',' << r.mid.Y() << ',' << r.mid.Z() << "]}";
+    }
+    js << "],\"sharpVertices\":[";
+    for (size_t i = 0; i < sharp_vertices.size(); ++i) {
+        if (i > 0) js << ',';
+        const SharpVertex& v = sharp_vertices[i];
+        js << "{\"at\":[" << v.at.X() << ',' << v.at.Y() << ',' << v.at.Z() << ']'
+           << ",\"faces\":[" << v.face_a << ',' << v.face_b << ']'
+           << ",\"angleDeg\":" << v.angle_deg << '}';
     }
     js << "]},\"surfaceHealth\":{"
        << "\"faces\":" << n_faces
@@ -11810,17 +11911,25 @@ TopoDS_Face face_beside(
 }
 
 int continuity_of(int asked, bool has_face, bool blend, std::string& error) {
-    (void)has_face;
     if (blend) {
-        error = "A blend is not available yet.";
+        if (asked <= 0) {
+            error = "A blend is G1 or G2. Set the seam to g1 or g2.";
+            return -2;
+        }
+        if (!has_face) {
+            error = "G1 and G2 need the face beside the edge. Pick an edge of the sheet, or set that side to G0.";
+            return -2;
+        }
+        return asked >= 2 ? 2 : 1;
+    }
+    // Left out, an edge that touches a face is G1 and a free curve is G0.
+    if (asked < 0) return has_face ? 1 : 0;
+    if (asked > 0 && !has_face) {
+        error = "G1 and G2 need the face beside the edge. Pick an edge of the sheet, or set that side to G0.";
         return -2;
     }
-    // Absent continuity is G0. G1 and G2 are not built on this path.
-    if (asked > 0) {
-        error = "G1, G2, an interior guide, and openings with more than four sides are not available yet. A patch is G0, with two to four sides.";
-        return -2;
-    }
-    return 0;
+    if (asked >= 2) return 2;
+    return asked > 0 ? 1 : 0;
 }
 
 bool orient_loop(std::vector<Handle(Geom_BSplineCurve)>& curves, std::string& error) {
@@ -11927,6 +12036,8 @@ TopoDS_Shape compound_with(const TopoDS_Shape& current, const TopoDS_Shape& adde
     return compound;
 }
 
+#include "organic_fill.inc"
+
 }  // namespace
 
 TopoDS_Shape build_patch(
@@ -11935,28 +12046,33 @@ TopoDS_Shape build_patch(
     const PatchBuildSpec& spec,
     std::string& error) {
     const int count = static_cast<int>(spec.bounds.size());
-    if (count < 2) {
-        error = "A patch needs between 2 and 4 boundary curves or edges.";
+    if (count < 2 || count > 20) {
+        error = "A patch needs between 2 and 20 boundary curves or edges.";
         return {};
     }
-    if (count > 4 || !spec.guides.empty() || !spec.points.empty()) {
-        error = "G1, G2, an interior guide, and openings with more than four sides are not available yet. A patch is G0, with two to four sides.";
+    if (!spec.guides.empty()) {
+        error = "An interior guide curve is not part of this fill. Use a guide point, or leave the guides empty.";
         return {};
     }
     if (!current.IsNull() && has_solid(current)) {
         error = "Patch fills an opening on a sheet. This part is already a closed solid.";
         return {};
     }
-    std::vector<std::vector<TopoDS_Edge>> sides(static_cast<size_t>(count));
+    std::vector<std::vector<TopoDS_Edge>> side_edges(static_cast<size_t>(count));
+    std::vector<TopoDS_Face> faces(static_cast<size_t>(count));
+    std::vector<int> orders(static_cast<size_t>(count), 0);
+    int max_order = 0;
     for (int i = 0; i < count; ++i) {
-        if (!collect_bound_edges(spec.bounds[static_cast<size_t>(i)], held, sides[static_cast<size_t>(i)], error)) return {};
-        const TopoDS_Face support = face_beside(spec.bounds[static_cast<size_t>(i)], sides[static_cast<size_t>(i)], current, held);
-        const int order = continuity_of(spec.bounds[static_cast<size_t>(i)].continuity, !support.IsNull(), false, error);
+        if (!collect_bound_edges(spec.bounds[static_cast<size_t>(i)], held, side_edges[static_cast<size_t>(i)], error)) return {};
+        faces[static_cast<size_t>(i)] = face_beside(spec.bounds[static_cast<size_t>(i)], side_edges[static_cast<size_t>(i)], current, held);
+        const int order = continuity_of(spec.bounds[static_cast<size_t>(i)].continuity, !faces[static_cast<size_t>(i)].IsNull(), false, error);
         if (order < 0) return {};
+        orders[static_cast<size_t>(i)] = order;
+        max_order = std::max(max_order, order);
     }
     std::vector<Handle(Geom_BSplineCurve)> curves;
     curves.reserve(static_cast<size_t>(count));
-    for (const std::vector<TopoDS_Edge>& side : sides) {
+    for (const std::vector<TopoDS_Edge>& side : side_edges) {
         Handle(Geom_BSplineCurve) curve = chain_to_bspline(side, error);
         if (curve.IsNull()) return {};
         curves.push_back(curve);
@@ -11966,9 +12082,16 @@ TopoDS_Shape build_patch(
         error = "These two curves meet at both ends. A patch of two sides needs them to meet at one end each.";
         return {};
     }
-    const TopoDS_Face patch = fill_geomfill(curves, error);
-    if (patch.IsNull()) return {};
-    return compound_with(current, patch);
+    if (count == 2 && (max_order > 0 || !spec.points.empty())) {
+        error = "A patch of two sides is a G0 fill. Use a blend to join two edges at G1 or G2.";
+        return {};
+    }
+    if (count <= 4 && max_order <= 0 && spec.points.empty()) {
+        const TopoDS_Face patch = fill_geomfill(curves, error);
+        if (patch.IsNull()) return {};
+        return compound_with(current, patch);
+    }
+    return fill_hermite_patch(current, curves, faces, orders, spec.points, error);
 }
 
 TopoDS_Shape build_blend(
@@ -11976,11 +12099,30 @@ TopoDS_Shape build_blend(
     const Held* held,
     const BlendBuildSpec& spec,
     std::string& error) {
-    (void)current;
-    (void)held;
-    (void)spec;
-    error = "A blend is not available yet.";
-    return {};
+    if (!current.IsNull() && has_solid(current)) {
+        error = "A blend joins two edges of a sheet. This part is already a closed solid.";
+        return {};
+    }
+    const double tension_a = tension_value(spec.tension_a, "Side A", error);
+    if (tension_a < 0.0) return {};
+    const double tension_b = tension_value(spec.tension_b, "Side B", error);
+    if (tension_b < 0.0) return {};
+    std::vector<TopoDS_Edge> edges_a;
+    std::vector<TopoDS_Edge> edges_b;
+    if (!collect_bound_edges(spec.a, held, edges_a, error)) return {};
+    if (!collect_bound_edges(spec.b, held, edges_b, error)) return {};
+    const TopoDS_Face face_a = face_beside(spec.a, edges_a, current, held);
+    const TopoDS_Face face_b = face_beside(spec.b, edges_b, current, held);
+    const int asked_a = spec.a.continuity >= 0 ? spec.a.continuity : spec.continuity;
+    const int asked_b = spec.b.continuity >= 0 ? spec.b.continuity : spec.continuity;
+    const int order_a = continuity_of(asked_a, !face_a.IsNull(), true, error);
+    if (order_a < 0) return {};
+    const int order_b = continuity_of(asked_b, !face_b.IsNull(), true, error);
+    if (order_b < 0) return {};
+    Handle(Geom_BSplineCurve) curve_a = chain_to_bspline(edges_a, error);
+    Handle(Geom_BSplineCurve) curve_b = chain_to_bspline(edges_b, error);
+    if (curve_a.IsNull() || curve_b.IsNull()) return {};
+    return fill_hermite_blend(current, curve_a, curve_b, face_a, face_b, order_a, order_b, tension_a, tension_b, error);
 }
 
 }  // namespace lime_occt

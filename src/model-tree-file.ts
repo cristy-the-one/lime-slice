@@ -782,6 +782,25 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
       };
     }
+    case "blendSurface": {
+      const a = readBoundary(value.a);
+      const b = readBoundary(value.b);
+      if (!a || !b) return undefined;
+      const continuity = readContinuity(value.continuity);
+      if (continuity === null || continuity === "g0") return undefined;
+      if (value.tensionA !== undefined && !finite(value.tensionA)) return undefined;
+      if (value.tensionB !== undefined && !finite(value.tensionB)) return undefined;
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      return {
+        kind: "blendSurface",
+        a,
+        b,
+        ...(continuity ? { continuity } : {}),
+        ...(finite(value.tensionA) ? { tensionA: value.tensionA } : {}),
+        ...(finite(value.tensionB) ? { tensionB: value.tensionB } : {}),
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+      };
+    }
     default:
       return undefined;
   }

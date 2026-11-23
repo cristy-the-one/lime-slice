@@ -1,6 +1,6 @@
-//! Organic surfaces S5: a G0 patch.
-//! A boundary of 2 to 4 sides at G0 uses GeomFill and sews into a solid.
-//! The G1, G2, N-sided, and BlendSurface acceptance tests are unchanged at c184c54b.
+//! Organic surfaces S5: Patch and BlendSurface.
+//! A clean 2–4 sided G0 boundary uses GeomFill. An N-sided opening, or any side
+//! that asks for G1 or G2, uses GeomPlate. Both leave a sheet that Sew can close.
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -238,9 +238,90 @@ fn fill_opening(case_name: &str, sides: usize, continuity: impl Fn(usize, usize)
 }
 
 #[test]
-fn patch_uses_geomfill_for_a_clean_g0_quad() {
+fn patch_fills_three_five_and_six_sided_openings_and_sews_them_solid() {
+    if !has_occt() {
+        return;
+    }
+    fill_opening("3-side", 3, |_, _| "g1", None);
+    fill_opening("5-side", 5, |i, n| if i + 1 == n { "g2" } else { "g1" }, None);
+    fill_opening("6-side", 6, |_, _| "g1", None);
+}
+
+#[test]
+fn patch_uses_geomfill_for_a_clean_g0_quad_and_plate_when_a_guide_point_is_set() {
     if !has_occt() {
         return;
     }
     fill_opening("4-side-g0", 4, |_, _| "g0", None);
+    fill_opening("4-side-g0-point", 4, |_, _| "g0", Some([0.0, 0.0, 12.0]));
+}
+
+#[test]
+fn blend_surface_meets_g1_and_g2_between_two_sheets() {
+    if !has_occt() {
+        return;
+    }
+    for continuity in ["g1", "g2"] {
+        let key = format!("s5-blend-{continuity}");
+        let opened = ok(json!({
+            "call": "open",
+            "key": key,
+            "chordMm": 0.05,
+            "feature": {
+                "kind": "sheet",
+                "mode": "extrude",
+                "curves": [{ "kind": "polyline", "points": [[0.0, 0.0, 10.0], [24.0, 0.0, 10.0]] }],
+                "dir": [0.0, 0.0, -1.0],
+                "distance": 10.0
+            }
+        }));
+        assert_eq!(opened["solid"], json!(false));
+        let walled = ok(json!({
+            "call": "apply",
+            "key": key,
+            "parent": 0,
+            "node": 1,
+            "chordMm": 0.05,
+            "op": {
+                "kind": "sheet",
+                "mode": "extrude",
+                "curves": [{ "kind": "polyline", "points": [[0.0, 12.0, 10.0], [24.0, 12.0, 10.0]] }],
+                "dir": [0.0, 0.0, -1.0],
+                "distance": 10.0
+            }
+        }));
+        let tops: Vec<AskedEdge> = sampled_edges(&walled)
+            .into_iter()
+            .filter(|edge| edge.points.iter().all(|p| p[2] > 9.5))
+            .map(|edge| AskedEdge { index: edge.index, mid: midpoint(&edge), continuity })
+            .collect();
+        assert_eq!(tops.len(), 2, "blend {continuity} should see two open top edges, got {}", tops.len());
+        let blended = ok(json!({
+            "call": "apply",
+            "key": key,
+            "parent": 1,
+            "node": 2,
+            "chordMm": 0.05,
+            "op": {
+                "kind": "blendSurface",
+                "a": { "edges": [tops[0].index], "continuity": continuity },
+                "b": { "edges": [tops[1].index], "continuity": continuity },
+                "continuity": continuity,
+                "tensionA": 1.0,
+                "tensionB": 1.0
+            }
+        }));
+        assert_eq!(blended["solid"], json!(false), "a blend is a sheet");
+        ok(json!({
+            "call": "apply",
+            "key": key,
+            "parent": 2,
+            "node": 3,
+            "chordMm": 0.05,
+            "op": { "kind": "sew", "tolerance": 0.05, "makeSolid": false }
+        }));
+        println!("S5 case=blend-{continuity} solid=false sewn-sheet");
+        check_sewn(&format!("blend-{continuity}"), &key, 3, &tops);
+        ok(json!({ "call": "close", "key": key }));
+    }
 }

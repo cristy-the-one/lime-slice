@@ -11,10 +11,10 @@ import { axesOf, framePose, isIdentityFrame, planePoint, workplaneOnFace, type W
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pushpull" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text" | "pattern" | "mirror" | "draft" | "patch";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pushpull" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text" | "pattern" | "mirror" | "draft" | "patch" | "blend";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pushpull", "pocket", "boss", "texture", "array", "ribs", "text", "pattern", "mirror", "draft", "patch"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pushpull", "pocket", "boss", "texture", "array", "ribs", "text", "pattern", "mirror", "draft", "patch", "blend"];
 
 // --- A3 composite features: one drag entry per feature, behind the single Features button. ---
 const FEATURE_DRAG: readonly ModelTool[] = ["pocket", "boss", "texture", "array", "ribs", "text"];
@@ -58,8 +58,9 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   mirror: ["modelMirX", "modelMirY", "modelMirZ"],
   // --- end A4 ---
   draft: ["modelDraft", "modelDraftPullX", "modelDraftPullY", "modelDraftPullZ"],
-  // --- S5: badges, not dock number fields.
+  // --- S5: badges and sliders, not dock number fields.
   patch: [],
+  blend: [],
 };
 
 /**
