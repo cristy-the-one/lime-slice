@@ -315,7 +315,7 @@ pub(super) fn build_sweep_shape(
         SweepMode::Frenet => (1, [0.0, 0.0, 1.0]),
         SweepMode::FixedBinormal { dir } => (2, dir),
         SweepMode::AuxSpine { curvilinear, keep_contact, .. } => {
-            (3, [f64::from(u8::from(curvilinear.unwrap_or(true))), f64::from(u8::from(keep_contact)), 0.0])
+            (3, [f64::from(u8::from(curvilinear.unwrap_or(true))), f64::from(u8::from(keep_contact.unwrap_or(false))), 0.0])
         }
     };
     let trans_id = match transition.unwrap_or_default() {

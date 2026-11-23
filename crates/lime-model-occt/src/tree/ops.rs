@@ -509,9 +509,10 @@ pub enum Curve3D {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
     },
-    /// The app, the MCP schema and saved projects write `through`; `points` is the older Rust spelling. Both read.
+    /// Written `through`, as the app, the MCP schema and saved projects write it, so the op the kernel echoes back is the
+    /// one the app reads. `points` is the older Rust spelling and still reads.
     Spline {
-        #[serde(alias = "through")]
+        #[serde(rename = "through", alias = "points")]
         points: Vec<[f64; 3]>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
@@ -526,8 +527,8 @@ pub enum Curve3D {
         knots: Vec<f64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mults: Vec<u32>,
-        /// Every caller writes `closed`; `periodic` is the older Rust spelling. Both read.
-        #[serde(default, alias = "closed", skip_serializing_if = "std::ops::Not::not")]
+        /// Written `closed`, as every caller writes it; `periodic` is the older Rust spelling and still reads.
+        #[serde(default, rename = "closed", alias = "periodic", skip_serializing_if = "std::ops::Not::not")]
         periodic: bool,
     },
     Segments {
@@ -564,9 +565,9 @@ pub enum SweepMode {
         /// Match the two spines by arc length (default), not by parameter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         curvilinear: Option<bool>,
-        /// Keep the section touching the auxiliary spine.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        keep_contact: bool,
+        /// Keep the section touching the auxiliary spine (default false). Kept as sent, so the echo is what came in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep_contact: Option<bool>,
     },
 }
 
@@ -1252,7 +1253,7 @@ mod tests {
                 Op::Sweep { mode: Some(super::SweepMode::AuxSpine { spine, curvilinear, keep_contact }), .. } => {
                     check(&spine);
                     assert_eq!(curvilinear, Some(false));
-                    assert!(keep_contact);
+                    assert_eq!(keep_contact, Some(true));
                 }
                 other => panic!("{other:?}"),
             }
@@ -1260,15 +1261,72 @@ mod tests {
     }
 
     #[test]
-    fn the_old_rust_spellings_still_read_and_are_still_written() {
+    fn the_old_rust_spellings_still_read_and_are_written_as_the_app_writes() {
         let old: Curve3D = serde_json::from_value(json!({ "kind": "spline", "points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }))
             .expect("points");
-        assert_eq!(serde_json::to_value(&old).expect("json"), json!({ "kind": "spline", "points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }));
+        assert_eq!(serde_json::to_value(&old).expect("json"), json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }));
         let old: Curve3D = serde_json::from_value(json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "periodic": true }))
             .expect("periodic");
         assert_eq!(
             serde_json::to_value(&old).expect("json"),
-            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "periodic": true })
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "closed": true })
         );
+    }
+
+    /// The kernel echoes the stored op in every apply reply, and the app keeps that echo in its tree
+    /// (src/app/model/apply.ts): it must be the JSON the app sent, byte for byte. Each op and each Curve3D kind as
+    /// src/model-tree.ts types it and src/modeling/bake.ts writes it.
+    #[test]
+    fn every_new_op_echoes_the_json_the_app_sent() {
+        let curves = [
+            json!({ "kind": "polyline", "points": [[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 5.0, 0.0]], "closed": true }),
+            json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]] }),
+            json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]], "closed": true }),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]] }),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+                "weights": [1.0, 0.7, 0.7, 1.0], "degree": 3, "knots": [0.0, 1.0], "mults": [4, 4], "closed": true }),
+            json!({ "kind": "segments", "start": [0.0, 0.0, 0.0], "segments": [
+                { "kind": "line", "to": [10.0, 0.0, 0.0] },
+                { "kind": "arc", "through": [12.0, 2.0, 0.0], "to": [10.0, 4.0, 0.0] },
+                { "kind": "spline", "through": [[8.0, 5.0, 0.0]], "to": [6.0, 4.0, 0.0] },
+                { "kind": "nurbs", "poles": [[4.0, 6.0, 0.0]], "weights": [1.0, 0.7, 1.0], "degree": 2, "to": [2.0, 4.0, 0.0] }
+            ] }),
+            json!({ "kind": "edges", "edges": [3, { "index": 4, "mid": [1.0, 2.0, 3.0], "lengthMm": 10.0 }] }),
+        ];
+        let section = json!({ "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 2.0 });
+        let echoes = |value: Value| {
+            let op: Op = serde_json::from_value(value.clone()).unwrap_or_else(|err| panic!("{value}: {err}"));
+            let back = serde_json::to_value(&op).expect("serializes");
+            assert_eq!(back, value, "the echo differs from what the app sent");
+        };
+        for curve in &curves {
+            echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curve }));
+            echoes(json!({ "kind": "sweep", "op": "cut", "sections": [section], "spine": curve, "transition": "right",
+                "mode": { "kind": "auxSpine", "spine": curve, "curvilinear": true, "keepContact": false },
+                "scale": [[0.0, 1.0], [1.0, 2.0]], "twistDeg": 45.0 }));
+            echoes(json!({ "kind": "loft", "op": "fuse", "sections": [section, section], "guides": [curve],
+                "startCondition": { "kind": "tangent", "dir": [0.0, 0.0, 1.0], "tension": 1.5 },
+                "endCondition": { "kind": "normal" }, "closed": true, "smoothing": true, "maxDegree": 6 }));
+            echoes(json!({ "kind": "sheet", "mode": "extrude", "curves": [curve], "dir": [0.0, 0.0, 1.0], "distance": 5.0, "symmetric": true }));
+            echoes(json!({ "kind": "splitFace", "faces": [0, { "index": 1, "mid": [0.0, 0.0, 1.0], "areaMm2": 4.0 }], "curve": curve, "direction": [0.0, 0.0, -1.0] }));
+            echoes(json!({ "kind": "patch", "boundaries": [{ "curve": curve, "continuity": "g1" }, { "edges": [1, 2], "face": 3 }],
+                "guides": [curve], "points": [[0.0, 0.0, 1.0]], "tolerance": 0.01 }));
+            echoes(json!({ "kind": "blendSurface", "a": { "curve": curve }, "b": { "edges": [5], "continuity": "g2" },
+                "continuity": "g2", "tensionA": 1.0, "tensionB": 2.0, "tolerance": 0.001 }));
+            echoes(json!({ "kind": "replaceFace", "face": 2, "sheet": { "mode": "loft", "curves": [curve, curve], "ruled": true } }));
+            echoes(json!({ "kind": "trimSplit", "sheet": { "mode": "revolve", "curves": [curve], "axisOrigin": [0.0, 0.0, 0.0], "dir": [0.0, 0.0, 1.0], "angleDeg": 180.0 }, "keep": "both" }));
+        }
+        echoes(json!({ "kind": "sheet", "mode": "planar", "curves": [curves[0]] }));
+        echoes(json!({ "kind": "sew", "tolerance": 0.05, "makeSolid": false, "capPlanar": true }));
+        echoes(json!({ "kind": "sew" }));
+        echoes(json!({ "kind": "thicken", "thickness": 2.0, "direction": "both", "tolerance": 0.001 }));
+        echoes(json!({ "kind": "trimSplit", "sheet": { "mode": "planar", "curves": [curves[0]] } }));
+        echoes(json!({ "kind": "fillet", "edges": [0, 1], "size": 2.0, "continuity": "conic", "rho": 0.6 }));
+        echoes(json!({ "kind": "fillet", "edges": [0], "size": 2.0, "continuity": "g2", "variable": [[0.0, 1.0], [1.0, 3.0]] }));
+        echoes(json!({ "kind": "loft", "op": "common", "sections": [section, { "origin": [0.0, 0.0, 10.0], "turn": [0.0, 0.0, 0.0], "apex": [0.0, 0.0, 10.0] }],
+            "endCondition": { "kind": "curvature", "dir": [0.0, 0.0, 1.0], "tension": 1.0 } }));
+        echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curves[0],
+            "mode": { "kind": "fixedBinormal", "dir": [1.0, 0.0, 0.0] }, "transition": "transformed" }));
+        echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curves[0], "mode": { "kind": "frenet" } }));
     }
 }
