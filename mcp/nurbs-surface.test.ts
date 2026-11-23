@@ -77,7 +77,12 @@ check(
       if ((!parsed.call || parsed.call === "open") && feature) {
         opens.push(parsed);
         const box = JSON.parse(await plain.modelTree(JSON.stringify({ call: "open", key: parsed.key, primitive: { primitive: "box", origin: [0, 0, 0], size: [10, 10, 1], radius: 0, height: 0, turn: [0, 0, 0] }, chordMm: 0.05 }))) as Record<string, unknown>;
-        return JSON.stringify(Array.isArray(parsed.nodes) && (parsed.nodes as unknown[]).length > 1 ? box : { ...box, solid: false, volumeMm3: 0, nakedEdges: [0, 1, 2, 3] });
+        // As the kernel does: the step the open is shown at decides the solid. At the root it is the bare sheet; at a
+        // later step (a thicken) a solid. A pole at z = 99 is a grid the thicken cannot follow.
+        const at = typeof parsed.current === "number" ? parsed.current : 0;
+        const poles = (feature as { poles?: number[][][] }).poles ?? [];
+        if (at > 0 && poles.some((row) => row.some((pole) => pole[2] === 99))) return JSON.stringify({ error: "Open CASCADE could not offset this surface by 2 mm: it bends tighter than that somewhere." });
+        return JSON.stringify(at > 0 ? box : { ...box, solid: false, volumeMm3: 0, nakedEdges: [0, 1, 2, 3] });
       }
       return plain.modelTree(request);
     },
@@ -123,11 +128,26 @@ check(
   const thick = await s.call("model_apply", { object, op: { kind: "thicken", thickness: 2 }, probe: true });
   const raised = grid.map((row, iu) => row.map((pole, iv) => (iu === 3 && iv === 3 ? [pole[0], pole[1], 9] : pole)));
   const edited = await s.call("model_edit", { object, node: "node_0", op: { kind: "nurbsSurface", poles: raised } });
-  const replay = opens.at(-1) as { feature?: { poles?: number[][][] }; nodes?: { op?: { kind?: string } | null }[] } | undefined;
+  const replay = opens.at(-1) as { current?: number; feature?: { poles?: number[][][] }; nodes?: { op?: { kind?: string } | null }[] } | undefined;
+  const shownTree = () => (s as unknown as { find(id: string): { tree?: { current: number }; solid?: { editable: boolean; volumeMm3: number } } | undefined }).find(object);
   check(
     "model_edit on a surface root reopens it with the new grid and replays the thicken above it",
     thick.ok === true && edited.ok === true && replay?.feature?.poles?.[3]?.[3]?.[2] === 9 && (replay.nodes ?? []).some((row) => row.op?.kind === "thicken"),
     JSON.stringify({ thick: thick.ok, edited, pole: replay?.feature?.poles?.[3]?.[3], nodes: replay?.nodes?.map((row) => row.op?.kind ?? null) }).slice(0, 600),
+  );
+  // The real kernel run showed the edit left the part on its root, the bare sheet (volume 0), not on the thicken.
+  check(
+    "after a root edit the part is on the step it was on, rebuilt on the new root, and the reply says which and its volume",
+    replay?.current === 1 && edited.current === "node_1" && shownTree()?.tree?.current === 1 && shownTree()?.solid?.editable === true
+      && typeof edited.volumeMm3 === "number" && edited.volumeMm3 > 0 && edited.replayRefused === undefined,
+    JSON.stringify({ sentAt: replay?.current, current: edited.current, volume: edited.volumeMm3, tree: shownTree()?.tree?.current }),
+  );
+  const folded = grid.map((row, iu) => row.map((pole, iv) => (iu === 3 && iv === 3 ? [pole[0], pole[1], 99] : pole)));
+  const kept = await s.call("model_edit", { object, node: "node_0", op: { kind: "nurbsSurface", poles: folded } });
+  check(
+    "a root edit the later steps cannot follow is kept, shown at the root, with the reason",
+    kept.ok === true && kept.current === "node_0" && shownTree()?.tree?.current === 0 && String(kept.replayRefused).includes("could not offset this surface") && String(kept.note).startsWith("The new first step is shown"),
+    JSON.stringify(kept),
   );
   const notSurface = await s.call("model_edit", { object, node: "node_0", op: { kind: "fillet", edges: [0], size: 1 } });
   check("a root that is not a feature kind is refused in a sentence", notSurface.ok === false && String(notSurface.reason).startsWith("This part started from a sketch or a surface."), JSON.stringify(notSurface));
