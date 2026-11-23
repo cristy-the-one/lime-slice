@@ -577,3 +577,21 @@ fn loft_tangent_end_condition_is_measured_and_curvature_is_refused() {
         "{reply}"
     );
 }
+
+/// A loft's maxDegree outside 2 to 10 was ignored; it is refused, as the MCP schema refuses it.
+#[test]
+fn a_loft_max_degree_outside_two_to_ten_is_refused() {
+    if !has_occt() {
+        return;
+    }
+    for bad in [1, 11] {
+        let reply = call(json!({ "call": "open", "key": format!("s3-loft-degree-{bad}"), "chordMm": 0.1, "feature": {
+            "kind": "loft", "op": "fuse", "maxDegree": bad,
+            "sections": [
+                { "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 5.0 },
+                { "origin": [0.0, 0.0, 20.0], "turn": [0.0, 0.0, 0.0], "radius": 3.0 }
+            ]
+        } }));
+        assert_eq!(reply["error"].as_str(), Some("A loft's maxDegree is 2 to 10."), "{bad}: {reply}");
+    }
+}

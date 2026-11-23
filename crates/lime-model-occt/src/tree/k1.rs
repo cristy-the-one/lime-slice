@@ -394,6 +394,9 @@ pub(super) fn build_loft_v2_shape(
     smoothing: bool,
     max_degree: Option<u8>,
 ) -> Result<Shape, String> {
+    if max_degree.is_some_and(|d| !(2..=10).contains(&d)) {
+        return Err("A loft's maxDegree is 2 to 10.".into());
+    }
     let mut head = Vec::with_capacity(sections.len() * 11);
     let mut data = Vec::new();
     let mut blob = Vec::new();
@@ -1015,6 +1018,10 @@ pub(super) struct NurbsSurfaceSpec<'a> {
 ///  poles (nu*nv*3), weights (nWeights), knotsU, multsU, knotsV, multsV, insertU pairs, insertV pairs]`.
 /// Degree 0 means the kernel's default of 3. Elevate 0 means do not elevate.
 pub(super) fn encode_nurbs_blob(surface: &NurbsSurfaceSpec<'_>) -> Result<Vec<f64>, String> {
+    // Left out, a degree is 3; an explicit 0 is refused, in the app's words (the blob's 0 means "left out").
+    if surface.degree_u == Some(0) || surface.degree_v == Some(0) {
+        return Err("This NURBS surface could not be built.".into());
+    }
     let nu = surface.poles.len();
     let nv = surface.poles.first().map(|row| row.len()).unwrap_or(0);
     if nu > 0 && surface.poles.iter().any(|row| row.len() != nv) {

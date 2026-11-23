@@ -12637,15 +12637,20 @@ TopoDS_Shape build_nurbs_surface(const TopoDS_Shape& current, const double* blob
     if (degree_u == 0) degree_u = 3;
     if (degree_v == 0) degree_v = 3;
     // The same limits the app and the MCP check, so no path builds past them.
+    if ((periodic_u || periodic_v) && (ninsert_u > 0 || ninsert_v > 0 || elevate_u > 0 || elevate_v > 0)) {
+        error = "Knot insertion and degree elevation are for a clamped NURBS surface, not a closed one.";
+        return {};
+    }
     for (const auto& [axis, degree, count, periodic, inserts, elevate] :
          {std::make_tuple("U", degree_u, nu, periodic_u, ninsert_u, elevate_u),
           std::make_tuple("V", degree_v, nv, periodic_v, ninsert_v, elevate_v)}) {
+        // The app's words for the same cases (src/modeling/nurbs-eval.ts surfaceRefusal and applyRefinements).
         if (degree > kNurbsMaxDegree) {
-            error = std::string("A NURBS surface's degree in ") + axis + " is 1 to 8; it was " + std::to_string(degree) + ".";
+            error = "A NURBS surface's degree is at most 8.";
             return {};
         }
         if (count > kNurbsMaxPoles) {
-            error = std::string("A NURBS surface has at most 64 poles in ") + axis + "; it has " + std::to_string(count) + ".";
+            error = "A NURBS surface has at most 64 poles in each direction.";
             return {};
         }
         if (periodic && count < 3) {
@@ -12657,7 +12662,7 @@ TopoDS_Shape build_nurbs_surface(const TopoDS_Shape& current, const double* blob
             return {};
         }
         if (elevate > kNurbsMaxDegree) {
-            error = std::string("A NURBS surface's degree in ") + axis + " can be raised to at most 8; it asked for " + std::to_string(elevate) + ".";
+            error = "A NURBS surface's degree is at most 8.";
             return {};
         }
     }
@@ -12741,7 +12746,11 @@ TopoDS_Shape build_nurbs_surface(const TopoDS_Shape& current, const double* blob
         for (int i = 0; i < count; ++i) {
             const double param = blob[at++];
             const double raw_times = blob[at++];
-            if (!std::isfinite(raw_times) || raw_times != std::floor(raw_times) || raw_times < 1.0 || raw_times > degree) {
+            if (!std::isfinite(raw_times) || raw_times != std::floor(raw_times) || raw_times < 1.0) {
+                error = knot_sentence(axis);
+                return false;
+            }
+            if (raw_times > degree) {
                 error = std::string("A knot insert in ") + axis + " is 1 to " + std::to_string(degree) + " times, a whole number.";
                 return false;
             }

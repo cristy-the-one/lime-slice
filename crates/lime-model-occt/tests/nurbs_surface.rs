@@ -215,12 +215,12 @@ fn nurbs_limits_are_refused_by_the_kernel() {
     }
     assert_eq!(
         refused("degree", json!({ "kind": "nurbsSurface", "poles": grid(10, 0.0), "degreeU": 9, "degreeV": 3 })),
-        "A NURBS surface's degree in U is 1 to 8; it was 9."
+        "A NURBS surface's degree is at most 8."
     );
     let tall: Vec<Vec<[f64; 3]>> = (0..65).map(|iu| (0..4).map(|iv| [iu as f64, iv as f64, 0.0]).collect()).collect();
     assert_eq!(
         refused("poles", json!({ "kind": "nurbsSurface", "poles": tall, "degreeU": 3, "degreeV": 3 })),
-        "A NURBS surface has at most 64 poles in U; it has 65."
+        "A NURBS surface has at most 64 poles in each direction."
     );
     assert_eq!(
         refused("periodic", json!({ "kind": "nurbsSurface", "poles": ring6, "degreeU": 1, "degreeV": 3, "periodicU": true })),
@@ -231,12 +231,30 @@ fn nurbs_limits_are_refused_by_the_kernel() {
         refused("inserts", feature(grid(6, 1.0), json!({ "insertU": many }))),
         "A NURBS surface takes at most 32 knot inserts in U; it has 33."
     );
-    for (name, times) in [("times0", 0.0), ("times-half", 1.5), ("times-over", 4.0)] {
+    for (name, times) in [("times0", 0.0), ("times-half", 1.5)] {
         assert_eq!(
             refused(name, feature(grid(6, 1.0), json!({ "insertU": [[0.5, times]] }))),
-            "A knot insert in U is 1 to 3 times, a whole number."
+            "The U knots do not match this surface. They must increase, and their multiplicities must add up to the poles and the degree."
         );
     }
+    assert_eq!(
+        refused("times-over", feature(grid(6, 1.0), json!({ "insertU": [[0.5, 4.0]] }))),
+        "A knot insert in U is 1 to 3 times, a whole number."
+    );
+    assert_eq!(
+        refused("zero-degree", feature(grid(6, 1.0), json!({ "degreeU": 0 }))),
+        "This NURBS surface could not be built."
+    );
+    let ring: Vec<Vec<[f64; 3]>> = (0..6)
+        .map(|iu| {
+            let a = std::f64::consts::TAU * iu as f64 / 6.0;
+            (0..4).map(|iv| [10.0 * a.cos(), 10.0 * a.sin(), iv as f64 * 5.0]).collect()
+        })
+        .collect();
+    assert_eq!(
+        refused("closed-insert", json!({ "kind": "nurbsSurface", "poles": ring, "degreeU": 3, "degreeV": 3, "periodicU": true, "insertV": [[0.5, 1.0]] })),
+        "Knot insertion and degree elevation are for a clamped NURBS surface, not a closed one."
+    );
     assert_eq!(
         refused("at-end", feature(grid(6, 1.0), json!({ "insertV": [[1.0, 1.0]] }))),
         "A knot insert in V must lie strictly inside the knot range, 0 to 1."
@@ -247,7 +265,7 @@ fn nurbs_limits_are_refused_by_the_kernel() {
     );
     assert_eq!(
         refused("elevate", feature(grid(6, 1.0), json!({ "elevateU": 9 }))),
-        "A NURBS surface's degree in U can be raised to at most 8; it asked for 9."
+        "A NURBS surface's degree is at most 8."
     );
     assert_eq!(
         refused("mults", feature(grid(4, 0.0), json!({ "knotsU": [0.0, 1.0], "multsU": [5, 3] }))),
