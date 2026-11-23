@@ -1,4 +1,5 @@
 /** Split to print: Apply and Update, and the laying out of the pieces they make. */
+import { plateRequest } from "../../model-mesh-quality";
 import { type Mat3 } from "../../mesh-place";
 import { forked, stepIds, type EditLevel, type ForkStep } from "../../model-edit";
 import { DAMAGED, decodeSolid, type ParsedSolid } from "../../model-reply";
@@ -377,7 +378,8 @@ async function replayPiece(key: string, parentKey: string, node: NodeId, index: 
   const renamed = stepIds(later, ids);
   const ops = later.map((id) => renumberedSteps(before.nodes.get(id)!.op!, renamed));
   const replay = ops.slice(1).map((op, at) => ({ id: ids[at + 1]!, op }));
-  const body = await treeCall(key, ROOT, { ...editRequest(key, ROOT, ids[0]!, ops[0]!, replay, state.stepTolerance), keepBroken: true });
+  // A replayed piece goes on the plate: plate quality.
+  const body = await treeCall(key, ROOT, plateRequest({ ...editRequest(key, ROOT, ids[0]!, ops[0]!, replay, state.stepTolerance), keepBroken: true }));
   const error = text(body.error);
   const parsed = error ? null : decodeSolid(body);
   const built = builtSteps(body.built);

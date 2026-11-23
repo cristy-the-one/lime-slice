@@ -244,7 +244,10 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
   };
   // The one rule (src/model-sheet.ts) on the verdict the node keeps from its last kernel reply: no badge on a
   // surfaces-only STEP's root, as on v7.1.2.
-  const isSheet = (ofTree: ModelTree, node: ModelNode): boolean => sheetAt(node.sheet, ofTree.root, node.id);
+  // A node with no reply kept yet (a tree read from a file, or one the MCP server built) reads its fingerprint: no volume
+  // and some faces is the kernel's "no closed solid".
+  const isSheet = (ofTree: ModelTree, node: ModelNode): boolean =>
+    sheetAt(node.sheet ?? (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0), ofTree.root, node.id);
 
   /**
    * The lane of the tool the join `join` takes, drawn before the join's row: its steps from the root to the one the join

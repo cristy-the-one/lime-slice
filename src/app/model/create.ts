@@ -1,4 +1,5 @@
 /** Creating a new solid: the primitive, the feature solid, its placement, and the empty state. */
+import { plateRequest } from "../../model-mesh-quality";
 import { boundsOf, encodeStl, settleBy, type Bounds } from "../../mesh-place";
 import {
   boxUnder,
@@ -61,7 +62,7 @@ export async function createSolid() {
   const exprs = panelExprs();
   const from: ModelRoot = exprs ? { kind: "primitive", solid: root, exprs } : { kind: "primitive", solid: root };
   await finishNewSolid({
-    request: (key, chord) => newSolidRequest(key, typed, chord),
+    request: (key, chord) => plateRequest(newSolidRequest(key, typed, chord)),
     name: (names) => primitiveName(names, typed.primitive),
     root: from,
     // The primitive's box, from its numbers, as before the mesh is read.
@@ -82,7 +83,8 @@ export async function createFeatureSolid(op: FeatureOp, pose?: Affine): Promise<
   }
   const from: ModelRoot = { kind: "feature", op };
   return finishNewSolid({
-    request: (key, chord) => openRequest(key, from, chord),
+    // A new object's mesh goes straight on the plate: plate quality (src/model-mesh-quality.ts).
+    request: (key, chord) => plateRequest(openRequest(key, from, chord)),
     name: (names) => (op.kind === "loft" && op.drawing?.sweep ? sweepObjectName(names) : featureObjectName(names, op.kind)),
     root: from,
     bounds: (positions) => boundsOf(positions),

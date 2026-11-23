@@ -1,4 +1,5 @@
 /** Plugin runs: the environment, the rebuild of a plugin row, and the swap back. */
+import { plateRequest } from "../../model-mesh-quality";
 import { type Mat3 } from "../../mesh-place";
 import { typedPoseOf } from "../../model-space";
 import { markProjectDirty } from "../../project-dirty";
@@ -188,7 +189,7 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
       params: runValues,
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? stamp.context.nozzleMm },
       recipes,
-      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
+      engine: { tree: (key, node, request) => treeCall(key, node, plateRequest(request)), open: (request) => post(plateRequest(request)) },
       env: recipeEnv(at.objectId, madeIt, stamp.sha256),
       runId: freshRunId(),
       plugins: appPluginSources(),
@@ -316,7 +317,7 @@ async function rebuildSet(at: Opened, ids: string[], run: StampedRun & { stamp: 
       params: code.params,
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? stamp.context.nozzleMm },
       recipes: code.recipes,
-      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
+      engine: { tree: (key, node, request) => treeCall(key, node, plateRequest(request)), open: (request) => post(plateRequest(request)) },
       env: recipeEnv("", false, stamp.sha256),
       runId: freshRunId(),
       plugins: appPluginSources(),

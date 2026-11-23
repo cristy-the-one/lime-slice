@@ -28,6 +28,7 @@ import { closeSketchSession, holdSketchForApply } from "../sketch";
 import { POINT_REFUSAL, holeSizeRefusal } from "../../sketch/holes.ts";
 import { freshTreeKey, modelTrees } from "../model-trees";
 import { sheetVerdict } from "../../model-sheet";
+import { plateSolidOf } from "./plate-mesh";
 import { applySelectedToState, syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { splitPrintOp, splitPrintOpen } from "../../ui/split-print.ts";
@@ -273,7 +274,9 @@ export async function applyOp(op: ModelOp, working: string): Promise<boolean> {
   }
   // --- F1. The engine's echo has no sketch. Put the one this call sent back on the stored op. ---
   const stored = keepSketch(isOp(body.op) ? body.op : op, op);
-  if (pieceKey && other && !addPiece(at, other, pieceKey, node)) {
+  // The split's other piece goes straight on the plate: its plate-quality mesh, never the display reply.
+  const otherPlate = pieceKey && other ? await plateSolidOf(pieceKey, ROOT, other) : other;
+  if (pieceKey && other && (!otherPlate || !addPiece(at, otherPlate, pieceKey, node))) {
     void dropInEngine(at.key, node);
     void post({ call: "close", key: pieceKey });
     readout("The other piece could not be added. The solid is unchanged.");

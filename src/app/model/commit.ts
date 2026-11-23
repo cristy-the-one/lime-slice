@@ -12,6 +12,7 @@ import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
 import { S } from "./shared";
 import { isOpenSheet, sheetVerdict } from "../../model-sheet";
 import { markSheet } from "./sheet-gate";
+import { cachedPlateSolid, plateSolidOf, settleShownMesh } from "./plate-mesh";
 import { recentSolid } from "./apply";
 import { placePiece } from "./create";
 import { treeOf } from "./edges";
@@ -38,9 +39,19 @@ export function commitModel() {
   if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || S.parked === at.key) return;
   // --- D12. A part cut for an export target stays as the plate had it: `exportedPart` says why, where it matters.
   if (exportCutTo(tree, plan.to)) return;
-  S.plateStale.delete(at.key);
   const node = tree.nodes.get(plan.to);
-  const mesh = solid?.id === plan.to ? node?.mesh ?? meshOf(solid) : held != null ? node?.mesh : null;
+  // The plate never takes the view's display mesh: the node's plate-quality solid (src/app/model/plate-mesh.ts). Not in
+  // hand yet, the commit waits for it and runs again; a slice, an export or a save settles it first.
+  const plateSolid = solid?.id === plan.to && !node?.mesh ? cachedPlateSolid(at.key, plan.to, solid) : solid;
+  if (solid?.id === plan.to && !node?.mesh && !plateSolid) {
+    const key = at.key;
+    void plateSolidOf(key, plan.to, solid).then((found) => {
+      if (found && S.open?.key === key) commitModel();
+    });
+    return;
+  }
+  S.plateStale.delete(at.key);
+  const mesh = solid?.id === plan.to ? node?.mesh ?? meshOf(plateSolid!) : held != null ? node?.mesh : null;
   if (!node || !mesh) return;
   noteEdit();
   tree = withNode(tree, plan.from, { keep: liveKeep() });
@@ -62,7 +73,7 @@ export function commitModel() {
   // takes the kernel's verdict on what was shown (`isOpenSheet`: never a surfaces-only STEP root unless already marked),
   // else the verdict the stored mesh carries. Slice and Export read the object's mark (src/model-sheet.ts).
   const marked = state.plate.objects.find((obj) => obj.id === at.objectId)?.sheet === true;
-  markSheet(at.objectId, solid?.id === plan.to ? isOpenSheet(solid, tree.root, plan.to, marked) : mesh.sheet);
+  markSheet(at.objectId, solid?.id === plan.to ? isOpenSheet(plateSolid ?? solid, tree.root, plan.to, marked) : mesh.sheet);
   const above = new Set(pathTo(tree, plan.from));
   const down = pathTo(tree, plan.to).filter((id) => !above.has(id));
   // A piece a join on the way down took off the plate stays off: fused back into its part, it is no part of its own.
@@ -170,6 +181,7 @@ export function meshOf(solid: ParsedSolid, named?: string): PlateMesh {
  * solid the engine can no longer write loses its STEP rather than keep one from an older shape.
  */
 export async function captureOpenSolid() {
+  await settleShownMesh();
   commitModel();
   const failed = await writeSteps();
   for (const token of failed) putStep(token, undefined);

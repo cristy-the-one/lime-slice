@@ -53,6 +53,7 @@ import { S } from "./shared";
 import { applyOp, keepSolid } from "./apply";
 import { createFeatureSolid } from "./create";
 import { forgetSurfaces } from "./surface-cache";
+import { forgetPlateSolids } from "./plate-mesh";
 import { treeOf } from "./edges";
 import { openWhole, post, treeCall } from "./engine";
 import { paintTextAnchor } from "./features";
@@ -290,6 +291,7 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
 function forgetSolids(key: string) {
   // A root edit rebuilds nodes under the same ids: their curvature and isoparm replies go with their solids.
   forgetSurfaces(key);
+  forgetPlateSolids(key);
   for (const name of [...solids.keys()]) if (name.startsWith(`${key}#`)) solids.delete(name);
 }
 

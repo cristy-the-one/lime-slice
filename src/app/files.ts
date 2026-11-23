@@ -556,6 +556,7 @@ export function withPrinterGcode(gcode: string, run?: RunMeta) {
 
 /** Save the G-code. A missing or stale slice is made first, so Export needs only a mesh. */
 export async function exportGcode() {
+  await fx.settleShownMesh?.();
   fx.commitModel?.();
   if (!state.mesh || state.busy) return;
   if (!state.result || stale()) await fx.runSlice(false);
@@ -590,6 +591,7 @@ export async function exportGcode() {
 }
 
 export async function export3mf() {
+  await fx.settleShownMesh?.();
   fx.commitModel?.();
   const exported: string | null = fx.exportedPart?.() ?? null;
   if (exported) {
