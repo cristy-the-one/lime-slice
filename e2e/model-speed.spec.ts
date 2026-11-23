@@ -595,6 +595,8 @@ test("@perf an 8×8 pole drag with Zebra on draws at 60 fps and commits fast", a
     w.__recording = false;
     return { frames: w.__frames, updates: w.__updates };
   });
+  // Read while the drag is still on: the preview shows only until the kernel's answer is taken.
+  const density = await page.locator("#model").getAttribute("data-nurbs-density");
   // The commit: pointer-up to the app's taking the answer (data-nurbs-built moves on).
   const builtBefore = Number((await page.locator("#model").getAttribute("data-nurbs-built")) ?? 0);
   await page.evaluate((before) => {
@@ -617,7 +619,6 @@ test("@perf an 8×8 pole drag with Zebra on draws at 60 fps and commits fast", a
   const sorted = [...frames.frames].sort((a, b) => a - b);
   const median = percentile(sorted, 0.5);
   const p95 = percentile(sorted, 0.95);
-  const density = await page.locator("#model").getAttribute("data-nurbs-density");
   console.log(`NURBS_FRAMES medianMs=${median.toFixed(2)} p95Ms=${p95.toFixed(2)} fps=${(1000 / median).toFixed(1)} frames=${sorted.length} previewUpdates=${frames.updates} density=${density} zebra=on`);
   console.log(`NURBS_COMMIT pointerUpToAppliedMs=${commitMs.toFixed(1)} engine=mock`);
   expect(density, "default preview density").toBe("4");
@@ -628,4 +629,85 @@ test("@perf an 8×8 pole drag with Zebra on draws at 60 fps and commits fast", a
   // At most the odd dropped frame.
   expect(p95, `p95 frame ${p95} ms`).toBeLessThanOrEqual(34);
   expect(commitMs, `pointer-up to applied ${commitMs} ms`).toBeLessThan(100);
+});
+
+/**
+ * S6: orbiting with the NURBS tool open on a big grid. Each camera move repaints the handles: one projection of the
+ * shown poles with one layout read, transforms only. Frames are rAF to rAF while the camera is dragged round.
+ */
+test("@perf orbiting with the NURBS tool open on a 32 × 32 and a 64 × 64 grid stays at 60 fps", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: SOLID.positions } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  await mockModelTree(page, {
+    open(request) {
+      const feature = request.feature as { kind?: string; poles?: V[][] } | undefined;
+      return feature?.kind === "nurbsSurface" ? sheetOver(feature.poles!) : SOLID;
+    },
+    apply: () => CUT,
+  });
+  await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelFeatureMenu [data-tool=sculpt]").click();
+  await page.locator("#modelNurbsNew").click();
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]")).toHaveCount(64);
+  await page.locator("#tabPrepare").click();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const doc = JSON.parse(unpackLime(fs.readFileSync((await download.path())!)).toString("utf8")) as { objects: { modelTree?: { rootFeature?: { kind?: string; poles?: V[][] } } }[] };
+  const holder = doc.objects.find((obj) => obj.modelTree?.rootFeature?.kind === "nurbsSurface")!.modelTree!.rootFeature!;
+  const results: string[] = [];
+  for (const n of [32, 64]) {
+    holder.poles = Array.from({ length: n }, (_, iu) => Array.from({ length: n }, (_, iv) => [(iu - (n - 1) / 2) * (70 / n), (iv - (n - 1) / 2) * (70 / n), 4 * Math.sin(iu / 5) * Math.cos(iv / 7)] as V));
+    await page.reload();
+    await page.locator("#projectFile").setInputFiles({ name: "big.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
+    await expect(page.locator("#objectList .obj")).toHaveCount(2);
+    await page.locator("#objectList .obj").nth(1).click();
+    await page.locator("#tabModel").click();
+    if (!(await page.locator("#modelToolNurbs").isVisible())) {
+      await page.locator("#modelFeatureMore").click();
+      await page.locator("#modelFeatureMenu [data-tool=sculpt]").click();
+    } else await page.locator("#modelToolNurbs").click();
+    await expect(page.locator("#model")).toHaveAttribute("data-nurbs-grid", `${n}x${n}`);
+    const handles = await page.locator("#modelNurbsOverlay [data-nurbs-iu]").count();
+    const view = (await page.locator("#model").boundingBox())!;
+    // An empty corner of the view, away from the handles.
+    const x = view.x + view.width * 0.9;
+    const y = view.y + view.height * 0.85;
+    await page.evaluate(() => {
+      const w = window as unknown as { __frames: number[]; __recording: boolean };
+      w.__frames = [];
+      w.__recording = true;
+      let last = 0;
+      const tick = (t: number) => {
+        if (last) w.__frames.push(t - last);
+        last = t;
+        if (w.__recording) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    const before = await page.locator("#model").getAttribute("data-camera");
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 60; i += 1) {
+      await page.mouse.move(x - i * 4, y - Math.sin(i / 8) * 20);
+      await page.waitForTimeout(8);
+    }
+    await page.mouse.up();
+    const frames = await page.evaluate(() => {
+      const w = window as unknown as { __frames: number[]; __recording: boolean };
+      w.__recording = false;
+      return w.__frames;
+    });
+    const after = await page.locator("#model").getAttribute("data-camera");
+    const sorted = [...frames].sort((a, b) => a - b);
+    const median = percentile(sorted, 0.5);
+    const p95 = percentile(sorted, 0.95);
+    results.push(`${n}x${n}: medianMs=${median.toFixed(2)} p95Ms=${p95.toFixed(2)} frames=${sorted.length} handles=${handles}`);
+    console.log(`NURBS_ORBIT ${n}x${n} medianMs=${median.toFixed(2)} p95Ms=${p95.toFixed(2)} fps=${(1000 / median).toFixed(1)} frames=${sorted.length} handles=${handles}`);
+    expect(after, "the camera moved").not.toBe(before);
+    expect(handles, "a window of handles on a big grid").toBeLessThanOrEqual(256);
+    expect(sorted.length).toBeGreaterThanOrEqual(30);
+    expect(median, `${n}×${n} median frame ${median} ms`).toBeLessThanOrEqual(18);
+  }
+  console.log(`NURBS_ORBIT ${results.join(" | ")}`);
 });
