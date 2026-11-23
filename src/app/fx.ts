@@ -64,6 +64,8 @@ export interface Fx {
   syncPose?: () => void;
   // The Model workspace (model.ts registers them)
   commitModel: Commit["commitModel"];
+  // Before a slice or an export: the shown node's plate-quality mesh is in hand (src/app/model/plate-mesh.ts).
+  settleShownMesh: () => Promise<void>;
   exportedPart: SplitPrint["exportedPart"];
   exportSplitNote: SplitPrint["exportSplitNote"];
   followSelection: Lifecycle["followSelection"];

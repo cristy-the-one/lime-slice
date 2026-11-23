@@ -592,6 +592,11 @@ export interface PlateMesh {
   token: string;
   /** The node's STEP, once written. The plate object carries it as `brep` while it holds this node. */
   step?: ArrayBuffer;
+  /**
+   * --- Organic surfaces S4: the kernel's verdict on this mesh (`sheetVerdict` in src/model-sheet.ts), set where a
+   * mesh is made from a Model reply. Absent: unknown (a part's own imported file), which leaves the object's mark alone.
+   */
+  sheet?: boolean;
 }
 
 export interface ModelNode {
@@ -626,6 +631,11 @@ export interface ModelNode {
    * its own. An app that does not know the mark reads it as an ordinary step.
    */
   builtWith?: NodeId;
+  /**
+   * --- Organic surfaces S4: the kernel's sheet verdict on this node's last reply (`sheetVerdict`), for its History
+   * badge. Not saved: the plate object's mark (`PlateObject.sheet`) is what Slice and Export read.
+   */
+  sheet?: boolean;
 }
 
 /**
@@ -914,9 +924,89 @@ export function renumberedSteps(op: ModelOp, ids: ReadonlyMap<NodeId, NodeId>): 
     if (!renamed && steps.every((step, i) => step === op.steps[i])) return op;
     return { ...op, steps, ...(renamed ? { source: { ...(op.source as Record<string, unknown>), of: renamed } } : {}) };
   }
-  if (op.kind !== "fillet" && op.kind !== "chamfer") return op;
-  if (!op.edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))) return op;
-  return { ...op, edges: op.edges.map((edge) => (isEdgeStep(edge) && ids.has(edge.fromNode) ? { ...edge, fromNode: ids.get(edge.fromNode)! } : edge)) };
+  // Every field that can hold an earlier step's edges: blend and transition edges, a curve made of edges (a sweep's
+  // spine or auxiliary spine, a loft's guides, a sheet's curves, a split line), and a patch's or blend's sides.
+  const picks = (edges: EdgePick[]): EdgePick[] =>
+    edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))
+      ? edges.map((edge) => (isEdgeStep(edge) && ids.has(edge.fromNode) ? { ...edge, fromNode: ids.get(edge.fromNode)! } : edge))
+      : edges;
+  const curve = (c: Curve3D): Curve3D => {
+    if (c.kind !== "edges") return c;
+    const edges = picks(c.edges);
+    return edges === c.edges ? c : { ...c, edges };
+  };
+  const curves = (list: Curve3D[]): Curve3D[] => {
+    const next = list.map(curve);
+    return next.every((c, i) => c === list[i]) ? list : next;
+  };
+  const side = (b: SurfaceBoundary): SurfaceBoundary => {
+    const edges = b.edges ? picks(b.edges) : undefined;
+    const c = b.curve ? curve(b.curve) : undefined;
+    return edges === b.edges && c === b.curve ? b : { ...b, ...(edges ? { edges } : {}), ...(c ? { curve: c } : {}) };
+  };
+  const sheet = (spec: SheetSpec): SheetSpec => {
+    const next = curves(spec.curves);
+    return next === spec.curves ? spec : { ...spec, curves: next };
+  };
+  switch (op.kind) {
+    case "fillet":
+    case "chamfer":
+    case "transition": {
+      const edges = picks(op.edges);
+      return edges === op.edges ? op : { ...op, edges };
+    }
+    case "sweep": {
+      const spine = curve(op.spine);
+      const aux = op.mode?.kind === "auxSpine" ? curve(op.mode.spine) : null;
+      if (spine === op.spine && (!aux || (op.mode?.kind === "auxSpine" && aux === op.mode.spine))) return op;
+      return { ...op, spine, ...(aux && op.mode?.kind === "auxSpine" ? { mode: { ...op.mode, spine: aux } } : {}) };
+    }
+    case "loft": {
+      if (!op.guides) return op;
+      const guides = curves(op.guides);
+      return guides === op.guides ? op : { ...op, guides };
+    }
+    case "sheet": {
+      const next = curves(op.curves);
+      return next === op.curves ? op : { ...op, curves: next };
+    }
+    case "trimSplit":
+    case "replaceFace": {
+      const next = sheet(op.sheet);
+      return next === op.sheet ? op : { ...op, sheet: next };
+    }
+    case "splitFace": {
+      const next = curve(op.curve);
+      return next === op.curve ? op : { ...op, curve: next };
+    }
+    case "patch": {
+      const boundaries = op.boundaries.map(side);
+      const guides = op.guides ? curves(op.guides) : undefined;
+      if (boundaries.every((b, i) => b === op.boundaries[i]) && guides === op.guides) return op;
+      return { ...op, boundaries, ...(guides ? { guides } : {}) };
+    }
+    case "blendSurface": {
+      const a = side(op.a);
+      const b = side(op.b);
+      return a === op.a && b === op.b ? op : { ...op, a, b };
+    }
+    default:
+      return op;
+  }
+}
+
+/**
+ * `tree` with everything a build left on its nodes dropped: fingerprints and plate meshes. A root edit
+ * rebuilds every node under the same ids, so a node's old plate mesh must not go back to the plate (`commitModel` takes
+ * a node's stored mesh first). The Prepare state (`keep`) stays.
+ */
+export function withoutBuilds(tree: ModelTree): ModelTree {
+  const nodes = new Map(tree.nodes);
+  for (const [id, node] of nodes) {
+    const { mesh: _mesh, ...rest } = node;
+    nodes.set(id, { ...rest, fingerprint: null });
+  }
+  return { ...tree, nodes };
 }
 
 /** The node whose plate mesh is `token`: how a plate restored by Prepare undo finds its place in the tree. */

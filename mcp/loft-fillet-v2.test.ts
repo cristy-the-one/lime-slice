@@ -78,7 +78,7 @@ const loftV2 = {
   ],
   guides: [{ kind: "nurbs", poles: [[8, 0, 10], [14, 0, 19], [0, 0, 28]], degree: 2 }],
   startCondition: { kind: "normal", tension: 1.4 },
-  endCondition: { kind: "curvature", dir: [0, 0, 1], tension: 1.2 },
+  endCondition: { kind: "tangent", dir: [0, 0, 1], tension: 1.2 },
   smoothing: true,
   maxDegree: 6,
 };
@@ -127,7 +127,7 @@ check(
     && sent2.guides?.[0]?.kind === "nurbs"
     && sent2.startCondition?.kind === "normal"
     && sent2.startCondition?.tension === 1.4
-    && sent2.endCondition?.kind === "curvature"
+    && sent2.endCondition?.kind === "tangent"
     && sent2.smoothing === true
     && sent2.maxDegree === 6,
   JSON.stringify({ r2, sent2 }),

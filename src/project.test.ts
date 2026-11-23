@@ -164,8 +164,8 @@ eq("an array is not a project", parseProject("[]"), { ok: false, message: "This 
 eq("a file with no version cannot be opened", parseProject("{}"), { ok: false, message: "This project file has no version, so it cannot be opened." });
 eq(
   "a newer file is refused",
-  parseProject(JSON.stringify({ ...JSON.parse(text), version: 5 })),
-  { ok: false, message: "This project is version 5. This app opens up to version 4." },
+  parseProject(JSON.stringify({ ...JSON.parse(text), version: 6 })),
+  { ok: false, message: "This project is version 6. This app opens up to version 5." },
 );
 eq(
   "version 0 has no built-in migration",
@@ -222,7 +222,7 @@ check("version 1 migrates to one object", migrated.ok);
 if (migrated.ok) {
   const objects = migrated.doc.objects as { id: string }[];
   check("the migrated object id is part", objects.length === 1 && objects[0]?.id === "part");
-  check("a plate drops the top-level mesh and is version 4", migrated.doc.mesh === undefined && migrated.doc.version === 4);
+  check("a plate drops the top-level mesh and reads as the latest version", migrated.doc.mesh === undefined && migrated.doc.version === 5);
 }
 
 const secondPlacement = { ...project.placement, centered: false, offset: { x: 40, y: 8, z: 0 } };

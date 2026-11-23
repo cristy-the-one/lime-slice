@@ -32,7 +32,8 @@ export const ROOT_BROKEN = "This solid's primitive builds differently in this mo
 
 /** Ops that name edges or faces by the solid's own numbering: they build only on a step the history built. */
 // --- P1: a face pull names faces, so a seed solid is rebuilt before the step, as a fillet is. ---
-export const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces", "draft", "transition", "patch", "blendSurface"]);
+// --- S4: Replace face and Split face name faces by index too (`face`, `faces`).
+export const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces", "draft", "transition", "patch", "blendSurface", "replaceFace", "splitFace"]);
 
 export const solids = new Map<string, ParsedSolid>();
 
@@ -218,6 +219,11 @@ export const S = {
   editing: null as Editing | null,
   /** --- E1. A feature-root edit is not a sibling fork. Undo waits until the sketch closes. --- */
   sketchRootEdit: false as boolean,
+  /**
+   * Trees whose plate mesh is out of date although the shown step is the committed one: a sketch root edit rebuilt
+   * every node under its own id. The next commit puts the shown step on the plate even with nothing to walk.
+   */
+  plateStale: new Set<string>(),
   /** P2. The idle edge knob. Null until the view is bound. */
   edgeDrag: null as { sync(): void; picksChanged(): void; holding(): boolean; end(): void } | null,
   /** --- S2 sketch --- redraws the grid when the solid on screen changes. */

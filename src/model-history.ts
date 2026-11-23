@@ -3,6 +3,7 @@
  * and what each key does in it. A join is a merge: the steps that made its tool come in on a lane
  * of their own and meet at the join's row. No DOM here; `ui/model-history.ts` draws the rows.
  */
+import { sheetAt } from "./model-sheet.ts";
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
@@ -241,12 +242,12 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
     const feature = node.op ?? (node.id === ROOT && tree.root.kind === "feature" ? tree.root.op : null);
     return { label: node.name?.trim() || historyCaption(feature, node.label), opLabel: node.name?.trim() ? node.label : null, broken: node.broken ?? null };
   };
+  // The one rule (src/model-sheet.ts) on the verdict the node keeps from its last kernel reply: no badge on a
+  // surfaces-only STEP's root, as on v7.1.2.
+  // A node with no reply kept yet (a tree read from a file, or one the MCP server built) reads its fingerprint: no volume
+  // and some faces is the kernel's "no closed solid".
   const isSheet = (ofTree: ModelTree, node: ModelNode): boolean =>
-    node.op?.kind === "sheet"
-    || node.op?.kind === "patch"
-    || node.op?.kind === "blendSurface"
-    || (node.id === ROOT && ofTree.root.kind === "feature" && ofTree.root.op.kind === "sheet")
-    || (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0);
+    sheetAt(node.sheet ?? (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0), ofTree.root, node.id);
 
   /**
    * The lane of the tool the join `join` takes, drawn before the join's row: its steps from the root to the one the join

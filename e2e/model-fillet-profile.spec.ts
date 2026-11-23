@@ -34,6 +34,19 @@ function boxSolid() {
   return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges };
 }
 
+/** Click over the viewport in edge mode until the readout names an edge. */
+async function pickEdge(page: Page) {
+  await page.locator("#modelPickEdge").click();
+  const box = (await page.locator("#model").boundingBox())!;
+  for (let r = 0; r < 9; r += 1) {
+    for (let col = 0; col < 9; col += 1) {
+      await page.mouse.click(box.x + box.width * (0.18 + col * 0.08), box.y + box.height * (0.18 + r * 0.08));
+      if (/Edge \d+/.test(await page.locator("#modelReadout").innerText())) return;
+    }
+  }
+  throw new Error("no edge under the scan");
+}
+
 async function openFillet(page: Page) {
   const solid = boxSolid();
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
@@ -45,11 +58,10 @@ async function openFillet(page: Page) {
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
-  await page.locator("#modelToolFillet").evaluate((button) => {
-    button.removeAttribute("disabled");
-    button.setAttribute("aria-disabled", "false");
-    button.classList.remove("is-disabled");
-  });
+  // As a user does: Fillet opens once an edge is picked.
+  await expect(page.locator("#modelToolFillet")).toHaveAttribute("aria-disabled", "true");
+  await pickEdge(page);
+  await expect(page.locator("#modelToolFillet")).not.toHaveAttribute("aria-disabled", "true");
   await page.locator("#modelToolFillet").click();
   await expect(page.locator("#modelFilletProfile")).toBeVisible();
 }

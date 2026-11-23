@@ -17,7 +17,7 @@ export function buildApi(ctx: ViewCtx): ModelView {
 
 
   return {
-    setSolid(next, at) {
+    setSolid(next, at, sheetLook) {
       ctx.clearBody();
       ctx.solid = next;
       // The arrow's face hit was on the solid just replaced: a press must not drag from where that face was.
@@ -32,6 +32,11 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.ownBox = null;
       ctx.setPosedMatrix(at);
       if (!next || next.positions.length < 9) {
+        // Nothing shown: the shared solid material leaves the sheet's front-only mode for whatever it draws next.
+        if (solidMaterial.side !== THREE.DoubleSide) {
+          solidMaterial.side = THREE.DoubleSide;
+          solidMaterial.needsUpdate = true;
+        }
         delete canvas.dataset.shapeKind;
         delete canvas.dataset.nakedEdges;
         ctx.clearGhosts();
@@ -43,7 +48,7 @@ export function buildApi(ctx: ViewCtx): ModelView {
         return;
       }
       const naked = next.nakedEdges ?? [];
-      const isSheet = naked.length > 0;
+      const isSheet = sheetLook ?? naked.length > 0;
       canvas.dataset.shapeKind = isSheet ? "sheet" : "solid";
       canvas.dataset.nakedEdges = String(naked.length);
       solidMaterial.side = isSheet ? THREE.FrontSide : THREE.DoubleSide;
