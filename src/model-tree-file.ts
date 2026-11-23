@@ -43,6 +43,8 @@ interface SavedNode {
   run?: RunMark;
   /** --- docs/plan-native-recipes.md 7.1. A recipe's queued step: the first step it was built with. */
   builtWith?: NodeId;
+  /** --- S4: the step's shape is an open sheet (see `ModelNode.sheet`). */
+  sheet?: true;
 }
 
 /**
@@ -94,6 +96,7 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
         ...(node.plugin ? { plugin: node.plugin } : {}),
         ...(node.run ? { run: node.run } : {}),
         ...(node.builtWith !== undefined ? { builtWith: node.builtWith } : {}),
+        ...(node.sheet ? { sheet: true as const } : {}),
       };
     });
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
@@ -168,6 +171,7 @@ export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, f
       ...(node.plugin ? { plugin: node.plugin } : {}),
       ...(node.run ? { run: node.run } : {}),
       ...(node.builtWith !== undefined ? { builtWith: node.builtWith } : {}),
+      ...(node.sheet ? { sheet: true as const } : {}),
       ...(mesh && node.id === saved.committed ? { mesh } : {}),
     });
   }
@@ -247,6 +251,7 @@ function readNode(value: unknown): SavedNode | null {
     ...(plugin ? { plugin } : {}),
     ...(run ? { run } : {}),
     ...(isId(value.builtWith) ? { builtWith: value.builtWith } : {}),
+    ...(value.sheet === true ? { sheet: true as const } : {}),
   };
 }
 
@@ -802,10 +807,11 @@ function readOpBody(value: unknown): SavedOp | undefined {
       };
     }
     case "nurbsSurface": {
-      if (!Array.isArray(value.poles) || value.poles.length < 1) return undefined;
+      // --- S6. Up to 64 poles each way, the schema's cap (a curve's point list stops at 50).
+      if (!Array.isArray(value.poles) || value.poles.length < 1 || value.poles.length > 64) return undefined;
       const poles: Vec3[][] = [];
       for (const raw of value.poles) {
-        const row = readPoints(raw);
+        const row = readPoints(raw, 64);
         if (!row || row.length < 1) return undefined;
         poles.push(row);
       }
@@ -825,6 +831,16 @@ function readOpBody(value: unknown): SavedOp | undefined {
       if (value.knotsV !== undefined && !knotsV) return undefined;
       if (value.multsU !== undefined && !multsU) return undefined;
       if (value.multsV !== undefined && !multsV) return undefined;
+      // --- S6. Knot insertion and degree elevation the kernel applies on open, as the schema takes them. The app bakes
+      // them into the grid before it stores an op, so only an older or hand-written file carries them; they are kept.
+      const insertU = value.insertU === undefined ? undefined : readInsertPairs(value.insertU);
+      const insertV = value.insertV === undefined ? undefined : readInsertPairs(value.insertV);
+      if (value.insertU !== undefined && !insertU) return undefined;
+      if (value.insertV !== undefined && !insertV) return undefined;
+      const elevateU = optionalInt(value.elevateU);
+      const elevateV = optionalInt(value.elevateV);
+      if (value.elevateU !== undefined && elevateU === undefined) return undefined;
+      if (value.elevateV !== undefined && elevateV === undefined) return undefined;
       return {
         kind: "nurbsSurface",
         poles,
@@ -837,6 +853,10 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(multsV ? { multsV } : {}),
         ...(value.periodicU === true ? { periodicU: true } : {}),
         ...(value.periodicV === true ? { periodicV: true } : {}),
+        ...(insertU && insertU.length > 0 ? { insertU } : {}),
+        ...(insertV && insertV.length > 0 ? { insertV } : {}),
+        ...(elevateU !== undefined ? { elevateU } : {}),
+        ...(elevateV !== undefined ? { elevateV } : {}),
       };
     }
     default:
@@ -859,6 +879,19 @@ function optionalInts(value: unknown): number[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.some((item) => typeof item !== "number" || !Number.isInteger(item) || item < 1)) return undefined;
   return [...value];
+}
+
+/** `[parameter, times]` pairs, each a finite number and a count of at least 1. */
+function readInsertPairs(value: unknown): [number, number][] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: [number, number][] = [];
+  for (const pair of value) {
+    if (!Array.isArray(pair) || pair.length !== 2) return undefined;
+    const [param, times] = pair as unknown[];
+    if (typeof param !== "number" || !Number.isFinite(param) || typeof times !== "number" || !Number.isInteger(times) || times < 1) return undefined;
+    out.push([param, times]);
+  }
+  return out;
 }
 
 function readWeightGrid(value: unknown, nu: number, nv: number): number[][] | undefined {
@@ -1342,8 +1375,8 @@ function readCurves(value: unknown): Curve3D[] | undefined {
   return curves;
 }
 
-function readPoints(value: unknown): Vec3[] | undefined {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 50) return undefined;
+function readPoints(value: unknown, most = 50): Vec3[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > most) return undefined;
   const points: Vec3[] = [];
   for (const raw of value) {
     const point = vec(raw);

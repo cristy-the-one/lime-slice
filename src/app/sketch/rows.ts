@@ -12,6 +12,7 @@ import { type IconNode, PenLine, Square, Circle, Spline, Hexagon, RectangleHoriz
 import { keyOf, tipWithShortcut } from "../../ui/commands";
 import { EDIT_DEMO_LEAD, EDIT_DEMO_KINDS, DEMOS } from "../../sketch/demos";
 import { hasOpenEnds } from "../../sketch/edit";
+import { splineEndsClosed } from "../../sketch/model";
 import { type SketchTool, activeSketch, constrainChoices } from "../../sketch/session";
 import { EDIT_BUTTONS, PURPOSE, ASSIST_PURPOSE, MAKE_BUTTONS, REASON } from "../../sketch/reasons";
 import { isConstrainTool, CONSTRAIN_MENU } from "../../sketch/constrain";
@@ -98,10 +99,10 @@ export function splineRowKey(): string {
   const info = selectedSplineInfo();
   if (S.editor.tool !== "spline" && info == null) return "";
   const mode = info?.mode ?? S.editor.draw.splineMode;
-  return `spline:${mode}:${S.editor.showCurvatureComb ? "comb" : ""}:${info ? `${info.entityId}:${info.cvIndex}:${info.weight}:${info.canCrease}` : ""}`;
+  return `spline:${mode}:${S.editor.showCurvatureComb ? "comb" : ""}:${info ? `${info.entityId}:${info.mode}:${info.closed}:${info.cvIndex}:${info.weight}:${info.canCrease}` : ""}`;
 }
 
-function selectedSplineInfo(): { entityId: number; mode: "cv" | "through"; cvIndex: number | null; weight: number; canCrease: boolean } | null {
+function selectedSplineInfo(): { entityId: number; mode: "cv" | "through"; closed: boolean; cvIndex: number | null; weight: number; canCrease: boolean } | null {
   const sketch = activeSketch(S.editor);
   if (!sketch) return null;
   const ptId = S.editor.selection.points[0];
@@ -113,6 +114,7 @@ function selectedSplineInfo(): { entityId: number; mode: "cv" | "through"; cvInd
       return {
         entityId: spline.id,
         mode: spline.mode === "cv" ? "cv" : "through",
+        closed: splineEndsClosed(sketch, spline),
         cvIndex: idx,
         weight,
         canCrease: idx > 0 && idx < spline.through.length - 1,
@@ -123,7 +125,7 @@ function selectedSplineInfo(): { entityId: number; mode: "cv" | "through"; cvInd
   if (entId != null) {
     const spline = sketch.entities.find((e) => e.id === entId && e.kind === "spline");
     if (spline && spline.kind === "spline") {
-      return { entityId: spline.id, mode: spline.mode === "cv" ? "cv" : "through", cvIndex: null, weight: 1, canCrease: false };
+      return { entityId: spline.id, mode: spline.mode === "cv" ? "cv" : "through", closed: splineEndsClosed(sketch, spline), cvIndex: null, weight: 1, canCrease: false };
     }
   }
   return null;
@@ -154,28 +156,28 @@ function splineRow(): HTMLElement {
   comb.title = comb.dataset.tip;
   row.append(comb);
   if (info) {
+    // Weights and knots belong to control points. On a through-point spline they would turn its points into poles and
+    // move the curve off them, and a closed spline is periodic, which knot insertion and creases do not handle yet:
+    // those buttons stay, disabled, with the reason as their tip.
+    const through = info.mode !== "cv" ? "Weights and knots shape control-point curves. Choose Control points (NURBS) for this spline first; it is redrawn from its points." : null;
+    const closedWhy = info.closed ? "Not available on a closed spline yet: it would open the loop." : null;
+    const off = (btn: HTMLButtonElement, why: string | null, tip: string) => {
+      btn.dataset.tip = why ?? tip;
+      btn.title = btn.dataset.tip;
+      // aria-disabled, not disabled: a disabled button shows no tip. The click handler ignores it.
+      if (why) btn.setAttribute("aria-disabled", "true");
+      return btn;
+    };
     if (info.cvIndex != null) {
-      const wDown = textButton("W−", { sketchCvWeight: "down" });
-      wDown.dataset.tip = `Decrease control point weight (current ${info.weight.toFixed(2)})`;
-      wDown.title = wDown.dataset.tip;
-      const wVal = textButton(`W ${info.weight.toFixed(2)}`, { sketchCvWeight: "reset" });
-      wVal.dataset.tip = "Reset control point weight to 1.00";
-      wVal.title = wVal.dataset.tip;
-      const wUp = textButton("W+", { sketchCvWeight: "up" });
-      wUp.dataset.tip = `Increase control point weight — pulls the curve closer (current ${info.weight.toFixed(2)})`;
-      wUp.title = wUp.dataset.tip;
+      const wDown = off(textButton("W−", { sketchCvWeight: "down" }), through, `Decrease control point weight (current ${info.weight.toFixed(2)})`);
+      const wVal = off(textButton(`W ${info.weight.toFixed(2)}`, { sketchCvWeight: "reset" }), through, "Reset control point weight to 1.00");
+      const wUp = off(textButton("W+", { sketchCvWeight: "up" }), through, `Increase control point weight — pulls the curve closer (current ${info.weight.toFixed(2)})`);
       row.append(wDown, wVal, wUp);
       if (info.canCrease) {
-        const crease = textButton("Sharp crease", { sketchCvCrease: "1" });
-        crease.dataset.tip = "Raise knot multiplicity at this point for an exact C0 sharp corner";
-        crease.title = crease.dataset.tip;
-        row.append(crease);
+        row.append(off(textButton("Sharp crease", { sketchCvCrease: "1" }), through ?? closedWhy, "Raise knot multiplicity at this point for an exact C0 sharp corner"));
       }
     }
-    const knot = textButton("Insert knot", { sketchCvKnot: "1" });
-    knot.dataset.tip = "Add an extra control point without changing the curve shape (Boehm refinement)";
-    knot.title = knot.dataset.tip;
-    row.append(knot);
+    row.append(off(textButton("Insert knot", { sketchCvKnot: "1" }), through ?? closedWhy, "Add an extra control point without changing the curve shape (Boehm refinement)"));
   }
   return row;
 }

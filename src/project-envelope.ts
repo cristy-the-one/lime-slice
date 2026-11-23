@@ -54,7 +54,82 @@ import { PARAM_NAME } from "./modeling/expr.ts";
 import type { NodeId } from "./model-tree.ts";
 import { readAssemblies, type Assembly } from "./assembly.ts";
 
-export const PROJECT_VERSION = 4;
+/**
+ * The newest version this app reads and writes. A save writes it only when the project holds something an older app
+ * would lose or misread (`projectNeedsLatest`); any other project is written as `PLAIN_PROJECT_VERSION`, byte for byte
+ * what 7.1.2 wrote, so it still opens there. 7.1.2 and older refuse a newer file with "This project is version 5. This
+ * app opens up to version 4." instead of opening it with History steps or fields silently dropped.
+ */
+export const PROJECT_VERSION = 5;
+
+/** What a project with nothing new is written as: the version 7.1.2 reads and writes. */
+export const PLAIN_PROJECT_VERSION = 4;
+
+/**
+ * The step kinds a version 4 project (7.1.2 and older) could hold: frozen history, never extended. A step of any other
+ * kind (sweep with a spine, sheet, sew, thicken, trimSplit, replaceFace, splitFace, patch, blendSurface, and any kind
+ * added later, such as S6's nurbsSurface) makes the project version 5 with no change here.
+ */
+const VERSION_4_STEP_KINDS: ReadonlySet<string> = new Set([
+  "boolean", "chamfer", "draft", "extrude", "faceExtrude", "fillet", "group", "hole", "join", "lettering", "loft",
+  "moveFaces", "partition", "revolve", "root", "scale", "shell", "split", "transition", "unify",
+]);
+
+/** Fields added to version 4 step kinds after 7.1.2: an older app drops them and builds another shape. */
+const NEWER_STEP_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  fillet: ["continuity", "rho", "variable"],
+  loft: ["guides", "startCondition", "endCondition", "closed", "smoothing", "maxDegree"],
+};
+
+function isPlainRow(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** True when a stored step (or a step inside a group) is one 7.1.2 cannot read as written. */
+function stepNeedsLatest(op: unknown): boolean {
+  if (!isPlainRow(op) || typeof op.kind !== "string") return false;
+  if (!VERSION_4_STEP_KINDS.has(op.kind)) return true;
+  if ((NEWER_STEP_FIELDS[op.kind] ?? []).some((field) => op[field] !== undefined)) return true;
+  // A loft's point (apex) section.
+  if (op.kind === "loft" && Array.isArray(op.sections) && op.sections.some((section) => isPlainRow(section) && section.apex !== undefined)) return true;
+  if (op.kind === "group" && Array.isArray(op.steps) && op.steps.some(stepNeedsLatest)) return true;
+  return false;
+}
+
+/**
+ * True when anything under `value` is a shape 7.1.2 misreads: a `nurbs` profile or curve segment, or a sketch spline
+ * drawn by control points (mode "cv", weights, knots, multiplicities or a degree), which it reopens as through-points.
+ */
+function shapeNeedsLatest(value: unknown, depth = 0): boolean {
+  if (depth > 64) return false;
+  if (Array.isArray(value)) return value.some((item) => shapeNeedsLatest(item, depth + 1));
+  if (!isPlainRow(value)) return false;
+  if (value.kind === "nurbs") return true;
+  if (value.kind === "spline" && (value.mode === "cv" || value.weights !== undefined || value.knots !== undefined || value.mults !== undefined || value.degree !== undefined)) return true;
+  for (const key in value) if (shapeNeedsLatest(value[key], depth + 1)) return true;
+  return false;
+}
+
+/** True when one saved Model history (`modelTree`) holds a step, field or shape 7.1.2 would lose or misread. */
+function treeNeedsLatest(tree: unknown): boolean {
+  if (!isPlainRow(tree)) return false;
+  if (stepNeedsLatest(tree.rootFeature)) return true;
+  if (Array.isArray(tree.nodes) && tree.nodes.some((node) => isPlainRow(node) && stepNeedsLatest(node.op))) return true;
+  return shapeNeedsLatest(tree);
+}
+
+/**
+ * True when the document `projectWire` built needs `PROJECT_VERSION` (5): some object's, tool's or held piece's Model
+ * history uses a step kind, a step field or a shape that 7.1.2 would drop or read differently. Every writer goes
+ * through `projectWire` (window save, autosave, and the MCP server's project_save via `encodeProject`).
+ */
+export function projectNeedsLatest(wire: Record<string, unknown>): boolean {
+  for (const list of [wire.objects, wire.modelTools, wire.heldPieces]) {
+    if (!Array.isArray(list)) continue;
+    if (list.some((holder) => isPlainRow(holder) && treeNeedsLatest(holder.modelTree))) return true;
+  }
+  return false;
+}
 
 export type SettingsLevel = "simple" | "advanced" | "expert";
 
@@ -244,11 +319,14 @@ export type Migration = (doc: Record<string, unknown>) => Record<string, unknown
  * Index 1 wraps a version 1 file into one object, id `part`.
  * Index 2 takes a version 2 plate as it is: only what `brep` holds changed.
  * Index 3 takes a version 3 plate as it is: only how its binary records are stored changed.
+ * Index 4 takes a version 4 plate as it is (see `PROJECT_VERSION`).
  */
 const migrationSteps: Migration[] = [];
 migrationSteps[1] = migrateVersion1;
 migrationSteps[2] = (doc) => ({ ...doc, version: 3 });
 migrationSteps[3] = (doc) => ({ ...doc, version: 4 });
+// Index 4 takes a version 4 plate as it is: version 5 only marks a project that holds newer steps or shapes.
+migrationSteps[4] = (doc) => ({ ...doc, version: 5 });
 export const migrations: readonly Migration[] = migrationSteps;
 
 export function meshRecord(name: string, bytes: Uint8Array): ProjectMesh {
@@ -271,7 +349,8 @@ export function projectWire(project: LimeProject): Record<string, unknown> {
   const objects = (plate ?? [own]).map(stripEmptySettings);
   const shared = shareRootSteps([...objects, ...(plate ? carried.tools : [])], objects);
   const wire: Record<string, unknown> = {
-    version: PROJECT_VERSION,
+    // Settled below, once the objects are in: 4 unless something needs 5. The key stays first.
+    version: PLAIN_PROJECT_VERSION,
     settings: project.settings,
     preset: project.preset,
     profile: project.profile,
@@ -300,6 +379,7 @@ export function projectWire(project: LimeProject): Record<string, unknown> {
       wire.sequentialGantryMm = project.sequentialGantryMm;
     }
   }
+  if (projectNeedsLatest(wire)) wire.version = PROJECT_VERSION;
   return withPreview(project, wire);
 }
 

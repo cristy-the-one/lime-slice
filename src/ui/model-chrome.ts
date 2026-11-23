@@ -918,6 +918,11 @@ export function openModelTool(): ModelTool | null {
   return tool;
 }
 
+/** S6. Open the NURBS tool on the open part, for History Edit of a NURBS step. */
+export function openSculptTool() {
+  if (tool !== "sculpt") toggleTool("sculpt");
+}
+
 /** Whether the open shape can be edited. Surfaces only can be measured and placed, so the edit tools turn off. */
 /** An open sheet keeps Patch and Blend available. A closed solid does not use this. */
 export function setSheetMode(next: boolean) {

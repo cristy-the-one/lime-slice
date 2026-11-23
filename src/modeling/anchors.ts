@@ -5,7 +5,7 @@
 import { eulerOrient } from "../mesh-place.ts";
 import { primitiveBox } from "../model-feasibility.ts";
 import type { ModelOp, ProfileLoop } from "../model-tree.ts";
-import { sampleNurbsCurve2D } from "./nurbs-eval.ts";
+import { loopStartsOffCurve, sampleNurbsSegment } from "../sketch/nurbs-seg.ts";
 import { splinePoints } from "./sweep.ts";
 
 type V3 = [number, number, number];
@@ -119,7 +119,9 @@ function loopPoints(loops: readonly ProfileLoop[]): [number, number][] {
   const out: [number, number][] = [];
   for (const loop of loops) {
     let cursor: readonly number[] = loop.start;
-    out.push([cursor[0]!, cursor[1]!]);
+    // A lone closed nurbs segment starts and ends at a pole, off the outline: its samples are the outline.
+    const offCurve = loopStartsOffCurve(loop);
+    if (!offCurve) out.push([cursor[0]!, cursor[1]!]);
     for (const seg of loop.segments) {
       if (seg.kind === "arc") {
         out.push([seg.through[0], seg.through[1]]);
@@ -127,11 +129,9 @@ function loopPoints(loops: readonly ProfileLoop[]): [number, number][] {
       } else if (seg.kind === "spline") {
         for (const point of seg.through) out.push([point[0], point[1]]);
       } else if (seg.kind === "nurbs") {
-        const poles: [number, number][] = [[cursor[0]!, cursor[1]!], ...(seg.poles ?? []), seg.to];
-        const sampled = sampleNurbsCurve2D({ poles, weights: seg.weights, degree: seg.degree, knots: seg.knots, mults: seg.mults }, 24);
-        for (const point of sampled) out.push([point[0], point[1]]);
+        for (const point of sampleNurbsSegment(cursor, seg)) out.push([point[0], point[1]]);
       }
-      out.push([seg.to[0], seg.to[1]]);
+      if (!offCurve) out.push([seg.to[0], seg.to[1]]);
       cursor = seg.to;
     }
   }
@@ -290,6 +290,12 @@ export function opBox(op: ModelOp): Box | null {
           }
         }
       }
+      return box;
+    }
+    // --- S6. A NURBS sheet lies inside its poles' hull (weights are above 0), so their box holds it.
+    case "nurbsSurface": {
+      let box: Box | null = null;
+      for (const row of op.poles) for (const p of row) box = grow(box, p);
       return box;
     }
     default:

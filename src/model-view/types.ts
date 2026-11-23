@@ -215,10 +215,19 @@ export interface ModelView {
   /** P1. A model-space point, in page pixels. Null when it is behind the camera. */
   projectPoint(at: Vec3): { x: number; y: number } | null;
   /**
-   * The live NURBS preview, evaluated already. Null hides it. `timeFrom` is `performance.now()`
-   * from before the evaluation, so the recorded frame includes evaluation, the mesh update and Zebra.
+   * S6. The live NURBS preview, already evaluated, in the open part's own frame; null hides it and frees its buffers. The
+   * same arrays from one call to the next are updated in place. While it shows, the committed solid is hidden.
    */
-  setNurbsPreview(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array } | null, timeFrom?: number): void;
+  setNurbsPreview(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; density: number } | null): void;
+  /**
+   * S6. Model-space points (x, y, z flat) to view pixels in `out` (x, y, 1 when in front of the camera else 0, flat),
+   * relative to the view's top left, with one layout read for the list. Returns the view's rectangle on the page.
+   */
+  projectMany(points: ArrayLike<number>, out: Float64Array): { left: number; top: number; width: number; height: number };
+  /** S6. Called (after the call returns) whenever the view is given another solid. Returns the way to stop. */
+  onSolidChange(cb: () => void): () => void;
+  /** S6. Called whenever the camera moves (orbit, pan, wheel zoom, a glide, a reset). Returns the way to stop. */
+  onCameraChange(cb: () => void): () => void;
   /** P1. A dotted line in model space, or null to hide it. */
   setAlign(ends: [Vec3, Vec3] | null): void;
   /** P1. The distance under the pointer, for tests. Null clears it. */

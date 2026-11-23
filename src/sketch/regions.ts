@@ -10,7 +10,7 @@
  * also its own region, so a washer is the ring and the hole, both selectable. `toLoops` writes
  * profile v2: the outer loop counter-clockwise, holes clockwise, arcs kept as arcs.
  */
-import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
+import { loopStartsOffCurve, sampleNurbsSegment } from "./nurbs-seg.ts";
 import {
   EPS,
   arcFrom3,
@@ -57,7 +57,10 @@ export interface Region {
 type Piece =
   | { kind: "line"; a: Pt; b: Pt }
   | { kind: "arc"; centre: Pt; radius: number; a0: number; sweep: number; a: Pt; b: Pt }
-  | { kind: "spline"; points: Pt[]; emit?: Pt[]; nurbs?: Omit<NurbsCurveMeta, "closed"> };
+  | { kind: "spline"; points: Pt[]; emit?: Pt[]; nurbs?: PieceNurbs };
+
+/** A whole control-point curve kept exact. `periodic`: a closed curve, every pole distinct (the first is not repeated). */
+type PieceNurbs = Omit<NurbsCurveMeta, "closed"> & { periodic?: boolean };
 
 interface Vertex {
   id: number;
@@ -130,8 +133,8 @@ export function loopSignedArea(loop: ProfileLoop): number {
     if (segment.kind === "line") area += shoelace(prev, segment.to);
     else if (segment.kind === "arc") area += arcSegmentArea(prev, segment.through, segment.to);
     else if (segment.kind === "nurbs") {
-      const poles: Pt[] = [prev, ...(segment.poles ?? []), segment.to];
-      area += polylineArea(sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8)));
+      // An open piece's samples run from `prev` to `to`, so their area plus the others' closes the loop. A closed one is its own loop.
+      area += polylineArea(sampleNurbsSegment(prev, segment));
     } else area += polylineArea([prev, ...segment.through, segment.to]);
     prev = segment.to;
   }
@@ -276,6 +279,23 @@ function emitLoop(pieces: Piece[], ccw: boolean): ProfileLoop {
     }
     segments.push({ kind: "line", to: [to[0], to[1]] });
   };
+  const only = oriented.length === 1 ? oriented[0]! : null;
+  if (only?.kind === "spline" && only.nurbs?.periodic) {
+    // The kernel reads a nurbs segment that ends where it starts as one periodic curve whose first pole is the start.
+    const poles = only.nurbs.poles;
+    return {
+      start: clonePt(poles[0]!),
+      segments: [{
+        kind: "nurbs",
+        poles: poles.slice(1).map(clonePt),
+        ...(only.nurbs.weights ? { weights: [...only.nurbs.weights] } : {}),
+        ...(only.nurbs.degree !== undefined ? { degree: only.nurbs.degree } : {}),
+        ...(only.nurbs.knots ? { knots: [...only.nurbs.knots] } : {}),
+        ...(only.nurbs.mults ? { mults: [...only.nurbs.mults] } : {}),
+        to: clonePt(poles[0]!),
+      }],
+    };
+  }
   for (const piece of oriented) {
     const from = pieceStart(piece);
     if (!start) start = [from[0], from[1]];
@@ -285,7 +305,7 @@ function emitLoop(pieces: Piece[], ccw: boolean): ProfileLoop {
         if (segment.kind === "line") pushLine(segment.to);
         else segments.push(segment);
       }
-    } else if (piece.nurbs && piece.nurbs.poles.length >= 2) {
+    } else if (piece.nurbs && !piece.nurbs.periodic && piece.nurbs.poles.length >= 2) {
       const interior = piece.nurbs.poles.slice(1, -1).map(clonePt);
       const to = clonePt(piece.nurbs.poles[piece.nurbs.poles.length - 1]!);
       segments.push({
@@ -362,6 +382,23 @@ function makePiece(curve: Curve, t0: number, t1: number, v0: Pt, v1: Pt): Piece 
         },
       };
     }
+    if (curve.nurbs && curve.closed && curve.nurbs.poles.length >= 3) {
+      // A whole closed control-point curve is sent as the kernel's periodic NURBS over its own poles, so the solid
+      // is the curve the sketch shows (an interpolating spline through the poles is not).
+      return {
+        kind: "spline",
+        points,
+        nurbs: {
+          poles: curve.nurbs.poles.map(clonePt),
+          ...(curve.nurbs.weights ? { weights: [...curve.nurbs.weights] } : {}),
+          ...(curve.nurbs.degree !== undefined ? { degree: curve.nurbs.degree } : {}),
+          ...(curve.nurbs.knots ? { knots: [...curve.nurbs.knots] } : {}),
+          ...(curve.nurbs.mults ? { mults: [...curve.nurbs.mults] } : {}),
+          periodic: true,
+        },
+      };
+    }
+    if (curve.nurbs) return { kind: "spline", points };
     const emit = curve.closed ? [...curve.controls.map(clonePt), clonePt(curve.controls[0]!)] : curve.controls.map(clonePt);
     emit[0] = clonePt(v0);
     emit[emit.length - 1] = clonePt(v1);
@@ -459,7 +496,38 @@ function pushHedge(hedges: Hedge[], v0: number, v1: number, piece: Piece) {
   hedges.push({ id: id1, from: v1, to: v0, angle: departure(reverse), curvature: curvatureOf(reverse), piece: reverse, twin: id0 });
 }
 
-function reverseNurbs(nurbs: Omit<NurbsCurveMeta, "closed">): Omit<NurbsCurveMeta, "closed"> {
+/**
+ * The same closed periodic curve walked the other way. Uniform knots: the first pole stays first and the rest reverse
+ * (a cyclic shift of the reversed poles is the same curve). Custom knots: the knots reflect (u -> u0 + u1 - u) and pole i
+ * moves to slot (n - 1 + p - i) mod n, the slot whose reflected support it now covers.
+ */
+export function reversePeriodicNurbs(nurbs: PieceNurbs): PieceNurbs {
+  const n = nurbs.poles.length;
+  let order: number[];
+  let knots: number[] | undefined;
+  let mults: number[] | undefined;
+  if (nurbs.knots && nurbs.knots.length >= 2) {
+    const p = Math.max(1, Math.min(Math.floor(nurbs.degree ?? 3), n));
+    const u0 = nurbs.knots[0]!;
+    const u1 = nurbs.knots[nurbs.knots.length - 1]!;
+    knots = [...nurbs.knots].reverse().map((k) => u0 + u1 - k);
+    mults = nurbs.mults ? [...nurbs.mults].reverse() : undefined;
+    order = Array.from({ length: n }, (_, m) => (((n - 1 + p - m) % n) + n) % n);
+  } else {
+    order = Array.from({ length: n }, (_, m) => (n - m) % n);
+  }
+  return {
+    poles: order.map((i) => clonePt(nurbs.poles[i]!)),
+    ...(nurbs.weights ? { weights: order.map((i) => nurbs.weights![i]!) } : {}),
+    ...(nurbs.degree !== undefined ? { degree: nurbs.degree } : {}),
+    ...(knots ? { knots } : {}),
+    ...(mults ? { mults } : {}),
+    periodic: true,
+  };
+}
+
+function reverseNurbs(nurbs: PieceNurbs): PieceNurbs {
+  if (nurbs.periodic) return reversePeriodicNurbs(nurbs);
   const poles = [...nurbs.poles].reverse().map(clonePt);
   const weights = nurbs.weights ? [...nurbs.weights].reverse() : undefined;
   let knots: number[] | undefined;
@@ -569,15 +637,16 @@ function loopContains(loop: ProfileLoop, pt: Pt): boolean {
 }
 
 function sampleLoop(loop: ProfileLoop): Pt[] {
-  const out: Pt[] = [clonePt(loop.start)];
+  // A lone closed nurbs segment starts at a pole, off the outline: its samples are the whole loop.
+  const offCurve = loopStartsOffCurve(loop);
+  const out: Pt[] = offCurve ? [] : [clonePt(loop.start)];
   let prev = loop.start;
   for (const segment of loop.segments) {
     if (segment.kind === "line") out.push(clonePt(segment.to));
     else if (segment.kind === "arc") sampleProfileArc(prev, segment.through, segment.to, out);
     else if (segment.kind === "nurbs") {
-      const poles: Pt[] = [prev, ...(segment.poles ?? []), segment.to];
-      const sampled = sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8));
-      for (let i = 1; i < sampled.length; i += 1) out.push(clonePt(sampled[i]!));
+      const sampled = sampleNurbsSegment(prev, segment);
+      for (let i = offCurve ? 0 : 1; i < sampled.length; i += 1) out.push(clonePt(sampled[i]!));
     } else {
       for (const point of segment.through) out.push(clonePt(point));
       out.push(clonePt(segment.to));

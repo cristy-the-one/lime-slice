@@ -82,7 +82,8 @@ const v3 = JSON.stringify({ ...JSON.parse(plain), version: 3 }, null, 2);
 
 const text = await encodeProject(project);
 const wire = JSON.parse(text) as { version: number; objects: { mesh: Record<string, unknown>; brep: Record<string, unknown>; modelTree: { rootStep: Record<string, unknown> } }[]; modelTools: { modelTree: { rootStep: Record<string, unknown> } }[]; settings: unknown };
-check("a save is version 4", wire.version === 4 && PROJECT_VERSION === 4);
+// A project with nothing newer than 7.1.2 is still written as version 4; this app reads up to 5.
+check("a save is version 4", wire.version === 4 && PROJECT_VERSION === 5);
 const records = [wire.objects[0]!.mesh, wire.objects[0]!.brep, wire.objects[0]!.modelTree.rootStep, wire.objects[1]!.mesh, wire.modelTools[0]!.modelTree.rootStep];
 check("every binary record names its encoding", records.every((row) => row.encoding === ENCODING_GZIP && typeof row.data === "string" && row.bytesBase64 === undefined));
 check("a record keeps its name, length, and hash", wire.objects[0]!.mesh.name === "part.stl" && wire.objects[0]!.mesh.byteLength === mesh.byteLength && wire.objects[0]!.mesh.hash === project.mesh.hash);
@@ -150,8 +151,8 @@ check("the async encoder agrees with the sync one", (await bytesToBase64Async(me
 check("URL-safe characters are not base64 here either", base64ToBytes("AA-A") === null && base64ToBytes("AA_A") === null);
 
 // A newer file is refused by its version, whatever it holds.
-const future = await decodeProject(JSON.stringify({ ...JSON.parse(text), version: 5 }));
-check("a version 5 file is refused by its version", !future.ok && future.message === "This project is version 5. This app opens up to version 4.", JSON.stringify(future));
+const future = await decodeProject(JSON.stringify({ ...JSON.parse(text), version: 6 }));
+check("a version 6 file is refused by its version", !future.ok && future.message === "This project is version 6. This app opens up to version 5.", JSON.stringify(future));
 
 // Saving leaves the project as it was, and a root STEP the file holds elsewhere is written as a reference and comes back.
 const before = JSON.stringify(project);

@@ -5,7 +5,7 @@
  * margin the kernel uses to close a profile loop. A spline here is a centripetal Catmull-Rom
  * through the controls, close enough to draw; the kernel's own interpolant is what a feature builds.
  */
-import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
+import { sampleNurbsCurve2DTotal } from "../modeling/nurbs-eval.ts";
 import { sketchPoint, type Pt, type SketchData, type SketchEntity } from "./model.ts";
 
 export type { Pt };
@@ -446,7 +446,10 @@ export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null 
     : controls;
   if (unique.length < 2) return null;
   if (entity.mode === "cv") {
-    const poles = closed ? unique : controls;
+    // A periodic curve needs three distinct poles. A closed CV spline over two points (A, B, A) is drawn as the
+    // open curve through its poles, never thrown: a file or an MCP sketch can hold one.
+    const periodic = closed && unique.length >= 3;
+    const poles = periodic ? unique : controls;
     const weights = entity.weights && entity.weights.length >= poles.length ? entity.weights.slice(0, poles.length) : undefined;
     const nurbs: NurbsCurveMeta = {
       poles,
@@ -454,14 +457,14 @@ export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null 
       ...(entity.degree !== undefined ? { degree: entity.degree } : {}),
       ...(entity.knots ? { knots: [...entity.knots] } : {}),
       ...(entity.mults ? { mults: [...entity.mults] } : {}),
-      closed,
+      closed: periodic,
     };
+    // About 16 samples per pole over the whole curve, not per knot span.
     const steps = Math.max(24, poles.length * 16);
     // A closed control-point spline is the kernel's periodic NURBS, custom knots included.
     // Sampling those knots as a clamped open curve ends on the last pole and leaves a seam
     // the kernel's Geom_BSplineCurve does not have.
-    const periodic = closed;
-    const samples = sampleNurbsCurve2D(
+    const samples = sampleNurbsCurve2DTotal(
       {
         poles,
         ...(weights ? { weights } : {}),
@@ -472,7 +475,7 @@ export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null 
       },
       steps,
     );
-    return { kind: "spline", controls: unique, closed, samples, nurbs };
+    return { kind: "spline", controls: periodic ? unique : controls, closed: periodic, samples, nurbs };
   }
   return { kind: "spline", controls: unique, closed, samples: sampleSpline(unique, closed) };
 }

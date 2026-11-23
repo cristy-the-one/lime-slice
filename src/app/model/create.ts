@@ -12,6 +12,7 @@ import {
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../../model-primitive";
 import { unionBox } from "../../measure";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
+import { isOpenSheet } from "../../model-sheet";
 import {
   ROOT,
   newTree,
@@ -138,7 +139,11 @@ async function finishNewSolid(made: {
   const { bedX, bedY } = state.profile;
   state.plate = addedSolid(state.plate, { name, fileName, bytes, sourcePos: positions, stepTolerance: chord }, id, key, pose, bedX, bedY);
   applySelectedToState(state.plate);
-  modelTrees.set(key, withNode(newTree(key, made.root, rootLabel(made.root, name), parsed.fingerprint), ROOT, { mesh }));
+  // --- Organic surfaces S4: a new object that is an open sheet goes on the plate like any part (so it saves, reopens
+  // and thickens later), marked from the kernel's reply (`isOpenSheet`); Prepare shows it as a sheet, and Slice and
+  // Export stop on it (`sheetPartNote` in ./sheet-gate.ts).
+  const sheet = isOpenSheet(parsed, made.root, ROOT);
+  modelTrees.set(key, withNode(newTree(key, made.root, rootLabel(made.root, name), parsed.fingerprint), ROOT, { mesh, ...(sheet ? { sheet: true as const } : {}) }));
   keepSolid(key, ROOT, chord, parsed);
   place(first ? "load" : "transform");
   flushEdit();

@@ -13,6 +13,7 @@ import {
 } from "../../model-space";
 import { unionBox } from "../../measure";
 import { decodeSurfaceInspect, type DecodedSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { isOpenSheet } from "../../model-sheet";
 import { contextParts } from "../../model-context";
 import { isHidden, isolate, pruneHidden, setHidden, showAll, visibleParts } from "../../model-hidden";
 import { extentAlong } from "../../model-plane";
@@ -106,6 +107,12 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
     if (oldest !== undefined) surfaceInspectCache.delete(oldest);
   }
   surfaceInspectCache.set(cacheKey, decoded);
+  // A late reply is kept for its node but shown only while that node is still on screen: isoparm lines carry no
+  // vertex count to check against (the curvature buffers are length-checked), so they would draw on another solid.
+  const nowTree = treeOf(S.open);
+  const nowKey = S.lens?.key ?? S.open?.key;
+  const nowNode = S.lens?.node ?? nowTree?.current;
+  if (nowKey !== key || nowNode !== node || state.stepTolerance !== chord) return;
   fx.model?.setSurfaceInspect({
     ...(decoded.minRadiusMm ? { minRadiusMm: decoded.minRadiusMm } : {}),
     ...(decoded.gaussian ? { gaussian: decoded.gaussian } : {}),
@@ -142,7 +149,8 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   syncWorkplaneFields();
   refreshModelContext();
   fx.model?.highlight([]);
-  const isSheet = !parsed.editable && parsed.faces.length > 0 && !view;
+  // One rule for the banner, the sheet tools and the commit gate: a surfaces-only STEP is not a sheet (`isOpenSheet`).
+  const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id);
   setSheetMode(isSheet);
   setModelEditable(parsed.editable);
   // --- Organic surfaces S4 (U6): show open-sheet banner with one-click Thicken & Cap & Sew when open.

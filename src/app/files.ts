@@ -596,6 +596,13 @@ export async function export3mf() {
     renderChrome();
     return;
   }
+  // --- Organic surfaces S4: an open sheet is on the plate but is no solid: Slice and Export stop with the prompt.
+  const sheet: string | null = fx.sheetPart?.() ?? null;
+  if (sheet) {
+    state.error = sheet;
+    renderChrome();
+    return;
+  }
   if (!state.placed) return;
   syncPlateFromState();
   const objects = livePlate();

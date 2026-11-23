@@ -63,7 +63,7 @@ export interface ViewCtx {
   sheetBackMesh: THREE.Mesh<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.Material | THREE.Material[], THREE.Object3DEventMap> | null;
   edgeLines: THREE.LineSegments<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.Material | THREE.Material[], THREE.Object3DEventMap> | null;
   nakedEdgeLines: THREE.LineSegments<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.Material | THREE.Material[], THREE.Object3DEventMap> | null;
-  preview: { shape: ModelSolid; mesh: THREE.Mesh; lines: THREE.LineSegments | null; } | null;
+  preview: { shape: ModelSolid; mesh: THREE.Mesh; lines: THREE.LineSegments | null; back?: THREE.Mesh | null } | null;
   faceOutline: LineSegments2 | null;
   locatedBoxes: Bounds[];
   checkBox: Bounds | null;
