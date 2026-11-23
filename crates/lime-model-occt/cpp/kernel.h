@@ -1043,7 +1043,8 @@ struct PatchBoundSpec {
     Curve3DSpec curve;
 };
 
-/// S5: Fill a boundary of two to four sides at G0 with GeomFill.
+/// S5: Fill a boundary. Two to four G0 sides with no guide point use GeomFill.
+/// G1, G2, a guide point, or five or more sides are N Hermite–Coons pieces.
 struct PatchBuildSpec {
     std::vector<PatchBoundSpec> bounds;
     std::vector<Curve3DSpec> guides;
@@ -1051,7 +1052,7 @@ struct PatchBuildSpec {
     double tolerance = 0;
 };
 
-/// S5: A blend is not available yet. The call is refused.
+/// S5: One Hermite sheet between two edges. Continuity is G1 or G2.
 struct BlendBuildSpec {
     PatchBoundSpec a;
     PatchBoundSpec b;
@@ -1068,7 +1069,7 @@ TopoDS_Shape build_patch(
     const PatchBuildSpec& spec,
     std::string& error);
 
-/// S5: Refuses. A blend is not available yet.
+/// S5: A Hermite sheet bridging `spec` on `current`.
 TopoDS_Shape build_blend(
     const TopoDS_Shape& current,
     const Held* held,

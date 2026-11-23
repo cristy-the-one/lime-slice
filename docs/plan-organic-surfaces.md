@@ -171,7 +171,7 @@ A dome start, so the meridian would leave the opening vertically, was tried on h
 The $G^0$ quad on that same Windows job, filled by GeomFill rather than GeomPlate, printed `gapMm=0.0000030611` on each of its four edges, with `solid=true naked=0 brepCheck=accepted-by-promotion`. That is the path R2.3 keeps. The G0 patch landed in #815. $G^1$ and $G^2$ wait on the construction above, and on the S5 acceptance bounds (gap under $10^{-4}$ mm, angle under $0.1°$, curvature jump not greater than $10^{-3}\,\text{mm}^{-1}$).
 
 ### R3 — Surface-to-Solid Workflow
-- **R3.1 Open Sheet Ops**: `Op::Sew` (`BRepBuilderAPI_Sewing` + `ShapeFix_Solid`), `Op::Thicken` (`BRepOffsetAPI_MakeThickSolid` / directional or symmetric wall closure), `Op::TrimSplit` (`BRepAlgoAPI_Splitter` splitting a solid by an open surface), `Op::ReplaceFace`, and `Op::SplitFace` (imprinting/projecting a curve onto a face).
+- **R3.1 Open Sheet Ops**: `Op::Sew` (`BRepBuilderAPI_Sewing` + `ShapeFix_Solid`), `Op::Thicken` (`BRepOffsetAPI_MakeThickSolid` / directional or symmetric wall closure), `Op::TrimSplit` (`BRepAlgoAPI_Splitter` splitting a solid by an open surface), `Op::ReplaceFace`, and `Op::SplitFace` (imprinting/projecting a curve onto a face). A TrimSplit of a sheet keeps the cut piece of that sheet; an older `.lime` that splits a sheet rebuilds into that piece, and a split of a solid is unchanged.
 - **R3.2 Print-Readiness Gate**: Distinct sheet visualization (backface tint + naked edges) and a one-click prompt to Thicken or Sew before slicing.
 
 ### R4 — Visual & Analytical Continuity Inspection

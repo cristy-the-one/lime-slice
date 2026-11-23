@@ -75,6 +75,88 @@ fn find_top_front_edge(opened: &Value) -> usize {
         .expect("top front edge along +X")
 }
 
+/// The fillet's own seam edges, found by where they lie, not by the class model_check assigned.
+/// A constant or variable fillet of the box's top-front edge leaves one seam on the top face
+/// (z = 10, y inset) and one on the front face (y = 0, z inset), both running along X.
+fn fillet_own_seams(shaped: &Value) -> Vec<usize> {
+    let decode_bytes = |b64: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap_or_default()
+    };
+    let Some(points_b64) = shaped["edgePoints"].as_str() else {
+        return Vec::new();
+    };
+    let Some(offs_b64) = shaped["edgeOffsets"].as_str() else {
+        return Vec::new();
+    };
+    let points: Vec<f32> = decode_bytes(points_b64)
+        .chunks_exact(4)
+        .map(|w| f32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .collect();
+    let offsets: Vec<u32> = decode_bytes(offs_b64)
+        .chunks_exact(4)
+        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .collect();
+    let mut seams = Vec::new();
+    for (index, window) in offsets.windows(2).enumerate() {
+        let start = window[0] as usize;
+        let end = window[1] as usize;
+        if end <= start + 1 {
+            continue;
+        }
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut on_top = true;
+        let mut on_front = true;
+        for i in start..end {
+            let base = i * 3;
+            if base + 2 >= points.len() {
+                on_top = false;
+                on_front = false;
+                break;
+            }
+            let x = points[base];
+            let y = points[base + 1];
+            let z = points[base + 2];
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            if !((z - 10.0).abs() < 0.15 && y > 0.2 && y < 19.8) {
+                on_top = false;
+            }
+            if !(y.abs() < 0.15 && z > 0.2 && z < 9.8) {
+                on_front = false;
+            }
+        }
+        if max_x - min_x > 10.0 && (on_top || on_front) {
+            seams.push(index);
+        }
+    }
+    seams
+}
+
+fn assert_fillet_seams(case_name: &str, shaped: &Value, inspect: &Value) {
+    let seams = fillet_own_seams(shaped);
+    let rows = inspect["continuity"]["edges"].as_array().cloned().unwrap_or_default();
+    assert!(
+        seams.len() >= 2,
+        "S5 fillet {case_name} expected its two seam edges by geometry, got {seams:?}"
+    );
+    for id in seams {
+        let Some(row) = rows.iter().find(|row| row["edge"].as_u64() == Some(id as u64)) else {
+            panic!("S5 fillet {case_name} edge {id} is missing from continuity.edges");
+        };
+        let kind = row["kind"].as_str().unwrap_or("");
+        let angle = row["angleDeg"].as_f64().unwrap_or(99.0);
+        let jump = row["curvatureJump"].as_f64().unwrap_or(99.0);
+        println!("S5 fillet {case_name} edge={id} kind={kind} angleDeg={angle} curvatureJump={jump}");
+        assert!(
+            kind == "G2" && angle < 0.1 && jump <= 1e-3,
+            "S5 fillet {case_name} edge {id} must be G2 with angle under 0.1° and curvature jump within 1e-3 mm^-1, got kind={kind} angleDeg={angle} curvatureJump={jump}"
+        );
+    }
+}
+
 fn open_box(key: &str) -> Value {
     ok(json!({
         "call": "open",
@@ -176,6 +258,7 @@ fn g2_smooth_fillet_achieves_exact_g2_continuity_on_constant_and_variable_edges(
         .unwrap_or(99.0);
     let (g2_angle, g2_jump) = g2_edge_bounds(&inspect);
     println!("S5 fillet constant g2Edges={g2_edges} worstSmoothAngleDeg={worst_angle} g2AngleDeg={g2_angle} g2CurvatureJump={g2_jump}");
+    assert_fillet_seams("constant", &applied, &inspect);
     assert!(
         worst_angle < 0.1,
         "G2 seam normal angle expected < 0.1°, got {worst_angle}"
@@ -219,6 +302,7 @@ fn g2_smooth_fillet_achieves_exact_g2_continuity_on_constant_and_variable_edges(
     let worst_var = inspect_v["continuity"]["worstSmoothAngleDeg"].as_f64().unwrap_or(99.0);
     let (g2_angle_v, g2_jump_v) = g2_edge_bounds(&inspect_v);
     println!("S5 fillet variable g2Edges={g2_var} worstSmoothAngleDeg={worst_var} g2AngleDeg={g2_angle_v} g2CurvatureJump={g2_jump_v}");
+    assert_fillet_seams("variable", &applied_v, &inspect_v);
     assert!(
         g2_var >= 2,
         "variable G2 fillet should preserve G2 continuity along both seams: {inspect_v}"

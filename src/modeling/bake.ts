@@ -15,8 +15,7 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
-import { draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, patchOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
-import { PATCH_NOT_YET } from "../model-surface.ts";
+import { blendSurfaceOp, draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, patchOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
@@ -239,7 +238,15 @@ function vec3Of(value: unknown): Vec3 | null {
 function readContinuityField(value: unknown, what: string): SurfaceContinuity | undefined | { reason: string } {
   if (value === undefined) return undefined;
   if (value === "g0" || value === "g1" || value === "g2") return value;
-  return { reason: `${what} continuity is g0.` };
+  return { reason: `${what} continuity is g0, g1, or g2.` };
+}
+
+function readTension(value: unknown, side: string): number | undefined | { reason: string } {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0.15 || value > 4) {
+    return { reason: `${side} tension is from 0.15 to 4.` };
+  }
+  return value;
 }
 
 function readBoundaryField(value: unknown, ctx: BakeContext, what: string): SurfaceBoundary | { reason: string } {
@@ -1003,9 +1010,6 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
   if (kind === "patch") {
     const boundaries = readBoundariesField(spec.boundaries, ctx);
     if ("reason" in boundaries) return boundaries;
-    if (boundaries.length > 4 || boundaries.some((bound) => bound.continuity === "g1" || bound.continuity === "g2")) {
-      return { reason: PATCH_NOT_YET };
-    }
     const guides: Curve3D[] = [];
     if (spec.guides !== undefined) {
       if (!Array.isArray(spec.guides)) return { reason: "A patch guide is a 3D curve." };
@@ -1031,8 +1035,34 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
       }
       tolerance = spec.tolerance;
     }
-    if (guides.length > 0 || points.length > 0) return { reason: PATCH_NOT_YET };
-    const made = patchOp(boundaries, { ...(tolerance !== undefined ? { tolerance } : {}) });
+    const made = patchOp(boundaries, { ...(guides.length > 0 ? { guides } : {}), ...(points.length > 0 ? { points } : {}), ...(tolerance !== undefined ? { tolerance } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "blendSurface") {
+    const a = readBoundaryField(spec.a, ctx, "Side A");
+    if ("reason" in a) return a;
+    const b = readBoundaryField(spec.b, ctx, "Side B");
+    if ("reason" in b) return b;
+    const continuity = readContinuityField(spec.continuity, "A blend");
+    if (typeof continuity !== "string" && continuity !== undefined) return continuity;
+    if (continuity === "g0") return { reason: "A blend is G1 or G2. Set the seam to G1 or G2." };
+    const tensionA = readTension(spec.tensionA, "Side A");
+    if (typeof tensionA !== "number" && tensionA !== undefined) return tensionA;
+    const tensionB = readTension(spec.tensionB, "Side B");
+    if (typeof tensionB !== "number" && tensionB !== undefined) return tensionB;
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0) || spec.tolerance > 1e-4) {
+        return { reason: "Blend tolerance is the gap the bridge aims for, above 0 and at most 0.0001 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const made = blendSurfaceOp(a, b, {
+      ...(continuity ? { continuity } : {}),
+      ...(tensionA !== undefined ? { tensionA } : {}),
+      ...(tensionB !== undefined ? { tensionB } : {}),
+      ...(tolerance !== undefined ? { tolerance } : {}),
+    });
     return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
   }
   // --- A gear (src/model-gear.ts): a boolean whose tool is the gear primitive, placed as a cylinder is. Fuse by default.

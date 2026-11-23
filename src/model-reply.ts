@@ -91,6 +91,8 @@ export interface ContinuitySummary {
   notable: SeamContinuityRow[];
   /** Every sampled shared edge, including a clean G2 seam. Capped at 256. */
   edges?: SeamContinuityRow[];
+  /** A vertex where two faces that meet a smooth seam differ by more than 0.1°. G1 is not sampled there. */
+  sharpVertices?: { at: Vec3; faces: [number, number]; angleDeg: number }[];
 }
 
 export interface SurfaceHealthSummary {

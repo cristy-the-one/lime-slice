@@ -166,6 +166,44 @@ pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolv
                 picks: Vec::new(),
             })
         }
+        Op::BlendSurface {
+            a,
+            b,
+            continuity,
+            tension_a,
+            tension_b,
+            tolerance,
+        } => {
+            let (edges_a, _) = resolve_blend(from, &a.edges, "blend", steps)?;
+            let (edges_b, _) = resolve_blend(from, &b.edges, "blend", steps)?;
+            let face_of = |face: Option<FacePick>, from: &mut Shape| -> Result<Option<FacePick>, String> {
+                Ok(match face {
+                    Some(face) => Some(FacePick::Ref(resolve_one_face(from, face)?)),
+                    None => None,
+                })
+            };
+            Ok(Resolved {
+                op: Op::BlendSurface {
+                    a: super::ops::SurfaceBoundary {
+                        curve: a.curve.clone(),
+                        edges: edges_a,
+                        face: face_of(a.face, from)?,
+                        continuity: a.continuity,
+                    },
+                    b: super::ops::SurfaceBoundary {
+                        curve: b.curve.clone(),
+                        edges: edges_b,
+                        face: face_of(b.face, from)?,
+                        continuity: b.continuity,
+                    },
+                    continuity: *continuity,
+                    tension_a: *tension_a,
+                    tension_b: *tension_b,
+                    tolerance: *tolerance,
+                },
+                picks: Vec::new(),
+            })
+        }
         Op::SplitFace {
             faces,
             curve,
