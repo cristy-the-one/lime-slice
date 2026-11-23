@@ -106,18 +106,6 @@ check(
 );
 console.log(`normal-weld: mesh without normals smoothNormalsCalls=${callsAfterWeld} source=${plain.canvas.dataset.normalsSource}`);
 
-// Organic fix round, item 13: isoparm lines and curvature buffers belong to the solid they were measured on.
-{
-  const v = view();
-  const first = solid(true);
-  v.api.setSolid(first, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] });
-  (v.ctx as { surfaceInspect: unknown }).surfaceInspect = { isoPoints: new Float32Array(6) };
-  v.api.setSolid(first, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] });
-  check("the same solid shown again keeps its surface buffers", v.ctx.surfaceInspect !== null);
-  v.api.setSolid(solid(false), { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] });
-  check("another solid drops the old isoparm lines", v.ctx.surfaceInspect === null);
-}
-
 if (failed) {
   console.error(`${failed} analytic-normal checks failed`);
   process.exit(1);

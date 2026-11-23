@@ -89,6 +89,7 @@ export function installMesh(ctx: ViewCtx): void {
     if (ctx.mesh && ctx.mesh.material !== activeMat) ctx.mesh.material = activeMat;
     if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = !ctx.preview && ctx.look.shading !== "zebra";
     if (ctx.preview && ctx.preview.mesh.material !== activeMat) ctx.preview.mesh.material = activeMat;
+    if (ctx.preview?.back) ctx.preview.back.visible = ctx.look.shading !== "zebra";
     canvas.dataset.shading = ctx.look.shading;
     canvas.dataset.isoparms = ctx.look.isoparms ? "1" : "0";
     // Rebuild or hide the trimmed UV isoparm overlay.
@@ -111,6 +112,8 @@ export function installMesh(ctx: ViewCtx): void {
 
   function clearPreview() {
     if (!ctx.preview) return;
+    // The back mesh shares the preview's geometry: removed, not disposed twice.
+    if (ctx.preview.back) body.remove(ctx.preview.back);
     for (const object of [ctx.preview.mesh, ctx.preview.lines]) {
       if (!object) continue;
       body.remove(object);
@@ -149,6 +152,15 @@ export function installMesh(ctx: ViewCtx): void {
     const shaded = new THREE.Mesh(geometry, activeMat);
     shaded.raycast = () => undefined;
     body.add(shaded);
+    // A patch or blend preview is a sheet: its back gets the sheet's back tint, as the shown sheet's does (the solid
+    // material draws front faces only while a sheet is shown).
+    let back: THREE.Mesh | null = null;
+    if ((shape.nakedEdges?.length ?? 0) > 0) {
+      back = new THREE.Mesh(geometry, sheetBackMaterial);
+      back.raycast = () => undefined;
+      back.visible = ctx.look.shading !== "zebra";
+      body.add(back);
+    }
     const { segments } = drawnEdgeSegments(shape.edges, shape.seams);
     let lines: THREE.LineSegments | null = null;
     if (segments.length > 0) {
@@ -162,7 +174,7 @@ export function installMesh(ctx: ViewCtx): void {
     if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = false;
     if (ctx.edgeLines) ctx.edgeLines.visible = false;
     if (ctx.nakedEdgeLines) ctx.nakedEdgeLines.visible = false;
-    ctx.preview = { shape, mesh: shaded, lines };
+    ctx.preview = { shape, mesh: shaded, lines, back };
     canvas.dataset.preview = String(shape.volumeMm3.toFixed(2));
     ctx.rebuildCap();
   }

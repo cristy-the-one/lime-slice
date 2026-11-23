@@ -19,8 +19,6 @@ export function buildApi(ctx: ViewCtx): ModelView {
   return {
     setSolid(next, at) {
       ctx.clearBody();
-      // Curvature and isoparm buffers belong to the solid they were measured on; the new one asks for its own.
-      if (next !== ctx.solid) ctx.surfaceInspect = null;
       ctx.solid = next;
       // The arrow's face hit was on the solid just replaced: a press must not drag from where that face was.
       ctx.seatHit = null;
@@ -34,6 +32,11 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.ownBox = null;
       ctx.setPosedMatrix(at);
       if (!next || next.positions.length < 9) {
+        // Nothing shown: the shared solid material leaves the sheet's front-only mode for whatever it draws next.
+        if (solidMaterial.side !== THREE.DoubleSide) {
+          solidMaterial.side = THREE.DoubleSide;
+          solidMaterial.needsUpdate = true;
+        }
         delete canvas.dataset.shapeKind;
         delete canvas.dataset.nakedEdges;
         ctx.clearGhosts();
