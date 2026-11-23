@@ -13,7 +13,7 @@
  * `ModelNode.sheet`, as the app keeps it for the History badge; it is not saved. Slice, the G-code export and the 3MF
  * export stop on a marked object with one sentence.
  */
-import { isOpenSheet, type SheetShape } from "../../src/model-sheet.ts";
+import { isOpenSheet, sheetVerdict, type SheetShape } from "../../src/model-sheet.ts";
 import { solidView as kernelSolidView } from "../../src/modeling/model-calls.ts";
 import type { ModelTree } from "../../src/model-tree.ts";
 import { refuse, type Refusal } from "../refusals.ts";
@@ -34,11 +34,19 @@ interface Marked {
   tree: ModelTree | null;
 }
 
-/** Whether the shape the object shows now (its tree's current step) is an open sheet, by the app's rule. */
+/**
+ * Whether the shape the object shows now (its tree's current step) is an open sheet, by the app's rule. A split's
+ * other half (a `piece` root) takes the kernel's verdict as it is, as the app marks a piece (src/app/model/split-apply.ts).
+ */
 export function showsSheet(obj: Marked): boolean {
   const tree = obj.tree;
-  if (!tree || tree.root.kind === "piece") return false;
+  if (!tree) return false;
   return isOpenSheet(obj.solid as SheetShape | null, tree.root, tree.current, obj.sheet === true);
+}
+
+/** The kernel's raw verdict on a reply's shape (`sheetVerdict`), for a piece that has no tree of its own yet. */
+export function pieceIsSheet(shape: SheetShape | null | undefined): boolean {
+  return sheetVerdict(shape);
 }
 
 /** Sets or clears the object's mark (`PlateObject.sheet`), and keeps the verdict on its committed node (`ModelNode.sheet`). */

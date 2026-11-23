@@ -557,6 +557,24 @@ try {
     );
   });
 
+  await testCase("the other half of a NURBS sheet's trimSplit is a sheet: slice refuses it with open-sheet", async () => {
+    // A 4 x 4 dome cut across by a sheet, keep both: the other half is a new object, a sheet by the kernel's verdict.
+    const dome = [-15, -5, 5, 15].map((x, i) => [-15, -5, 5, 15].map((y, j) => [x, y, (i === 1 || i === 2) && (j === 1 || j === 2) ? 6 : 0]));
+    const made = await call("solid_new", { feature: { kind: "nurbsSurface", poles: dome } });
+    if (made.ok !== true) throw new Error(why(made));
+    const object = made.object as string;
+    const cutter = { mode: "extrude", curves: [{ kind: "polyline", points: [[0, -20, -5], [0, 20, -5]] }], dir: [0, 0, 1], distance: 20 };
+    const cut = await call("model_apply", { object, op: { kind: "trimSplit", sheet: cutter, keep: "both" } });
+    const other = typeof cut.other === "string" ? cut.other : null;
+    if (other) await call("object_select", { object: other });
+    const refused = other ? await call("slice_start", { scope: "object", wait: true }) : null;
+    check(
+      "the other half of a NURBS sheet's trimSplit is a sheet: slice refuses it with open-sheet",
+      cut.ok === true && other !== null && refused?.ok === false && refused.code === "open-sheet" && refused.object === other,
+      `cut ${why(cut)} other ${other}; slice ${JSON.stringify(refused && { ok: refused.ok, code: refused.code, reason: refused.reason })}`,
+    );
+  });
+
   await testCase("thicken: a 20 mm square, normal 2 and both 3", async () => {
     const one = await build("thicken-normal", SMALL, [{ kind: "sheet", mode: "planar", curves: [square(10, 100)] }]);
     if (one.reply.ok !== true) throw new Error(why(one.reply));

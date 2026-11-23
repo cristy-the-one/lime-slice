@@ -276,6 +276,16 @@ check(
       JSON.stringify({ opened: opened.ok, reopened, refused: { ok: refused.ok, code: refused.code } }),
     );
   }
+  // The app also stops an open sheet in the pose export's mesh formats and in Stress: so does MCP, with the same code.
+  const setup = await s.call("sim_setup", { object: part, hMm: 2, representation: "smear", fixtures: [{ kind: "faces", faces: [4] }], loads: [{ kind: "force", faces: [5], magnitude: 20, direction: [0, 0, -1] }], card: "inhouse-petg" });
+  check("sim_setup refuses an open sheet with open-sheet", setup.ok === false && setup.code === "open-sheet" && String(setup.reason).includes("cannot be set up for a stress study"), JSON.stringify(setup).slice(0, 300));
+  const run = await s.call("sim_run", { object: part });
+  check("sim_run refuses an open sheet with open-sheet", run.ok === false && run.code === "open-sheet" && String(run.reason).includes("cannot be solved for stress"), JSON.stringify(run).slice(0, 300));
+  const base = (await s.call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 })).object as string;
+  await s.call("model_place", { object: part, to: base, x: 30, assembly: "Lid" });
+  const posed = await s.call("pose_export", { assembly: "Lid", format: "stl" });
+  check("pose_export to STL refuses an assembly holding an open sheet", posed.ok === false && posed.code === "open-sheet" && posed.object === part && String(posed.reason).includes("cannot be exported as STL"), JSON.stringify(posed).slice(0, 300));
+  await s.call("object_remove", { object: base });
   const copy = await s.call("object_duplicate", { object: part });
   const copyId = (copy.objects as string[] | undefined)?.[0];
   const listed = (await s.call("plate_list", {})).objects as { object: string; sheet?: boolean }[];
@@ -292,6 +302,38 @@ check(
   );
   check("session_info lists no open sheet once it is thickened", (await s.call("session_info", {})).openSheets === undefined);
   check("thicken clears the node's mark", !nodeMark());
+}
+
+// 7. The other half of a sheet's trimSplit (keep both) is a sheet too: marked from the kernel's verdict on that half,
+// as the app marks a piece, so it commits as a sheet and Slice refuses it with open-sheet, not a commit failure.
+{
+  const plain = fakeEngine();
+  const halfEngine = {
+    ...plain,
+    async modelTree(request: string): Promise<string> {
+      const parsed = JSON.parse(request) as { call?: string; op?: { kind?: string } };
+      if (parsed.call === "apply" && parsed.op?.kind && S4_KINDS.has(parsed.op.kind)) {
+        const fake = JSON.parse(await plain.modelTree(JSON.stringify({ ...parsed, op: { kind: "unify" } }))) as Record<string, unknown>;
+        const sheet = { ...fake, op: parsed.op, solid: false, nakedEdges: [0, 1, 2, 3] };
+        return JSON.stringify(parsed.op.kind === "trimSplit" ? { ...sheet, other: { ...sheet } } : sheet);
+      }
+      if (parsed.call === "probe" && parsed.op?.kind && S4_KINDS.has(parsed.op.kind)) {
+        return JSON.stringify({ ok: true, fits: true, volumeMm3: 1800, faces: 6, edges: 12, solids: 1 });
+      }
+      return plain.modelTree(request);
+    },
+  };
+  const s = new Session(halfEngine);
+  const part = (await s.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 })).object as string;
+  await s.call("model_apply", { object: part, op: opSheet, probe: true });
+  await s.call("model_commit", { object: part });
+  const cut = await s.call("model_apply", { object: part, op: { kind: "trimSplit", sheet: archSheetSpec, keep: "both" }, probe: true });
+  const listed = ((await s.call("plate_list", {})).objects as { object: string; sheet?: boolean }[]);
+  const half = listed.find((one) => one.object !== part);
+  check("a sheet's trimSplit keeps both halves, the other half marked a sheet", cut.ok === true && half?.sheet === true, JSON.stringify({ cut: cut.ok, reason: cut.reason, listed }).slice(0, 600));
+  if (half) await s.call("object_select", { object: half.object });
+  const sliced = half ? await s.call("slice_start", { scope: "object", wait: true }) : {};
+  check("slice_start on the other half refuses it with open-sheet, not a commit failure", sliced.ok === false && sliced.code === "open-sheet" && sliced.object === half?.object, JSON.stringify(sliced).slice(0, 400));
 }
 
 if (failed > 0) process.exit(1);
