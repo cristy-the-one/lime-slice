@@ -246,7 +246,8 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
     || node.op?.kind === "patch"
     || node.op?.kind === "blendSurface"
     || (node.id === ROOT && ofTree.root.kind === "feature" && ofTree.root.op.kind === "sheet")
-    || (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0);
+    // A surfaces-only STEP at its root is an import, not a sheet (`isOpenSheet`): no badge, as on v7.1.2.
+    || (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0 && !(node.id === ROOT && ofTree.root.kind === "step"));
 
   /**
    * The lane of the tool the join `join` takes, drawn before the join's row: its steps from the root to the one the join

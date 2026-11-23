@@ -12,6 +12,7 @@ import {
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../../model-primitive";
 import { unionBox } from "../../measure";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
+import { isOpenSheet } from "../../model-sheet";
 import {
   ROOT,
   newTree,
@@ -113,6 +114,13 @@ async function finishNewSolid(made: {
     // An open the engine answered left a tree there.
     if (typeof body.error !== "string") void post({ call: "close", key });
     if (mine === S.ticket && state.stage === "model" && typeof parsed === "string") readout(parsed);
+    return false;
+  }
+  // --- Organic surfaces S4: an open sheet is no plate object (its open mesh would slice as STL). Same rule as the
+  // commit gate (`isOpenSheet`). It is refused, with what to do instead.
+  if (isOpenSheet(parsed, made.root, ROOT)) {
+    void post({ call: "close", key });
+    readout("This would be an open sheet, and an open sheet cannot be a part on the plate. Build it on a part, then thicken or cap & sew it there.");
     return false;
   }
   // The open object's edits reach the plate first. The new object then joins the visit's Prepare step, as an edit does.

@@ -13,6 +13,7 @@ import {
 } from "../../model-space";
 import { unionBox } from "../../measure";
 import { decodeSurfaceInspect, type DecodedSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { isOpenSheet } from "../../model-sheet";
 import { contextParts } from "../../model-context";
 import { isHidden, isolate, pruneHidden, setHidden, showAll, visibleParts } from "../../model-hidden";
 import { extentAlong } from "../../model-plane";
@@ -142,7 +143,8 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   syncWorkplaneFields();
   refreshModelContext();
   fx.model?.highlight([]);
-  const isSheet = !parsed.editable && parsed.faces.length > 0 && !view;
+  // One rule for the banner, the sheet tools and the commit gate: a surfaces-only STEP is not a sheet (`isOpenSheet`).
+  const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id);
   setSheetMode(isSheet);
   setModelEditable(parsed.editable);
   // --- Organic surfaces S4 (U6): show open-sheet banner with one-click Thicken & Cap & Sew when open.

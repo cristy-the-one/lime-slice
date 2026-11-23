@@ -11,6 +11,7 @@ import { state } from "../state";
 import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
 import { S } from "./shared";
 import { pushToast } from "../../ui/toasts";
+import { isOpenSheet, SHEET_NOT_PRINTABLE } from "../../model-sheet";
 import { recentSolid } from "./apply";
 import { placePiece } from "./create";
 import { treeOf } from "./edges";
@@ -35,9 +36,10 @@ export function commitModel() {
   if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || S.parked === at.key) return;
   // --- D12. A part cut for an export target stays as the plate had it: `exportedPart` says why, where it matters.
   if (exportCutTo(tree, plan.to)) return;
-  // --- Organic surfaces S4 (U6): refuse silently pushing an unclosed open sheet to Prepare/Slice.
-  if (solid && !solid.editable && solid.faces.length > 0) {
-    pushToast("This part is an open sheet. Thicken or Cap & Sew it into a solid before slicing.", "info");
+  // --- Organic surfaces S4 (U6): a sheet a step built does not go to the plate. A surfaces-only STEP is no sheet
+  // (`isOpenSheet`): it commits as it always did.
+  if (isOpenSheet(solid, tree.root, plan.to)) {
+    pushToast(SHEET_NOT_PRINTABLE, "info");
     return;
   }
   const node = tree.nodes.get(plan.to);
