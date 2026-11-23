@@ -322,3 +322,30 @@ export function organicProblem(value: unknown, path: string): string | null {
   }
   return null;
 }
+
+/** The kernel lists at most this many shared edges in `continuity.edges` (kernel.cpp, surface inspect). */
+export const KERNEL_EDGE_ROWS = 256;
+/** Sharp vertices model_check lists; the kernel sends every one it finds. */
+export const MAX_SHARP_VERTICES = 64;
+
+/**
+ * model_check's continuity, saying when a list is cut short. The kernel samples every shared edge it can and counts
+ * each in g0, g1, g2 or gaps, but lists only the 256 worst (largest gap, then angle, then curvature jump), in edge
+ * order. Their sum is the true total, so a shorter list says how many there were. Sharp vertices are capped here.
+ */
+export function listedContinuity<T extends { g0: number; g1: number; g2: number; gaps: number; edges?: unknown[]; sharpVertices?: unknown[] }>(continuity: T): T & Record<string, unknown> {
+  const out: Record<string, unknown> = { ...continuity };
+  const sampled = [continuity.g0, continuity.g1, continuity.g2, continuity.gaps].reduce((sum, n) => sum + (isNum(n) ? n : 0), 0);
+  const notes: string[] = [];
+  if (Array.isArray(continuity.edges) && continuity.edges.length < sampled) {
+    out.edgesTotal = sampled;
+    notes.push(`continuity.edges lists ${continuity.edges.length} of the ${sampled} sampled shared edges: the worst by gap, then angle, then curvature jump. The counts g0, g1, g2 and gaps cover all ${sampled}.`);
+  }
+  if (Array.isArray(continuity.sharpVertices) && continuity.sharpVertices.length > MAX_SHARP_VERTICES) {
+    out.sharpVerticesTotal = continuity.sharpVertices.length;
+    out.sharpVertices = continuity.sharpVertices.slice(0, MAX_SHARP_VERTICES);
+    notes.push(`continuity.sharpVertices lists the first ${MAX_SHARP_VERTICES} of ${continuity.sharpVertices.length}.`);
+  }
+  if (notes.length > 0) out.note = notes.join(" ");
+  return out as T & Record<string, unknown>;
+}

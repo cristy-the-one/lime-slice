@@ -2076,7 +2076,7 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical; on a belt, from the build direction. Default 45." },
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
-        surfaces: { type: "boolean", description: "Also inspect shared-edge continuity (G0/G1/G2, gaps) and NURBS surface health (degrees, poles, tightest bend radius)." },
+        surfaces: { type: "boolean", description: "Also inspect shared-edge continuity (G0/G1/G2, gaps) and NURBS surface health (degrees, poles, tightest bend radius). continuity.edges lists up to 256 sampled edges, the worst first chosen; edgesTotal and note say when there were more. When surfaces cannot be read, surfaces says why." },
         interference: { type: "boolean", description: "Instead: every pair of the assembly's parts at their assembled poses, clear, touch or crossing, by the mesh pass. Meshes that overlap no deeper than toleranceMm (0.05 mm, the kernel's mesh chord) touch: faces that touch in the solids, an axle in a hole of its size, overlap that much in their meshes." },
         exact: { type: "boolean", description: "With interference: each pair the mesh pass did not clear, touches included, measured by the kernel's common volume; under 0.01 mm³ is a touch." },
         crossingsOnly: { type: "boolean", description: "With interference: omit touches; unmeasured pairs stay." },
