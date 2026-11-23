@@ -277,23 +277,7 @@ export function mountModelLook(next: ModelLookView) {
       open.focus();
       return;
     }
-    // --- Organic surfaces S1 (U1): Alt+Z (Zebra), Alt+C (Curvature), Alt+I (Surface grid / Isoparms) in Model view.
-    if (!ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
-    const target = ev.target as HTMLElement | null;
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-    const modelCanvas = byId<HTMLElement>("#model");
-    if (!modelCanvas || modelCanvas.getBoundingClientRect().width === 0) return;
-    const key = ev.key.toLowerCase();
-    if (key === "z") {
-      ev.preventDefault();
-      toggleZebra();
-    } else if (key === "c") {
-      ev.preventDefault();
-      toggleCurvature();
-    } else if (key === "i") {
-      ev.preventDefault();
-      toggleIsoparms();
-    }
+    // Alt+Z, Alt+C and Alt+I are commands (src/ui/commands.ts): help, the palette and the one-key-one-command test see them.
   });
   document.addEventListener("pointerdown", (ev) => {
     if (panel.hidden) return;
