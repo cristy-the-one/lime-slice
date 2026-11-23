@@ -255,6 +255,8 @@ export interface PlateObject {
   treeStale?: boolean;
   /** Why the last commit's mesh does not close, when it committed anyway because the part came in open. */
   commitWarning?: string;
+  /** --- Organic surfaces S4: the committed shape is an open sheet (mcp/session/sheet.ts). Slice and the exports stop on it. */
+  sheet?: true;
   solid: SolidView | null;
   probes: Map<string, true>;
   supportEdits: EditEntry[];

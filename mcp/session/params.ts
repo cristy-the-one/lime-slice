@@ -5,7 +5,8 @@
 import { plainModelError } from "../../src/app/model-error.ts";
 import { builtBranch, forked, stepIds, type ForkStep } from "../../src/model-edit.ts";
 import { editRequest, keepSketch } from "../../src/model-request.ts";
-import { readBroken, readBuilt, nodeHandle, solidView } from "../../src/modeling/model-calls.ts";
+import { readBroken, readBuilt, nodeHandle } from "../../src/modeling/model-calls.ts";
+import { solidView } from "./sheet.ts";
 import { anchorRow } from "../../src/modeling/anchors.ts";
 import { expandOps, type PartDef } from "../../src/modeling/macro.ts";
 import { renumberedSteps } from "../../src/model-tree.ts";

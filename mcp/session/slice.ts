@@ -21,6 +21,7 @@ import { exportGcode, mass } from "../export-gcode.ts";
 import { sessionSliceRequest, stlBytes } from "../request.ts";
 import { reviewGcode } from "../review.ts";
 import { resolveWrite } from "../workspace.ts";
+import { openSheetRefusal } from "./sheet.ts";
 import { type CallMeta, type Job, type PlateObject, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, STALE_SLICE, type SliceSummary, type ToolHandler, UNKNOWN_OBJECT, roundTo, shownName, standsOnNothing } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -194,6 +195,8 @@ async function sliceStart(
   if (committed) return refuse("commit-failed", committed);
   const skipped = this.notSliced();
   const built = this.sliceBody(obj, scope);
+  const sheet = openSheetRefusal(built.plate ? this.objects : [obj], "sliced");
+  if (sheet) return sheet;
   built.body.partHold = true;
   // Replies stay lean: a one-object slice lists the pairs that name that object, a plate slice at most COLLISION_CAP
   // of them, the most overlapped first, with the count of the rest.
@@ -564,6 +567,8 @@ function customBlocks(this: Session): string[] {
 async function gcodeExport(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const job = this.finished(typeof input.job === "string" ? input.job : undefined);
   if (!job?.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
+  const sheet = openSheetRefusal(this.objects.filter((row) => job.slicedIds.includes(row.id)), "exported as G-code");
+  if (sheet) return sheet;
   const gcode = await this.ensureGcode(job);
   if ("refusal" in gcode) return gcode.refusal;
   const stale = this.staleReason(job);
@@ -588,6 +593,8 @@ async function export3mf(this: Session, name: string, objectId?: string): Promis
   } else refused = (await this.commitAll())[0];
   if (refused) return refuse("commit-failed", `${refused.name} (${refused.object}): ${refused.reason}`, { object: refused.object });
   const written = only ? [only] : this.objects;
+  const sheet = openSheetRefusal(written, "exported to 3MF");
+  if (sheet) return sheet;
   const bytes = encode3mf(written.map((obj) => this.placed(obj).positions));
   const path = resolveWrite(name, ".3mf");
   writeFileSync(path, bytes);

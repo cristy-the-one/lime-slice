@@ -73,7 +73,65 @@ function missingDescriptions(node: unknown, missing: string[]): void {
 }
 const undescribed: string[] = [];
 for (const tool of TOOLS) missingDescriptions(tool.inputSchema, undescribed);
-check("every property has a description", undescribed.length === 0);
+check("every property has a description", undescribed.length === 0, undescribed.join(", "));
+
+// --- Organic surfaces fix round: fields the kernel changed or dropped with no word are refused in a sentence.
+{
+  const refusal = (op: unknown) => validateTool("model_apply", { op }) ?? "";
+  const starts = (name: string, op: unknown, sentence: string) => {
+    const got = refusal(op);
+    check(name, got.startsWith(sentence), got);
+  };
+  const ring = (z: number) => ({ origin: [0, 0, z], radius: 4 });
+  const line = { kind: "polyline", points: [[0, 0, 0], [0, 0, 20]] };
+  const quad = [[0, 0, 0], [0, 0, 10], [10, 0, 10], [10, 0, 20]];
+  const spineSweep = (spine: unknown, extra: Record<string, unknown> = {}) => ({ kind: "sweep", op: "fuse", sections: [ring(0)], spine, ...extra });
+  starts("an apex section takes no radius", { kind: "loft", op: "fuse", sections: [ring(0), { apex: [0, 0, 9], radius: 2 }] }, "op.sections[1].radius does not apply to an apex section, which is only the point; give apex alone.");
+  starts("a section with no apex still needs an origin", { kind: "loft", op: "fuse", sections: [{ radius: 4 }, { apex: [0, 0, 9] }] }, "op.sections[0].origin is required.");
+  check("an apex section alone passes", refusal({ kind: "loft", op: "fuse", sections: [ring(0), { apex: [0, 0, 9] }] }) === "");
+  starts("a bare sweep names the path and the spine", { kind: "sweep" }, "A sweep needs a path (a tube through points) or a spine");
+  starts("a path with a spine is refused", { kind: "sweep", path: [[0, 0, 0], [0, 0, 9]], radius: 1, spine: line, sections: [ring(0)] }, "A sweep takes a path or a spine, not both");
+  starts("a path sweep's radius on a spine sweep is refused", spineSweep(line, { radius: 2 }), "op.radius is for a sweep along a path");
+  starts("a spine sweep's sections on a path sweep are refused", { kind: "sweep", path: [[0, 0, 0], [0, 0, 9]], radius: 1, sections: [ring(0)] }, "op.sections is for a sweep along a spine");
+  starts("a spine sweep needs sections", { kind: "sweep", spine: line }, "op.sections is required with a spine");
+  starts("a scale station past the spine's end is refused", spineSweep(line, { scale: [[0, 1], [1.5, 2]] }), "op.scale[1] is at u 1.5");
+  starts("a scale station below 0 is refused", spineSweep(line, { scale: [[-0.1, 1], [1, 2]] }), "op.scale[0] is at u -0.1");
+  check("scale stations from 0 to 1 pass", refusal(spineSweep(line, { scale: [[0, 1], [0.5, 1.5], [1, 2]] })) === "");
+  starts("a degree the poles cannot carry is refused", spineSweep({ kind: "nurbs", poles: quad, degree: 5 }), "op.spine.degree is 5, but 4 poles carry at most degree 3.");
+  starts("weights that do not match the poles are refused", spineSweep({ kind: "nurbs", poles: quad, weights: [1, 1] }), "op.spine.weights has 2 values for 4 poles; give one weight per pole.");
+  starts("knots without mults are refused", spineSweep({ kind: "nurbs", poles: quad, knots: [0, 1] }), "op.spine has knots without mults");
+  starts("knots and mults of different lengths are refused", spineSweep({ kind: "nurbs", poles: quad, knots: [0, 1], mults: [4, 4, 1] }), "op.spine.knots has 2 values and mults 3");
+  starts("multiplicities that do not add up are refused", spineSweep({ kind: "nurbs", poles: quad, knots: [0, 1], mults: [3, 3] }), "op.spine: the multiplicities add up to 6; 4 poles of degree 3 need 4 + 3 + 1 = 8.");
+  starts("knots that do not rise are refused", spineSweep({ kind: "nurbs", poles: [...quad, [20, 0, 20]], knots: [0, 0.5, 0.5, 1], mults: [4, 1, 1, 4] }), "op.spine.knots must rise");
+  check("a clamped knot vector that fits passes", refusal(spineSweep({ kind: "nurbs", poles: [...quad, [20, 0, 20]], knots: [0, 0.5, 1], mults: [4, 1, 4] })) === "");
+  starts("a closed curve's multiplicities are checked as periodic", spineSweep({ kind: "nurbs", poles: quad, closed: true, knots: [0, 1, 2, 3, 4], mults: [1, 1, 1, 1, 2] }), "op.spine: a closed curve's first and last multiplicities match");
+  check("a closed curve with periodic knots passes", refusal(spineSweep({ kind: "nurbs", poles: quad, closed: true, knots: [0, 1, 2, 3, 4], mults: [1, 1, 1, 1, 1] })) === "");
+  const loop = (seg: Record<string, unknown>) => ({ kind: "extrude", op: "fuse", depth: 2, loops: [{ start: [0, 0], segments: [{ kind: "line", to: [10, 0] }, { kind: "nurbs", to: [0, 10], ...seg }, { kind: "line", to: [0, 0] }] }] });
+  starts("a profile segment's weights count its start and end", loop({ poles: [[10, 10]], weights: [1, 0.7], degree: 2 }), "op.loops[0].segments[1].weights has 2 values for 3 poles; give one weight per pole, the start and the end included.");
+  check("a rational quarter circle segment passes", refusal(loop({ poles: [[10, 10]], weights: [1, Math.SQRT1_2, 1], degree: 2 })) === "");
+  starts("a profile segment's degree is checked against its poles", loop({ poles: [[10, 10]], degree: 3 }), "op.loops[0].segments[1].degree is 3, but 3 poles carry at most degree 2.");
+  check(
+    "a closed profile segment counts its poles without the repeated start",
+    refusal({ kind: "extrude", op: "fuse", depth: 2, loops: [{ start: [12, 0], segments: [{ kind: "nurbs", poles: [[0, 10], [-12, 0], [0, -10]], weights: [1, 1, 1, 1], to: [12, 0] }] }] }) === "",
+  );
+  starts("maxDegree is what the kernel applies, 2 to 10", { kind: "loft", op: "fuse", sections: [ring(0), ring(9)], maxDegree: 11 }, "op.maxDegree must be at most 10.");
+  starts("a curvature end condition is refused with the kinds that work", { kind: "loft", op: "fuse", sections: [ring(0), ring(9)], endCondition: { kind: "curvature", dir: [0, 0, 1] } }, 'op.endCondition kind "curvature" is not built: a loft steers an end by its direction only. Use "normal" or "tangent".');
+  check("a tangent end condition passes", refusal({ kind: "loft", op: "fuse", sections: [ring(0), ring(9)], endCondition: { kind: "tangent", dir: [0, 0, 1] } }) === "");
+  starts("rho without a conic is refused", { kind: "fillet", edges: [0], size: 1, rho: 0.5 }, "op.rho is the fullness of a conic fillet");
+  check("rho on a conic passes", refusal({ kind: "fillet", edges: [0], size: 1, continuity: "conic", rho: 0.5 }) === "");
+  starts("a variable station past the edge is refused", { kind: "fillet", edges: [0], size: 1, variable: [[0, 1], [1.2, 2]] }, "op.variable[1] is at u 1.2");
+  const sheet = { mode: "planar", curves: [{ kind: "polyline", points: [[0, 0, 0], [1, 0, 0], [1, 1, 0]], closed: true }] };
+  starts("a face that is text is refused in a sentence", { kind: "replaceFace", face: "top", sheet }, "op.face is a face index (0 or more) or a selector {normal:[x, y, z], nearPoint:[x, y, z]}.");
+  starts("a splitFace face that is true is refused in a sentence", { kind: "splitFace", faces: [0, { normal: [0, 0, 1] }, true], curve: line }, "op.faces[2] is a face index");
+  check("faces as indexes and selectors pass", refusal({ kind: "splitFace", faces: [0, { normal: [0, 0, 1], nearPoint: [0, 0, 5] }], curve: line }) === "");
+  const big = Array.from({ length: 100 }, () => ({ kind: "nurbs", poles: Array.from({ length: 200 }, (_, i) => [i, 0, 0]) }));
+  starts("a sheet of 100 curves is refused with the count", { kind: "sheet", mode: "loft", curves: big }, "op.curves has 100 curves; the most is 20.");
+  starts("20 curves of 200 poles are refused by the whole-op cap", { kind: "sheet", mode: "loft", curves: big.slice(0, 20) }, "This sheet carries 4000 curve points across its curves; one op takes at most 2000.");
+  starts("a patch side of 65 edges is refused with the count", { kind: "patch", boundaries: [{ edges: Array.from({ length: 65 }, (_, i) => i) }, { edges: [1] }] }, "op.boundaries[0].edges has 65 edges; the most is 64.");
+  starts("the same refusals in model_build's ops", { kind: "fillet", edges: [0], size: 1, rho: 0.5 }, "op.rho");
+  const built = validateTool("model_build", { base: { primitive: "box", dx: 1, dy: 1, dz: 1 }, ops: [{ kind: "sweep" }] }) ?? "";
+  check("a bare sweep in model_build is refused the same way", built.startsWith("A sweep needs a path"), built);
+}
 // Discovery (docs/plan-mcp-discovery.md D5). The one token bound is on first contact: the server's instructions and
 // the default tools/list, which every client reads every session. Everything else is read on demand through guide, so
 // a tool's words cost nothing until an agent asks for that tool, and adding a tool or a field touches no other tool.

@@ -1,5 +1,9 @@
 # Directory Update Log
 
+## 2026-11-23
+
+* **Update**: [Sketching and features](modeler/sketching.md) describes the organic-surfaces steps of 7.2.0 (S1 to S5): which the app has, which are MCP and recipe only, and what 7.1.2 does with a project that uses them. [Tool catalog](mcp/tools.md) describes `model_check {surfaces: true}` and the organic ops' refusals. The new sources point at the `feature/organic-surfaces` branch; pin them to the merge commit once it reaches main.
+
 ## 2026-11-21
 
 * **Update**: [Simulation](stress/simulation.md) describes the Resist buckling goal, and [Tool catalog](mcp/tools.md) describes `goal.buckling`, `goal.on` and `plan.bucklingFactor`. The sources are on this branch; pin them to the merge commit once it reaches main.

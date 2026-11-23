@@ -3,6 +3,22 @@
 Status: ready for implementation (all architectural & UX decisions locked via `/grill-me`). Written 2026-11-22 against `main` at `e6625f97` (v7.1.0).
 Integration branch: `feature/organic-surfaces` (branched from `origin/main` so beta releases can ship independently without interfering with `main` until the full plan is ready to merge).
 
+## As shipped in 7.2.0
+
+This section records what the release holds. The plan below is left as it was written; where they differ, this section is what shipped.
+
+- **In 7.2.0:** S1 to S5. S6 (`Op::NurbsSurface` and CV sculpting) is not in this release. The three betas of D4 and U8 were skipped: `feature/organic-surfaces` merges into `main` once, as the stable 7.2.0. `release.yml` marks a tag `*-beta.*` as a pre-release; `v7.2.0` matches no beta pattern, so it is a normal release.
+- **In the app:**
+  - the Look menu's **Shading** (Normal, Step for colour by step, Zebra, Curvature) and the **Surface grid** checkbox;
+  - the Sketch **Spline** tool with Control-point (the default) and Through-point modes, a curvature comb, and per-point weight, sharp crease and insert knot;
+  - the **Fillet** panel's **Profile** (Circular G1, Smooth G2, Conic with ρ) and **Variable radius**;
+  - an open sheet: a bar with **Thicken** and **Cap & Sew**, and a **Sheet** chip in History;
+  - **Patch** and **Blend**: their rail buttons show only on an open sheet (both stay in the Features menu; the kernel refuses a patch on a closed solid).
+- **Only over MCP and recipes** (`lime_recipe` API 1.18): creating a sheet (`sheet`), the kernel sweep along a 3D spine (`sweep` with `spine`), the loft v2 options (`apex` sections, `guides`, `startCondition` and `endCondition`, `closed`, `smoothing`, `maxDegree`), `trimSplit`, `replaceFace`, `splitFace`, and `patch` and `blendSurface` on sheets made that way. The app opens such a part and replays its steps, but has no tool that creates them. Over MCP a `sheet` op is added to an existing part, whose own faces stay beside it; the guide says to start from a small box and `trimSplit` it away with a planar cutter.
+- **trimSplit and replaceFace** take a sheet built from curves: an extrude, revolve, loft or planar sheet. They do not take a sculpted NURBS surface; that is S6.
+- **`model_check {surfaces:true}`** lists at most 256 shared edges in `continuity.edges`, the worst by gap, then angle, then curvature jump; the counts `g0`, `g1`, `g2` and `gaps` cover every sampled edge, and `edgesTotal` with a `note` says when the list is shorter. `sharpVertices` is capped at 64 the same way. R2.4's "lists every shared edge" holds only up to 256.
+- **Compatibility with 7.1.2 and older.** A project has no version guard. In 7.1.2, an object whose history uses a new step kind (a sweep with a spine, `sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch`, `blendSurface`, a loft with an apex section, a profile with a `nurbs` segment) cannot be read: that object opens as its saved mesh, with its history dropped. New fields on an old step (fillet `continuity`, `rho`, `variable`; loft `guides`, `startCondition`, `endCondition`, `closed`, `smoothing`, `maxDegree`) are dropped silently, and a replay there builds the plain fillet or loft. Saving the project in 7.1.2 makes either loss permanent. (Read from `src/model-tree-file.ts` on `main` at 7.1.2: an unknown op kind or segment kind makes the saved tree unreadable, and the fillet and loft readers keep only their old fields.)
+
 ---
 
 ## 1. Plain-English Mental Model (How 3D Organic Surfaces Work)

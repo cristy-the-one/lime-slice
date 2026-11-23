@@ -145,3 +145,24 @@ time with its hold; an end off that grid is shown by the next frame, which holds
 end)` returns exactly those times (before 1.17 it returned the old `round(end * fps)` frames spread over `[0, end]`), and
 `k as f64 / fps as f64` is the same number, so a script that keys every `1/fps` puts each key on a frame. A plugin of an
 earlier level built against this crate gets the new times too: they are the host's. See `docs/plan-pose-animation.md`.
+
+## Organic surfaces (API 1.18)
+
+The ops of `docs/plan-organic-surfaces.md` (app 7.2.0), each the JSON `mcp/schema.ts` takes:
+
+- curves: `ops::nurbs_seg` (an exact NURBS segment of a profile loop: interior poles, weights for every pole start and end
+  included, degree, knots with their multiplicities), `ops::curve3d_polyline` and `ops::curve3d_nurbs` (a 3D curve;
+  `closed: true` makes a NURBS curve periodic);
+- `ops::sweep(op, sections, spine)`: the kernel's sweep of sections along a 3D spine (chain `transition`, `mode`, `scale`
+  stations `[u, factor]` with `u` from 0 to 1, `twistDeg` with `.set`);
+- `ops::fillet_g2`, `ops::fillet_conic` (`rho` 0.05 to 0.95) and `ops::fillet_variable` (`[u, radius]` stations);
+- `ops::loft_apex` (a point section, first or last) and `ops::loft` (chain `guides`, `startCondition`, `endCondition`,
+  `closed`, `smoothing`, `maxDegree` 2 to 10);
+- open sheets: `ops::sheet_extrude_spec`, `sheet_revolve_spec`, `sheet_loft_spec`, `sheet_planar_spec`, then `ops::sheet`,
+  `ops::trim_split` or `ops::replace_face` with a spec; `ops::sew`, `ops::thicken`, `ops::split_face`;
+- `ops::surface_boundary`, `ops::patch` and `ops::blend_surface`.
+
+A host before 7.2.0 does not build these steps: a plugin that uses one records 1.18, and an older host refuses it in one
+sentence instead of failing at the step. The server refuses what does not fit before the kernel sees it (weights or
+knots that do not match the poles, a degree the poles cannot carry, a station outside 0 to 1, rho without a conic). The
+corpus plugin is `mcp/fixtures/plugins/api-1.18-organic-surfaces.rs`.

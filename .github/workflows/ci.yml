@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  # feature/organic-surfaces is here so PRs into the integration branch get CI; remove it from both lists once that branch is merged.
   push:
     branches: [main, feature/organic-surfaces]
   pull_request:
@@ -456,6 +457,12 @@ jobs:
           node --experimental-strip-types mcp/draft-occt.test.ts
           # Moulding report on a small synthetic shelled box. Kept here so the shared Open CASCADE job stays within its 25 minutes.
           node --experimental-strip-types mcp/moulding-occt.test.ts
+          # Organic surfaces S1–S5: every new op kind and field sent as a client sends it (schema and bake), against
+          # the kernel, each with a geometric fact. On this job, which has the most headroom of the Open CASCADE jobs.
+          node --experimental-strip-types mcp/organic-contract-occt.test.ts
+          # A closed sketch NURBS through the app's own request, against the kernel (PR #824 adds the file). Guarded so this
+          # job does not fail before #824 is merged; make it unconditional once it is in.
+          if [ -f mcp/sketch-nurbs-closed-occt.test.ts ]; then node --experimental-strip-types mcp/sketch-nurbs-closed-occt.test.ts; fi
 
   # Auto ribs plans that solve many times (load cases, and later the frequency goal and resin vents), on their own
   # so neither the shared Open CASCADE job nor the folded-shell job runs near its 25 minutes. Same setup as those jobs.
