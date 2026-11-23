@@ -254,13 +254,15 @@ test.describe("compact support editing", () => {
     await chip.evaluate((el: HTMLButtonElement) => el.click());
     await expect.poll(() => requests.length).toBeGreaterThan(1);
     const after = requests.length;
+    // The stale regrow's toast appears when its slice lands and holds for 6 s (src/ui/toasts.ts). Check it here:
+    // the canvas scan below can take longer than that on a slow runner, and the toast was gone by then.
+    await expect(page.locator("#toasts")).toContainText("No support can reach this patch.");
 
     const again = await pickUnheld();
     expect(again, "the patch under the pointer after the stale regrow").not.toBeNull();
     await canvas.click({ position: again! });
     await expect(chip).toBeDisabled();
     await expect(chip).toHaveAttribute("title", "Already in the edits");
-    await expect(page.locator("#toasts")).toContainText("No support can reach this patch.");
     await chip.evaluate((el: HTMLButtonElement) => el.click());
     await expect.poll(() => requests.length).toBe(after);
   });
