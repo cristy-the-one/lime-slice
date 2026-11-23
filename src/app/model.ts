@@ -5,7 +5,6 @@ import { bindChrome, bindToolbar } from "./model/bind-chrome";
 import { bindSketch } from "./model/bind-sketch";
 import { bindStress } from "./model/bind-stress";
 import { commitModel } from "./model/commit";
-import { settleShownMesh } from "./model/plate-mesh";
 import { bindEdgeDrag } from "./model/edge-tool";
 import { bindHistory } from "./model/history";
 import { followSelection, forgetModelTrees } from "./model/lifecycle";
@@ -50,4 +49,4 @@ export function bindModelView() {
   bindLook();
 }
 
-Object.assign(fx, { refreshModelContext, commitModel, settleShownMesh, exportedPart, exportSplitNote, transitionStaleNote, requestReaim, keepStale, forgetModelTrees, followSelection, releaseModelTrees });
+Object.assign(fx, { refreshModelContext, commitModel, exportedPart, exportSplitNote, transitionStaleNote, requestReaim, keepStale, forgetModelTrees, followSelection, releaseModelTrees });

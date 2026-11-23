@@ -14,6 +14,7 @@ import {
 import { unionBox } from "../../measure";
 import { decodeSurfaceInspect, type ParsedSolid } from "../../model-reply";
 import { cachedSurface, keepSurface, surfaceKey } from "./surface-cache";
+import { viewRequest } from "../../model-mesh-quality";
 import { isOpenSheet } from "../../model-sheet";
 import { contextParts } from "../../model-context";
 import { isHidden, isolate, pruneHidden, setHidden, showAll, visibleParts } from "../../model-hidden";
@@ -89,7 +90,8 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
   const mine = ++surfaceInspectTicket;
   const wantCurv = need.curvature || !!cached?.minRadiusMm;
   const wantIso = need.isoparms || cached?.isoPoints !== undefined;
-  const body = await treeCall(key, node, {
+  // Per-vertex curvature describes the display mesh when the view draws one: the same field as the view's own requests.
+  const body = await treeCall(key, node, viewRequest({
     call: "surfaceInspect",
     key,
     node,
@@ -97,7 +99,7 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
     curvature: wantCurv,
     isoparms: wantIso,
     isoCount: 6,
-  });
+  }));
   if (mine !== surfaceInspectTicket) return;
   const decoded = decodeSurfaceInspect(body);
   if (typeof decoded === "string") return;

@@ -1,6 +1,7 @@
 import { base64ToBytes, bytesToBase64 } from "./base64.ts";
 import type { Fingerprint } from "./model-tree.ts";
 import type { ModelSolid } from "./model-view.ts";
+import type { DisplayMesh } from "./model-view/types.ts";
 
 /**
  * The layout of a solid reply. The engine ships with the app, so a reply that names another is
@@ -50,8 +51,6 @@ export interface ParsedSolid extends ModelSolid {
   fingerprint: Fingerprint | null;
   /** False for surfaces with no closed solid: measured, never edited, and its volume means nothing. */
   editable: boolean;
-  /** The reply was the kernel's fine display mesh (src/model-mesh-quality.ts): never put on the plate. */
-  displayMesh?: true;
 }
 
 /** What `encodeSolid` writes: a solid with plain number arrays. */
@@ -68,6 +67,8 @@ export interface SolidArrays {
   solid?: boolean;
   /** The node that made each face, or null for a face the step being previewed has not applied yet. */
   stepFaces?: (number | null)[];
+  /** --- Organic surfaces: the view's finer mesh, as the kernel sends it under `display` (a stand-in sets it to test). */
+  display?: { positions: ArrayLike<number>; normals?: ArrayLike<number>; triangles: ArrayLike<number> };
 }
 
 /** --- Organic surfaces S1: shared-edge G0/G1/G2 continuity and NURBS health from `surfaceInspect`. */
@@ -151,6 +152,8 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
   if (positions.length !== triangles.length * 9 || offsets.length !== edgeLengths.length + 1 || offsets[0] !== 0) return DAMAGED;
   const normals = rawNormals && rawNormals.length === positions.length ? rawNormals : undefined;
   for (const face of triangles) if (face >= faceRows.length) return DAMAGED;
+  const display = readDisplay(body.display, faceRows.length);
+  if (display === null) return DAMAGED;
   const faces: ParsedSolid["faces"] = [];
   for (const row of faceRows as { [K in keyof FaceRow]?: unknown }[]) {
     if (!row || typeof row.areaMm2 !== "number") return DAMAGED;
@@ -192,8 +195,26 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
     ...(seams.length > 0 ? { seams } : {}),
     ...(nakedEdges.length > 0 ? { nakedEdges } : {}),
     ...(stepFaces ? { stepFaces } : {}),
-    ...(body.displayMesh === true ? { displayMesh: true as const } : {}),
+    ...(display ? { display } : {}),
   };
+}
+
+/**
+ * --- Organic surfaces: the reply's `display` object, the Model view's finer mesh (`meshQuality: "display"`):
+ * `positions` b64 f32 nine a triangle, `normals` b64 f32 nine a triangle in the same order, `triangles` b64 u32 one face
+ * index a triangle. Undefined when the reply has none; null when it is damaged (the whole reply is then refused).
+ */
+function readDisplay(raw: unknown, faceCount: number): DisplayMesh | undefined | null {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const positions = words(row.positions, Float32Array);
+  const triangles = words(row.triangles, Uint32Array);
+  if (!positions || !triangles || positions.length !== triangles.length * 9) return null;
+  for (const face of triangles) if (face >= faceCount) return null;
+  const normals = row.normals === undefined ? undefined : words(row.normals, Float32Array);
+  if (normals === null || (normals && normals.length !== positions.length)) return null;
+  return { positions, triangles, ...(normals ? { normals } : {}) };
 }
 
 /** A closed face's flag and fold distances, or nothing for any other face. A distance that is not a number 0 or over is dropped. */
@@ -219,6 +240,7 @@ export type SolidWire = {
   triangles: string;
   edgePoints: string;
   edgeOffsets: string;
+  display?: { positions: string; normals?: string; triangles: string };
 };
 
 export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (number | null)[] } {
@@ -250,6 +272,15 @@ export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (numb
     edgePoints: wordsBase64(Float32Array.from(points)),
     edgeOffsets: wordsBase64(Uint32Array.from(offsets)),
     ...(solid.stepFaces && solid.stepFaces.length === solid.faces.length ? { stepFaces: solid.stepFaces } : {}),
+    ...(solid.display
+      ? {
+          display: {
+            positions: wordsBase64(Float32Array.from(solid.display.positions)),
+            ...(solid.display.normals ? { normals: wordsBase64(Float32Array.from(solid.display.normals)) } : {}),
+            triangles: wordsBase64(Uint32Array.from(solid.display.triangles)),
+          },
+        }
+      : {}),
   };
 }
 

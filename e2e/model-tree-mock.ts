@@ -16,6 +16,8 @@ export interface MockSolid {
   solid?: boolean;
   /** Vertex normals, nine per triangle, as the kernel sends its analytic normals. Absent: the view welds its own. */
   normals?: number[];
+  /** The view's finer mesh, sent under `display` as the kernel does for `meshQuality: "display"`. */
+  display?: { positions: number[]; normals?: number[]; triangles: number[] };
   /** Open-border edge indexes on a sheet. */
   nakedEdges?: number[];
   /** --- A10. The node that made each face, when a test wants colour by step. */

@@ -1,4 +1,5 @@
 /** Step edges: the blend target, the outline of a step's edges, and their engine history. */
+import { viewRequest } from "../../model-mesh-quality";
 import { ROOT, pathTo, type ModelTree, type NodeId } from "../../model-tree";
 import { gotoRequest, stepEdgesRequest } from "../../model-request";
 import {
@@ -114,7 +115,7 @@ export function ensureEdgeHistory(key: string, viewed: NodeId, steps: readonly N
   const run = (async () => {
     const problem = await openWhole(key, viewed);
     if (problem) return problem;
-    const body = await post(gotoRequest(key, viewed, state.stepTolerance));
+    const body = await post(viewRequest(gotoRequest(key, viewed, state.stepTolerance)));
     noteHeld(key, body);
     return text(body.error) || null;
   })().finally(() => {

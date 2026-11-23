@@ -1,4 +1,5 @@
 /** Parameters: the table's params, what they affect, and the rebuild they run. */
+import { viewRequest } from "../../model-mesh-quality";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { pathTo, type ModelOp, type ModelTree, type NodeId } from "../../model-tree";
 import { gotoRequest } from "../../model-request";
@@ -69,7 +70,7 @@ async function builtOn(tree: ModelTree, parent: NodeId): Promise<ParsedSolid | s
   const chord = state.stepTolerance;
   const kept = recentSolid(tree.key, parent, chord) ?? (S.open?.key === tree.key && S.open.solid.id === parent ? S.open.solid : null);
   if (kept) return kept;
-  const body = await treeCall(tree.key, parent, gotoRequest(tree.key, parent, chord));
+  const body = await treeCall(tree.key, parent, viewRequest(gotoRequest(tree.key, parent, chord)));
   const error = text(body.error);
   if (error) return error;
   const decoded = decodeSolid(body);

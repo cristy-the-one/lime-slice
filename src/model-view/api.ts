@@ -1,4 +1,5 @@
 /** api */
+import { drawnSolid } from "./types";
 import * as THREE from "three";
 import { BLEND_GHOST_STEP_MM } from "./constants";
 import { type CameraPose, mmPerPixel } from "../sketch/frame";
@@ -28,7 +29,10 @@ export function buildApi(ctx: ViewCtx): ModelView {
   const solidWatchers = new Set<() => void>();
 
   return {
-    setSolid(next, at, sheetLook) {
+    setSolid(given, at, sheetLook) {
+      // The view draws, picks and paints the display mesh when the reply has one (`drawnSolid`); face and edge ids are
+      // the same B-rep faces and edges in both meshes.
+      const next = given ? drawnSolid(given) : given;
       for (const cb of solidWatchers) queueMicrotask(cb);
       ctx.clearBody();
       ctx.solid = next;
@@ -216,7 +220,8 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.rebuildGhost();
       ctx.kick();
     },
-    setPreview(next) {
+    setPreview(given) {
+      const next = given ? drawnSolid(given) : given;
       if (next === (ctx.preview?.shape ?? null)) return;
       if (next) ctx.showPreview(next);
       else ctx.clearPreview();

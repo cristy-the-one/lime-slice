@@ -9,6 +9,8 @@
  * with the other edits of the part. Commits queue: the latest grid is always the one the kernel ends on. A refusal
  * snaps the preview back to the last grid the kernel built and says why, on that part only.
  */
+import { viewRequest } from "../../model-mesh-quality";
+import { forgetSurfaces } from "./surface-cache";
 import { fx } from "../fx";
 import { modelTrees } from "../model-trees";
 import { state } from "../state";
@@ -971,6 +973,8 @@ async function commitOnce(job: Source, next: NurbsSurface3D, record: boolean) {
 
 function forgetSolids(key: string) {
   for (const name of [...solids.keys()]) if (name.startsWith(`${key}#`)) solids.delete(name);
+  // The old surface's curvature and isoparm replies go with it: the nodes are rebuilt under the same ids.
+  forgetSurfaces(key);
 }
 
 /**
@@ -1068,7 +1072,7 @@ async function editStep(job: Source, op: NurbsSurfaceOp): Promise<{ node: NodeId
   say(job.key, "Building the surface…");
   let body: Record<string, unknown>;
   try {
-    body = await treeCall(job.key, parent, editRequest(job.key, parent, ids[0]!, op, replay, chord));
+    body = await treeCall(job.key, parent, viewRequest(editRequest(job.key, parent, ids[0]!, op, replay, chord)));
   } finally {
     if (mine === S.ticket) S.busy = false;
     syncUndo();

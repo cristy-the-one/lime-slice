@@ -1,5 +1,4 @@
 /** The Plugins panel: Preview, Apply, Use vN, and Save as plugin. */
-import { plateRequest } from "../../model-mesh-quality";
 import { boundsOf, encodeStl, settleBy } from "../../mesh-place";
 import { IDENTITY_POSE, inversePose, thenPose, typedPoseOf, type Affine } from "../../model-space";
 import { madePoses, mergedSolid, partNames } from "../../plugin-parts";
@@ -141,7 +140,7 @@ export async function runPanelPlugin(plugin: PanelPlugin, params: Record<string,
       params,
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? 0.4 },
       recipes,
-      engine: { tree: (key, node, request) => treeCall(key, node, plateRequest(request)), open: (request) => post(plateRequest(request)) },
+      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
       env: recipeEnv(at?.objectId ?? "", false, plugin.sha256),
       onProgress: (fraction, message) => { if (mine === S.ticket) readout(`${message || `Running ${title}`} (${Math.round(fraction * 100)}%)`); },
       runId: freshRunId(),
@@ -368,7 +367,7 @@ export async function savePluginRow(row: RowKey, words: { title: string; descrip
       params: {},
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? 0.4 },
       recipes,
-      engine: { tree: (key, node, request) => treeCall(key, node, plateRequest(request)), open: (request) => post(plateRequest(request)) },
+      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
       env: recipeEnv(at.objectId, false, stamp.sha256),
       runId: freshRunId(),
     });
