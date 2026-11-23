@@ -938,7 +938,7 @@ const sheetOps = [
         type: "array",
         minItems: 2,
         maxItems: 20,
-        description: "Boundary sides, in order. Each is edges and/or a curve, with continuity g0, g1, or g2.",
+        description: "Boundary sides, in order. Each is edges and/or a curve, with continuity g0 or g1. A side asked g2 is not built in this version: the kernel refuses it with the curvature jump it reached.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -946,7 +946,7 @@ const sheetOps = [
             edges: cappedEdges(64, "Edges of this side, in order, at most 64."),
             curve: curve3dField,
             face: facePick("Support face: an index, or {normal, nearPoint}."),
-            continuity: { enum: ["g0", "g1", "g2"], description: "g0, g1, or g2. Absent: g1 on an edge that touches a face, otherwise g0." },
+            continuity: { enum: ["g0", "g1", "g2"], description: "g0 or g1 (g2 is not built in this version and is refused). Absent: g1 on an edge that touches a face, otherwise g0." },
           },
         },
       },

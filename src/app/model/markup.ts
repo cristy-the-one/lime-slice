@@ -190,9 +190,11 @@ const DOCK = `
               </div>
               <div class="modes" id="modelFilletProfile" data-for="fillet" role="group" aria-label="Fillet profile">
                 <button class="btn mode on" type="button" data-fillet-profile="g1" aria-pressed="true" data-tip="Circular arc cross-section (G1, default)">Circular G1</button>
-                <button class="btn mode" type="button" data-fillet-profile="g2" aria-pressed="false" data-tip="Curvature-continuous smooth blend (G2)">Smooth G2</button>
-                <button class="btn mode" type="button" data-fillet-profile="conic" aria-pressed="false" data-tip="Rational conic profile with fullness ρ">Conic</button>
+                <button class="btn mode" type="button" data-fillet-profile="g2" aria-pressed="false" data-tip="Curvature-continuous blend (G2), exact on a straight edge between two flat faces">Smooth G2</button>
+                <button class="btn mode" type="button" data-fillet-profile="conic" aria-pressed="false" data-tip="Conic profile with fullness ρ, on a straight edge between two flat faces">Conic</button>
               </div>
+              <!-- Organic surfaces: G2 and conic are built exactly only on a straight edge between two flat faces; the kernel refuses edges that meet at a corner, and says why. -->
+              <p class="model-note" id="modelFilletProfileNote" data-for="fillet" data-fillet-profile="g2 conic" data-tip="Built exactly only on a straight edge between two flat faces. Picked edges that meet at a corner are refused, with the reason.">Only on straight edges between flat faces.</p>
               <!-- Gaps 13: equal sides, two sizes, or a size and an angle. -->
               <div class="modes" id="modelChamferForm" data-for="chamfer" role="group" aria-label="Chamfer sides">
                 <button class="btn mode on" type="button" data-chamfer-form="equal" aria-pressed="true" data-tip="Size along both faces">Equal</button>

@@ -52,6 +52,16 @@ for (const [name, op] of [["a sweep with a spline spine", sweep], ["a closed NUR
 // The kernel refuses a loft "curvature" end condition: the app no longer produces one (old files still read).
 check("a typed loft curvature condition is refused with the kernel's terms", "reason" in readLoftBoundary({ kind: "curvature" }));
 check("normal and tangent conditions are still taken", !("reason" in readLoftBoundary({ kind: "normal" })) && !("reason" in readLoftBoundary({ kind: "tangent", dir: [0, 0, 1] })));
+{
+  // An old file's loft with a curvature end is read as it was saved, not dropped: the step goes to the kernel, which
+  // refuses it ("A loft cannot match curvature at an end: ..."), and History shows that sentence on the step.
+  const ring = (z: number) => ({ origin: [0, 0, z], turn: [0, 0, 0], radius: 5 });
+  const oldLoft = { kind: "loft", op: "fuse", sections: [ring(0), ring(10)], endCondition: { kind: "curvature", dir: [0, 0, 1] } };
+  const tree = withChild(newTree("a#1", { kind: "primitive", solid: { primitive: "box", origin: [0, 0, 0], size: [20, 20, 20] } } as never, "Box", null), 0, { id: 1, op: oldLoft as unknown as ModelOp, label: "Loft", fingerprint: null });
+  const read = readSavedTree({ ...JSON.parse(JSON.stringify(savedTree({ ...tree, committed: 1 }, 1, () => undefined))), rootPrimitive: { primitive: "box", origin: [0, 0, 0], size: [20, 20, 20] } }) as { nodes?: { op?: { endCondition?: unknown } }[] } | null;
+  const kept = read?.nodes?.find((node) => node.op)?.op?.endCondition;
+  check("an old file's loft curvature end is kept as saved, for the kernel to refuse", same(kept, { kind: "curvature", dir: [0, 0, 1] }), JSON.stringify(read?.nodes));
+}
 
 // The kernel refuses a NURBS degree above poles - 1 and knots without mults: the sketch never makes either.
 {
