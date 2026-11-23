@@ -9663,7 +9663,8 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
                 const double dot = std::clamp(na.Dot(nb), -1.0, 1.0);
                 const double ang = std::acos(dot) * (180.0 / M_PI);
                 edge_ang = std::max(edge_ang, ang);
-                if (ang <= 1.0) {
+                // Measured at every station, so a row reports the jump whatever its class.
+                {
                     gp_Pnt ep;
                     gp_Vec et;
                     ec.D1(ec.FirstParameter() + (ec.LastParameter() - ec.FirstParameter()) * frac, ep, et);
@@ -9679,13 +9680,14 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
             }
             max_gap_mm = std::max(max_gap_mm, edge_gap);
             const char* cls = "G0";
-            if (edge_gap > 0.01) {
+            // The same bounds the builders accept by (kernel.h).
+            if (edge_gap >= kContinuityGapMm) {
                 cls = "gap";
                 cnt_gaps += 1;
-            } else if (edge_ang > 1.0) {
+            } else if (edge_ang >= kContinuityAngleDeg) {
                 cls = "G0";
                 cnt_g0 += 1;
-            } else if (edge_kjump > 1e-3) {
+            } else if (edge_kjump > kContinuityJump) {
                 cls = "G1";
                 cnt_g1 += 1;
                 worst_smooth_angle_deg = std::max(worst_smooth_angle_deg, edge_ang);
@@ -9798,7 +9800,8 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
                     }
                 }
             }
-            if (!(worst > 0.1) || ba < 0) continue;
+            // Sharp by the same bound an edge is G1 by, so a vertex is sharp exactly where no edge class says smooth.
+            if (!(worst >= kContinuityAngleDeg) || ba < 0) continue;
             if (ba > bb) std::swap(ba, bb);
             bool merged = false;
             for (SharpVertex& existing : sharp_vertices) {
@@ -10724,7 +10727,12 @@ bool try_exact_edge_surface_fillet(
 /// The worst curvature jump, per mm, across the smooth seams a fillet made on `solid`: each edge between a face that is
 /// not in `before` and a face beside it whose normals meet within 1 degree, measured as model_check measures it (the
 /// normal curvature across the edge on each side, at the fractions 0.1 to 0.9 of the edge). -1 when no seam is read.
-double worst_fillet_seam_jump(const TopoDS_Shape& solid, const TopoDS_Shape& before) {
+/// A fillet's own seams are told from the creases beside them by an angle of at most this: it finds the seams to measure,
+/// it is not the G1 bound (that is kContinuityAngleDeg, which the seams found must then meet).
+constexpr double kFilletSeamDeg = 1.0;
+
+double worst_fillet_seam_jump(const TopoDS_Shape& solid, const TopoDS_Shape& before, double& worst_angle) {
+    worst_angle = 0.0;
     TopTools_IndexedMapOfShape old_faces;
     TopExp::MapShapes(before, TopAbs_FACE, old_faces);
     TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
@@ -10773,7 +10781,9 @@ double worst_fillet_seam_jump(const TopoDS_Shape& solid, const TopoDS_Shape& bef
             gp_Dir nb = pb.Normal();
             if (out_a < 0.0) na.Reverse();
             if (out_b < 0.0) nb.Reverse();
-            if (std::acos(std::clamp(na.Dot(nb), -1.0, 1.0)) * (180.0 / M_PI) > 1.0) continue;
+            const double angle = std::acos(std::clamp(na.Dot(nb), -1.0, 1.0)) * (180.0 / M_PI);
+            if (angle > kFilletSeamDeg) continue;
+            worst_angle = std::max(worst_angle, angle);
             gp_Pnt point;
             gp_Vec tangent;
             ec.D1(ec.FirstParameter() + (ec.LastParameter() - ec.FirstParameter()) * frac, point, tangent);
@@ -10924,13 +10934,16 @@ bool fillet_v2_build(
             return false;
         }
         if (spec.continuity == 1) {
-            const double jump = worst_fillet_seam_jump(solid, current);
-            if (!(jump >= 0.0) || jump > 1e-3) {
+            double angle = 0.0;
+            const double jump = worst_fillet_seam_jump(solid, current, angle);
+            // The same G2 bounds model_check classes by (kernel.h).
+            if (!(jump >= 0.0) || jump > kContinuityJump || angle >= kContinuityAngleDeg) {
                 std::ostringstream out;
                 out.setf(std::ios::fixed);
                 out.precision(6);
                 out << "A G2 fillet is exact only on straight edges between two flat faces, as a convex corner. Here the "
-                       "seams reach " << (jump >= 0.0 ? jump : 0.0) << " per mm of curvature jump, over 0.001.";
+                       "seams reach " << (jump >= 0.0 ? jump : 0.0) << " per mm of curvature jump and " << angle
+                    << " degrees, over 0.001 per mm or 0.1 degrees.";
                 error = out.str();
                 return false;
             }

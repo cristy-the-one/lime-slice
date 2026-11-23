@@ -6,9 +6,9 @@
 // n(s). It is not the step 6 transverse ribbon; that ribbon is the split's
 // departure tangent, already stored on the shared cubic.
 
-constexpr double kHermiteGapMm = 1e-4;
-constexpr double kHermiteAngleDeg = 0.1;
-constexpr double kHermiteJump = 1e-3;
+constexpr double kHermiteGapMm = kContinuityGapMm;
+constexpr double kHermiteAngleDeg = kContinuityAngleDeg;
+constexpr double kHermiteJump = kContinuityJump;
 constexpr int kHermiteStations = 5;
 constexpr int kHermiteRefineCap = 24;
 
