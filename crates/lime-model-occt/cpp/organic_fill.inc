@@ -1537,17 +1537,18 @@ TopoDS_Shape fill_hermite_blend(
             error = "Open CASCADE could not bridge these edges.";
             return {};
         }
-        auto field_at = [&](const Handle(Geom_BSplineCurve)& curve, const TopoDS_Face& support, double tension, double t, bool far, gp_Vec& T, gp_Vec& A) -> bool {
+        // `far` is an MSVC keyword, so the flag cannot use that name.
+        auto field_at = [&](const Handle(Geom_BSplineCurve)& curve, const TopoDS_Face& support, double tension, double t, bool far_side, gp_Vec& T, gp_Vec& A) -> bool {
             gp_Pnt point;
             gp_Vec tangent;
             curve->D1(t, point, tangent);
-            const Transverse got = transverse_at(support, point, tangent, far ? 1 : 0);
+            const Transverse got = transverse_at(support, point, tangent, far_side ? 1 : 0);
             if (!got.ok) {
                 error = got.error;
                 return false;
             }
             gp_Pnt other;
-            (far ? ua : ub)->D0(t, other);
+            (far_side ? ua : ub)->D0(t, other);
             const double g = point.Distance(other);
             if (g < kHermiteGapMm) {
                 error = "These edges already meet, so there is no gap to bridge.";
@@ -1558,7 +1559,7 @@ TopoDS_Shape fill_hermite_blend(
             // one of them to make one shell, so the far derivative points the other
             // way and the oriented normals agree after that reversal.
             gp_Vec Ds = got.Ds;
-            if (far) Ds.Reverse();
+            if (far_side) Ds.Reverse();
             T = Ds.Multiplied(lambda);
             A = got.Dss.Multiplied(lambda * lambda);
             return true;
