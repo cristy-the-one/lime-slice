@@ -413,7 +413,15 @@ html:not(.layout-compact) .model-dock .model-stress .model-params-main { padding
 #modelNurbsOverlay button[data-cv-axis][aria-pressed="true"] { font-weight: 700; border-color: currentColor; }
 #modelNurbsOverlay button:focus-visible { outline: 2px solid var(--accent, #3b6); outline-offset: 2px; }
 #modelNurbsOverlay button[hidden] { display: none; }
+.model-fields > .model-sculpt { grid-column: 1 / -1; display: grid; gap: 6px; margin: 0; min-width: 0; }
+.model-sculpt > p { margin: 0; color: var(--text-dim); font-size: var(--fs-1); }
+.model-sculpt .sculpt-modes { display: flex; gap: 4px; }
+.model-sculpt .sculpt-modes > button { flex: 1 1 0; }
+.model-fields .model-sculpt label.sculpt-check { display: flex; align-items: center; gap: 6px; color: var(--text); }
+.model-fields .model-sculpt label.sculpt-check input { width: auto; height: auto; }
 .model-sculpt details { display: grid; gap: 4px; }
+.model-sculpt details[open] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; }
+.model-sculpt details > summary { grid-column: 1 / -1; cursor: pointer; }
 #modelEdgeBadges button { position: absolute; pointer-events: auto; transform: translate(-50%, -50%); min-width: 2.2rem; padding: 0.1rem 0.35rem; border-radius: 999px; border: 1px solid var(--line, #888); background: var(--panel, #fff); color: inherit; font: inherit; font-size: 0.75rem; }
 .stress-legend {
   position: absolute;
