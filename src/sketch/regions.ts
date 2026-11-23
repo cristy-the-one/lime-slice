@@ -462,14 +462,32 @@ function selfHits(curve: Curve): { t: number; pt: Pt }[] {
     for (let k = 0; k < index; k++) before += lengths[k]!;
     return (before + u * lengths[index]!) / total;
   };
+  // Each sample span's box and whether it has no length, worked out once: two spans whose boxes do not meet cannot
+  // cross, so the pair test below runs only where they do (it was O(n^2) distance calls on a long CV curve).
+  const box = new Float64Array(count * 4);
+  const flat = new Uint8Array(count);
+  for (let k = 0; k < count; k++) {
+    const p = samples[k]!;
+    const q = samples[k + 1]!;
+    box[k * 4] = Math.min(p[0], q[0]);
+    box[k * 4 + 1] = Math.max(p[0], q[0]);
+    box[k * 4 + 2] = Math.min(p[1], q[1]);
+    box[k * 4 + 3] = Math.max(p[1], q[1]);
+    flat[k] = samePt(p, q) ? 1 : 0;
+  }
   for (let i = 0; i < count; i++) {
+    if (flat[i]) continue;
+    const ax0 = box[i * 4]!;
+    const ax1 = box[i * 4 + 1]!;
+    const ay0 = box[i * 4 + 2]!;
+    const ay1 = box[i * 4 + 3]!;
     for (let j = i + 2; j < count; j++) {
       if (curve.closed && i === 0 && j === count - 1) continue;
+      if (flat[j] || box[j * 4]! > ax1 || box[j * 4 + 1]! < ax0 || box[j * 4 + 2]! > ay1 || box[j * 4 + 3]! < ay0) continue;
       const a0 = samples[i]!;
       const a1 = samples[i + 1]!;
       const b0 = samples[j]!;
       const b1 = samples[j + 1]!;
-      if (samePt(a0, a1) || samePt(b0, b1)) continue;
       const rx = a1[0] - a0[0];
       const ry = a1[1] - a0[1];
       const sx = b1[0] - b0[0];
