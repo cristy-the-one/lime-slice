@@ -90,6 +90,15 @@ for (const [name, steps, root] of newer) {
   const wire = projectWire(plate(steps, root));
   check(`${name}: written as version 5`, wire.version === PROJECT_VERSION && PROJECT_VERSION === 5 && projectNeedsLatest(wire), `version=${String(wire.version)}`);
 }
+// An object marked an open sheet is version 5, and the mark reads back.
+{
+  const marked = plate([box], undefined, true);
+  (marked.objects![0] as { sheet?: true }).sheet = true;
+  const wire = projectWire(marked);
+  check("an object marked an open sheet makes the project version 5", wire.version === 5);
+  const back = parseProject(serializeProject(marked));
+  check("the sheet mark reads back", back.ok && (back.project.objects?.[0] as { sheet?: true } | undefined)?.sheet === true, back.ok ? "" : back.message);
+}
 // A kept tool's or a held piece's history counts too.
 {
   const project = plate([box]);

@@ -1,4 +1,5 @@
 import { dropProjectFonts } from "./user-fonts.ts";
+import { sheetPartNote } from "../model-sheet";
 import { fx } from "./fx";
 import { warmHull } from "./bed-rest";
 import { state, session, STEP_TOLERANCE_DEFAULT } from "./state";
@@ -555,6 +556,7 @@ export function withPrinterGcode(gcode: string, run?: RunMeta) {
 
 /** Save the G-code. A missing or stale slice is made first, so Export needs only a mesh. */
 export async function exportGcode() {
+  await fx.settleShownMesh?.();
   fx.commitModel?.();
   if (!state.mesh || state.busy) return;
   if (!state.result || stale()) await fx.runSlice(false);
@@ -589,6 +591,7 @@ export async function exportGcode() {
 }
 
 export async function export3mf() {
+  await fx.settleShownMesh?.();
   fx.commitModel?.();
   const exported: string | null = fx.exportedPart?.() ?? null;
   if (exported) {
@@ -597,7 +600,7 @@ export async function export3mf() {
     return;
   }
   // --- Organic surfaces S4: an open sheet is on the plate but is no solid: Slice and Export stop with the prompt.
-  const sheet: string | null = fx.sheetPart?.() ?? null;
+  const sheet = sheetPartNote(state.plate.objects);
   if (sheet) {
     state.error = sheet;
     renderChrome();

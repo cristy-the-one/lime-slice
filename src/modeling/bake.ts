@@ -466,7 +466,7 @@ export function readShape(spec: Record<string, unknown>, points: number): Profil
   return { smooth: true, corners: [...new Set(spec.corners as number[])] };
 }
 
-function readLoftBoundaryField(value: unknown): LoftBoundary | { reason: string } {
+export function readLoftBoundaryField(value: unknown): LoftBoundary | { reason: string } {
   if (!value || typeof value !== "object") return { reason: "Loft boundary condition must be an object." };
   const raw = value as Record<string, unknown>;
   if (raw.kind === "free") return { kind: "free" };
@@ -483,16 +483,9 @@ function readLoftBoundaryField(value: unknown): LoftBoundary | { reason: string 
     if (!dir || Math.hypot(...dir) < 1e-9) return { reason: "Loft tangent boundary needs a non-zero dir [x, y, z]." };
     return { kind: "tangent", dir, ...(tension !== undefined ? { tension } : {}) };
   }
-  if (raw.kind === "curvature") {
-    let dir: Vec3 | undefined;
-    if (raw.dir !== undefined) {
-      const parsed = vec3Of(raw.dir);
-      if (!parsed || Math.hypot(...parsed) < 1e-9) return { reason: "Loft curvature dir must be a non-zero [x, y, z] vector." };
-      dir = parsed;
-    }
-    return { kind: "curvature", ...(dir ? { dir } : {}), ...(tension !== undefined ? { tension } : {}) };
-  }
-  return { reason: "Loft boundary kind must be free, normal, tangent, or curvature." };
+  // The kernel builds no curvature (G2) loft end; a step saved with one still reads, and the kernel says why it fails.
+  if (raw.kind === "curvature") return { reason: "A loft end cannot be held to curvature (G2). Use free, normal, or tangent." };
+  return { reason: "Loft boundary kind must be free, normal, or tangent." };
 }
 
 /** One loft section: origin and turn as a profile's plane, then a radius (radiusV for an ellipse) or a profile, or an apex point cap. */

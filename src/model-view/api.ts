@@ -28,7 +28,7 @@ export function buildApi(ctx: ViewCtx): ModelView {
   const solidWatchers = new Set<() => void>();
 
   return {
-    setSolid(next, at) {
+    setSolid(next, at, sheetLook) {
       for (const cb of solidWatchers) queueMicrotask(cb);
       ctx.clearBody();
       ctx.solid = next;
@@ -60,7 +60,7 @@ export function buildApi(ctx: ViewCtx): ModelView {
         return;
       }
       const naked = next.nakedEdges ?? [];
-      const isSheet = naked.length > 0;
+      const isSheet = sheetLook ?? naked.length > 0;
       canvas.dataset.shapeKind = isSheet ? "sheet" : "solid";
       canvas.dataset.nakedEdges = String(naked.length);
       solidMaterial.side = isSheet ? THREE.FrontSide : THREE.DoubleSide;

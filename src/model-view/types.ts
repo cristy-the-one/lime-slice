@@ -148,7 +148,11 @@ export interface StressDraw {
 
 export interface ModelView {
   /** The open solid, in its own frame, drawn at `pose` in model space. The camera stays where it is. */
-  setSolid(solid: ModelSolid | null, pose: Affine): void;
+  /**
+   * `sheet`: draw it as an open sheet (front-only body, back tint, naked edges lit). Model passes `isOpenSheet`
+   * (src/model-sheet.ts), so a surfaces-only STEP looks as on v7.1.2; absent, a shape with naked edges is one.
+   */
+  setSolid(solid: ModelSolid | null, pose: Affine, sheet?: boolean): void;
   /** Move the open solid in model space. Its mesh is not touched. */
   setPose(pose: Affine): void;
   /** Look at `box`, a model-space box, from the direction Model opens with. */

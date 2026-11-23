@@ -1,4 +1,5 @@
 /** Split to print: Apply and Update, and the laying out of the pieces they make. */
+import { plateRequest } from "../../model-mesh-quality";
 import { type Mat3 } from "../../mesh-place";
 import { forked, stepIds, type EditLevel, type ForkStep } from "../../model-edit";
 import { DAMAGED, decodeSolid, type ParsedSolid } from "../../model-reply";
@@ -53,6 +54,7 @@ import { partKeys, pinsKeyFor, readPieces, readPins, splitStored, targetName } f
 import { syncUndo } from "./undo";
 import { present, refreshModelContext } from "./view";
 import { sameMat } from "./workplane";
+import { markSheet } from "./sheet-gate";
 
 /**
  * Apply of Split to print's card: the part keeps its plate id and the first piece (D8); every other piece is a new plate
@@ -228,8 +230,10 @@ function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key:
     const mesh = meshOf(shown, `${owner ? stlName(owner.name).replace(/\.stl$/i, "") : `${stem} part ${index}`}.stl`);
     let name = owner?.name ?? null;
     if (held) name = mesh.name;
-    else if (owner) state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, piece.key);
-    else name = placePiece(piece.key, mesh);
+    else if (owner) {
+      state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, piece.key);
+      markSheet(owner.id, mesh.sheet);
+    } else name = placePiece(piece.key, mesh);
     if (!name) {
       keys.push(null);
       return;
@@ -335,8 +339,10 @@ function putPinsObject(at: Opened, node: NodeId, pins: { key: string; solid: Par
   const mesh = meshOf(pins.solid, `${owner ? stlName(owner.name).replace(/\.stl$/i, "") : `${stem} pins`}.stl`);
   let name: string | null = owner?.name ?? null;
   if (held) name = mesh.name;
-  else if (owner) state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, pins.key);
-  else name = placePiece(pins.key, mesh);
+  else if (owner) {
+    state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, pins.key);
+    markSheet(owner.id, mesh.sheet);
+  } else name = placePiece(pins.key, mesh);
   if (!name) return null;
   const root = newTree(pins.key, { kind: "piece", tree: at.key, node, pins: true }, "Pins", pins.solid.fingerprint);
   modelTrees.set(pins.key, { ...withNode(root, ROOT, { mesh }), committed: ROOT });
@@ -372,7 +378,8 @@ async function replayPiece(key: string, parentKey: string, node: NodeId, index: 
   const renamed = stepIds(later, ids);
   const ops = later.map((id) => renumberedSteps(before.nodes.get(id)!.op!, renamed));
   const replay = ops.slice(1).map((op, at) => ({ id: ids[at + 1]!, op }));
-  const body = await treeCall(key, ROOT, { ...editRequest(key, ROOT, ids[0]!, ops[0]!, replay, state.stepTolerance), keepBroken: true });
+  // A replayed piece goes on the plate: plate quality.
+  const body = await treeCall(key, ROOT, plateRequest({ ...editRequest(key, ROOT, ids[0]!, ops[0]!, replay, state.stepTolerance), keepBroken: true }));
   const error = text(body.error);
   const parsed = error ? null : decodeSolid(body);
   const built = builtSteps(body.built);

@@ -10,7 +10,6 @@ type ShellActions = typeof import("./shell-actions.ts");
 type Commit = typeof import("./model/commit.ts");
 type Lifecycle = typeof import("./model/lifecycle.ts");
 type SplitPrint = typeof import("./model/split-print.ts");
-type SheetGate = typeof import("./model/sheet-gate.ts");
 type Transition = typeof import("./model/transition.ts");
 type Save = typeof import("./model/save.ts");
 type ModelViewing = typeof import("./model/view.ts");
@@ -65,11 +64,10 @@ export interface Fx {
   syncPose?: () => void;
   // The Model workspace (model.ts registers them)
   commitModel: Commit["commitModel"];
+  // Before a slice or an export: the shown node's plate-quality mesh is in hand (src/app/model/plate-mesh.ts).
+  settleShownMesh: () => Promise<void>;
   exportedPart: SplitPrint["exportedPart"];
   exportSplitNote: SplitPrint["exportSplitNote"];
-  // Organic surfaces S4: an open sheet on the plate stops Slice and Export, and Prepare marks it.
-  sheetPart: SheetGate["sheetPart"];
-  sheetObjectNote: SheetGate["sheetObjectNote"];
   followSelection: Lifecycle["followSelection"];
   forgetModelTrees: Lifecycle["forgetModelTrees"];
   keepStale: Transition["keepStale"];

@@ -12,7 +12,8 @@ import {
   type Affine,
 } from "../../model-space";
 import { unionBox } from "../../measure";
-import { decodeSurfaceInspect, type DecodedSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { decodeSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { cachedSurface, keepSurface, surfaceKey } from "./surface-cache";
 import { isOpenSheet } from "../../model-sheet";
 import { contextParts } from "../../model-context";
 import { isHidden, isolate, pruneHidden, setHidden, showAll, visibleParts } from "../../model-hidden";
@@ -62,8 +63,6 @@ import { posedFace } from "./workplane";
 /** Each solid's, and each plate mesh's, box in its own frame. */
 const ownBoxes = new WeakMap<Float32Array, Bounds>();
 
-/** --- Organic surfaces S1: lazy surface inspection cache per `<key>#<node>@<chord>`. */
-const surfaceInspectCache = new Map<string, DecodedSurfaceInspect>();
 let surfaceInspectTicket = 0;
 
 async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolean }) {
@@ -74,8 +73,8 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
   const key = S.lens?.key ?? open.key;
   const node = S.lens?.node ?? tree.current;
   const chord = state.stepTolerance;
-  const cacheKey = `${key}#${node}@${chord}`;
-  const cached = surfaceInspectCache.get(cacheKey);
+  const cacheKey = surfaceKey(key, node, chord);
+  const cached = cachedSurface(cacheKey);
   const hasCurv = !need.curvature || !!cached?.minRadiusMm;
   const hasIso = !need.isoparms || cached?.isoPoints !== undefined;
   if (cached && hasCurv && hasIso) {
@@ -102,11 +101,7 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
   if (mine !== surfaceInspectTicket) return;
   const decoded = decodeSurfaceInspect(body);
   if (typeof decoded === "string") return;
-  if (surfaceInspectCache.size > 24) {
-    const oldest = surfaceInspectCache.keys().next().value;
-    if (oldest !== undefined) surfaceInspectCache.delete(oldest);
-  }
-  surfaceInspectCache.set(cacheKey, decoded);
+  keepSurface(cacheKey, decoded);
   // A late reply is kept for its node but shown only while that node is still on screen: isoparm lines carry no
   // vertex count to check against (the curvature buffers are length-checked), so they would draw on another solid.
   const nowTree = treeOf(S.open);
@@ -139,7 +134,11 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   hideEmpty();
   if (!view) learnSeat(parsed);
   setModelLocked(view && !S.editing ? PEEK_LOCK : null);
-  fx.model?.setSolid(parsed, openPose());
+  // One rule for the banner, the sheet tools, the viewport's sheet look and the plate mark (src/model-sheet.ts): a
+  // surfaces-only STEP is no sheet unless its plate object is marked one.
+  const marked = state.plate.objects.find((obj) => obj.id === S.open?.objectId)?.sheet === true;
+  const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id, marked);
+  fx.model?.setSolid(parsed, openPose(), isSheet);
   setInspectVolume(parsed.editable ? `${mm(parsed.volumeMm3)} mm³` : "—");
   if (S.open && S.framedFor !== S.open.objectId) {
     S.framedFor = S.open.objectId;
@@ -149,8 +148,6 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   syncWorkplaneFields();
   refreshModelContext();
   fx.model?.highlight([]);
-  // One rule for the banner, the sheet tools and the commit gate: a surfaces-only STEP is not a sheet (`isOpenSheet`).
-  const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id);
   setSheetMode(isSheet);
   setModelEditable(parsed.editable);
   // --- Organic surfaces S4 (U6): show open-sheet banner with one-click Thicken & Cap & Sew when open.

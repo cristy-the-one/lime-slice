@@ -50,6 +50,8 @@ export interface ParsedSolid extends ModelSolid {
   fingerprint: Fingerprint | null;
   /** False for surfaces with no closed solid: measured, never edited, and its volume means nothing. */
   editable: boolean;
+  /** The reply was the kernel's fine display mesh (src/model-mesh-quality.ts): never put on the plate. */
+  displayMesh?: true;
 }
 
 /** What `encodeSolid` writes: a solid with plain number arrays. */
@@ -190,6 +192,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
     ...(seams.length > 0 ? { seams } : {}),
     ...(nakedEdges.length > 0 ? { nakedEdges } : {}),
     ...(stepFaces ? { stepFaces } : {}),
+    ...(body.displayMesh === true ? { displayMesh: true as const } : {}),
   };
 }
 

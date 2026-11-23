@@ -613,6 +613,11 @@ export interface PlateMesh {
   token: string;
   /** The node's STEP, once written. The plate object carries it as `brep` while it holds this node. */
   step?: ArrayBuffer;
+  /**
+   * --- Organic surfaces S4: the kernel's verdict on this mesh (`sheetVerdict` in src/model-sheet.ts), set where a
+   * mesh is made from a Model reply. Absent: unknown (a part's own imported file), which leaves the object's mark alone.
+   */
+  sheet?: boolean;
 }
 
 export interface ModelNode {
@@ -648,10 +653,10 @@ export interface ModelNode {
    */
   builtWith?: NodeId;
   /**
-   * --- Organic surfaces S4: the kernel answered this node with an open sheet (`isOpenSheet`: not a solid, open borders,
-   * not a surfaces-only STEP root). Set when the node is committed to the plate; the slice and export gates read it.
+   * --- Organic surfaces S4: the kernel's sheet verdict on this node's last reply (`sheetVerdict`), for its History
+   * badge. Not saved: the plate object's mark (`PlateObject.sheet`) is what Slice and Export read.
    */
-  sheet?: true;
+  sheet?: boolean;
 }
 
 /**
@@ -1017,14 +1022,14 @@ export function renumberedSteps(op: ModelOp, ids: ReadonlyMap<NodeId, NodeId>): 
 }
 
 /**
- * `tree` with everything a build left on its nodes dropped: fingerprints, plate meshes and sheet marks. A root edit
+ * `tree` with everything a build left on its nodes dropped: fingerprints and plate meshes. A root edit
  * rebuilds every node under the same ids, so a node's old plate mesh must not go back to the plate (`commitModel` takes
  * a node's stored mesh first). The Prepare state (`keep`) stays.
  */
 export function withoutBuilds(tree: ModelTree): ModelTree {
   const nodes = new Map(tree.nodes);
   for (const [id, node] of nodes) {
-    const { mesh: _mesh, sheet: _sheet, ...rest } = node;
+    const { mesh: _mesh, ...rest } = node;
     nodes.set(id, { ...rest, fingerprint: null });
   }
   return { ...tree, nodes, rebuilt: true };

@@ -126,7 +126,8 @@ function treeNeedsLatest(tree: unknown): boolean {
 export function projectNeedsLatest(wire: Record<string, unknown>): boolean {
   for (const list of [wire.objects, wire.modelTools, wire.heldPieces]) {
     if (!Array.isArray(list)) continue;
-    if (list.some((holder) => isPlainRow(holder) && treeNeedsLatest(holder.modelTree))) return true;
+    // An object marked an open sheet (`PlateObject.sheet`): 7.1.2 would drop the mark and slice it as a solid.
+    if (list.some((holder) => isPlainRow(holder) && (holder.sheet === true || treeNeedsLatest(holder.modelTree)))) return true;
   }
   return false;
 }
@@ -806,6 +807,7 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   if (chain) object.chain = chain;
   const jointLimits = readJointLimits(row.jointLimits);
   if (jointLimits) object.jointLimits = jointLimits;
+  if (row.sheet === true) object.sheet = true;
   if (row.brep !== undefined && row.brep !== null) {
     const brep = readMesh(row.brep);
     if (typeof brep === "string") {

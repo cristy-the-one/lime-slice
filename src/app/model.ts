@@ -5,6 +5,7 @@ import { bindChrome, bindToolbar } from "./model/bind-chrome";
 import { bindSketch } from "./model/bind-sketch";
 import { bindStress } from "./model/bind-stress";
 import { commitModel } from "./model/commit";
+import { settleShownMesh } from "./model/plate-mesh";
 import { bindEdgeDrag } from "./model/edge-tool";
 import { bindHistory } from "./model/history";
 import { followSelection, forgetModelTrees } from "./model/lifecycle";
@@ -13,7 +14,6 @@ import { bindPlugins } from "./model/plugin-panel";
 import { bindPull } from "./model/pull";
 import { releaseModelTrees } from "./model/save";
 import { bindSplitPrint, exportedPart, exportSplitNote } from "./model/split-print";
-import { sheetObjectNote, sheetPart } from "./model/sheet-gate";
 import { bindTransition, keepStale, requestReaim, transitionStaleNote } from "./model/transition";
 import { bindAutoRibs } from "./model/auto-ribs";
 import { bindInspect, bindLook, refreshModelContext } from "./model/view";
@@ -50,4 +50,4 @@ export function bindModelView() {
   bindLook();
 }
 
-Object.assign(fx, { refreshModelContext, commitModel, exportedPart, exportSplitNote, sheetPart, sheetObjectNote, transitionStaleNote, requestReaim, keepStale, forgetModelTrees, followSelection, releaseModelTrees });
+Object.assign(fx, { refreshModelContext, commitModel, settleShownMesh, exportedPart, exportSplitNote, transitionStaleNote, requestReaim, keepStale, forgetModelTrees, followSelection, releaseModelTrees });
