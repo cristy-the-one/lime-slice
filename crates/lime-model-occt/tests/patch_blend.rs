@@ -1026,6 +1026,16 @@ fn a_guide_point_keeps_g1_on_every_asked_edge() {
     guided_patch("g1");
 }
 
+/// A guide straight over the centre (as the MCP contract test sends it): the centre every piece shares moves to it, the
+/// splits run to it, and every side and split still meets G1.
+#[test]
+fn a_guide_point_over_the_centre_raises_the_centre() {
+    if !has_occt() {
+        return;
+    }
+    fill_opening("4-side-g1-centre", 4, |_, _| "g1", Some([0.0, 0.0, 15.0]), true, None);
+}
+
 /// At G2 the quintic pieces get their free pole from the knot at 0.5 the plan inserts, with the two ribbon rows beside
 /// each boundary left where they are. This opening cannot be filled at G2 at all (its G2 bound fails at the half-side
 /// ends with or without a guide), so the guide must not change why it is refused: never "no free pole".

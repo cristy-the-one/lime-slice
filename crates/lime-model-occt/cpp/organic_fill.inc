@@ -1685,6 +1685,22 @@ TopoDS_Shape fill_hermite_patch(
     }
     double max_radius = 0.0;
     for (const gp_Pnt& p : cloud) max_radius = std::max(max_radius, centre.Distance(p));
+    // A guide point straight over the centre, along N_c, is where the centre goes. C is the corner every piece shares,
+    // where no free pole of any piece reaches, so the fill is built through the guide from the start: the splits run
+    // from each M to it.
+    std::vector<char> on_centre(points.size(), 0);
+    for (size_t k = 0; k < points.size(); ++k) {
+        const gp_Pnt guide(points[k][0], points[k][1], points[k][2]);
+        const gp_Vec off(centre, guide);
+        const gp_Vec lateral = off - gp_Vec(centre_normal) * off.Dot(gp_Vec(centre_normal));
+        if (lateral.Magnitude() > 1e-3) continue;
+        if (off.Magnitude() > 2.0 * max_radius) {
+            error = "A guide point would land farther from the centre than the fill allows.";
+            return {};
+        }
+        centre = guide;
+        on_centre[k] = 1;
+    }
 
     std::vector<SplitPrep> splits(static_cast<size_t>(count));
     for (int i = 0; i < count; ++i) {
@@ -1735,7 +1751,7 @@ TopoDS_Shape fill_hermite_patch(
 
     const int min_degree = need_degree(max_order);
     // Each guide point goes to the one piece it lies closest to, built without guides, and moves only that piece.
-    g_guide_off = -1.0;
+    g_guide_off = std::any_of(on_centre.begin(), on_centre.end(), [](char c) { return c != 0; }) ? 0.0 : -1.0;
     std::vector<std::vector<std::array<double, 3>>> guides_of(static_cast<size_t>(count));
     if (!points.empty()) {
         std::vector<Handle(Geom_BSplineSurface)> bare;
@@ -1744,7 +1760,9 @@ TopoDS_Shape fill_hermite_patch(
             if (piece.face.IsNull()) return {};
             bare.push_back(piece.surface);
         }
-        for (const std::array<double, 3>& raw : points) {
+        for (size_t k = 0; k < points.size(); ++k) {
+            if (on_centre[k]) continue;
+            const std::array<double, 3>& raw = points[k];
             const gp_Pnt guide(raw[0], raw[1], raw[2]);
             int nearest = -1;
             double best = 1e300;
