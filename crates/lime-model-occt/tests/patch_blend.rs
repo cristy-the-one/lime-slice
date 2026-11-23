@@ -115,6 +115,17 @@ fn opening_sheet(sides: usize) -> Value {
     })
 }
 
+fn circle_arcs(radius: f64, z: f64) -> Value {
+    json!({
+        "kind": "segments",
+        "start": [radius, 0.0, z],
+        "segments": [
+            { "kind": "arc", "through": [0.0, radius, z], "to": [-radius, 0.0, z] },
+            { "kind": "arc", "through": [0.0, -radius, z], "to": [radius, 0.0, z] }
+        ]
+    })
+}
+
 fn circle_curve(radius: f64, z: f64) -> Value {
     // A polynomial spline, not a rational arc. The blend's end derivative is built
     // as if the rim weights are 1, and a rational circle leaves the normal 0.3° off.
@@ -733,13 +744,14 @@ fn edge_on_plane(edge: &SampledEdge, origin: [f64; 3], normal: [f64; 3]) -> bool
 
 /// The part of an ellipsoid of revolution above a vertical prism: one smooth face, N boundary edges.
 fn smooth_cap(sides: usize) -> (String, Value, Vec<SideCurve>) {
-    let radius = 96.0;
-    let apothem = 36.0;
+    smooth_opening(sides, 96.0, 36.0, format!("s5-smooth-{sides}"))
+}
+
+fn smooth_opening(sides: usize, radius: f64, apothem: f64, key: String) -> (String, Value, Vec<SideCurve>) {
     let circum = apothem / (std::f64::consts::PI / sides as f64).cos();
     // Put the revolution seam on a corner. A seam crossing the middle of a side
     // leaves a 0.57° normal glitch that model_check samples and the fill does not.
     let spin = 0.0;
-    let key = format!("s5-smooth-{sides}");
     let opened = ok(json!({
         "call": "open",
         "key": key,
@@ -1006,6 +1018,158 @@ fn blend_surface_meets_g1_and_g2_between_two_sheets() {
         assert_eq!(blended["solid"], json!(false), "a blend is a sheet until it is sewn");
         let sewn = finish_sheet(&case_name, &key, 3, 4, false, 0.05);
         check_opening(&case_name, &key, 4, &sewn, &sides, false, None);
+        ok(json!({ "call": "close", "key": key }));
+    }
+}
+
+fn ordered_cap(sides: usize, radius: f64, apothem: f64, key: &str, continuity: impl Fn(usize, usize) -> &'static str) -> (String, i64, Vec<SideCurve>, i64) {
+    let (key, cap, mut asked) = smooth_opening(sides, radius, apothem, key.to_string());
+    assert_eq!(asked.len(), sides);
+    asked.sort_by(|a, b| a.midpoint[1].atan2(a.midpoint[0]).total_cmp(&b.midpoint[1].atan2(b.midpoint[0])));
+    for (n, side) in asked.iter_mut().enumerate() {
+        side.continuity = continuity(n, sides);
+    }
+    let parent = cap["capNode"].as_i64().unwrap_or(1);
+    let faces = cap["fingerprint"]["faces"].as_i64().unwrap_or(0);
+    (key, parent, asked, faces)
+}
+
+#[test]
+fn patch_refuses_g2_on_a_radius_24_cap() {
+    if !has_occt() {
+        return;
+    }
+    // The radius-96 cap, apothem 36 mm, is the passing G2 case. On a radius-24
+    // sphere the same proportion still meets the bound. An apothem of 15 mm does
+    // not: both G2 halves stay above 1e-3 mm^-1 when the spans can take no more
+    // knots. The op must refuse and leave the sheet without a patch face.
+    let (key, parent, asked, faces) = ordered_cap(5, 24.0, 15.0, "s5-r24", |i, n| if i + 1 == n { "g2" } else { "g1" });
+    let g2: Vec<usize> = asked.iter().filter(|side| side.continuity == "g2").flat_map(|side| side.edges.clone()).collect();
+    assert_eq!(g2.len(), 1, "the G2 side is one opening edge, got {g2:?}");
+    let reply = call(json!({
+        "call": "apply",
+        "key": key,
+        "parent": parent,
+        "node": 3,
+        "chordMm": CHORD_MM,
+        "op": patch_op(&asked, None)
+    }));
+    let error = reply["error"].as_str().unwrap_or("").to_string();
+    println!("S5 r24 refusal: {error}");
+    assert_eq!(
+        error,
+        format!("Edge {}: G2 can't be reached at this curvature.", g2[0]),
+        "radius-24 G2 must refuse by naming that edge: {reply}"
+    );
+    assert!(reply.get("solid").is_none(), "a refusal builds no face: {reply}");
+    let missing = call(json!({ "call": "goto", "key": key, "node": 3 }));
+    assert!(missing.get("error").is_some(), "the refused patch is not a step: {missing}");
+    let still = ok(json!({ "call": "goto", "key": key, "node": parent, "chordMm": CHORD_MM }));
+    assert_eq!(still["fingerprint"]["faces"], json!(faces), "the cap is unchanged");
+    assert_eq!(still["solid"], json!(false));
+    ok(json!({ "call": "close", "key": key }));
+}
+
+fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) -> Value {
+    let outer_r = 18.0;
+    let inner_r = 10.0;
+    let height = 16.0;
+    ok(json!({
+        "call": "open",
+        "key": key,
+        "chordMm": CHORD_MM,
+        "feature": {
+            "kind": "sheet",
+            "mode": "extrude",
+            "curves": [rim(outer_r, 0.0)],
+            "dir": [0.0, 0.0, 1.0],
+            "distance": height
+        }
+    }));
+    ok(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 0,
+        "node": 1,
+        "chordMm": CHORD_MM,
+        "op": {
+            "kind": "sheet",
+            "mode": "extrude",
+            "curves": [rim(inner_r, 0.0)],
+            "dir": [0.0, 0.0, 1.0],
+            "distance": height
+        }
+    }));
+    let walled = ok(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 1,
+        "node": 2,
+        "chordMm": CHORD_MM,
+        "op": {
+            "kind": "sheet",
+            "mode": "revolve",
+            "curves": [{ "kind": "polyline", "points": [[inner_r, 0.0, 0.0], [outer_r, 0.0, 0.0]] }],
+            "dir": [0.0, 0.0, 1.0],
+            "axisOrigin": [0.0, 0.0, 0.0],
+            "angleDeg": 360.0
+        }
+    }));
+    let mut outer = Vec::new();
+    let mut inner = Vec::new();
+    for edge in sampled_edges(&walled) {
+        if edge.points.iter().any(|p| p[2] < height - 0.5) {
+            continue;
+        }
+        let radius = edge.points.iter().map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt()).sum::<f64>() / edge.points.len() as f64;
+        if radius > (outer_r + inner_r) * 0.5 {
+            outer.push(edge);
+        } else {
+            inner.push(edge);
+        }
+    }
+    assert!(!outer.is_empty() && !inner.is_empty(), "circle blend needs both rims");
+    let sides = [side_from_edges(sort_by_angle(outer), continuity), side_from_edges(sort_by_angle(inner), continuity)];
+    call(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 2,
+        "node": 3,
+        "chordMm": CHORD_MM,
+        "op": {
+            "kind": "blendSurface",
+            "a": { "edges": sides[0].edges, "continuity": continuity },
+            "b": { "edges": sides[1].edges, "continuity": continuity },
+            "continuity": continuity,
+            "tensionA": 1.0,
+            "tensionB": 1.0
+        }
+    }))
+}
+
+#[test]
+fn blend_refuses_exact_circle_rims() {
+    if !has_occt() {
+        return;
+    }
+    // Exact circle rims, not the 24-point polynomial. The blend must refuse
+    // instead of leaving a surface whose normal is 0.315° off the wall.
+    for continuity in ["g1", "g2"] {
+        let key = format!("s5-circle-{continuity}");
+        let reply = blend_apply(&key, continuity, circle_arcs);
+        let error = reply["error"].as_str().unwrap_or("").to_string();
+        println!("S5 circle-{continuity} refusal: {error}");
+        let expected = if continuity == "g1" {
+            "The fill cannot reach the continuity you asked for. The largest gap is 0.000000 mm, the largest angle is 180.000000 degrees, and the largest curvature jump is 0.750000 per mm."
+        } else {
+            "The fill cannot reach the continuity you asked for. The largest gap is 0.000000 mm, the largest angle is 180.000000 degrees, and the largest curvature jump is 0.002112 per mm."
+        };
+        assert_eq!(error, expected, "exact circles must be refused, got {reply}");
+        assert!(reply.get("solid").is_none(), "a refusal builds no blend face: {reply}");
+        let missing = call(json!({ "call": "goto", "key": key, "node": 3 }));
+        assert!(missing.get("error").is_some(), "the refused blend is not a step: {missing}");
+        let still = ok(json!({ "call": "goto", "key": key, "node": 2, "chordMm": CHORD_MM }));
+        assert_eq!(still["solid"], json!(false));
         ok(json!({ "call": "close", "key": key }));
     }
 }

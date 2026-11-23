@@ -562,6 +562,7 @@ struct SidePrep {
     gp_Vec Dss;
     std::vector<double> extra_start;
     std::vector<double> extra_end;
+    std::vector<int> edges;
 };
 
 struct SplitPrep {
@@ -1229,11 +1230,44 @@ BuiltPiece build_one_piece(
     return built;
 }
 
+// Step 11. A G2 edge whose curvature jump is still over the bound, once knots can go no
+// further, is a refusal. The face is not built. The sentence names the asked edge.
+std::string refusal_sentence(
+    const std::vector<EdgeReport>& reports,
+    const std::vector<SidePrep>& sides,
+    double max_gap,
+    double max_angle,
+    double max_jump) {
+    std::vector<int> edges;
+    for (const EdgeReport& report : reports) {
+        if (report.asked < 2 || !(report.jump > kHermiteJump)) continue;
+        if (report.side < 0 || report.side >= static_cast<int>(sides.size())) continue;
+        const std::vector<int>& ids = sides[static_cast<size_t>(report.side)].edges;
+        edges.insert(edges.end(), ids.begin(), ids.end());
+    }
+    if (!edges.empty()) {
+        std::sort(edges.begin(), edges.end());
+        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+        std::ostringstream out;
+        if (edges.size() == 1) {
+            out << "Edge " << edges[0];
+        } else {
+            out << "Edges " << edges[0];
+            for (size_t i = 1; i + 1 < edges.size(); ++i) out << ", " << edges[i];
+            out << " and " << edges.back();
+        }
+        out << ": G2 can't be reached at this curvature.";
+        return out.str();
+    }
+    return miss_sentence(max_gap, max_angle, max_jump);
+}
+
 TopoDS_Shape fill_hermite_patch(
     const TopoDS_Shape& current,
     const std::vector<Handle(Geom_BSplineCurve)>& curves,
     const std::vector<TopoDS_Face>& faces,
     const std::vector<int>& orders,
+    const std::vector<std::vector<int>>& edge_ids,
     const std::vector<std::array<double, 3>>& points,
     std::string& error) {
     const auto started = std::chrono::steady_clock::now();
@@ -1255,6 +1289,7 @@ TopoDS_Shape fill_hermite_patch(
         side.face = faces[static_cast<size_t>(i)];
         side.order = orders[static_cast<size_t>(i)];
         side.tension = 1.0;
+        if (static_cast<int>(edge_ids.size()) == count) side.edges = edge_ids[static_cast<size_t>(i)];
         max_order = std::max(max_order, side.order);
         side.from_start = half_curve(side.full, true, error);
         side.from_end = half_curve(side.full, false, error);
@@ -1461,7 +1496,7 @@ TopoDS_Shape fill_hermite_patch(
             std::fprintf(stderr, "S5 hermite sides=%d maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
                          count, max_order, refinements, ms, max_gap, max_angle, max_jump);
             if (failed) {
-                error = miss_sentence(max_gap, max_angle, max_jump);
+                error = refusal_sentence(reports, sides, max_gap, max_angle, max_jump);
                 return {};
             }
             break;

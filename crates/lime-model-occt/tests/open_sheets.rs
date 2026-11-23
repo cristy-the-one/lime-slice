@@ -3,6 +3,7 @@
 //! - `Op::Sew` (multi-sheet box & `capPlanar` auto-promotion to watertight solid with 0 naked edges)
 //! - `Op::Thicken` (sculpted double-curved NURBS roof thickened into a watertight solid, normal & both)
 //! - `Op::TrimSplit` (sculpted NURBS wave roof splitting a solid cleanly into above/below/both)
+//! - `Op::TrimSplit` of a sheet keeps the cut piece, and a replay rebuilds that sheet
 //! - `Op::ReplaceFace` (replacing a flat box top with a sculpted arching NURBS dome roof)
 //! - `Op::SplitFace` (imprinting an exact NURBS curve onto a face, dividing it with volume preserved)
 //! - Solid-only ops cleanly refused on an open sheet while sheet ops run directly on it.
@@ -303,4 +304,70 @@ fn split_face_imprints_exact_nurbs_curve_onto_solid_face_without_changing_volume
     assert_eq!(faces_after, faces_before + 1, "imprinting one curve across the top face must split it into 2 faces");
     let vol = split["volumeMm3"].as_f64().unwrap();
     assert!((vol - 4000.0).abs() < 1e-2, "SplitFace must preserve solid volume (4000 mm^3), got {vol}");
+}
+
+/// A sheet has no solid volume, so adopting the cut used to throw the piece away.
+/// The kept faces are the step. Replaying it, which is what an older .lime does on open,
+/// rebuilds that same sheet.
+#[test]
+fn sheet_trim_split_keeps_the_cut_piece_and_replays_it() {
+    let key = "s4-sheet-trim";
+    let sheet = call(json!({
+        "call": "open",
+        "key": key,
+        "chordMm": 0.05,
+        "feature": {
+            "kind": "sheet",
+            "mode": "revolve",
+            "curves": [{
+                "kind": "segments",
+                "start": [0.0, 0.0, 20.0],
+                "segments": [{
+                    "kind": "arc",
+                    "through": [14.1421356237, 0.0, 14.1421356237],
+                    "to": [20.0, 0.0, 0.0]
+                }]
+            }],
+            "dir": [0.0, 0.0, 1.0],
+            "axisOrigin": [0.0, 0.0, 0.0],
+            "angleDeg": 360.0
+        }
+    }));
+    assert_eq!(sheet["solid"], json!(false), "the zone starts as a sheet");
+    let cut = call(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 0,
+        "node": 1,
+        "chordMm": 0.05,
+        "op": {
+            "kind": "trimSplit",
+            "keep": "above",
+            "sheet": {
+                "mode": "planar",
+                "curves": [{
+                    "kind": "polyline",
+                    "points": [[-30.0, -30.0, 10.0], [30.0, -30.0, 10.0], [30.0, 30.0, 10.0], [-30.0, 30.0, 10.0]],
+                    "closed": true
+                }]
+            }
+        }
+    }));
+    assert_eq!(cut["solid"], json!(false), "the kept piece of a sheet is a sheet: {cut}");
+    let volume = cut["volumeMm3"].as_f64().unwrap_or(0.0);
+    assert!(volume.abs() < 1e-6, "a sheet piece has no solid volume, got {volume}");
+    assert!(cut["fingerprint"]["faces"].as_i64().unwrap_or(0) >= 1, "the cut keeps a face: {cut}");
+    assert!(cut.get("nakedEdges").is_some(), "the cut sheet still has a boundary: {cut}");
+
+    lime_model_occt::set_tree_limits(0, 0);
+    // Evict runs after a call. Leave the cut first so it is no longer pinned, and the
+    // following goto has to build it again. That is the replay an older .lime does on open.
+    call(json!({ "call": "goto", "key": key, "node": 0, "chordMm": 0.05 }));
+    let replayed = call(json!({ "call": "goto", "key": key, "node": 1, "chordMm": 0.05 }));
+    lime_model_occt::set_tree_limits(24, 8);
+    assert!(replayed["replayed"].as_i64().unwrap_or(0) >= 1, "the step is rebuilt, not reused: {replayed}");
+    assert_eq!(replayed["fingerprint"], cut["fingerprint"], "an older .lime rebuilds the kept sheet");
+    assert_eq!(replayed["solid"], json!(false));
+    let replayed_volume = replayed["volumeMm3"].as_f64().unwrap_or(0.0);
+    assert!(replayed_volume.abs() < 1e-6, "the rebuilt piece is still a sheet, volume {replayed_volume}");
 }

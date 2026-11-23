@@ -12091,7 +12091,10 @@ TopoDS_Shape build_patch(
         if (patch.IsNull()) return {};
         return compound_with(current, patch);
     }
-    return fill_hermite_patch(current, curves, faces, orders, spec.points, error);
+    std::vector<std::vector<int>> edge_ids;
+    edge_ids.reserve(static_cast<size_t>(count));
+    for (const PatchBoundSpec& bound : spec.bounds) edge_ids.push_back(bound.edges);
+    return fill_hermite_patch(current, curves, faces, orders, edge_ids, spec.points, error);
 }
 
 TopoDS_Shape build_blend(
