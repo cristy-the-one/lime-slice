@@ -30,7 +30,7 @@ use super::joints::{joined_of, keep_built, stored_joints, Joined};
 use super::k1::{
     build_blend_shape, build_k1_loops, build_loft_v2_shape, build_nurbs_shape, build_patch_shape, build_replace_face_shape,
     build_sew_shape, build_sheet_shape, build_split_face_shape, build_sweep_shape, build_thicken_shape,
-    build_trim_split_shape, k1_has_loops, loft_needs_v2, push_shape,
+    build_trim_split_shape, k1_has_loops, loft_needs_v2, push_shape, NurbsSurfaceSpec,
 };
 use super::ops::{FacePick, FilletContinuity, Neutral, Op, Primitive};
 use super::outcome::Failure;
@@ -754,20 +754,22 @@ pub(super) fn build(
             elevate_v,
         } => build_nurbs_shape(
             Some(from),
-            poles,
-            weights,
-            *degree_u,
-            *degree_v,
-            knots_u,
-            mults_u,
-            knots_v,
-            mults_v,
-            *periodic_u,
-            *periodic_v,
-            insert_u,
-            insert_v,
-            *elevate_u,
-            *elevate_v,
+            &NurbsSurfaceSpec {
+                poles,
+                weights,
+                degree_u: *degree_u,
+                degree_v: *degree_v,
+                knots_u,
+                knots_v,
+                mults_u,
+                mults_v,
+                periodic_u: *periodic_u,
+                periodic_v: *periodic_v,
+                insert_u,
+                insert_v,
+                elevate_u: *elevate_u,
+                elevate_v: *elevate_v,
+            },
         ),
     };
     match kept {
