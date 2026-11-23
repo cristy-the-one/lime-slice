@@ -107,6 +107,12 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
     if (oldest !== undefined) surfaceInspectCache.delete(oldest);
   }
   surfaceInspectCache.set(cacheKey, decoded);
+  // A late reply is kept for its node but shown only while that node is still on screen: isoparm lines carry no
+  // vertex count to check against (the curvature buffers are length-checked), so they would draw on another solid.
+  const nowTree = treeOf(S.open);
+  const nowKey = S.lens?.key ?? S.open?.key;
+  const nowNode = S.lens?.node ?? nowTree?.current;
+  if (nowKey !== key || nowNode !== node || state.stepTolerance !== chord) return;
   fx.model?.setSurfaceInspect({
     ...(decoded.minRadiusMm ? { minRadiusMm: decoded.minRadiusMm } : {}),
     ...(decoded.gaussian ? { gaussian: decoded.gaussian } : {}),
