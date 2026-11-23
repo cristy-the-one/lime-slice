@@ -700,6 +700,8 @@ gp_Vec project_off(const gp_Vec& v, const gp_Vec& unit_n) {
 /// angle and curvature jump at the op's stations, how many refinement rounds it took, and whether it was refused. Per
 /// thread: an op runs on the thread that called, so a test reads its own op's measure.
 thread_local std::string g_last_fill;
+/// The farthest a guide point is from the patch the op kept, by the op's own projection; -1 with no guide.
+thread_local double g_guide_off = -1.0;
 
 void note_last_fill(const std::vector<EdgeReport>& reports, int refinements, bool refused) {
     std::ostringstream out;
@@ -711,7 +713,7 @@ void note_last_fill(const std::vector<EdgeReport>& reports, int refinements, boo
             << ",\"asked\":" << report.asked << ",\"gapMm\":" << report.gap << ",\"angleDeg\":" << report.angle
             << ",\"curvatureJump\":" << report.jump << "}";
     }
-    out << "]}";
+    out << "],\"guideMm\":" << g_guide_off << "}";
     g_last_fill = out.str();
 }
 
@@ -1493,6 +1495,7 @@ BuiltPiece build_one_piece(
                 if (proj.NbPoints() > 0) off = proj.LowerDistance();
             } catch (const Standard_Failure&) {
             }
+            g_guide_off = std::max(g_guide_off, off);
             if (!(off <= kHermiteGapMm)) {
                 error = "A guide point is off the patch along its centre normal, so moving the free pole cannot reach it. Move the point over the opening.";
                 return {};
@@ -1698,6 +1701,7 @@ TopoDS_Shape fill_hermite_patch(
 
     const int min_degree = need_degree(max_order);
     // Each guide point goes to the one piece it lies closest to, built without guides, and moves only that piece.
+    g_guide_off = -1.0;
     std::vector<std::vector<std::array<double, 3>>> guides_of(static_cast<size_t>(count));
     if (!points.empty()) {
         std::vector<Handle(Geom_BSplineSurface)> bare;

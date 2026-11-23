@@ -764,11 +764,19 @@ fn fill_opening(
         assert_op_time(case_name, asked.iter().map(|side| side.continuity).max().unwrap_or("g0"));
     }
     if let Some(guide) = point {
-        // The op itself refuses a guide it cannot bring within 1e-4 mm. The mesh, at a 5e-4 mm chord, must pass
-        // within that chord and the bound of the guide.
+        // The op's own measure: the guide within 1e-4 mm of the patch it kept (debug builds read it).
+        #[cfg(lime_occt_test_hooks)]
+        if guide[2] > 12.0 {
+            let report = call(json!({ "call": "testLastFill" }));
+            let guide_mm = report["guideMm"].as_f64().unwrap_or(99.0);
+            println!("S5 report case={case_name} guideMm={guide_mm}");
+            assert!((0.0..=G0_GAP_MM).contains(&guide_mm), "{case_name}: the patch passes {guide_mm} mm from the guide point");
+        }
+        // And the mesh near it: a 5e-4 mm chord, which Open CASCADE holds to about 1.5 chords on a curved face
+        // (mesh_quality.rs).
         let off = mesh_distance(&patched, guide);
         println!("S5 report case={case_name} guide={guide:?} meshDistanceMm={off}");
-        assert!(off <= CHORD_MM + G0_GAP_MM, "{case_name}: the patch passes {off} mm from the guide point");
+        assert!(off <= 2.0 * CHORD_MM + G0_GAP_MM, "{case_name}: the mesh passes {off} mm from the guide point");
     }
     let sewn = finish_sheet(case_name, &key, 1, 2, true, 0.05);
     check_opening(case_name, &key, 2, &sewn, &asked, expect_splits, sharp_count);
