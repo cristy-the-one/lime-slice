@@ -10,7 +10,7 @@ import { eulerOrient } from "./mesh-place.ts";
 import { readSavedTree, savedTree } from "./model-tree-file.ts";
 import { newTree, withChild, type ModelOp } from "./model-tree.ts";
 import { readLoftBoundaryField as readLoftBoundary } from "./modeling/bake.ts";
-import { addNurbs, emptySketch } from "./sketch/model.ts";
+import { addNurbs, emptySketch, readSketch, sketchJson as sketchJsonOf } from "./sketch/model.ts";
 import { curveOf } from "./sketch/geom.ts";
 
 let failed = 0;
@@ -75,6 +75,14 @@ check("normal and tangent conditions are still taken", !("reason" in readLoftBou
   const old = { ...knotsOnly, entities: [{ ...knotsOnly.entities[0]!, mults: undefined }] } as typeof knotsOnly;
   const c = curveOf(old, old.entities[0]!);
   check("an old entity's knots go out with their implied mults", c?.kind === "spline" && same(c.nurbs?.mults, [4, 1, 4]), JSON.stringify(c && c.kind === "spline" ? c.nurbs : null));
+  // The preview (src/modeling/nurbs-eval.ts) still lowers a degree the poles cannot carry, but the app never sends a
+  // lowered one: a new curve's degree fits its poles (above), and an old file's is kept as saved and sent as it is, so
+  // the kernel refuses it with its own sentence rather than build another curve than the file holds.
+  const saved = sketchJsonOf(addNurbs(emptySketch(), [[0, 0], [10, 10], [20, 0]]).sketch);
+  (saved.entities[0] as { degree?: number }).degree = 5;
+  const reread = readSketch(JSON.parse(JSON.stringify(saved)));
+  const sent = reread ? curveOf(reread, reread.entities[0]!) : null;
+  check("an old file's degree above its poles is read and sent as saved, for the kernel to refuse", sent?.kind === "spline" && sent.nurbs?.degree === 5, JSON.stringify(sent && sent.kind === "spline" ? sent.nurbs : null));
 }
 
 if (failed) {
