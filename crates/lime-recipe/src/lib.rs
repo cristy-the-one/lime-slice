@@ -462,7 +462,9 @@ pub struct Part {
 /// 1.18: organic surfaces (docs/plan-organic-surfaces.md, app 7.2.0): `ops::nurbs_seg`, `ops::curve3d_polyline`,
 /// `ops::curve3d_nurbs`, the kernel `ops::sweep` along a 3D spine, `ops::fillet_g2`, `fillet_conic`, `fillet_variable`,
 /// `ops::loft_apex` and `ops::loft`, the open sheets (`sheet_*_spec`, `sheet`, `sew`, `thicken`, `trim_split`,
-/// `replace_face`, `split_face`), and `surface_boundary`, `patch` and `blend_surface`. A host before 7.2.0 does not
+/// `replace_face`, `split_face`), `surface_boundary`, `patch` and `blend_surface`, and `ops::nurbs_surface` and
+/// `ops::NurbsSurface` (S6: weights, degrees, knots, periodic, insert, elevate; `.op()` also feeds
+/// `solid_new {feature}`). A host before 7.2.0 does not
 /// build these steps, so a plugin that uses them records 1.18.
 pub const API: (u32, u32) = (1, 18);
 
