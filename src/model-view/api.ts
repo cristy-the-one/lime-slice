@@ -25,9 +25,11 @@ export function buildApi(ctx: ViewCtx): ModelView {
   ctx.posed?.add(nurbsMesh);
   let nurbsArrays: Float32Array | null = null;
   let nurbsSerial = 0;
+  const solidWatchers = new Set<() => void>();
 
   return {
     setSolid(next, at) {
+      for (const cb of solidWatchers) queueMicrotask(cb);
       ctx.clearBody();
       ctx.solid = next;
       // The arrow's face hit was on the solid just replaced: a press must not drag from where that face was.
@@ -434,6 +436,24 @@ export function buildApi(ctx: ViewCtx): ModelView {
       canvas.dataset.nurbsDensity = String(mesh.density);
       canvas.dataset.nurbsSerial = String(nurbsSerial);
       ctx.kick();
+    },
+    projectMany(points, out) {
+      // One layout read and one camera update for the whole list, not one per point.
+      camera.updateMatrixWorld();
+      const rect = canvas.getBoundingClientRect();
+      for (let i = 0; i < out.length / 3; i += 1) {
+        projected.set(points[i * 3]!, points[i * 3 + 1]!, points[i * 3 + 2]!);
+        projected.project(camera);
+        const visible = projected.z >= -1 && projected.z <= 1;
+        out[i * 3] = (projected.x * 0.5 + 0.5) * rect.width;
+        out[i * 3 + 1] = (-projected.y * 0.5 + 0.5) * rect.height;
+        out[i * 3 + 2] = visible ? 1 : 0;
+      }
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    },
+    onSolidChange(cb) {
+      solidWatchers.add(cb);
+      return () => solidWatchers.delete(cb);
     },
     onCameraChange(cb) {
       controls.addEventListener("change", cb);

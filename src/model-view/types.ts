@@ -219,6 +219,13 @@ export interface ModelView {
    * same arrays from one call to the next are updated in place. While it shows, the committed solid is hidden.
    */
   setNurbsPreview(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; density: number } | null): void;
+  /**
+   * S6. Model-space points (x, y, z flat) to view pixels in `out` (x, y, 1 when in front of the camera else 0, flat),
+   * relative to the view's top left, with one layout read for the list. Returns the view's rectangle on the page.
+   */
+  projectMany(points: ArrayLike<number>, out: Float64Array): { left: number; top: number; width: number; height: number };
+  /** S6. Called (after the call returns) whenever the view is given another solid. Returns the way to stop. */
+  onSolidChange(cb: () => void): () => void;
   /** S6. Called whenever the camera moves (orbit, pan, wheel zoom, a glide, a reset). Returns the way to stop. */
   onCameraChange(cb: () => void): () => void;
   /** P1. A dotted line in model space, or null to hide it. */
