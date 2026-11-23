@@ -9,7 +9,6 @@ import { moveFacesOp, shellOp, stepEdges } from "../../model-request";
 import { draftPanelOp } from "../../model-edit";
 import {
   fieldPrimitive,
-  blendChoice,
   filletChoice,
   holeBoxes,
   chamferChoice,
@@ -180,24 +179,11 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
     }
     case "patch": {
       const edges = selectedEdges(S.picks);
-      if (edges.length < 2) return null;
+      if (edges.length < 2 || edges.length > 4) return null;
+      if (edges.some((index) => continuityOf(index) !== "g0")) return null;
       return {
         kind: "patch",
         boundaries: edges.map((index) => ({ edges: [index], continuity: continuityOf(index) })),
-      };
-    }
-    case "blend": {
-      const edges = selectedEdges(S.picks);
-      if (edges.length < 2) return null;
-      const mid = Math.max(1, Math.floor(edges.length / 2));
-      const continuity = blendChoice();
-      return {
-        kind: "blendSurface",
-        a: { edges: edges.slice(0, mid), continuity },
-        b: { edges: edges.slice(mid), continuity },
-        continuity,
-        tensionA: num("#modelBlendTensionA"),
-        tensionB: num("#modelBlendTensionB"),
       };
     }
     case "draft": {

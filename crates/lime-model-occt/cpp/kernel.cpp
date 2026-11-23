@@ -77,10 +77,7 @@
 #include <GeomFill_BSplineCurves.hxx>
 #include <GeomFill_ConstrainedFilling.hxx>
 #include <GeomFill_SimpleBound.hxx>
-#include <BRepOffsetAPI_MakeFilling.hxx>
 #include <Geom_BezierCurve.hxx>
-#include <Geom_SurfaceOfRevolution.hxx>
-#include <iostream>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BezierSurface.hxx>
 #include <Geom_Circle.hxx>
@@ -11722,13 +11719,13 @@ Handle(Geom_BSplineCurve) edge_to_bspline(const TopoDS_Edge& edge, std::string& 
     }
     Handle(Geom_BSplineCurve) bs = GeomConvert::CurveToBSplineCurve(trimmed);
     if (bs.IsNull()) {
-        error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
+        error = "Open CASCADE could not fill this opening.";
         return {};
     }
     // CurveToBSplineCurve can hand back the edge's own curve. Reverse that and the sheet's edge moves.
     bs = Handle(Geom_BSplineCurve)::DownCast(bs->Copy());
     if (bs.IsNull()) {
-        error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
+        error = "Open CASCADE could not fill this opening.";
         return {};
     }
     if (built.Orientation() == TopAbs_REVERSED) bs->Reverse();
@@ -11813,81 +11810,17 @@ TopoDS_Face face_beside(
 }
 
 int continuity_of(int asked, bool has_face, bool blend, std::string& error) {
-    int order = asked;
-    if (order < 0) order = has_face ? 1 : 0;
-    if (blend && order == 0) {
-        error = "A blend is G1 or G2. Set the seam to G1 or G2.";
+    (void)has_face;
+    if (blend) {
+        error = "A blend is not available yet.";
         return -2;
     }
-    if (order > 2) order = 2;
-    if (order > 0 && !has_face) {
-        error = "G1 and G2 need the face beside the edge. Pick an edge of the sheet, or set that side to G0.";
+    // Absent continuity is G0. G1 and G2 are not built on this path.
+    if (asked > 0) {
+        error = "G1, G2, an interior guide, and openings with more than four sides are not available yet. A patch is G0, with two to four sides.";
         return -2;
     }
-    return order;
-}
-
-GeomAbs_Shape abs_order(int order) {
-    // Plate constraints are G1 and G2. C1 and C2 are not those orders, and a plate
-    // asked for C1 keeps only the position, so a cap meets a wall at 90°.
-    if (order >= 2) return GeomAbs_G2;
-    if (order == 1) return GeomAbs_G1;
-    return GeomAbs_C0;
-}
-
-bool orient_loop(std::vector<Handle(Geom_BSplineCurve)>& curves, std::string& error) {
-    if (curves.size() < 2) return true;
-    const bool closed = curves.size() >= 3;
-    // The first edge keeps the face's orientation, which may walk the opening backwards.
-    // Point it at the next curve before the rest of the chain follows its end.
-    if (closed) {
-        const gp_Pnt a0 = curves[0]->StartPoint();
-        const gp_Pnt a1 = curves[0]->EndPoint();
-        const double at_end = std::min(a1.Distance(curves[1]->StartPoint()), a1.Distance(curves[1]->EndPoint()));
-        const double at_start = std::min(a0.Distance(curves[1]->StartPoint()), a0.Distance(curves[1]->EndPoint()));
-        if (at_start + 1e-9 < at_end) curves[0]->Reverse();
-    }
-    for (size_t i = 1; i < curves.size(); ++i) {
-        const gp_Pnt prev = curves[i - 1]->EndPoint();
-        const double to_start = prev.Distance(curves[i]->StartPoint());
-        const double to_end = prev.Distance(curves[i]->EndPoint());
-        if (closed && to_end + 1e-9 < to_start) curves[i]->Reverse();
-        else if (!closed && to_end + 1e-9 < to_start && to_end <= kPatchJoinMm) curves[i]->Reverse();
-        if (closed && prev.Distance(curves[i]->StartPoint()) > kPatchJoinMm) {
-            error = "These boundary curves do not meet. Move each end so it starts where the previous curve ends.";
-            return false;
-        }
-    }
-    if (closed && curves.back()->EndPoint().Distance(curves.front()->StartPoint()) > kPatchJoinMm) {
-        error = "These boundary curves do not meet. Move each end so it starts where the previous curve ends.";
-        return false;
-    }
-    return true;
-}
-
-bool meets_both_ends(const Handle(Geom_BSplineCurve)& a, const Handle(Geom_BSplineCurve)& b) {
-    const double a0b0 = a->StartPoint().Distance(b->StartPoint());
-    const double a0b1 = a->StartPoint().Distance(b->EndPoint());
-    const double a1b0 = a->EndPoint().Distance(b->StartPoint());
-    const double a1b1 = a->EndPoint().Distance(b->EndPoint());
-    const bool start_meets = std::min(a0b0, a0b1) <= kPatchJoinMm;
-    const bool end_meets = std::min(a1b0, a1b1) <= kPatchJoinMm;
-    return start_meets && end_meets;
-}
-
-TopoDS_Face face_from_surface(const Handle(Geom_BSplineSurface)& surface, std::string& error) {
-    if (surface.IsNull()) {
-        error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
-        return {};
-    }
-    BRepBuilderAPI_MakeFace face(surface, 1e-6);
-    if (!face.IsDone() || face.Face().IsNull()) {
-        error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
-        return {};
-    }
-    ShapeFix_Face fix(face.Face());
-    fix.Perform();
-    return fix.Face().IsNull() ? face.Face() : fix.Face();
+    return 0;
 }
 
 TopoDS_Face fill_geomfill(const std::vector<Handle(Geom_BSplineCurve)>& curves, std::string& error) {
@@ -11920,141 +11853,7 @@ TopoDS_Face fill_geomfill(const std::vector<Handle(Geom_BSplineCurve)>& curves, 
         }
         return face_from_surface(surface, error);
     } catch (const Standard_Failure&) {
-        error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
-        return {};
-    }
-}
-
-// GeomPlate's own starting plane exists only when every support normal sits in one half-space.
-// A closed wall does not, so the plate stays flat and meets the wall at 90°. A dome whose
-// meridian leaves the opening vertically gives that solve a surface it can actually deform.
-TopoDS_Face dome_init(
-    const std::vector<std::vector<TopoDS_Edge>>& sides,
-    const std::vector<TopoDS_Face>& supports,
-    const std::vector<int>& orders) {
-    try {
-        std::vector<gp_Pnt> samples;
-        gp_Vec free(0, 0, 0);
-        for (size_t i = 0; i < sides.size(); ++i) {
-            for (const TopoDS_Edge& edge : sides[i]) {
-                BRepAdaptor_Curve curve(edge);
-                const double first = curve.FirstParameter();
-                const double last = curve.LastParameter();
-                if (!(last > first)) continue;
-                for (int s = 0; s < 5; ++s) {
-                    samples.push_back(curve.Value(first + (last - first) * (static_cast<double>(s) / 4.0)));
-                }
-            }
-            if (i >= supports.size() || supports[i].IsNull() || orders[i] <= 0 || sides[i].empty()) continue;
-            const TopoDS_Face& face = supports[i];
-            const TopoDS_Edge& edge = sides[i].front();
-            Standard_Real c0 = 0.0;
-            Standard_Real c1 = 0.0;
-            const Handle(Geom2d_Curve) pcurve = BRep_Tool::CurveOnSurface(edge, face, c0, c1);
-            if (pcurve.IsNull() || !(c1 > c0)) continue;
-            const gp_Pnt2d uv = pcurve->Value(0.5 * (c0 + c1));
-            BRepAdaptor_Surface surface(face);
-            BRepLProp_SLProps props(surface, 1, 1e-7);
-            props.SetParameters(uv.X(), uv.Y());
-            if (!props.IsNormalDefined()) continue;
-            gp_Dir normal = props.Normal();
-            if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
-            BRepAdaptor_Curve curve(edge);
-            gp_Pnt at;
-            gp_Vec tangent;
-            curve.D1(0.5 * (curve.FirstParameter() + curve.LastParameter()), at, tangent);
-            if (tangent.Magnitude() < 1e-9) continue;
-            tangent.Normalize();
-            gp_Vec cross = gp_Vec(normal).Crossed(tangent);
-            if (cross.Magnitude() < 1e-9) continue;
-            cross.Normalize();
-            const gp_Pnt trial = at.Translated(cross * 0.5);
-            BRepClass_FaceClassifier classifier(face, trial, 1e-6);
-            if (classifier.State() == TopAbs_IN) cross.Reverse();
-            free += cross;
-        }
-        if (samples.size() < 3 || free.Magnitude() < 1e-6) return {};
-        gp_Pnt center(0, 0, 0);
-        for (const gp_Pnt& point : samples) center.ChangeCoord() += point.Coord();
-        center.ChangeCoord().Divide(static_cast<double>(samples.size()));
-        const gp_Dir axis(free);
-        const gp_Vec axis_vec(axis);
-        const gp_Ax2 frame(center, axis);
-        double radius = 0.0;
-        for (const gp_Pnt& point : samples) {
-            const gp_Vec from(center, point);
-            const gp_Vec radial = from - axis_vec * from.Dot(axis_vec);
-            radius = std::max(radius, radial.Magnitude());
-        }
-        if (!(radius > 1.0)) return {};
-        const double height = 0.55 * radius;
-        const gp_Pnt base = center.Translated(gp_Vec(frame.XDirection()) * radius);
-        TColgp_Array1OfPnt poles(1, 3);
-        poles.SetValue(1, base);
-        poles.SetValue(2, base.Translated(gp_Vec(axis) * height));
-        poles.SetValue(3, center.Translated(gp_Vec(axis) * height));
-        Handle(Geom_BezierCurve) profile = new Geom_BezierCurve(poles);
-        Handle(Geom_SurfaceOfRevolution) dome = new Geom_SurfaceOfRevolution(profile, gp_Ax1(center, axis));
-        BRepBuilderAPI_MakeFace face(dome, 0.0, 2.0 * M_PI, profile->FirstParameter(), profile->LastParameter(), 1e-6);
-        if (!face.IsDone() || face.Face().IsNull()) return {};
-        return face.Face();
-    } catch (const Standard_Failure&) {
-        return {};
-    }
-}
-
-TopoDS_Face fill_plate(
-    const std::vector<std::vector<TopoDS_Edge>>& sides,
-    const std::vector<TopoDS_Face>& supports,
-    const std::vector<int>& orders,
-    const std::vector<TopoDS_Edge>& guides,
-    const std::vector<gp_Pnt>& points,
-    double tolerance,
-    std::string& error) {
-    const double tol3d = tolerance > 0.0 ? std::clamp(tolerance, 1e-7, 1e-4) : 1e-5;
-    try {
-        const int max_order = orders.empty() ? 0 : *std::max_element(orders.begin(), orders.end());
-        // Degree i+2 is the resolution Open CASCADE recommends for a constraint of order i.
-        const int degree = max_order >= 2 ? 4 : 3;
-        BRepOffsetAPI_MakeFilling filling(degree, 15, 3, Standard_False, 1e-5, tol3d, 0.001, 0.02, 8, 9);
-        if (max_order > 0) {
-            const TopoDS_Face dome = dome_init(sides, supports, orders);
-            if (!dome.IsNull()) filling.LoadInitSurface(dome);
-        }
-        for (size_t i = 0; i < sides.size(); ++i) {
-            const GeomAbs_Shape order = abs_order(orders[i]);
-            for (const TopoDS_Edge& edge : sides[i]) {
-                if (!supports[i].IsNull() && orders[i] > 0) filling.Add(edge, supports[i], order, Standard_True);
-                else filling.Add(edge, GeomAbs_C0, Standard_True);
-            }
-        }
-        for (const TopoDS_Edge& guide : guides) {
-            filling.Add(guide, GeomAbs_C0, Standard_False);
-        }
-        for (const gp_Pnt& point : points) filling.Add(point);
-        filling.Build();
-        if (!filling.IsDone() || filling.Shape().IsNull()) {
-            error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
-            return {};
-        }
-        {
-            std::ostringstream plate;
-            plate.imbue(std::locale::classic());
-            plate << "S5 plate g0Mm=" << filling.G0Error()
-                  << " g1Rad=" << filling.G1Error()
-                  << " g2=" << filling.G2Error() << '\n';
-            std::cout << plate.str();
-        }
-        for (TopExp_Explorer explorer(filling.Shape(), TopAbs_FACE); explorer.More(); explorer.Next()) {
-            TopoDS_Face face = TopoDS::Face(explorer.Current());
-            // MakeFilling can leave a bound with only a pcurve. Sewing then throws "No geometry".
-            BRepLib::BuildCurves3d(face);
-            return face;
-        }
-        error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
-        return {};
-    } catch (const Standard_Failure&) {
-        error = "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides.";
+        error = "Open CASCADE could not fill this opening.";
         return {};
     }
 }
@@ -12073,64 +11872,6 @@ TopoDS_Shape compound_with(const TopoDS_Shape& current, const TopoDS_Shape& adde
     return compound;
 }
 
-void edge_ends(const TopoDS_Edge& edge, gp_Pnt& start, gp_Pnt& end) {
-    BRepAdaptor_Curve curve(edge);
-    start = curve.Value(curve.FirstParameter());
-    end = curve.Value(curve.LastParameter());
-}
-
-gp_Pnt edge_midpoint(const TopoDS_Edge& edge) {
-    BRepAdaptor_Curve curve(edge);
-    return curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter()));
-}
-
-bool tension_point(
-    const TopoDS_Face& face,
-    const TopoDS_Edge& edge,
-    double tension,
-    double span,
-    gp_Pnt& out,
-    std::string& error) {
-    Standard_Real first = 0.0;
-    Standard_Real last = 0.0;
-    const Handle(Geom2d_Curve) pcurve = BRep_Tool::CurveOnSurface(edge, face, first, last);
-    if (pcurve.IsNull() || !(last > first)) {
-        error = "G1 and G2 need the face beside the edge. Pick an edge of the sheet, or set that side to G0.";
-        return false;
-    }
-    const gp_Pnt2d uv = pcurve->Value(0.5 * (first + last));
-    BRepAdaptor_Surface surface(face);
-    BRepLProp_SLProps props(surface, 2, 1e-7);
-    props.SetParameters(uv.X(), uv.Y());
-    if (!props.IsNormalDefined()) {
-        error = "G1 and G2 need the face beside the edge. Pick an edge of the sheet, or set that side to G0.";
-        return false;
-    }
-    gp_Dir normal = props.Normal();
-    if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
-    BRepAdaptor_Curve curve(edge);
-    gp_Pnt at;
-    gp_Vec tangent;
-    curve.D1(0.5 * (curve.FirstParameter() + curve.LastParameter()), at, tangent);
-    if (tangent.Magnitude() < 1e-9) {
-        error = "A blend needs two open edges or chains. Pick one chain on each sheet.";
-        return false;
-    }
-    tangent.Normalize();
-    gp_Vec cross = gp_Vec(normal).Crossed(tangent);
-    if (cross.Magnitude() < 1e-9) {
-        error = "Open CASCADE could not bridge these edges. Move them closer, or lower the tension.";
-        return false;
-    }
-    cross.Normalize();
-    const gp_Pnt trial = at.Translated(cross * 0.5);
-    BRepClass_FaceClassifier classifier(face, trial, 1e-6);
-    if (classifier.State() == TopAbs_IN) cross.Reverse();
-    const double pull = std::clamp(tension > 0.0 ? tension : 1.0, 0.15, 4.0) * std::max(span, 1.0) * 0.15;
-    out = at.Translated(cross * pull);
-    return true;
-}
-
 }  // namespace
 
 TopoDS_Shape build_patch(
@@ -12139,8 +11880,12 @@ TopoDS_Shape build_patch(
     const PatchBuildSpec& spec,
     std::string& error) {
     const int count = static_cast<int>(spec.bounds.size());
-    if (count < 2 || count > 20) {
-        error = "A patch needs between 2 and 20 boundary curves or edges.";
+    if (count < 2) {
+        error = "A patch needs between 2 and 4 boundary curves or edges.";
+        return {};
+    }
+    if (count > 4 || !spec.guides.empty() || !spec.points.empty()) {
+        error = "G1, G2, an interior guide, and openings with more than four sides are not available yet. A patch is G0, with two to four sides.";
         return {};
     }
     if (!current.IsNull() && has_solid(current)) {
@@ -12148,48 +11893,25 @@ TopoDS_Shape build_patch(
         return {};
     }
     std::vector<std::vector<TopoDS_Edge>> sides(static_cast<size_t>(count));
-    std::vector<TopoDS_Face> supports(static_cast<size_t>(count));
-    std::vector<int> orders(static_cast<size_t>(count), 0);
     for (int i = 0; i < count; ++i) {
         if (!collect_bound_edges(spec.bounds[static_cast<size_t>(i)], held, sides[static_cast<size_t>(i)], error)) return {};
-        supports[static_cast<size_t>(i)] = face_beside(spec.bounds[static_cast<size_t>(i)], sides[static_cast<size_t>(i)], current, held);
-        const int order = continuity_of(spec.bounds[static_cast<size_t>(i)].continuity, !supports[static_cast<size_t>(i)].IsNull(), false, error);
+        const TopoDS_Face support = face_beside(spec.bounds[static_cast<size_t>(i)], sides[static_cast<size_t>(i)], current, held);
+        const int order = continuity_of(spec.bounds[static_cast<size_t>(i)].continuity, !support.IsNull(), false, error);
         if (order < 0) return {};
-        orders[static_cast<size_t>(i)] = order;
     }
-    const bool guided = !spec.guides.empty() || !spec.points.empty();
-    const bool all_g0 = std::all_of(orders.begin(), orders.end(), [](int order) { return order == 0; });
-    bool use_geomfill = all_g0 && !guided && count >= 2 && count <= 4;
     std::vector<Handle(Geom_BSplineCurve)> curves;
-    if (use_geomfill) {
-        curves.reserve(static_cast<size_t>(count));
-        for (const std::vector<TopoDS_Edge>& side : sides) {
-            Handle(Geom_BSplineCurve) curve = chain_to_bspline(side, error);
-            if (curve.IsNull()) return {};
-            curves.push_back(curve);
-        }
-        if (!orient_loop(curves, error)) return {};
-        if (count == 2 && meets_both_ends(curves[0], curves[1])) use_geomfill = false;
+    curves.reserve(static_cast<size_t>(count));
+    for (const std::vector<TopoDS_Edge>& side : sides) {
+        Handle(Geom_BSplineCurve) curve = chain_to_bspline(side, error);
+        if (curve.IsNull()) return {};
+        curves.push_back(curve);
     }
-    TopoDS_Face patch;
-    if (use_geomfill) {
-        patch = fill_geomfill(curves, error);
-    } else {
-        std::vector<TopoDS_Edge> guides;
-        for (const Curve3DSpec& guide : spec.guides) {
-            const TopoDS_Wire wire = curve3d_wire(guide, held, error);
-            if (wire.IsNull()) return {};
-            for (BRepTools_WireExplorer explorer(wire); explorer.More(); explorer.Next()) {
-                guides.push_back(explorer.Current());
-            }
-        }
-        std::vector<gp_Pnt> points;
-        points.reserve(spec.points.size());
-        for (const std::array<double, 3>& point : spec.points) {
-            points.emplace_back(point[0], point[1], point[2]);
-        }
-        patch = fill_plate(sides, supports, orders, guides, points, spec.tolerance, error);
+    if (!orient_loop(curves, error)) return {};
+    if (count == 2 && meets_both_ends(curves[0], curves[1])) {
+        error = "These two curves meet at both ends. A patch of two sides needs them to meet at one end each.";
+        return {};
     }
+    const TopoDS_Face patch = fill_geomfill(curves, error);
     if (patch.IsNull()) return {};
     return compound_with(current, patch);
 }
@@ -12199,104 +11921,11 @@ TopoDS_Shape build_blend(
     const Held* held,
     const BlendBuildSpec& spec,
     std::string& error) {
-    if (current.IsNull()) {
-        error = "A blend needs two open edges or chains. Pick one chain on each sheet.";
-        return {};
-    }
-    if (has_solid(current)) {
-        error = "A blend bridges open edges on sheets. This part is already a closed solid.";
-        return {};
-    }
-    std::vector<TopoDS_Edge> side_a;
-    std::vector<TopoDS_Edge> side_b;
-    if (!collect_bound_edges(spec.a, held, side_a, error) || !collect_bound_edges(spec.b, held, side_b, error)) {
-        if (error.empty()) error = "A blend needs two open edges or chains. Pick one chain on each sheet.";
-        return {};
-    }
-    const TopoDS_Face face_a = face_beside(spec.a, side_a, current, held);
-    const TopoDS_Face face_b = face_beside(spec.b, side_b, current, held);
-    const int asked_a = spec.a.continuity >= 0 ? spec.a.continuity : spec.continuity;
-    const int asked_b = spec.b.continuity >= 0 ? spec.b.continuity : spec.continuity;
-    const int order_a = continuity_of(asked_a, !face_a.IsNull(), true, error);
-    const int order_b = order_a < 0 ? -2 : continuity_of(asked_b, !face_b.IsNull(), true, error);
-    if (order_a < 0 || order_b < 0) return {};
-    // MakeFilling only accepts a bound that is already a continuous wire.
-    const auto orient_chain = [](std::vector<TopoDS_Edge>& edges) {
-        for (size_t i = 1; i < edges.size(); ++i) {
-            gp_Pnt prev_start;
-            gp_Pnt prev_end;
-            gp_Pnt next_start;
-            gp_Pnt next_end;
-            edge_ends(edges[i - 1], prev_start, prev_end);
-            edge_ends(edges[i], next_start, next_end);
-            if (prev_end.Distance(next_end) + 1e-9 < prev_end.Distance(next_start)) edges[i].Reverse();
-        }
-    };
-    const auto chain_ends = [](const std::vector<TopoDS_Edge>& edges, gp_Pnt& start, gp_Pnt& end) {
-        gp_Pnt ignore;
-        edge_ends(edges.front(), start, end);
-        if (edges.size() > 1) edge_ends(edges.back(), ignore, end);
-    };
-    const auto reverse_chain = [](std::vector<TopoDS_Edge>& edges) {
-        std::reverse(edges.begin(), edges.end());
-        for (TopoDS_Edge& edge : edges) edge.Reverse();
-    };
-    orient_chain(side_a);
-    orient_chain(side_b);
-    gp_Pnt a0, a1, b0, b1;
-    chain_ends(side_a, a0, a1);
-    chain_ends(side_b, b0, b1);
-    if (a1.Distance(b1) + 1e-9 < a1.Distance(b0)) {
-        reverse_chain(side_b);
-        chain_ends(side_b, b0, b1);
-    }
-    std::vector<TopoDS_Edge> connectors;
-    const auto add_connector = [&](const gp_Pnt& from, const gp_Pnt& to) {
-        if (from.Distance(to) <= 1e-4) return;
-        BRepBuilderAPI_MakeEdge edge(from, to);
-        if (edge.IsDone() && !edge.Edge().IsNull()) connectors.push_back(edge.Edge());
-    };
-    add_connector(a1, b0);
-    add_connector(b1, a0);
-    const gp_Pnt mid_a = edge_midpoint(side_a.front());
-    const gp_Pnt mid_b = edge_midpoint(side_b.front());
-    const double span = mid_a.Distance(mid_b);
-    gp_Pnt pull_a;
-    gp_Pnt pull_b;
-    if (!tension_point(face_a, side_a.front(), spec.tension_a, span, pull_a, error)) return {};
-    if (!tension_point(face_b, side_b.front(), spec.tension_b, span, pull_b, error)) return {};
-    // Wire order: chain A, the far connector, chain B, the near connector.
-    std::vector<std::vector<TopoDS_Edge>> sides;
-    std::vector<TopoDS_Face> supports;
-    std::vector<int> orders;
-    for (const TopoDS_Edge& edge : side_a) {
-        sides.push_back({edge});
-        supports.push_back(face_a);
-        orders.push_back(order_a);
-    }
-    if (!connectors.empty()) {
-        sides.push_back({connectors[0]});
-        supports.push_back(TopoDS_Face());
-        orders.push_back(0);
-    }
-    for (const TopoDS_Edge& edge : side_b) {
-        sides.push_back({edge});
-        supports.push_back(face_b);
-        orders.push_back(order_b);
-    }
-    if (connectors.size() > 1) {
-        sides.push_back({connectors[1]});
-        supports.push_back(TopoDS_Face());
-        orders.push_back(0);
-    }
-    const TopoDS_Face patch = fill_plate(sides, supports, orders, {}, {pull_a, pull_b}, spec.tolerance, error);
-    if (patch.IsNull()) {
-        if (error.find("fill this opening") != std::string::npos) {
-            error = "Open CASCADE could not bridge these edges. Move them closer, or lower the tension.";
-        }
-        return {};
-    }
-    return compound_with(current, patch);
+    (void)current;
+    (void)held;
+    (void)spec;
+    error = "A blend is not available yet.";
+    return {};
 }
 
 }  // namespace lime_occt

@@ -1043,7 +1043,7 @@ struct PatchBoundSpec {
     Curve3DSpec curve;
 };
 
-/// S5: Fill a boundary. Clean 2–4 sides at G0, with no guides, use GeomFill. Anything else uses GeomPlate.
+/// S5: Fill a boundary of two to four sides at G0 with GeomFill.
 struct PatchBuildSpec {
     std::vector<PatchBoundSpec> bounds;
     std::vector<Curve3DSpec> guides;
@@ -1051,7 +1051,7 @@ struct PatchBuildSpec {
     double tolerance = 0;
 };
 
-/// S5: Bridge two open edges or chains. `continuity` is -1 (each side decides), 1 (G1), or 2 (G2).
+/// S5: A blend is not available yet. The call is refused.
 struct BlendBuildSpec {
     PatchBoundSpec a;
     PatchBoundSpec b;
@@ -1068,7 +1068,7 @@ TopoDS_Shape build_patch(
     const PatchBuildSpec& spec,
     std::string& error);
 
-/// S5: A sheet that bridges two open edges or chains on `current`.
+/// S5: Refuses. A blend is not available yet.
 TopoDS_Shape build_blend(
     const TopoDS_Shape& current,
     const Held* held,

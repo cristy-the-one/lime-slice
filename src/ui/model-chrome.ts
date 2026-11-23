@@ -38,6 +38,7 @@ import { addFontFile, ensureLibrary, listedFonts, onUserFontsChange, removeUserF
 import type { LetteringOp } from "../model-tree";
 import { curvedLettersGhost, curvedThinNoteOf, lettersGhost, thinNoteOf } from "./text-preview";
 import { lastEdge, modelApplyReady, shellFacesLabel, type ModelPickRef } from "../model-select";
+import { PATCH_NOT_YET, patchLaterNote } from "../model-surface.ts";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
 import { fx } from "../app/fx";
@@ -227,7 +228,6 @@ const TOOL_TITLES: Partial<Record<ModelTool, string>> = {
   mirror: "Mirror",
   draft: "Draft",
   patch: "Patch",
-  blend: "Blend",
 };
 
 function toolTitle(next: ModelTool): string {
@@ -296,8 +296,8 @@ const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly
 const BED_KEY = "lime-slice-model-bed";
 /** Tools that leave the open solid as it is, so they run on surfaces with no closed solid too. */
 const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place", "workplane", "check"]);
-/** Patch and blend run on an open sheet, which is not an editable solid. */
-const SHEET_TOOLS: ReadonlySet<string> = new Set(["patch", "blend"]);
+/** Patch runs on an open sheet, which is not an editable solid. */
+const SHEET_TOOLS: ReadonlySet<string> = new Set(["patch"]);
 let sheetMode = false;
 const WP_FIELDS = ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"] as const;
 
@@ -521,7 +521,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // --- end A4 ---
-    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextDir [data-dir], #modelTextWrap [data-wrap], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form], #modelFilletProfile [data-fillet-profile], #modelBlendContinuity [data-blend-continuity]");
+    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextDir [data-dir], #modelTextWrap [data-wrap], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form], #modelFilletProfile [data-fillet-profile]");
     if (featureMode) {
       // --- Text with real fonts: a style the font cannot make says why, and changes nothing.
       if (featureMode.getAttribute("aria-disabled") === "true") {
@@ -913,13 +913,11 @@ export function openModelTool(): ModelTool | null {
 }
 
 /** Whether the open shape can be edited. Surfaces only can be measured and placed, so the edit tools turn off. */
-/** An open sheet keeps Patch and Blend available. A closed solid does not use this. */
+/** An open sheet keeps Patch available. A closed solid does not use this. */
 export function setSheetMode(next: boolean) {
   sheetMode = next;
-  // On a solid these two stay in the Features menu, so the rail keeps the height the layout specs measure.
-  for (const id of ["#modelToolPatch", "#modelToolBlend"]) {
-    document.querySelector<HTMLElement>(id)?.toggleAttribute("hidden", !next);
-  }
+  // On a solid the rail button stays in the Features menu, so the rail keeps the height the layout specs measure.
+  document.querySelector<HTMLElement>("#modelToolPatch")?.toggleAttribute("hidden", !next);
   refreshTools();
 }
 
@@ -2136,12 +2134,6 @@ const HOLE_CHOICES: ReadonlySet<string> = new Set(["modelThrough", "modelCounter
 
 /** The hole's Through all and Counterbore boxes, as ticked. */
 /** S3 (U5). Fillet profile (G1 circular, G2 smooth, conic) and variable-radius toggle. */
-/** S5. The blend's seam, G1 unless G2 is pressed. */
-export function blendChoice(): "g1" | "g2" {
-  const on = document.querySelector<HTMLButtonElement>('#modelBlendContinuity [aria-pressed="true"]')?.dataset.blendContinuity;
-  return on === "g2" ? "g2" : "g1";
-}
-
 export function filletChoice(): FilletChoice {
   const on = document.querySelector<HTMLButtonElement>('#modelFilletProfile [aria-pressed="true"]')?.dataset.filletProfile;
   const continuity = on === "g2" || on === "conic" ? on : "g1";
@@ -2440,10 +2432,10 @@ function refreshNote() {
     }
   } else if ((tool === "fillet" || tool === "chamfer") && selectedEdges(picks).length === 0) {
     text = "Pick an edge.";
+  } else if (tool === "patch" && (patchLaterNote() || selectedEdges(picks).length > 4)) {
+    text = patchLaterNote() ?? PATCH_NOT_YET;
   } else if (tool === "patch" && selectedEdges(picks).length < 2) {
     text = "Pick the edges around the opening.";
-  } else if (tool === "blend" && selectedEdges(picks).length < 2) {
-    text = "Pick an open edge on each side.";
   } else if (tool === "scale") {
     text = "About the centre. Placement scale becomes 100%.";
   } else if (tool === "measure") {

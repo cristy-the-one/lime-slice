@@ -4,7 +4,6 @@ use std::os::raw::c_int;
 
 use super::build::{BuildFail, Built};
 use super::ffi::{
-    lime_tree_blend_surface,
     lime_tree_extrude_loops,
     lime_tree_extrude_loops_extent,
     lime_tree_loft_loops,
@@ -711,30 +710,6 @@ pub(super) fn build_patch_shape(
     let blob = encode_surface_blob(boundaries, guides, points, tolerance, None, None, None)?;
     let raw_from = from.map_or(std::ptr::null(), Shape::raw);
     Shape::made(|error| unsafe { lime_tree_patch(raw_from, blob.as_ptr(), blob.len() as c_int, error) })
-}
-
-/// --- Organic surfaces S5: bridge two open edges or chains.
-pub(super) fn build_blend_shape(
-    from: &Shape,
-    a: &SurfaceBoundary,
-    b: &SurfaceBoundary,
-    continuity: Option<SurfaceContinuity>,
-    tension_a: Option<f64>,
-    tension_b: Option<f64>,
-    tolerance: Option<f64>,
-) -> Result<Shape, String> {
-    let blob = encode_surface_blob(
-        &[a.clone(), b.clone()],
-        &[],
-        &[],
-        tolerance,
-        tension_a,
-        tension_b,
-        continuity,
-    )?;
-    Shape::made(|error| unsafe {
-        lime_tree_blend_surface(from.raw(), blob.as_ptr(), blob.len() as c_int, error)
-    })
 }
 
 /// K3 bits for the C side: bit 0 a second depth, bit 1 a draft, bit 2 a face to stop at. 0 is a plain extrude.

@@ -121,8 +121,7 @@ type ModelOpBase =
   | TrimSplitOp
   | ReplaceFaceOp
   | SplitFaceOp
-  | PatchOp
-  | BlendSurfaceOp;
+  | PatchOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -321,10 +320,10 @@ export interface SplitFaceOp {
   direction?: Vec3;
 }
 
-/** How a patch or blend side meets the face beside it. Absent on an edge that touches a face means G1. */
+/** How a patch side meets the face beside it. A patch is G0. */
 export type SurfaceContinuity = "g0" | "g1" | "g2";
 
-/** One side of a patch, or one side of a blend. */
+/** One side of a patch. */
 export interface SurfaceBoundary {
   curve?: Curve3D;
   edges?: EdgePick[];
@@ -332,23 +331,12 @@ export interface SurfaceBoundary {
   continuity?: SurfaceContinuity;
 }
 
-/** S5: Fill an opening. A sheet, so Sew, Thicken, and auto-promotion still apply. */
+/** S5: Fill an opening of two to four sides at G0. A sheet, so Sew, Thicken, and auto-promotion still apply. */
 export interface PatchOp {
   kind: "patch";
   boundaries: SurfaceBoundary[];
   guides?: Curve3D[];
   points?: Vec3[];
-  tolerance?: number;
-}
-
-/** S5: Bridge two open edges or chains at G1 or G2, with a tension on each side. */
-export interface BlendSurfaceOp {
-  kind: "blendSurface";
-  a: SurfaceBoundary;
-  b: SurfaceBoundary;
-  continuity?: SurfaceContinuity;
-  tensionA?: number;
-  tensionB?: number;
   tolerance?: number;
 }
 
@@ -1241,8 +1229,6 @@ export function opLabel(op: ModelOp, parts?: number): string {
     }
     case "patch":
       return `Patch ${op.boundaries.length} sides`;
-    case "blendSurface":
-      return `Blend ${op.continuity === "g2" ? "G2" : "G1"}`;
   }
 }
 

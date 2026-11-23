@@ -1,7 +1,7 @@
 /**
- * Patch defaults: an edge that touches a face starts at G1, and the badge cycles G0, G1, G2.
+ * A patch edge is G0. Asking for G1 or G2 is refused, and the edge stays G0.
  */
-import { defaultBoundaryContinuity, nextContinuity } from "./model-surface.ts";
+import { PATCH_NOT_YET, clearPatchLater, defaultBoundaryContinuity, notePatchLater, patchLaterNote } from "./model-surface.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean) {
@@ -10,9 +10,14 @@ function check(name: string, ok: boolean) {
   console.error(`FAIL ${name}`);
 }
 
-check("an edge on a face defaults to G1", defaultBoundaryContinuity(true) === "g1");
-check("a free curve defaults to G0", defaultBoundaryContinuity(false) === "g0");
-check("the badge cycles G0, G1, G2", nextContinuity("g0") === "g1" && nextContinuity("g1") === "g2" && nextContinuity("g2") === "g0");
+check("an edge on a face is G0", defaultBoundaryContinuity(true) === "g0");
+check("a free curve is G0", defaultBoundaryContinuity(false) === "g0");
+clearPatchLater();
+check("nothing is refused until a later continuity is asked", patchLaterNote() === null);
+notePatchLater();
+check("G1 or G2 is refused in one sentence", patchLaterNote() === PATCH_NOT_YET);
+clearPatchLater();
+check("the refusal clears", patchLaterNote() === null);
 
 if (failed > 0) {
   console.error(`${failed} failed`);

@@ -3493,7 +3493,7 @@ LimeShape* lime_tree_patch(const LimeShape* from, const double* blob, int len, c
         const Held* held = from != nullptr ? &from->held : nullptr;
         const TopoDS_Shape shape = build_patch(base, held, spec, message);
         if (shape.IsNull()) {
-            set_error(error, message.empty() ? "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides." : message);
+            set_error(error, message.empty() ? "Open CASCADE could not fill this opening." : message);
             return nullptr;
         }
         auto made = hold(shape, 0.0);
@@ -3524,7 +3524,7 @@ LimeShape* lime_tree_blend_surface(const LimeShape* from, const double* blob, in
         }
         const TopoDS_Shape shape = build_blend(from->held.shape, &from->held, spec, message);
         if (shape.IsNull()) {
-            set_error(error, message.empty() ? "Open CASCADE could not bridge these edges. Move them closer, or lower the tension." : message);
+            set_error(error, message.empty() ? "A blend is not available yet." : message);
             return nullptr;
         }
         auto made = hold(shape, 0.0);

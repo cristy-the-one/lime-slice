@@ -28,7 +28,7 @@ use super::ffi::{
 use super::group::{build_combined, build_group};
 use super::joints::{joined_of, keep_built, stored_joints, Joined};
 use super::k1::{
-    build_blend_shape, build_k1_loops, build_loft_v2_shape, build_patch_shape, build_replace_face_shape,
+    build_k1_loops, build_loft_v2_shape, build_patch_shape, build_replace_face_shape,
     build_sew_shape, build_sheet_shape, build_split_face_shape, build_sweep_shape, build_thicken_shape,
     build_trim_split_shape, k1_has_loops, loft_needs_v2, push_shape,
 };
@@ -729,14 +729,6 @@ pub(super) fn build(
             points,
             tolerance,
         } => build_patch_shape(Some(from), boundaries, guides, points, *tolerance),
-        Op::BlendSurface {
-            a,
-            b,
-            continuity,
-            tension_a,
-            tension_b,
-            tolerance,
-        } => build_blend_shape(from, a, b, *continuity, *tension_a, *tension_b, *tolerance),
     };
     match kept {
         Ok(kept) => Ok(Built {

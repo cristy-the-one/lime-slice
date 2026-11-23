@@ -1,13 +1,13 @@
 /**
- * Patch edge badges. A picked edge touches a face, so it starts at G1. Clicking the badge cycles G0, G1, G2.
+ * Patch edge badges. Every edge is G0. A click that would set G1 or G2 is refused.
  */
 import { fx } from "../fx";
-import { defaultBoundaryContinuity, nextContinuity, type SeamContinuity } from "../../model-surface.ts";
+import { clearPatchLater, defaultBoundaryContinuity, notePatchLater, type SeamContinuity } from "../../model-surface.ts";
 import { openModelTool } from "../../ui/model-chrome";
 import { viewed } from "./view";
 
 export type { SeamContinuity };
-export { defaultBoundaryContinuity, nextContinuity };
+export { defaultBoundaryContinuity };
 
 const chosen = new Map<number, SeamContinuity>();
 let frame = 0;
@@ -38,9 +38,10 @@ function paint(edges: readonly number[]) {
   const host = document.querySelector<HTMLElement>("#modelEdgeBadges");
   if (!host) return;
   const tool = openModelTool();
-  if (tool !== "patch" && tool !== "blend") {
+  if (tool !== "patch") {
     host.hidden = true;
     host.replaceChildren();
+    clearPatchLater();
     return;
   }
   host.hidden = false;
@@ -58,21 +59,18 @@ function paint(edges: readonly number[]) {
     button.dataset.edge = String(index);
     button.style.left = `${at.x}px`;
     button.style.top = `${at.y}px`;
-    button.title = tool === "patch" ? "Click to change this edge between G0, G1, and G2." : continuity.toUpperCase();
-    if (tool === "patch") {
-      button.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      });
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        chosen.set(index, nextContinuity(continuityOf(index)));
-        paint(edges);
-      });
-    } else {
-      button.disabled = true;
-    }
+    button.title = "G0. G1 and G2 are not available yet.";
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      notePatchLater();
+      paint(edges);
+      document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     host.appendChild(button);
   }
 }
@@ -82,7 +80,7 @@ export function syncEdgeBadges(edges: readonly number[]) {
   window.cancelAnimationFrame(frame);
   const draw = () => {
     paint(edges);
-    if (openModelTool() === "patch" || openModelTool() === "blend") frame = window.requestAnimationFrame(draw);
+    if (openModelTool() === "patch") frame = window.requestAnimationFrame(draw);
   };
   draw();
 }

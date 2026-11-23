@@ -65,7 +65,7 @@ export function scheduleProbe(wait: number) {
   const tool = openModelTool();
   const editable = !!viewed()?.editable;
   // --- P1: Push/Pull's panel probes like a face move. The gesture probes on its own. ---
-  const sheetTool = tool === "patch" || tool === "blend";
+  const sheetTool = tool === "patch";
   const op = (editable || sheetTool) && (isProbed(tool) || tool === "pushpull") && !editUntouched() ? panelOp() : null;
   const picked = editable ? joinPick() : null;
   if (at && tree && !op && picked) {

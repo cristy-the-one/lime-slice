@@ -1,18 +1,28 @@
 /**
- * Continuity asked of a patch edge. An edge that touches a face starts at G1. A free curve starts at G0.
- * Clicking the badge cycles G0, G1, G2.
+ * Continuity asked of a patch edge. A patch is G0. G1, G2, and an opening of more than four sides are refused.
  */
 
 export type SeamContinuity = "g0" | "g1" | "g2";
 
-const ORDER: SeamContinuity[] = ["g0", "g1", "g2"];
+export const PATCH_NOT_YET =
+  "G1, G2, an interior guide, and openings with more than four sides are not available yet. A patch is G0, with two to four sides.";
 
-/** An edge that touches a face starts at G1. A free curve starts at G0. */
-export function defaultBoundaryContinuity(touchesFace: boolean): SeamContinuity {
-  return touchesFace ? "g1" : "g0";
+/** Every patch edge is G0, whether or not it touches a face. */
+export function defaultBoundaryContinuity(_touchesFace: boolean): SeamContinuity {
+  return "g0";
 }
 
-/** The next badge, wrapping after G2. */
-export function nextContinuity(current: SeamContinuity): SeamContinuity {
-  return ORDER[(ORDER.indexOf(current) + 1) % ORDER.length] ?? "g0";
+let askedLater = false;
+
+/** The badge was asked for G1 or G2. The edge stays G0. */
+export function notePatchLater(): void {
+  askedLater = true;
+}
+
+export function clearPatchLater(): void {
+  askedLater = false;
+}
+
+export function patchLaterNote(): string | null {
+  return askedLater ? PATCH_NOT_YET : null;
 }

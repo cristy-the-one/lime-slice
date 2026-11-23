@@ -1895,25 +1895,14 @@ pub mod ops {
             .set("makeSolid", make_solid)
     }
 
-    /// S5: One side of a patch or blend. `continuity` is `"g0"`, `"g1"`, or `"g2"`.
+    /// S5: One side of a patch. `continuity` is `"g0"`.
     pub fn surface_boundary(edges: Json, continuity: &str) -> Json {
         Json::obj().set("edges", edges).set("continuity", continuity)
     }
 
-    /// S5: Fill an opening. A clean 2–4 curve G0 boundary uses GeomFill; G1, G2, or an N-sided opening uses GeomPlate.
+    /// S5: Fill an opening of two, three, or four sides at G0.
     pub fn patch(boundaries: Vec<Json>) -> Json {
         Json::obj().set("kind", "patch").set("boundaries", Json::arr(boundaries))
-    }
-
-    /// S5: Bridge two open edges or chains at `"g1"` or `"g2"`, with a tension on each side.
-    pub fn blend_surface(a: Json, b: Json, continuity: &str, tension_a: f64, tension_b: f64) -> Json {
-        Json::obj()
-            .set("kind", "blendSurface")
-            .set("a", a)
-            .set("b", b)
-            .set("continuity", continuity)
-            .set("tensionA", tension_a)
-            .set("tensionB", tension_b)
     }
 
     /// S4: Thicken an open sheet into a watertight solid wall (`direction`: `"normal"`, `"reverse"`, or `"both"`).
@@ -8050,16 +8039,14 @@ mod animation_tests {
     }
 
     #[test]
-    fn s5_patch_and_blend_ops_build_expected_json() {
+    fn s5_patch_op_builds_expected_json() {
         use crate::ops;
-        let side = ops::surface_boundary(Json::arr(vec![Json::from(0.0)]), "g1");
-        let patch = ops::patch(vec![side.clone(), ops::surface_boundary(Json::arr(vec![Json::from(1.0)]), "g2")]);
+        let patch = ops::patch(vec![
+            ops::surface_boundary(Json::arr(vec![Json::from(0.0)]), "g0"),
+            ops::surface_boundary(Json::arr(vec![Json::from(1.0)]), "g0"),
+        ]);
         assert_eq!(patch.get("kind").and_then(Json::as_str), Some("patch"));
-        assert_eq!(patch.at("boundaries.1.continuity").and_then(Json::as_str), Some("g2"));
-        let blend = ops::blend_surface(side, ops::surface_boundary(Json::arr(vec![Json::from(2.0)]), "g1"), "g1", 1.0, 1.4);
-        assert_eq!(blend.get("kind").and_then(Json::as_str), Some("blendSurface"));
-        assert_eq!(blend.get("continuity").and_then(Json::as_str), Some("g1"));
-        assert_eq!(blend.get("tensionB").and_then(Json::as_f64), Some(1.4));
+        assert_eq!(patch.at("boundaries.1.continuity").and_then(Json::as_str), Some("g0"));
     }
 
     #[test]
