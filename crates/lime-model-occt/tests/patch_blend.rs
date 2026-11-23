@@ -1023,19 +1023,51 @@ fn patch_uses_geomfill_for_a_clean_g0_quad_and_hermite_pieces_when_a_guide_point
 
 #[test]
 fn a_guide_point_keeps_g1_on_every_asked_edge() {
+    guided_patch("g1");
+}
+
+/// At G2 the quintic pieces get their free pole from the knot at 0.5 the plan inserts, with the two ribbon rows beside
+/// each boundary left where they are. This opening cannot be filled at G2 at all (its G2 bound fails at the half-side
+/// ends with or without a guide), so the guide must not change why it is refused: never "no free pole".
+#[test]
+fn a_guide_point_on_a_g2_patch_finds_a_free_pole() {
     if !has_occt() {
         return;
     }
-    // Over the middle of one piece, 0.5 mm above the patch the opening gets without a guide, so the free pole has to
-    // move. Every side and split is still checked at G1 after the move, and the patch passes through the point.
-    let key = "s5-4-side-g1-plain";
+    let key = "s5-4-side-g2-guide";
     let opened = ok(json!({ "call": "open", "key": key, "chordMm": CHORD_MM, "feature": opening_sheet(4) }));
-    let asked = top_sides(&opened, |_, _| "g1");
+    let asked = top_sides(&opened, |_, _| "g2");
+    let plain = call(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": CHORD_MM, "op": patch_op(&asked, None) }));
+    let guided = call(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": CHORD_MM, "op": patch_op(&asked, Some([7.0, 0.5, 14.0])) }));
+    println!("G2 plain: {}
+G2 guided: {}", plain["error"], guided["error"]);
+    let guided_error = guided["error"].as_str().unwrap_or("");
+    assert!(!guided_error.contains("free pole"), "{guided}");
+    if let Some(plain_error) = plain["error"].as_str() {
+        let reason = |text: &str| text.split(". ").next().unwrap_or("").to_string();
+        assert_eq!(reason(guided_error), reason(plain_error), "the guide changes nothing but the pole it moves");
+    } else {
+        assert!(guided.get("error").is_none(), "{guided}");
+    }
+    ok(json!({ "call": "close", "key": key }));
+}
+
+/// Over the middle of one piece, 0.5 mm above the patch the opening gets without a guide, so the free pole has to move.
+/// Every side and split is still checked at the asked continuity after the move, and the patch passes through the
+/// point (the op's own measure, within 1e-4 mm).
+fn guided_patch(continuity: &'static str) {
+    if !has_occt() {
+        return;
+    }
+    let key = format!("s5-4-side-{continuity}-plain");
+    let opened = ok(json!({ "call": "open", "key": key, "chordMm": CHORD_MM, "feature": opening_sheet(4) }));
+    let asked = top_sides(&opened, |_, _| continuity);
     let plain = ok(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": CHORD_MM, "op": patch_op(&asked, None) }));
     let (x, y) = (7.0, 0.5);
     let z = height_at(&plain, x, y).expect("the plain patch lies over the guide's x, y");
     ok(json!({ "call": "close", "key": key }));
-    fill_opening("4-side-g1-point", 4, |_, _| "g1", Some([x, y, z + 0.5]), true, None);
+    let case_name = format!("4-side-{continuity}-point");
+    fill_opening(&case_name, 4, move |_, _| continuity, Some([x, y, z + 0.5]), true, None);
 }
 
 /// The highest point of a reply's triangles straight above or below `x`, `y`.
