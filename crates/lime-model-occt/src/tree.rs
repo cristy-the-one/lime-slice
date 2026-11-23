@@ -228,6 +228,18 @@ struct Doc {
     nodes: HashMap<NodeId, Node>,
     current: NodeId,
     probe: Option<Probed>,
+    /// The root was read from a STEP file. A STEP import that is not a closed solid takes no edit, as on main: the
+    /// sheet ops are for sheets the ops build.
+    step_root: bool,
+}
+
+/// True when `data` (base64) is a STEP file, not the engine's own binary format.
+fn is_step_data(data: &str) -> bool {
+    let head: String = data.trim().chars().take(64).collect();
+    let head = &head[..head.len() - head.len() % 4];
+    base64::engine::general_purpose::STANDARD
+        .decode(head)
+        .map_or(true, |bytes| !bytes.starts_with(BREP_MAGIC))
 }
 
 struct Reply {

@@ -192,6 +192,7 @@ impl Store {
                 seed,
                 quiet,
             } => {
+                let step_root = step_path.is_some() || data_b64.as_deref().is_some_and(super::is_step_data);
                 let root = root_shape(data_b64, step_path, box_mm, primitive, feature.map(|op| *op))?;
                 if let Some(saved) = fingerprint {
                     let got = root.fingerprint();
@@ -205,6 +206,7 @@ impl Store {
                 self.open(
                     key,
                     root,
+                    step_root,
                     nodes,
                     current,
                     seed,
