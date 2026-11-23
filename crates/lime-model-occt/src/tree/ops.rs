@@ -509,7 +509,9 @@ pub enum Curve3D {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
     },
+    /// The app, the MCP schema and saved projects write `through`; `points` is the older Rust spelling. Both read.
     Spline {
+        #[serde(alias = "through")]
         points: Vec<[f64; 3]>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
@@ -524,7 +526,8 @@ pub enum Curve3D {
         knots: Vec<f64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mults: Vec<u32>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        /// Every caller writes `closed`; `periodic` is the older Rust spelling. Both read.
+        #[serde(default, alias = "closed", skip_serializing_if = "std::ops::Not::not")]
         periodic: bool,
     },
     Segments {
@@ -1139,4 +1142,112 @@ pub struct LoftSection {
     /// S3: punctual point-apex section (first or last section only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apex: Option<[f64; 3]>,
+}
+
+#[cfg(test)]
+mod tests {
+    //! The curve spellings the TypeScript side writes (src/model-tree.ts `Curve3D`, src/modeling/bake.ts
+    //! `readCurve3DField`, mcp/schema.ts `curve3dField`): a spline's points are `through`, a closed NURBS is `closed`.
+    use super::{Curve3D, Op, SurfaceBoundary};
+    use serde_json::{json, Value};
+
+    fn spline() -> Value {
+        json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]], "closed": true })
+    }
+
+    fn nurbs() -> Value {
+        json!({
+            "kind": "nurbs",
+            "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+            "weights": [1.0, 0.7, 0.7, 1.0],
+            "degree": 3,
+            "closed": true
+        })
+    }
+
+    fn section() -> Value {
+        json!({ "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 2.0 })
+    }
+
+    fn check(curve: &Curve3D) {
+        match curve {
+            Curve3D::Spline { points, closed } => {
+                assert_eq!(points.len(), 3);
+                assert!(*closed);
+            }
+            Curve3D::Nurbs { poles, periodic, .. } => {
+                assert_eq!(poles.len(), 4);
+                assert!(*periodic, "a NURBS sent closed is built periodic");
+            }
+            other => panic!("unexpected curve {other:?}"),
+        }
+    }
+
+    fn op(value: Value) -> Op {
+        serde_json::from_value(value.clone()).unwrap_or_else(|err| panic!("{value}: {err}"))
+    }
+
+    #[test]
+    fn every_curve3d_field_reads_the_spellings_the_app_writes() {
+        for curve in [spline(), nurbs()] {
+            // Sweep spine and auxiliary spine.
+            match op(json!({ "kind": "sweep", "op": "fuse", "sections": [section()], "spine": curve, "auxSpine": curve })) {
+                Op::Sweep { spine, aux_spine, .. } => {
+                    check(&spine);
+                    check(aux_spine.as_deref().expect("auxSpine"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Loft guides.
+            match op(json!({ "kind": "loft", "op": "fuse", "sections": [section(), section()], "guides": [curve] })) {
+                Op::Loft { guides, .. } => check(&guides[0]),
+                other => panic!("{other:?}"),
+            }
+            // Split face curve.
+            match op(json!({ "kind": "splitFace", "faces": [0], "curve": curve, "direction": [0.0, 0.0, 1.0] })) {
+                Op::SplitFace { curve, .. } => check(&curve),
+                other => panic!("{other:?}"),
+            }
+            // Patch guides and a boundary's curve.
+            match op(json!({ "kind": "patch", "boundaries": [{ "curve": curve, "continuity": "g0" }], "guides": [curve] })) {
+                Op::Patch { boundaries, guides, .. } => {
+                    check(&guides[0]);
+                    check(boundaries[0].curve.as_ref().expect("curve"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Blend sides.
+            match op(json!({ "kind": "blendSurface", "a": { "curve": curve }, "b": { "curve": curve }, "continuity": "g1" })) {
+                Op::BlendSurface { a, b, .. } => {
+                    check(a.curve.as_ref().expect("a"));
+                    check(b.curve.as_ref().expect("b"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Sheet curves (flattened spec) and replaceFace's sheet.
+            match op(json!({ "kind": "sheet", "mode": "extrude", "curves": [curve], "dir": [0.0, 0.0, 1.0], "distance": 5.0 })) {
+                Op::Sheet { spec } => check(&spec.curves[0]),
+                other => panic!("{other:?}"),
+            }
+            match op(json!({ "kind": "replaceFace", "face": 0, "sheet": { "mode": "loft", "curves": [curve, curve] } })) {
+                Op::ReplaceFace { sheet, .. } => check(&sheet.curves[1]),
+                other => panic!("{other:?}"),
+            }
+            let side: SurfaceBoundary = serde_json::from_value(json!({ "curve": curve })).expect("boundary");
+            check(side.curve.as_ref().expect("curve"));
+        }
+    }
+
+    #[test]
+    fn the_old_rust_spellings_still_read_and_are_still_written() {
+        let old: Curve3D = serde_json::from_value(json!({ "kind": "spline", "points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }))
+            .expect("points");
+        assert_eq!(serde_json::to_value(&old).expect("json"), json!({ "kind": "spline", "points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }));
+        let old: Curve3D = serde_json::from_value(json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "periodic": true }))
+            .expect("periodic");
+        assert_eq!(
+            serde_json::to_value(&old).expect("json"),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "periodic": true })
+        );
+    }
 }
