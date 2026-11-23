@@ -521,27 +521,111 @@ test("a two second knob drag on a 3,000 face part stays with the orbit @perf", a
   expect(step, "the drag moved through many values").toBeGreaterThanOrEqual(50);
 });
 
-test("@perf an 8×8 pole drag stays inside one 60 fps frame at the default preview density", async ({ page }) => {
-  await modeler(page);
+/** S6: an open sheet over a NURBS grid's corners, as the kernel answers a NURBS root. */
+function sheetOver(poles: V[][]) {
+  const a = poles[0]![0]!;
+  const b = poles.at(-1)![0]!;
+  const c = poles.at(-1)!.at(-1)!;
+  const d = poles[0]!.at(-1)!;
+  const edge = (id: number, p: V, q: V) => ({ id, lengthMm: Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]), points: [...p, ...q] });
+  return { volumeMm3: 0, positions: [...a, ...b, ...c, ...a, ...c, ...d], triangles: [0, 0], faces: [{ id: 0, areaMm2: 4900 }], edges: [edge(0, a, b), edge(1, b, c), edge(2, c, d), edge(3, d, a)], solid: false, nakedEdges: [0, 1, 2, 3] };
+}
+
+function percentile(sorted: readonly number[], p: number): number {
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1))] ?? Number.POSITIVE_INFINITY;
+}
+
+/**
+ * S6 acceptance (docs/plan-organic-surfaces.md): dragging poles on an 8×8 bicubic surface runs at 60 fps with live
+ * Zebra, and commits in under 100 ms. Frames are real: requestAnimationFrame to requestAnimationFrame in the page, with
+ * the whole Model scene drawn (the box part beside the surface, Zebra shading on), while a scripted drag moves a pole
+ * every frame. The commit is pointer-up to the app having taken the kernel's answer, against the mocked engine: it
+ * proves the app's own share (request, decode, history, view), not OCCT's build time.
+ */
+test("@perf an 8×8 pole drag with Zebra on draws at 60 fps and commits fast", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: SOLID.positions } }));
+  await mockModelTree(page, {
+    open(request) {
+      const feature = request.feature as { kind?: string; poles?: V[][] } | undefined;
+      return feature?.kind === "nurbsSurface" ? sheetOver(feature.poles!) : SOLID;
+    },
+    apply: () => CUT,
+  });
   await openModel(page);
+  const view = page.locator("#modelLookOpen");
+  if (!(await view.isVisible())) await page.getByRole("button", { name: "Inspect tools" }).click();
+  await view.click();
+  await page.locator("#modelShading [data-shading=zebra]").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-shading", "zebra");
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelFeatureMenu [data-tool=sculpt]").click();
+  await page.locator("#modelNurbsNew").click();
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]")).toHaveCount(64);
   const axis = page.locator("#modelNurbsOverlay [data-cv-axis=z]");
   await expect(axis).toBeVisible();
-  const box = await axis.boundingBox();
-  expect(box).toBeTruthy();
-  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  const box = (await axis.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  // Record every frame from here on, and the preview updates among them.
+  await page.evaluate(() => {
+    const w = window as unknown as { __frames: number[]; __recording: boolean; __updates: number };
+    w.__frames = [];
+    w.__recording = true;
+    const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    const first = Number(canvas.dataset.nurbsSerial ?? 0);
+    let last = 0;
+    const tick = (t: number) => {
+      if (last) w.__frames.push(t - last);
+      last = t;
+      w.__updates = Number(canvas.dataset.nurbsSerial ?? 0) - first;
+      if (w.__recording) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await page.mouse.move(x, y);
   await page.mouse.down();
-  for (let i = 0; i < 24; i += 1) await page.mouse.move(box!.x + box!.width / 2, box!.y - 4 - i * 2);
+  const moves = 90;
+  for (let i = 1; i <= moves; i += 1) {
+    await page.mouse.move(x + Math.sin(i / 6) * 4, y - i * 1.5);
+    await page.waitForTimeout(8);
+  }
+  const frames = await page.evaluate(() => {
+    const w = window as unknown as { __frames: number[]; __recording: boolean; __updates: number };
+    w.__recording = false;
+    return { frames: w.__frames, updates: w.__updates };
+  });
+  // The commit: pointer-up to the app's taking the answer (data-nurbs-built moves on).
+  const builtBefore = Number((await page.locator("#model").getAttribute("data-nurbs-built")) ?? 0);
+  await page.evaluate((before) => {
+    const w = window as unknown as { __upAt: number; __landedAt: number };
+    const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    document.addEventListener("pointerup", () => (w.__upAt = performance.now()), { once: true, capture: true });
+    new MutationObserver((_, observer) => {
+      if (Number(canvas.dataset.nurbsBuilt ?? 0) > before) {
+        w.__landedAt = performance.now();
+        observer.disconnect();
+      }
+    }).observe(canvas, { attributes: true, attributeFilter: ["data-nurbs-built"] });
+  }, builtBefore);
   await page.mouse.up();
-  const samples = await page.evaluate(() => (window as unknown as { __nurbsFrameSamples?: number[] }).__nurbsFrameSamples ?? []);
-  const sorted = [...samples].sort((a, b) => a - b);
-  const median = sorted[Math.floor(sorted.length / 2)] ?? Number.POSITIVE_INFINITY;
-  const p95 = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] ?? Number.POSITIVE_INFINITY;
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __landedAt?: number }).__landedAt ?? 0)).toBeGreaterThan(0);
+  const commitMs = await page.evaluate(() => {
+    const w = window as unknown as { __upAt: number; __landedAt: number };
+    return w.__landedAt - w.__upAt;
+  });
+  const sorted = [...frames.frames].sort((a, b) => a - b);
+  const median = percentile(sorted, 0.5);
+  const p95 = percentile(sorted, 0.95);
   const density = await page.locator("#model").getAttribute("data-nurbs-density");
-  console.log(`NURBS_FRAME medianMs=${median.toFixed(3)} p95Ms=${p95.toFixed(3)} samples=${samples.length} density=${density}`);
+  console.log(`NURBS_FRAMES medianMs=${median.toFixed(2)} p95Ms=${p95.toFixed(2)} fps=${(1000 / median).toFixed(1)} frames=${sorted.length} previewUpdates=${frames.updates} density=${density} zebra=on`);
+  console.log(`NURBS_COMMIT pointerUpToAppliedMs=${commitMs.toFixed(1)} engine=mock`);
   expect(density, "default preview density").toBe("4");
-  expect(samples.length, "the drag evaluated a frame per move").toBeGreaterThanOrEqual(12);
-  expect(median, `median ${median} ms`).toBeLessThanOrEqual(16.7);
-  expect(p95, `p95 ${p95} ms`).toBeLessThanOrEqual(16.7);
+  expect(frames.updates, "the preview followed the drag").toBeGreaterThanOrEqual(30);
+  expect(sorted.length, "frames were drawn all through the drag").toBeGreaterThanOrEqual(30);
+  // 60 fps: the median frame is one vsync (16.7 ms), with a little room for the timer's jitter.
+  expect(median, `median frame ${median} ms`).toBeLessThanOrEqual(18);
+  // At most the odd dropped frame.
+  expect(p95, `p95 frame ${p95} ms`).toBeLessThanOrEqual(34);
+  expect(commitMs, `pointer-up to applied ${commitMs} ms`).toBeLessThan(100);
 });
