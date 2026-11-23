@@ -830,6 +830,16 @@ function readOpBody(value: unknown): SavedOp | undefined {
       if (value.knotsV !== undefined && !knotsV) return undefined;
       if (value.multsU !== undefined && !multsU) return undefined;
       if (value.multsV !== undefined && !multsV) return undefined;
+      // --- S6. Knot insertion and degree elevation the kernel applies on open, as the schema takes them. The app bakes
+      // them into the grid before it stores an op, so only an older or hand-written file carries them; they are kept.
+      const insertU = value.insertU === undefined ? undefined : readInsertPairs(value.insertU);
+      const insertV = value.insertV === undefined ? undefined : readInsertPairs(value.insertV);
+      if (value.insertU !== undefined && !insertU) return undefined;
+      if (value.insertV !== undefined && !insertV) return undefined;
+      const elevateU = optionalInt(value.elevateU);
+      const elevateV = optionalInt(value.elevateV);
+      if (value.elevateU !== undefined && elevateU === undefined) return undefined;
+      if (value.elevateV !== undefined && elevateV === undefined) return undefined;
       return {
         kind: "nurbsSurface",
         poles,
@@ -842,6 +852,10 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(multsV ? { multsV } : {}),
         ...(value.periodicU === true ? { periodicU: true } : {}),
         ...(value.periodicV === true ? { periodicV: true } : {}),
+        ...(insertU && insertU.length > 0 ? { insertU } : {}),
+        ...(insertV && insertV.length > 0 ? { insertV } : {}),
+        ...(elevateU !== undefined ? { elevateU } : {}),
+        ...(elevateV !== undefined ? { elevateV } : {}),
       };
     }
     default:
@@ -864,6 +878,19 @@ function optionalInts(value: unknown): number[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.some((item) => typeof item !== "number" || !Number.isInteger(item) || item < 1)) return undefined;
   return [...value];
+}
+
+/** `[parameter, times]` pairs, each a finite number and a count of at least 1. */
+function readInsertPairs(value: unknown): [number, number][] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: [number, number][] = [];
+  for (const pair of value) {
+    if (!Array.isArray(pair) || pair.length !== 2) return undefined;
+    const [param, times] = pair as unknown[];
+    if (typeof param !== "number" || !Number.isFinite(param) || typeof times !== "number" || !Number.isInteger(times) || times < 1) return undefined;
+    out.push([param, times]);
+  }
+  return out;
 }
 
 function readWeightGrid(value: unknown, nu: number, nv: number): number[][] | undefined {

@@ -339,6 +339,7 @@ mcp/speed-ux.test.ts
 mcp/surface-inspect.test.ts
 src/modeling/nurbs-eval.test.ts
 src/modeling/nurbs-surface-eval.test.ts
+src/modeling/nurbs-bake.test.ts
 src/sketch/nurbs.test.ts
 src/sketch/nurbs-closed.test.ts
 src/sketch/nurbs-edits.test.ts

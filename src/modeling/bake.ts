@@ -16,7 +16,7 @@ import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
 import { blendSurfaceOp, draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, nurbsSurfaceOp, patchOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
-import { surfaceRefusal } from "./nurbs-eval.ts";
+import { applyRefinements, surfaceRefusal } from "./nurbs-eval.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
@@ -1093,7 +1093,27 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     });
     const refusal = surfaceRefusal(made);
     if (refusal) return { reason: refusal };
-    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+    // --- S6. Knot insertion and degree elevation are applied here, with the same exact maths the sculpt tool uses, so
+    // the stored op is the grid the kernel builds and nothing the call asked for is dropped.
+    const pairs = (value: unknown): [number, number][] | null | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value)) return null;
+      const out: [number, number][] = [];
+      for (const pair of value) {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "number" || typeof pair[1] !== "number") return null;
+        out.push([pair[0], pair[1]]);
+      }
+      return out;
+    };
+    const insertU = pairs(spec.insertU);
+    const insertV = pairs(spec.insertV);
+    if (insertU === null || insertV === null) return { reason: "Each knot to insert is [parameter, times]." };
+    const elevateU = typeof spec.elevateU === "number" ? spec.elevateU : undefined;
+    const elevateV = typeof spec.elevateV === "number" ? spec.elevateV : undefined;
+    const refined = applyRefinements(made, { ...(insertU ? { insertU } : {}), ...(insertV ? { insertV } : {}), ...(elevateU !== undefined ? { elevateU } : {}), ...(elevateV !== undefined ? { elevateV } : {}) });
+    if (typeof refined === "string") return { reason: refined };
+    const baked = nurbsSurfaceOp(refined);
+    return { op: toSolidOp(baked, ctx.pose), typed: { ...baked } };
   }
   // --- A gear (src/model-gear.ts): a boolean whose tool is the gear primitive, placed as a cylinder is. Fuse by default.
   if (kind === "gear") {
