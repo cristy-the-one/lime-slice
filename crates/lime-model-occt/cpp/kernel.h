@@ -81,13 +81,20 @@ struct Held {
     /// the two share (`inherit_about`), so a step measures only what it changed.
     std::vector<std::string> face_about;
     std::vector<std::string> edge_about;
+    /// The Model view's display mesh lives on a copy of `shape`, so its finer triangles never reach the faces of
+    /// `shape`, whose mesh is the one committed, sliced and exported. `display_faces[i]` is the copy of face i + 1,
+    /// with its orientation; `display_meshed` is the chord the copy was meshed at, 0 for none yet.
+    TopoDS_Shape display_shape;
+    std::vector<TopoDS_Face> display_faces;
+    double display_meshed = 0;
 };
 
 /// One tessellation as the reply sends it, as binary arrays.
 struct Mesh {
     /// Nine per triangle: the corners of a triangle soup, wound outward.
     std::vector<float> positions;
-    /// Nine per triangle: exact outward unit surface normals at each corner (`BRepLProp_SLProps`).
+    /// Nine per triangle: exact outward unit surface normals at each corner (`BRepLProp_SLProps`). Display mesh only:
+    /// empty for the standard mesh.
     std::vector<float> normals;
     /// The face index of each triangle.
     std::vector<uint32_t> triangles;
@@ -133,9 +140,13 @@ double volume_of(const TopoDS_Shape& shape);
 /// difference of those faces' volumes about one point.
 double faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& about);
 /// Mesh the faces unless they are meshed at this chord already, and read the mesh out.
-Mesh tessellate(Held& held, double chord);
+/// `display`: the Model view's finer mesh with analytic normals (mesh_angle_of), on a copy of the shape. Otherwise the
+/// mesh every commit, slice and export uses: half a radian, no normals.
+Mesh tessellate(Held& held, double chord, bool display = false);
+/// The last Hermite patch or blend's own measure at its stations, as JSON, for the tests.
+std::string last_fill_report();
 /// --- Organic surfaces S1: lazy curvature buffers, UV isoparms, shared-edge G0/G1/G2 continuity, and NURBS health.
-SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count);
+SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count, bool display = false);
 /// What a reply says of the shape whatever the chord, as a JSON object: `volumeMm3`, `solid`,
 /// `faces` (area and outward normal), and `edgeLengths`.
 std::string describe(Held& held);

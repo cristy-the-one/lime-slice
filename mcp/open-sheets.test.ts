@@ -180,5 +180,70 @@ check(
   JSON.stringify(layout.rows.map((r) => ({ id: r.id, label: r.label, sheet: r.sheet }))),
 );
 
+// 6. An open sheet on the plate: committed and marked, Slice and the exports refuse it, thicken clears the mark.
+{
+  const plain = fakeEngine();
+  let openSheet = false;
+  const sheetEngine = {
+    ...plain,
+    async modelTree(request: string): Promise<string> {
+      const parsed = JSON.parse(request) as { call?: string; op?: { kind?: string } };
+      if (parsed.call === "apply" && parsed.op?.kind && S4_KINDS.has(parsed.op.kind)) {
+        // The kernel answers a sheet as not a solid with open borders, and a thickened one as a solid with none.
+        openSheet = parsed.op.kind === "sheet";
+        const fake = JSON.parse(await plain.modelTree(JSON.stringify({ ...parsed, op: { kind: "unify" } }))) as Record<string, unknown>;
+        return JSON.stringify(openSheet ? { ...fake, op: parsed.op, solid: false, nakedEdges: [0, 1, 2, 3] } : { ...fake, op: parsed.op });
+      }
+      if (parsed.call === "probe" && parsed.op?.kind && S4_KINDS.has(parsed.op.kind)) {
+        return JSON.stringify({ ok: true, fits: true, volumeMm3: 1800, faces: 6, edges: 12, solids: 1 });
+      }
+      return plain.modelTree(request);
+    },
+  };
+  const s = new Session(sheetEngine);
+  const part = (await s.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 })).object as string;
+  const before = await s.call("slice_start", { wait: true });
+  check("a solid slices before it becomes a sheet", before.ok === true && before.status === "done", JSON.stringify(before).slice(0, 300));
+  const sheeted = await s.call("model_apply", { object: part, op: opSheet, probe: true });
+  const committed = await s.call("model_commit", { object: part });
+  const list = await s.call("plate_list", {});
+  const row = (list.objects as { object: string; sheet?: boolean }[] | undefined)?.find((one) => one.object === part);
+  check("an open sheet commits to the plate and is marked in plate_list", sheeted.ok === true && committed.ok === true && row?.sheet === true, JSON.stringify({ sheeted, committed, row }).slice(0, 600));
+  const info = await s.call("session_info", {});
+  check("session_info names the open sheets", JSON.stringify(info.openSheets) === JSON.stringify([part]), JSON.stringify(info.openSheets));
+  const nodeMark = () => {
+    const tree = (s as unknown as { find(id: string): { tree?: { committed: number; nodes: Map<number, { sheet?: true }> } } | undefined }).find(part)?.tree;
+    return tree?.nodes.get(tree.committed)?.sheet === true;
+  };
+  check("the mark rides on the committed history node too", nodeMark());
+  const sliced = await s.call("slice_start", { wait: true });
+  check(
+    "slice_start refuses an open sheet with code open-sheet, naming it",
+    sliced.ok === false && sliced.code === "open-sheet" && sliced.object === part
+      && sliced.reason === `box (${part}) is an open sheet, not a solid, so it cannot be sliced. Thicken it ({kind:"thicken", thickness}) or sew it shut ({kind:"sew", capPlanar:true}) and commit, then try again.`,
+    JSON.stringify(sliced),
+  );
+  const gcode = await s.call("gcode_export", { name: "sheet.gcode" });
+  check("gcode_export refuses a slice of an object that is now an open sheet", gcode.ok === false && gcode.code === "open-sheet" && String(gcode.reason).includes("cannot be exported as G-code"), JSON.stringify(gcode));
+  const threeMf = await s.call("export_3mf", { name: "sheet.3mf" });
+  check("export_3mf refuses an open sheet", threeMf.ok === false && threeMf.code === "open-sheet" && String(threeMf.reason).includes("cannot be exported to 3MF"), JSON.stringify(threeMf));
+  const copy = await s.call("object_duplicate", { object: part });
+  const copyId = (copy.objects as string[] | undefined)?.[0];
+  const listed = (await s.call("plate_list", {})).objects as { object: string; sheet?: boolean }[];
+  check("a duplicate of an open sheet carries the mark", copy.ok === true && listed.find((one) => one.object === copyId)?.sheet === true, JSON.stringify({ copy, listed }).slice(0, 400));
+  if (copyId) await s.call("object_remove", { object: copyId });
+  const thick = await s.call("model_apply", { object: part, op: opThicken, probe: true });
+  const recommitted = await s.call("model_commit", { object: part });
+  const after = (await s.call("plate_list", {})).objects as { object: string; sheet?: boolean }[];
+  const sliceAfter = await s.call("slice_start", { wait: true });
+  check(
+    "thicken clears the mark and the part slices again",
+    thick.ok === true && recommitted.ok === true && after.find((one) => one.object === part)?.sheet === undefined && sliceAfter.ok === true && sliceAfter.status === "done",
+    JSON.stringify({ thick: thick.ok, recommitted, sliceAfter: { ok: sliceAfter.ok, code: sliceAfter.code, reason: sliceAfter.reason } }).slice(0, 500),
+  );
+  check("session_info lists no open sheet once it is thickened", (await s.call("session_info", {})).openSheets === undefined);
+  check("thicken clears the node's mark", !nodeMark());
+}
+
 if (failed > 0) process.exit(1);
 console.log("S4 open-sheets MCP, codec, reply, and history checks passed.");

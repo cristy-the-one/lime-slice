@@ -196,3 +196,130 @@ fn nurbs_refusals_are_plain_sentences() {
         "A weight on this surface is 0 or less. Every weight has to be greater than 0."
     );
 }
+
+/// The limits the app and the MCP check, held by the kernel too: each refused with its own sentence.
+#[test]
+fn nurbs_limits_are_refused_by_the_kernel() {
+    let refused = |name: &str, body: Value| -> String {
+        let reply = call_raw(json!({ "call": "open", "key": format!("s6-limit-{name}"), "feature": body }));
+        let error = reply["error"].as_str().unwrap_or("").to_string();
+        println!("{name}: {error}");
+        assert!(!error.is_empty(), "{name} must be refused: {reply}");
+        error
+    };
+    let mut ring6 = Vec::new();
+    for iu in 0..2 {
+        ring6.push((0..4).map(|iv| [iu as f64 * 10.0, iv as f64 * 10.0, 0.0]).collect::<Vec<_>>());
+    }
+    assert_eq!(
+        refused("degree", json!({ "kind": "nurbsSurface", "poles": grid(10, 0.0), "degreeU": 9, "degreeV": 3 })),
+        "A NURBS surface's degree in U is 1 to 8; it was 9."
+    );
+    let tall: Vec<Vec<[f64; 3]>> = (0..65).map(|iu| (0..4).map(|iv| [iu as f64, iv as f64, 0.0]).collect()).collect();
+    assert_eq!(
+        refused("poles", json!({ "kind": "nurbsSurface", "poles": tall, "degreeU": 3, "degreeV": 3 })),
+        "A NURBS surface has at most 64 poles in U; it has 65."
+    );
+    assert_eq!(
+        refused("periodic", json!({ "kind": "nurbsSurface", "poles": ring6, "degreeU": 1, "degreeV": 3, "periodicU": true })),
+        "A surface closed in U needs at least 3 poles in U."
+    );
+    let many: Vec<[f64; 2]> = (0..33).map(|i| [0.01 + 0.02 * f64::from(i), 1.0]).collect();
+    assert_eq!(
+        refused("inserts", feature(grid(6, 1.0), json!({ "insertU": many }))),
+        "A NURBS surface takes at most 32 knot inserts in U; it has 33."
+    );
+    for (name, times) in [("times0", 0.0), ("times-half", 1.5), ("times-over", 4.0)] {
+        assert_eq!(
+            refused(name, feature(grid(6, 1.0), json!({ "insertU": [[0.5, times]] }))),
+            "A knot insert in U is 1 to 3 times, a whole number."
+        );
+    }
+    assert_eq!(
+        refused("at-end", feature(grid(6, 1.0), json!({ "insertV": [[1.0, 1.0]] }))),
+        "A knot insert in V must lie strictly inside the knot range, 0 to 1."
+    );
+    assert_eq!(
+        refused("full", feature(grid(6, 1.0), json!({ "insertU": [[0.5, 2.0], [0.5, 2.0]] }))),
+        "Inserting the U knot 0.5 2 times would give it multiplicity 4, past its full multiplicity 3."
+    );
+    assert_eq!(
+        refused("elevate", feature(grid(6, 1.0), json!({ "elevateU": 9 }))),
+        "A NURBS surface's degree in U can be raised to at most 8; it asked for 9."
+    );
+    assert_eq!(
+        refused("mults", feature(grid(4, 0.0), json!({ "knotsU": [0.0, 1.0], "multsU": [5, 3] }))),
+        "The U knots do not match this surface. They must increase, and their multiplicities must add up to the poles and the degree."
+    );
+}
+
+/// A surface closed in U (six poles round a circle, cubic): it builds as a periodic sheet.
+#[test]
+fn a_periodic_surface_builds() {
+    let ring: Vec<Vec<[f64; 3]>> = (0..6)
+        .map(|iu| {
+            let a = std::f64::consts::TAU * iu as f64 / 6.0;
+            (0..4).map(|iv| [10.0 * a.cos(), 10.0 * a.sin(), iv as f64 * 5.0]).collect()
+        })
+        .collect();
+    let opened = call(json!({ "call": "open", "key": "s6-periodic", "chordMm": 0.1,
+        "feature": { "kind": "nurbsSurface", "poles": ring, "degreeU": 3, "degreeV": 3, "periodicU": true } }));
+    assert_eq!(opened["solid"], json!(false), "{opened}");
+    // A tube open at both ends: two naked rims.
+    let naked = opened["nakedEdges"].as_array().map(Vec::len).unwrap_or(0);
+    assert_eq!(naked, 2, "a periodic tube has its two rims open: {opened}");
+    call(json!({ "call": "close", "key": "s6-periodic" }));
+}
+
+/// An open clamped sheet has exactly its four boundary edges open.
+#[test]
+fn a_clamped_sheet_has_four_naked_edges() {
+    let opened = call(json!({ "call": "open", "key": "s6-naked", "chordMm": 0.1, "feature": feature(grid(8, 2.0), json!({})) }));
+    assert_eq!(opened["nakedEdges"].as_array().map(Vec::len), Some(4), "{opened}");
+    call(json!({ "call": "close", "key": "s6-naked" }));
+}
+
+/// A flat 30 x 30 mm sheet thickened 1 mm both ways is a 30 x 30 x 1 slab: 900 mm³.
+#[test]
+fn a_flat_sheet_thickens_to_its_closed_form_volume() {
+    let key = "s6-thicken-flat";
+    call(json!({ "call": "open", "key": key, "chordMm": 0.1, "feature": feature(grid(4, 0.0), json!({})) }));
+    let thick = call(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": 0.1,
+        "op": { "kind": "thicken", "thickness": 1.0, "direction": "both" } }));
+    let volume = thick["volumeMm3"].as_f64().unwrap_or(0.0);
+    println!("flat sheet thickened: {volume} mm³ (900 expected)");
+    assert!((volume - 900.0).abs() <= 1e-6 * 900.0, "{volume}");
+    call(json!({ "call": "close", "key": key }));
+}
+
+/// Knot insertion and degree elevation, as the op applies them, leave the surface where it was: the committed surface
+/// evaluated at a 7 x 7 grid of parameters against the plain one, within 1e-9 mm.
+#[cfg(lime_occt_test_hooks)]
+#[test]
+fn insert_and_elevate_keep_the_shape() {
+    let poles = grid(6, 3.0);
+    let params: Vec<[f64; 2]> = (0..7).flat_map(|i| (0..7).map(move |j| [f64::from(i) / 6.0, f64::from(j) / 6.0])).collect();
+    let eval = |extra: Value| -> Vec<[f64; 3]> {
+        let mut surface = json!({ "poles": poles, "degreeU": 3, "degreeV": 3, "params": params });
+        for (key, value) in extra.as_object().expect("object") {
+            surface[key] = value.clone();
+        }
+        let reply = call(json!({ "call": "evalNurbs", "surface": surface }));
+        serde_json::from_value(reply["points"].clone()).expect("points")
+    };
+    let plain = eval(json!({}));
+    for extra in [
+        json!({ "insertU": [[0.37, 1.0], [0.37, 1.0]], "insertV": [[0.61, 2.0]] }),
+        json!({ "elevateU": 5, "elevateV": 4 }),
+        json!({ "insertU": [[0.25, 1.0]], "elevateV": 6 }),
+    ] {
+        let changed = eval(extra.clone());
+        let worst = plain
+            .iter()
+            .zip(&changed)
+            .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt())
+            .fold(0.0_f64, f64::max);
+        println!("{extra}: worst {worst:e} mm");
+        assert!(worst <= 1e-9, "{extra} moved the surface {worst} mm");
+    }
+}

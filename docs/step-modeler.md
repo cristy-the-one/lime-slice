@@ -276,6 +276,33 @@ The engine builds four ops that boxes and cylinders cannot: a profile pushed or 
 
 `tests/sketch.rs`, `tests/extrude_extent.rs`, `tests/loft.rs`, `tests/loops.rs`, `tests/shell.rs`, `tests/faces.rs`, and `tests/feature_edges.rs` check each volume against one worked out by hand, each refusal, and a replay. `extrude_extent.rs` is the second depth, the draft (a 5° frustum on a 10 mm square pushed 10 mm), and an extrude up to a slanted face. `tests/loops.rs` is a washer (a circle with a circular hole) and a rounded rectangle, each against its exact area times the depth, and the refusals for an open loop, crossing loops, and a hole outside the outline. Its second test puts a second depth and a draft on loops: a circle 6 up and 4 down is a 10 mm cylinder, a 5° draft is a frustum, the owner's centred 8.2 mm with 3° is a frustum leaning one way, a closed spline drafts the same way, a draft that closes the circle is refused, a centred 10° draft on a washer matches its two frustums, and one that closes the hole says so.
 
+## Organic surfaces (7.2.0)
+
+Milestones S1 to S5 of `docs/plan-organic-surfaces.md`; S6 (a direct NURBS surface) is in "NURBS surfaces (S6, 7.2.0)" below. The new steps are kernel ops in `crates/lime-model-occt/src/tree/ops.rs`, built in `kernel.cpp` and `tree.cpp`, stored in the History tree and the `.lime` file like any other step.
+
+In the app:
+
+- **Look menu.** Shading is Normal, Step (colour by step), Zebra (stripe count and direction) or Curvature (bend radius with a warning threshold, Gauss or Mean). Surface grid draws the faces' isoparametric lines. Normals on Open CASCADE parts are the kernel's analytic normals.
+- **Sketch spline.** Control-point mode (exact NURBS, the default) or Through-point mode, a curvature comb, and on a selected control point its weight, a sharp crease and insert knot. The sketch's NURBS evaluator (`src/modeling/nurbs-eval.ts`) matches Open CASCADE within 1e-6 mm.
+- **Fillet panel.** Profile Circular G1 (default), Smooth G2, or Conic with ρ; Variable radius sets start, middle and end radii along the edge.
+- **Open sheets.** A part that is an open sheet shows a bar with Thicken and Cap & Sew, and a Sheet chip on its History row. Patch and Blend show on the rail only for an open sheet (both are in the Features menu); a patch on a closed solid is refused.
+
+Only over MCP and recipes (`lime_recipe` API 1.18; the ops and fields are in `docs/mcp-server.md`, "Organic surfaces"): creating a sheet (`sheet`: extrude, revolve, loft or planar from 3D curves), the kernel sweep along a 3D spine (`sweep` with `spine`, transitions, frame modes, scale and twist), the loft v2 options (apex sections, guides, start and end conditions, closed, smoothing, maxDegree), `trimSplit`, `replaceFace` and `splitFace` (the cutting or replacing sheet is built from curves, not a sculpted surface), and `patch` and `blendSurface` on such sheets. The app opens a part built that way and replays its steps, but has no tool that makes them.
+
+`model_check {surfaces: true}` (MCP) and the Look menu read the same kernel inspection: G0, G1 and G2 per shared edge (gap in mm, normal angle, curvature jump; G2 when the jump is at most 1e-3 mm⁻¹), sharp vertices, and each face's NURBS health. The edge list holds at most 256 rows, the worst first chosen; the counts cover every edge.
+
+### Meshes
+
+The kernel's display mesh, with a finer angle on curved faces and analytic normals, is made only when a request asks for it with `meshQuality: "display"`, and only the Model view asks; those replies carry `normals`. Anything committed to the plate, sliced or exported uses the same mesh as 7.1.2.
+
+### Open sheets on the plate
+
+An open sheet commits to the plate as a sheet: its committed History step carries `sheet: true` (the app's `isOpenSheet`: not a closed solid, with faces and open borders, and not the root of a STEP import). Prepare marks it, and Slice and Export stop on it until it is thickened or capped and sewn. Over MCP the same mark stops `slice_start`, `gcode_export` and `export_3mf` with code `open-sheet`.
+
+### Opening a 7.2.0 project in 7.1.2 or older
+
+A project that uses a new step kind (a sweep with a spine, `sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch`, `blendSurface`) or a new field on an old step (a fillet's `continuity`, `rho` and `variable`; a loft's apex sections, `guides`, `startCondition`, `endCondition`, `closed`, `smoothing` and `maxDegree`; a `nurbs` profile or curve segment; a sketch spline drawn by control points) is saved as project version 5. Since 3.3.0 every release reads project versions up to 4 and refuses a newer file before reading it, with "This project is version 5. This app opens up to version 4." (`applyMigrations`, `if (version > target)`, in `src/project.ts` and since 5.7.0 in `src/project-envelope.ts`; checked at v3.3.0, v5.6.1, v5.7.0, v7.0.0, v7.1.1 and v7.1.2). Releases 2.7.0 to 3.2.x refuse it the same way, saying "up to version 3", and 2.0.0 to 2.6.x "up to version 2". So no released version opens a version 5 project and misreads it; the MCP server's `project_open` uses the same decoder. A project with none of the new steps or fields is still written as version 4, byte for byte as 7.1.2 writes it, and opens there. Without the version, 7.1.2 would have opened such an object as its saved mesh with its History dropped, and dropped the new fillet and loft fields without a word.
+
 ## NURBS surfaces (S6, 7.2.0)
 
 `nurbsSurface` is a kernel op (`crates/lime-model-occt/src/tree/ops.rs`, `build_nurbs_surface` in `kernel.cpp`): a grid of poles, one row per U index, 2 to 64 each way, with optional weights (each above 0), a degree in U and in V (1 to 8, 3 when left out), and clamped or periodic knots (a closed direction needs at least 3 poles). The result is an open sheet; the kernel refuses it on a closed solid. A part starts from one as a feature root, the way the app's NURBS tool and `solid_new {feature}` open it.

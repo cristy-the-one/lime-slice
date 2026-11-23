@@ -39,6 +39,15 @@ sources:
   - id: draft-kernel
     resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/crates/lime-model-occt/cpp/kernel.cpp
     title: crates/lime-model-occt/cpp/kernel.cpp (03b1c1d6)
+  - id: organic-ops
+    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/organic-surfaces/crates/lime-model-occt/src/tree/ops.rs
+    title: crates/lime-model-occt/src/tree/ops.rs (feature/organic-surfaces)
+  - id: organic-plan
+    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/organic-surfaces/docs/plan-organic-surfaces.md
+    title: docs/plan-organic-surfaces.md (feature/organic-surfaces)
+  - id: organic-file
+    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/organic-surfaces/src/model-tree-file.ts
+    title: src/model-tree-file.ts (feature/organic-surfaces)
   - id: s6-ops
     resource: https://github.com/cristy-the-one/lime-slice/blob/organic-surfaces/s6-nurbs-surface/crates/lime-model-occt/src/tree/ops.rs
     title: crates/lime-model-occt/src/tree/ops.rs (organic-surfaces/s6-nurbs-surface)
@@ -58,6 +67,8 @@ The solver in `src/sketch/solve.ts` is Levenberg-Marquardt over points, circle r
 History ops in `ModelOp` are `boolean`, `hole`, `split`, `fillet`, `chamfer`, `scale`, `join`, `root`, `extrude`, `revolve`, `loft`, `shell`, `group`, `faceExtrude`, `moveFaces`, and `partition`. Boolean ops are `fuse`, `cut`, and `common`.[^tree]
 
 Since 6.13.0 `ModelOp` also has `draft`: `{kind: "draft", faces, angleDeg, pull?, neutral?}` tilts 1 to 50 existing flat, cylindrical or conical faces by −30° to 30° (not 0). A positive angle opens them toward `pull` (default +Z) about the neutral plane: a flat face, an `{origin, normal}` plane, or by default the plane through the faces' lowest point along the pull. History labels it "Draft 2 walls 3°".[^draft] The kernel builds it with `BRepOffsetAPI_DraftAngle`, refuses a floor and a face it cannot draft, naming the face by its index on the solid, and a group cannot contain one.[^draft-kernel] The app's face menu and the `model-draft` command open the Draft tool (angle and pull). A project saved with a `draft` step opens in 6.12 as a mesh with its History dropped, since 6.12 cannot read the op.[^draft]
+
+Since 7.2.0 (organic surfaces S1 to S5) the kernel also has `sweep` along a 3D spine (`Curve3D`: polyline, spline, nurbs, segments or edges), `sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch` and `blendSurface`; a profile loop takes a `nurbs` segment; a loft takes apex sections, guides, start and end conditions, `closed`, `smoothing` and `maxDegree` 2 to 10; and a fillet takes `continuity` g1, g2 or conic, `rho` and `variable` stations.[^organic-ops] In the app these are the Look menu's Zebra, Curvature and Surface grid, the Sketch spline's control-point mode, the Fillet panel's Profile and Variable radius, and the open-sheet bar (Thicken, Cap & Sew) with Patch and Blend; creating a sheet, the spine sweep, the loft options and trim, replace and split face are MCP and recipe only. S6 (a direct NURBS surface) is not in 7.2.0.[^organic-plan] A project with one of the new step kinds opens in 7.1.2 as its saved mesh with its History dropped, and new fillet and loft fields are dropped there without a word.[^organic-file]
 
 Primitive kinds are `box`, `cylinder`, `sphere`, `ellipsoid`, `cone`, `torus`, `wedge`, `polygon`, and `tube`.[^primitive]
 
@@ -88,5 +99,8 @@ Open CASCADE is required for Model. See [Engine](../architecture/engine.md). Wit
 [^readme]: README.md
 [^draft]: src/model-tree.ts (03b1c1d6)
 [^draft-kernel]: crates/lime-model-occt/cpp/kernel.cpp (03b1c1d6)
+[^organic-ops]: crates/lime-model-occt/src/tree/ops.rs (feature/organic-surfaces)
+[^organic-plan]: docs/plan-organic-surfaces.md (feature/organic-surfaces)
+[^organic-file]: src/model-tree-file.ts (feature/organic-surfaces)
 [^s6-ops]: crates/lime-model-occt/src/tree/ops.rs (organic-surfaces/s6-nurbs-surface)
 [^s6-tool]: src/app/model/nurbs-sculpt.ts (organic-surfaces/s6-nurbs-surface)

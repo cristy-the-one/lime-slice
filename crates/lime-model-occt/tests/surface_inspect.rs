@@ -46,7 +46,9 @@ fn analytic_normals_match_exact_sphere_and_box_surfaces() {
         "call": "open",
         "key": "s1-sphere",
         "primitive": { "primitive": "sphere", "origin": [10.0, -5.0, 20.0], "radius": 15.0 },
-        "chordMm": 0.05
+        "chordMm": 0.05,
+        // Analytic normals are the Model view's display mesh only.
+        "meshQuality": "display"
     }));
     let positions = decode_f32(reply["positions"].as_str().expect("positions"));
     let normals = decode_f32(reply["normals"].as_str().expect("normals"));
@@ -108,6 +110,15 @@ fn surface_inspect_curvatures_isoparms_and_continuity() {
     let mean = decode_f32(inspect["mean"].as_str().expect("mean"));
     let iso = decode_f32(inspect["isoPoints"].as_str().expect("isoPoints"));
     assert_eq!(rmin.len(), positions.len() / 3);
+    // The display mesh's curvature follows the display mesh, corner for corner.
+    let shown = ok(json!({ "call": "goto", "key": key, "node": 1, "chordMm": 0.05, "meshQuality": "display" }));
+    let shown_positions = decode_f32(shown["positions"].as_str().expect("positions"));
+    let shown_inspect = ok(json!({
+        "call": "surfaceInspect", "key": key, "node": 1, "chordMm": 0.05, "curvature": true, "meshQuality": "display"
+    }));
+    let shown_rmin = decode_f32(shown_inspect["minRadiusMm"].as_str().expect("minRadiusMm"));
+    assert_eq!(shown_rmin.len(), shown_positions.len() / 3);
+    assert!(shown_positions.len() > positions.len(), "the display mesh is the finer one");
     assert_eq!(gaussian.len(), positions.len() / 3);
     assert_eq!(mean.len(), positions.len() / 3);
     assert!(iso.len() >= 12 && iso.len() % 6 == 0, "expected isoparm segments on fillet face, got {}", iso.len());

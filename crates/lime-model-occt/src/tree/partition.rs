@@ -298,7 +298,8 @@ pub(super) fn piece_replies(
         .iter_mut()
         .enumerate()
         .map(|(index, piece)| match piece_keys.get(index) {
-            Some(Some(_)) => piece.reply(ROOT, chord).map(Some),
+            // A piece goes to the plate: always the standard mesh, whatever the call asked for its own reply.
+            Some(Some(_)) => piece.reply(ROOT, chord, false).map(Some),
             _ => Ok(None),
         })
         .collect()

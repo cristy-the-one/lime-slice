@@ -113,6 +113,51 @@ check(
   JSON.stringify(withSurfaces.warnings),
 );
 
+// 3. Lists cut short say so; surfaces asked but not read say why.
+{
+  const row = (edge: number) => ({ edge, faces: [0, 1], kind: "G0", gapMm: 0, angleDeg: 90, curvatureJump: 0, mid: [0, 0, 0] });
+  const vertex = (i: number) => ({ at: [i, 0, 0], faces: [0, 1], angleDeg: 90 });
+  let answer: Record<string, unknown> = {};
+  const listing = {
+    ...baseEngine,
+    modelTree(request: string): string | Promise<string> {
+      const parsed = JSON.parse(request) as { call?: string };
+      return parsed.call === "surfaceInspect" ? JSON.stringify(answer) : baseEngine.modelTree(request);
+    },
+  };
+  const health = { faces: 1, kinds: { plane: 1, cylinder: 0, cone: 0, sphere: 0, torus: 0, bspline: 0, bezier: 0, other: 0 }, maxUDegree: 0, maxVDegree: 0, maxPoles: 0, rationalFaces: 0, highDegreeFaces: 0, heavyFaces: 0 };
+  const counts = { sharedEdges: 300, g2: 0, g1: 0, g0: 300, gaps: 0, maxGapMm: 0, worstSmoothAngleDeg: 0, worstCurvatureJump: 0, notable: [] };
+  const many = new Session(listing);
+  const part = (await many.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 })).object as string;
+
+  answer = { id: 0, continuity: { ...counts, edges: Array.from({ length: 256 }, (_, i) => row(i)), sharpVertices: Array.from({ length: 70 }, (_, i) => vertex(i)) }, surfaceHealth: health };
+  const cut = await many.call("model_check", { object: part, surfaces: true });
+  const continuity = cut.continuity as { edges?: unknown[]; edgesTotal?: number; sharpVertices?: unknown[]; sharpVerticesTotal?: number; note?: string };
+  check(
+    "a continuity list cut at 256 rows says it lists 256 of 300",
+    continuity.edges?.length === 256 && continuity.edgesTotal === 300 && String(continuity.note).includes("lists 256 of the 300 sampled shared edges"),
+    JSON.stringify({ edgesTotal: continuity.edgesTotal, note: continuity.note }),
+  );
+  check(
+    "sharp vertices are capped at 64 with the total",
+    continuity.sharpVertices?.length === 64 && continuity.sharpVerticesTotal === 70 && String(continuity.note).includes("first 64 of 70"),
+    JSON.stringify({ n: continuity.sharpVertices?.length, total: continuity.sharpVerticesTotal }),
+  );
+
+  answer = { id: 0, continuity: { ...counts, sharedEdges: 3, g0: 3, edges: [row(0), row(1), row(2)] }, surfaceHealth: health };
+  const whole = await many.call("model_check", { object: part, surfaces: true });
+  const full = whole.continuity as { edgesTotal?: number; note?: string };
+  check("a whole list has no total and no note", full.edgesTotal === undefined && full.note === undefined, JSON.stringify(full));
+
+  answer = { error: "Open CASCADE could not read this face." };
+  const failedRead = await many.call("model_check", { object: part, surfaces: true });
+  check(
+    "surfaces asked but not read says why, and the check still answers",
+    failedRead.ok === true && failedRead.continuity === undefined && String(failedRead.surfaces).startsWith("Not inspected: the modeler could not read this part's surfaces (Open CASCADE could not read this face.)"),
+    JSON.stringify(failedRead.surfaces),
+  );
+}
+
 if (failed) {
   console.error(`${failed} checks failed`);
   process.exit(1);

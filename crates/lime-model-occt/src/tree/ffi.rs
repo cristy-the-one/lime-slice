@@ -545,6 +545,15 @@ extern "C" {
     #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_fault(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_test_place(
+        shape: *const RawShape,
+        mirror: c_int,
+        offset: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_test_last_fill() -> *mut c_char;
+    #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_nurbs(shape: *const RawShape, error: *mut *mut c_char) -> *mut RawShape;
     #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_mesh(shape: *mut RawShape, chord: f64, error: *mut *mut c_char) -> *mut c_char;
@@ -588,6 +597,15 @@ extern "C" {
         out: *mut f64,
         error: *mut *mut c_char,
     ) -> c_int;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_eval_built_nurbs_surface(
+        blob: *const f64,
+        len: c_int,
+        params: *const f64,
+        nparams: c_int,
+        out: *mut f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
     pub(super) fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
     // --- A10.
     pub(super) fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;
@@ -613,6 +631,7 @@ extern "C" {
     pub(super) fn lime_tree_mesh(
         shape: *mut RawShape,
         chord: f64,
+        display: c_int,
         view: *mut MeshView,
         error: *mut *mut c_char,
     ) -> *mut RawMesh;
@@ -623,6 +642,7 @@ extern "C" {
         want_curvature: c_int,
         want_isoparms: c_int,
         iso_count: c_int,
+        display: c_int,
         view: *mut SurfaceInspectView,
         error: *mut *mut c_char,
     ) -> *mut RawSurfaceInspect;

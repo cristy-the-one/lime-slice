@@ -1084,7 +1084,7 @@ fn soup(shape: &mut Shape) -> Vec<f64> {
     };
     let mut error: *mut c_char = std::ptr::null_mut();
     // SAFETY: `shape` is held for this call; the kernel fills `view` with the mesh's own arrays.
-    let raw = unsafe { lime_tree_mesh(shape.0.as_ptr(), 0.05, &mut view, &mut error) };
+    let raw = unsafe { lime_tree_mesh(shape.0.as_ptr(), 0.05, 0, &mut view, &mut error) };
     let _ = take_text(error);
     let Some(mesh) = NonNull::new(raw).map(Mesh) else {
         return Vec::new();

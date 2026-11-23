@@ -2765,10 +2765,11 @@ int lime_tree_edge(LimeShape* shape, int index, double* mid, double* length) {
 
 /// The tessellation for the Model reply, read through `view` until lime_tree_mesh_free, and the
 /// shape's description, which lives as long as the shape. Null, and `error` set, when Open CASCADE fails.
-Mesh* lime_tree_mesh(LimeShape* shape, double chord, LimeMeshView* view, char** error) {
+/// `display` non-zero: the Model view's finer mesh with normals; 0: the mesh that is committed, sliced and exported.
+Mesh* lime_tree_mesh(LimeShape* shape, double chord, int display, LimeMeshView* view, char** error) {
     try {
         LIME_CATCH_FAULTS;
-        auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord));
+        auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord, display != 0));
         if (shape->held.about.empty()) {
             shape->held.about = describe(shape->held);
         }
@@ -2803,12 +2804,13 @@ SurfaceInspect* lime_tree_surface_inspect(
     int want_curvature,
     int want_isoparms,
     int iso_count,
+    int display,
     LimeSurfaceInspectView* view,
     char** error) {
     try {
         LIME_CATCH_FAULTS;
         auto data = std::make_unique<SurfaceInspect>(
-            surface_inspect(shape->held, chord, want_curvature != 0, want_isoparms != 0, iso_count));
+            surface_inspect(shape->held, chord, want_curvature != 0, want_isoparms != 0, iso_count, display != 0));
         view->min_radius_mm = reinterpret_cast<const unsigned char*>(data->min_radius_mm.data());
         view->min_radius_bytes = data->min_radius_mm.size() * sizeof(float);
         view->gaussian = reinterpret_cast<const unsigned char*>(data->gaussian.data());
@@ -3259,16 +3261,20 @@ LimeShape* lime_tree_trim_split(
             set_error(error, message.empty() ? "Open CASCADE could not split with this surface." : message);
             return nullptr;
         }
+        // A split of a sheet is the face the cutter left. It has no solid volume,
+        // so adopting it would throw the piece away.
+        std::unique_ptr<LimeShape> kept_out = has_solid(kept)
+            ? adopt(kept, volume, "Open CASCADE could not split with this surface.", error, from)
+            : hold(kept, 0.0);
+        if (!kept_out) {
+            return nullptr;
+        }
+        // Only once the kept piece is held: a refusal hands back no other piece to free.
         if (other_out != nullptr && !other_shape.IsNull()) {
             double other_vol = has_solid(other_shape) ? volume_of(other_shape) : 0.0;
             *other_out = hold(other_shape, other_vol).release();
         }
-        // A split of a sheet is the face the cutter left. It has no solid volume,
-        // so adopting it would throw the piece away.
-        if (!has_solid(kept)) {
-            return hold(kept, 0.0).release();
-        }
-        return adopt(kept, volume, "Open CASCADE could not split with this surface.", error, from).release();
+        return kept_out.release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -3378,6 +3384,10 @@ LimeShape* lime_tree_split_face(
         if (out.IsNull()) {
             set_error(error, message.empty() ? "Open CASCADE could not split this face." : message);
             return nullptr;
+        }
+        // A sheet split stays a sheet: it has no solid volume to adopt.
+        if (!has_solid(from->held.shape)) {
+            return hold(out, 0.0).release();
         }
         return adopt(out, volume, "Open CASCADE could not split this face.", error, from).release();
     } catch (const Standard_Failure& failure) {
@@ -4028,6 +4038,40 @@ int lime_tree_solids(const LimeShape* shape, LimeShape** out, int max) {
 #ifdef LIME_OCCT_TEST_HOOKS
 /// Debug builds only, for tests: the shape with every surface and curve converted to NURBS, as a STEP file may store a
 /// flat face or a straight edge.
+/// Debug builds only, for tests: step's shape mirrored in the plane x = 0 (`mirror`, geometry rebuilt, so every plane
+/// has an indirect placement), or moved by `offset` as a TopLoc_Location on the shape (geometry untouched).
+LimeShape* lime_tree_test_place(const LimeShape* shape, int mirror, const double* offset, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        TopoDS_Shape made;
+        if (mirror != 0) {
+            gp_Trsf trsf;
+            trsf.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)));
+            BRepBuilderAPI_Transform transform(shape->held.shape, trsf, Standard_True);
+            made = transform.Shape();
+        } else {
+            gp_Trsf trsf;
+            trsf.SetTranslation(gp_Vec(offset[0], offset[1], offset[2]));
+            made = shape->held.shape.Moved(TopLoc_Location(trsf));
+        }
+        if (!has_solid(made)) {
+            return hold(made, 0.0).release();
+        }
+        return adopt(made, volume_of(as_solid(made)), "Open CASCADE did not place the shape", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// Debug builds only, for tests: the last Hermite patch or blend's own measure, as JSON (kernel.cpp note_last_fill).
+char* lime_tree_test_last_fill() {
+    return alloc(last_fill_report());
+}
+
 LimeShape* lime_tree_test_nurbs(const LimeShape* shape, char** error) {
     try {
         LIME_CATCH_FAULTS;
@@ -4233,6 +4277,39 @@ int lime_tree_eval_nurbs_surface(
                 message)) {
             set_error(error, message.empty() ? "Open CASCADE did not evaluate the NURBS surface." : message);
             return 0;
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+
+/// Debug builds only, for tests: points on the surface `nurbsSurface` commits for `blob` (k1.rs encode_nurbs_blob), at
+/// each `(u, v)` of `params`, into `out` (three numbers a point). 0, and `error` set, when the op would refuse.
+int lime_tree_eval_built_nurbs_surface(const double* blob, int len, const double* params, int nparams, double* out, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        const TopoDS_Shape shape = build_nurbs_surface(TopoDS_Shape(), blob, len, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "This NURBS surface could not be built." : message);
+            return 0;
+        }
+        TopExp_Explorer faces(shape, TopAbs_FACE);
+        if (!faces.More()) {
+            set_error(error, "This NURBS surface could not be built.");
+            return 0;
+        }
+        const Handle(Geom_Surface) surface = BRep_Tool::Surface(TopoDS::Face(faces.Current()));
+        for (int i = 0; i < nparams; ++i) {
+            const gp_Pnt point = surface->Value(params[i * 2], params[i * 2 + 1]);
+            out[i * 3] = point.X();
+            out[i * 3 + 1] = point.Y();
+            out[i * 3 + 2] = point.Z();
         }
         return 1;
     } catch (const Standard_Failure& failure) {

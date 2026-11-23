@@ -9,7 +9,7 @@ import { evaluateMember, memberFields, memberPose, samePose } from "../../src/as
 import { relativePose } from "../../src/model-space.ts";
 import { formatMm } from "../../src/model-plane.ts";
 import { editRequest } from "../../src/model-request.ts";
-import { solidView } from "../../src/modeling/model-calls.ts";
+import { solidView } from "./sheet.ts";
 import { dropped, pathTo, withNode, type ModelOp, type ModelTree, type NodeId, type PluginStamp } from "../../src/model-tree.ts";
 import { replayedTree, replayOps } from "../../src/recipe/rebuild.ts";
 import { markedRun, runEndingAt, runsOnPath, sameFingerprint, sameValues, stampValue, type StampedRun } from "../../src/plugin-step.ts";

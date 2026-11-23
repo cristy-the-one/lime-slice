@@ -18,7 +18,8 @@
  */
 import { gotoRequest } from "../../src/model-request.ts";
 import { opBox, unionBox } from "../../src/modeling/anchors.ts";
-import { solidView, type SolidView } from "../../src/modeling/model-calls.ts";
+import { type SolidView } from "../../src/modeling/model-calls.ts";
+import { solidView } from "./sheet.ts";
 import type { ModelOp } from "../../src/model-tree.ts";
 import { CHORD } from "./shared.ts";
 import type { Session } from "../session.ts";

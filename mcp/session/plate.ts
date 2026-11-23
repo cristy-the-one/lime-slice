@@ -379,6 +379,7 @@ function plateList(this: Session, input: Record<string, unknown>): Record<string
       ...(member?.held ? { held: true } : {}),
       ...(aligned !== null ? { aligned } : {}),
       scalePercent: obj.scale * 100,
+      ...(obj.sheet ? { sheet: true, sheetNote: "Open sheet: not printed. Thicken it or sew it shut to make a solid." } : {}),
       notes: this.plateNotes(obj, placed.bounds),
     };
   });
@@ -790,6 +791,7 @@ async function closeMeshHoles(this: Session, input: Record<string, unknown>): Pr
   delete obj.brep;
   delete obj.treeStale;
   delete obj.commitWarning;
+  if (report.openAfter === 0) delete obj.sheet;
   obj.supportEdits = [];
   obj.supportPaint = [];
   obj.seamPaint = [];

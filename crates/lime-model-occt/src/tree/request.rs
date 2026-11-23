@@ -363,6 +363,20 @@ pub(super) enum Request {
     /// for a test that opens a flat face stored as a B-spline.
     #[cfg(lime_occt_test_hooks)]
     TestNurbs { key: String, node: NodeId },
+    /// Debug builds only: step `node`'s shape mirrored in x = 0 (`mirror`), or moved by `offset` as a location, as
+    /// BinTools bytes in base64, for a test that opens it.
+    #[cfg(lime_occt_test_hooks)]
+    TestPlace {
+        key: String,
+        node: NodeId,
+        #[serde(default)]
+        mirror: bool,
+        #[serde(default)]
+        offset: [f64; 3],
+    },
+    /// Debug builds only: the last Hermite patch or blend's own measure at its stations.
+    #[cfg(lime_occt_test_hooks)]
+    TestLastFill,
     /// Debug builds only: the cheap checks of a text build next to the exact calls they stand in for, on the face of step `node`'s solid
     /// nearest `point`: the classifier, the edge gap, the validity checks, and the whole solid's volume.
     #[cfg(lime_occt_test_hooks)]
@@ -546,6 +560,20 @@ pub(super) struct EvalNurbsSurface {
     pub(super) knots_v: Vec<f64>,
     #[serde(default)]
     pub(super) mults_v: Vec<i32>,
+    /// With any of the fields below, the surface evaluated is the one `nurbsSurface` commits: built as the op builds
+    /// it, with Open CASCADE's own knot insertion and degree elevation, and periodic knots.
+    #[serde(default)]
+    pub(super) periodic_u: bool,
+    #[serde(default)]
+    pub(super) periodic_v: bool,
+    #[serde(default)]
+    pub(super) insert_u: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub(super) insert_v: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub(super) elevate_u: Option<u32>,
+    #[serde(default)]
+    pub(super) elevate_v: Option<u32>,
     pub(super) params: Vec<[f64; 2]>,
 }
 

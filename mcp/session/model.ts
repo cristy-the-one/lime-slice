@@ -10,7 +10,9 @@ import { facePlane, formatMm } from "../../src/model-plane.ts";
 import { gearOf, rootSpec, type PrimitiveSpec } from "../../src/model-primitive.ts";
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
 import { decodeSurfaceInspect } from "../../src/model-reply.ts";
-import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, solidView, stepGuard } from "../../src/modeling/model-calls.ts";
+import { listedContinuity, organicFirstProblem, organicProblem } from "../organic-checks.ts";
+import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, stepGuard } from "../../src/modeling/model-calls.ts";
+import { solidView } from "./sheet.ts";
 import { bakeOp, onFaceIndex } from "../../src/modeling/bake.ts";
 import { checkReply } from "../../src/modeling/part-reads.ts";
 import { exprLeaves } from "../../src/modeling/links.ts";
@@ -666,7 +668,10 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
   if (!obj.solid || obj.solid.positions.length < 9) return refuse("solid-unreadable", "This solid could not be read.");
   const printer = this.printer();
   const base = checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm, belt: printer.kind === "belt" ? printer.belt : null }, input, obj.solid.triangles);
-  if (input.surfaces !== true || base.ok !== true || !obj.tree) return base;
+  if (input.surfaces !== true || base.ok !== true) return base;
+  // surfaces was asked: when it cannot be given, the reply says why instead of answering as a plain check.
+  const notInspected = (why: string) => ({ ...base, surfaces: `Not inspected: ${why}` });
+  if (!obj.tree) return notInspected("this part has no solid history, only a mesh, so there are no surfaces to read.");
   const raw = await this.treeCall({
     call: "surfaceInspect",
     key: obj.tree.key,
@@ -676,7 +681,7 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
     isoparms: false,
   }, "check");
   const decoded = decodeSurfaceInspect(raw);
-  if (typeof decoded === "string") return base;
+  if (typeof decoded === "string") return notInspected(`the modeler could not read this part's surfaces (${decoded}).`);
   const warnings = Array.isArray(base.warnings) ? [...(base.warnings as string[])] : [];
   if (decoded.continuity.gaps > 0) {
     warnings.push(`${decoded.continuity.gaps} shared edge${decoded.continuity.gaps === 1 ? "" : "s"} have a surface gap (max ${decoded.continuity.maxGapMm.toFixed(3)} mm).`);
@@ -687,7 +692,7 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
   }
   return {
     ...base,
-    continuity: decoded.continuity,
+    continuity: listedContinuity(decoded.continuity),
     surfaceHealth: decoded.surfaceHealth,
     ...(warnings.length > 0 ? { warnings } : {}),
   };
@@ -971,7 +976,7 @@ async function featureSolidNew(this: Session, input: Record<string, unknown>): P
   if (feature.kind !== "nurbsSurface" && feature.kind !== "sheet") {
     return refuse("bad-op", "solid_new's feature is a nurbsSurface or a sheet. Start other parts from a primitive.");
   }
-  const problem = validate(OP_SCHEMA, feature, "feature") ?? nurbsSurfaceProblem(feature, "feature");
+  const problem = organicFirstProblem(feature, "feature") ?? validate(OP_SCHEMA, feature, "feature") ?? organicProblem(feature, "feature") ?? nurbsSurfaceProblem(feature, "feature");
   if (problem) return refuse("bad-op", problem);
   const ctx = { pose: IDENTITY_POSE, solid: null, plane: GLOBAL_WORKPLANE, expand: () => ({ faces: [], faceBy: () => ({ reason: "A part that starts from a surface has no faces to pick yet." }) }) as never, nodeOf: () => null, hasNode: () => false };
   const baked = bakeOp(feature, ctx);

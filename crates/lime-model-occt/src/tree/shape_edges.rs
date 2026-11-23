@@ -295,7 +295,9 @@ impl Shape {
 
     /// The solid reply for node `id`: the tessellation's arrays as base64 of their little-endian
     /// bytes, its faces and edges as JSON, and the fingerprint. `docs/step-modeler.md` lists the fields.
-    pub(super) fn reply(&mut self, id: NodeId, chord: f64) -> Result<String, Failure> {
+    /// `display`: the Model view's finer mesh, with `normals`. Otherwise the mesh that is committed, sliced and exported,
+    /// with no `normals`.
+    pub(super) fn reply(&mut self, id: NodeId, chord: f64, display: bool) -> Result<String, Failure> {
         let mut view = MeshView {
             positions: std::ptr::null(),
             positions_bytes: 0,
@@ -310,7 +312,7 @@ impl Shape {
             meta: std::ptr::null(),
         };
         let mut error: *mut c_char = std::ptr::null_mut();
-        let raw = unsafe { lime_tree_mesh(self.0.as_ptr(), chord, &mut view, &mut error) };
+        let raw = unsafe { lime_tree_mesh(self.0.as_ptr(), chord, c_int::from(display), &mut view, &mut error) };
         let message = take_text(error);
         let mesh = NonNull::new(raw).map(Mesh).ok_or_else(|| {
             Failure::Message(message.unwrap_or_else(|| "Open CASCADE failed".into()))
@@ -359,6 +361,9 @@ impl Shape {
             "{{\"id\":{id},\"format\":\"{SOLID_FORMAT}\",{meta},\"fingerprint\":{fingerprint}"
         );
         for (name, bytes) in arrays {
+            if name == "normals" && !display {
+                continue;
+            }
             let _ = write!(out, ",\"{name}\":\"");
             base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut out);
             out.push('"');
@@ -375,6 +380,7 @@ impl Shape {
         curvature: bool,
         isoparms: bool,
         iso_count: i32,
+        display: bool,
     ) -> Result<String, Failure> {
         let mut view = SurfaceInspectView {
             min_radius_mm: std::ptr::null(),
@@ -395,6 +401,7 @@ impl Shape {
                 if curvature { 1 } else { 0 },
                 if isoparms { 1 } else { 0 },
                 iso_count,
+                c_int::from(display),
                 &mut view,
                 &mut error,
             )

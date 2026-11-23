@@ -509,7 +509,10 @@ pub enum Curve3D {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
     },
+    /// Written `through`, as the app, the MCP schema and saved projects write it, so the op the kernel echoes back is the
+    /// one the app reads. `points` is the older Rust spelling and still reads.
     Spline {
+        #[serde(rename = "through", alias = "points")]
         points: Vec<[f64; 3]>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
@@ -524,7 +527,8 @@ pub enum Curve3D {
         knots: Vec<f64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mults: Vec<u32>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        /// Written `closed`, as every caller writes it; `periodic` is the older Rust spelling and still reads.
+        #[serde(default, rename = "closed", alias = "periodic", skip_serializing_if = "std::ops::Not::not")]
         periodic: bool,
     },
     Segments {
@@ -547,13 +551,24 @@ pub enum SweepTransition {
 }
 
 /// Cross-section orientation along a sweep spine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SweepMode {
     #[default]
     CorrectedFrenet,
     Frenet,
     FixedBinormal { dir: [f64; 3] },
+    /// The app, the MCP schema and saved projects send an auxiliary spine this way. The sweep's own `auxSpine` field is
+    /// the older Rust spelling of the same thing; a sweep takes one or the other.
+    AuxSpine {
+        spine: Box<Curve3D>,
+        /// Match the two spines by arc length (default), not by parameter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        curvilinear: Option<bool>,
+        /// Keep the section touching the auxiliary spine (default false). Kept as sent, so the echo is what came in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep_contact: Option<bool>,
+    },
 }
 
 /// --- Organic surfaces S3 (U5): Fillet cross-section profile continuity.
@@ -1177,4 +1192,179 @@ pub struct LoftSection {
     /// S3: punctual point-apex section (first or last section only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apex: Option<[f64; 3]>,
+}
+
+#[cfg(test)]
+mod tests {
+    //! The curve spellings the TypeScript side writes (src/model-tree.ts `Curve3D`, src/modeling/bake.ts
+    //! `readCurve3DField`, mcp/schema.ts `curve3dField`): a spline's points are `through`, a closed NURBS is `closed`.
+    use super::{Curve3D, Op, SurfaceBoundary};
+    use serde_json::{json, Value};
+
+    fn spline() -> Value {
+        json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]], "closed": true })
+    }
+
+    fn nurbs() -> Value {
+        json!({
+            "kind": "nurbs",
+            "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+            "weights": [1.0, 0.7, 0.7, 1.0],
+            "degree": 3,
+            "closed": true
+        })
+    }
+
+    fn section() -> Value {
+        json!({ "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 2.0 })
+    }
+
+    fn check(curve: &Curve3D) {
+        match curve {
+            Curve3D::Spline { points, closed } => {
+                assert_eq!(points.len(), 3);
+                assert!(*closed);
+            }
+            Curve3D::Nurbs { poles, periodic, .. } => {
+                assert_eq!(poles.len(), 4);
+                assert!(*periodic, "a NURBS sent closed is built periodic");
+            }
+            other => panic!("unexpected curve {other:?}"),
+        }
+    }
+
+    fn op(value: Value) -> Op {
+        serde_json::from_value(value.clone()).unwrap_or_else(|err| panic!("{value}: {err}"))
+    }
+
+    #[test]
+    fn every_curve3d_field_reads_the_spellings_the_app_writes() {
+        for curve in [spline(), nurbs()] {
+            // Sweep spine and auxiliary spine.
+            match op(json!({ "kind": "sweep", "op": "fuse", "sections": [section()], "spine": curve, "auxSpine": curve })) {
+                Op::Sweep { spine, aux_spine, .. } => {
+                    check(&spine);
+                    check(aux_spine.as_deref().expect("auxSpine"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Loft guides.
+            match op(json!({ "kind": "loft", "op": "fuse", "sections": [section(), section()], "guides": [curve] })) {
+                Op::Loft { guides, .. } => check(&guides[0]),
+                other => panic!("{other:?}"),
+            }
+            // Split face curve.
+            match op(json!({ "kind": "splitFace", "faces": [0], "curve": curve, "direction": [0.0, 0.0, 1.0] })) {
+                Op::SplitFace { curve, .. } => check(&curve),
+                other => panic!("{other:?}"),
+            }
+            // Patch guides and a boundary's curve.
+            match op(json!({ "kind": "patch", "boundaries": [{ "curve": curve, "continuity": "g0" }], "guides": [curve] })) {
+                Op::Patch { boundaries, guides, .. } => {
+                    check(&guides[0]);
+                    check(boundaries[0].curve.as_ref().expect("curve"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Blend sides.
+            match op(json!({ "kind": "blendSurface", "a": { "curve": curve }, "b": { "curve": curve }, "continuity": "g1" })) {
+                Op::BlendSurface { a, b, .. } => {
+                    check(a.curve.as_ref().expect("a"));
+                    check(b.curve.as_ref().expect("b"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Sheet curves (flattened spec) and replaceFace's sheet.
+            match op(json!({ "kind": "sheet", "mode": "extrude", "curves": [curve], "dir": [0.0, 0.0, 1.0], "distance": 5.0 })) {
+                Op::Sheet { spec } => check(&spec.curves[0]),
+                other => panic!("{other:?}"),
+            }
+            match op(json!({ "kind": "replaceFace", "face": 0, "sheet": { "mode": "loft", "curves": [curve, curve] } })) {
+                Op::ReplaceFace { sheet, .. } => check(&sheet.curves[1]),
+                other => panic!("{other:?}"),
+            }
+            let side: SurfaceBoundary = serde_json::from_value(json!({ "curve": curve })).expect("boundary");
+            check(side.curve.as_ref().expect("curve"));
+            // The sweep mode the app and the MCP send for an auxiliary spine.
+            match op(json!({ "kind": "sweep", "op": "fuse", "sections": [section()], "spine": spline(),
+                "mode": { "kind": "auxSpine", "spine": curve, "curvilinear": false, "keepContact": true } })) {
+                Op::Sweep { mode: Some(super::SweepMode::AuxSpine { spine, curvilinear, keep_contact }), .. } => {
+                    check(&spine);
+                    assert_eq!(curvilinear, Some(false));
+                    assert_eq!(keep_contact, Some(true));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_old_rust_spellings_still_read_and_are_written_as_the_app_writes() {
+        let old: Curve3D = serde_json::from_value(json!({ "kind": "spline", "points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }))
+            .expect("points");
+        assert_eq!(serde_json::to_value(&old).expect("json"), json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }));
+        let old: Curve3D = serde_json::from_value(json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "periodic": true }))
+            .expect("periodic");
+        assert_eq!(
+            serde_json::to_value(&old).expect("json"),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "closed": true })
+        );
+    }
+
+    /// The kernel echoes the stored op in every apply reply, and the app keeps that echo in its tree
+    /// (src/app/model/apply.ts): it must be the JSON the app sent, byte for byte. Each op and each Curve3D kind as
+    /// src/model-tree.ts types it and src/modeling/bake.ts writes it.
+    #[test]
+    fn every_new_op_echoes_the_json_the_app_sent() {
+        let curves = [
+            json!({ "kind": "polyline", "points": [[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 5.0, 0.0]], "closed": true }),
+            json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]] }),
+            json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]], "closed": true }),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]] }),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+                "weights": [1.0, 0.7, 0.7, 1.0], "degree": 3, "knots": [0.0, 1.0], "mults": [4, 4], "closed": true }),
+            json!({ "kind": "segments", "start": [0.0, 0.0, 0.0], "segments": [
+                { "kind": "line", "to": [10.0, 0.0, 0.0] },
+                { "kind": "arc", "through": [12.0, 2.0, 0.0], "to": [10.0, 4.0, 0.0] },
+                { "kind": "spline", "through": [[8.0, 5.0, 0.0]], "to": [6.0, 4.0, 0.0] },
+                { "kind": "nurbs", "poles": [[4.0, 6.0, 0.0]], "weights": [1.0, 0.7, 1.0], "degree": 2, "to": [2.0, 4.0, 0.0] }
+            ] }),
+            json!({ "kind": "edges", "edges": [3, { "index": 4, "mid": [1.0, 2.0, 3.0], "lengthMm": 10.0 }] }),
+        ];
+        let section = json!({ "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 2.0 });
+        let echoes = |value: Value| {
+            let op: Op = serde_json::from_value(value.clone()).unwrap_or_else(|err| panic!("{value}: {err}"));
+            let back = serde_json::to_value(&op).expect("serializes");
+            assert_eq!(back, value, "the echo differs from what the app sent");
+        };
+        for curve in &curves {
+            echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curve }));
+            echoes(json!({ "kind": "sweep", "op": "cut", "sections": [section], "spine": curve, "transition": "right",
+                "mode": { "kind": "auxSpine", "spine": curve, "curvilinear": true, "keepContact": false },
+                "scale": [[0.0, 1.0], [1.0, 2.0]], "twistDeg": 45.0 }));
+            echoes(json!({ "kind": "loft", "op": "fuse", "sections": [section, section], "guides": [curve],
+                "startCondition": { "kind": "tangent", "dir": [0.0, 0.0, 1.0], "tension": 1.5 },
+                "endCondition": { "kind": "normal" }, "closed": true, "smoothing": true, "maxDegree": 6 }));
+            echoes(json!({ "kind": "sheet", "mode": "extrude", "curves": [curve], "dir": [0.0, 0.0, 1.0], "distance": 5.0, "symmetric": true }));
+            echoes(json!({ "kind": "splitFace", "faces": [0, { "index": 1, "mid": [0.0, 0.0, 1.0], "areaMm2": 4.0 }], "curve": curve, "direction": [0.0, 0.0, -1.0] }));
+            echoes(json!({ "kind": "patch", "boundaries": [{ "curve": curve, "continuity": "g1" }, { "edges": [1, 2], "face": 3 }],
+                "guides": [curve], "points": [[0.0, 0.0, 1.0]], "tolerance": 0.01 }));
+            echoes(json!({ "kind": "blendSurface", "a": { "curve": curve }, "b": { "edges": [5], "continuity": "g2" },
+                "continuity": "g2", "tensionA": 1.0, "tensionB": 2.0, "tolerance": 0.001 }));
+            echoes(json!({ "kind": "replaceFace", "face": 2, "sheet": { "mode": "loft", "curves": [curve, curve], "ruled": true } }));
+            echoes(json!({ "kind": "trimSplit", "sheet": { "mode": "revolve", "curves": [curve], "axisOrigin": [0.0, 0.0, 0.0], "dir": [0.0, 0.0, 1.0], "angleDeg": 180.0 }, "keep": "both" }));
+        }
+        echoes(json!({ "kind": "sheet", "mode": "planar", "curves": [curves[0]] }));
+        echoes(json!({ "kind": "sew", "tolerance": 0.05, "makeSolid": false, "capPlanar": true }));
+        echoes(json!({ "kind": "sew" }));
+        echoes(json!({ "kind": "thicken", "thickness": 2.0, "direction": "both", "tolerance": 0.001 }));
+        echoes(json!({ "kind": "trimSplit", "sheet": { "mode": "planar", "curves": [curves[0]] } }));
+        echoes(json!({ "kind": "fillet", "edges": [0, 1], "size": 2.0, "continuity": "conic", "rho": 0.6 }));
+        echoes(json!({ "kind": "fillet", "edges": [0], "size": 2.0, "continuity": "g2", "variable": [[0.0, 1.0], [1.0, 3.0]] }));
+        echoes(json!({ "kind": "loft", "op": "common", "sections": [section, { "origin": [0.0, 0.0, 10.0], "turn": [0.0, 0.0, 0.0], "apex": [0.0, 0.0, 10.0] }],
+            "endCondition": { "kind": "curvature", "dir": [0.0, 0.0, 1.0], "tension": 1.0 } }));
+        echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curves[0],
+            "mode": { "kind": "fixedBinormal", "dir": [1.0, 0.0, 0.0] }, "transition": "transformed" }));
+        echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curves[0], "mode": { "kind": "frenet" } }));
+    }
 }

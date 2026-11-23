@@ -24,7 +24,7 @@ use super::ffi::{
 #[cfg(lime_occt_test_hooks)]
 use super::ffi::{
     lime_tree_eval_nurbs_curve, lime_tree_eval_nurbs_surface, lime_tree_test_fault, lime_tree_test_mesh,
-    lime_tree_test_nurbs, lime_tree_test_text,
+    lime_tree_test_nurbs, lime_tree_test_place, lime_tree_test_text,
 };
 #[cfg(lime_occt_test_hooks)]
 use super::request::{EvalNurbsCurve, EvalNurbsSurface};
@@ -206,6 +206,16 @@ impl Shape {
         Shape::made(|error| unsafe { lime_tree_test_nurbs(self.raw(), error) })?.brep_bytes()
     }
 
+    /// Debug builds only: this shape mirrored in x = 0, or moved by `offset` as a location, as BinTools bytes.
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn test_place(&self, mirror: bool, offset: [f64; 3]) -> Result<Vec<u8>, String> {
+        // SAFETY: `self` is held for this call; `offset` holds the three numbers the kernel reads.
+        Shape::made(|error| unsafe {
+            lime_tree_test_place(self.raw(), c_int::from(mirror), offset.as_ptr(), error)
+        })?
+        .brep_bytes()
+    }
+
     /// Debug builds only: how good the solid's mesh at `chord` is (triangles, the farthest from the surface, the
     /// sharpest corner, slivers).
     #[cfg(lime_occt_test_hooks)]
@@ -296,6 +306,15 @@ pub(super) fn eval_nurbs_curve_points(curve: &EvalNurbsCurve) -> Result<Vec<[f64
 /// Points from `Geom_BSplineSurface::D0`, as `[[x, y, z], ...]`.
 #[cfg(lime_occt_test_hooks)]
 pub(super) fn eval_nurbs_surface_points(surface: &EvalNurbsSurface) -> Result<Vec<[f64; 3]>, String> {
+    if surface.periodic_u
+        || surface.periodic_v
+        || !surface.insert_u.is_empty()
+        || !surface.insert_v.is_empty()
+        || surface.elevate_u.is_some()
+        || surface.elevate_v.is_some()
+    {
+        return eval_built_nurbs_surface_points(surface);
+    }
     let nu = surface.poles.len();
     let nv = surface.poles.first().map(|row| row.len()).unwrap_or(0);
     if nu < 2 || nv < 2 || surface.params.is_empty() {
@@ -370,6 +389,54 @@ pub(super) fn eval_nurbs_surface_points(surface: &EvalNurbsSurface) -> Result<Ve
             knots_v,
             mults_v,
             surface.knots_v.len() as c_int,
+            params.as_ptr(),
+            surface.params.len() as c_int,
+            out.as_mut_ptr(),
+            &mut error,
+        )
+    };
+    let message = take_text(error);
+    if ok == 0 {
+        return Err(message.unwrap_or_else(|| "Open CASCADE did not evaluate the NURBS surface.".into()));
+    }
+    Ok(out.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect())
+}
+
+/// Points on the surface `nurbsSurface` commits for these numbers: the op's own blob and build, so Open CASCADE's knot
+/// insertion, degree elevation and periodic knots are what is evaluated.
+#[cfg(lime_occt_test_hooks)]
+fn eval_built_nurbs_surface_points(surface: &EvalNurbsSurface) -> Result<Vec<[f64; 3]>, String> {
+    let unsigned = |values: &[i32]| -> Result<Vec<u32>, String> {
+        values.iter().map(|&m| u32::try_from(m).map_err(|_| "A knot multiplicity is 1 or more.".to_string())).collect()
+    };
+    let mults_u = unsigned(&surface.mults_u)?;
+    let mults_v = unsigned(&surface.mults_v)?;
+    let degree = |d: i32| u32::try_from(d).ok().filter(|d| *d > 0);
+    let spec = super::k1::NurbsSurfaceSpec {
+        poles: &surface.poles,
+        weights: &surface.weights,
+        degree_u: degree(surface.degree_u),
+        degree_v: degree(surface.degree_v),
+        knots_u: &surface.knots_u,
+        knots_v: &surface.knots_v,
+        mults_u: &mults_u,
+        mults_v: &mults_v,
+        periodic_u: surface.periodic_u,
+        periodic_v: surface.periodic_v,
+        insert_u: &surface.insert_u,
+        insert_v: &surface.insert_v,
+        elevate_u: surface.elevate_u,
+        elevate_v: surface.elevate_v,
+    };
+    let blob = super::k1::encode_nurbs_blob(&spec)?;
+    let params: Vec<f64> = surface.params.iter().flatten().copied().collect();
+    let mut out = vec![0.0; surface.params.len() * 3];
+    let mut error: *mut c_char = std::ptr::null_mut();
+    // SAFETY: the vectors live for this call. The kernel writes `out` and, on failure, an error string we free.
+    let ok = unsafe {
+        super::ffi::lime_tree_eval_built_nurbs_surface(
+            blob.as_ptr(),
+            blob.len() as c_int,
             params.as_ptr(),
             surface.params.len() as c_int,
             out.as_mut_ptr(),

@@ -2,6 +2,7 @@
 
 import { FIRST_TOOLS, GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
 import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
+import { organicFirstProblem, organicProblem } from "./organic-checks.ts";
 import { nurbsSurfaceProblem } from "./nurbs-surface-checks.ts";
 import { ALIGN_RELATIONS } from "../src/place-snap.ts";
 
@@ -58,6 +59,29 @@ const edgeList = {
     },
   ],
 };
+
+/** edgeList with at most `most` indexes, the kernel's cap where the organic ops read edges. */
+const cappedEdges = (most: number, description?: string) => ({
+  ...edgeList,
+  ...(description ? { description } : {}),
+  oneOf: [{ ...edgeList.oneOf[0], maxItems: most }, ...edgeList.oneOf.slice(1)],
+});
+/** A face of the part: an index, or a selector. organic-checks.ts refuses anything else in a sentence. */
+const facePick = (description: string) => ({
+  description,
+  oneOf: [
+    { type: "integer", minimum: 0 },
+    {
+      type: "object",
+      properties: {
+        normal: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Outward normal." },
+        nearPoint: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Nearest to this point." },
+        withinDeg: { type: "number", minimum: 0, maximum: 180, description: "Normal tolerance, degrees." },
+        index: { type: "integer", minimum: 0, description: "Face index." },
+      },
+    },
+  ],
+});
 
 const label = { type: "string", maxLength: 80, description: "Step name." };
 const objectName = { type: "string", minLength: 1, maxLength: 120, description: "Name in the app's object list." };
@@ -402,8 +426,12 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0, textOk
   const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
   // A text with a font is one step: model_probe checks it (the session says when a text with no font is several).
   if (plain && typeof kind === "string" && COMPOSITE.has(kind) && !(textOk && kind === "text")) return `${path}.kind ${kind} is several steps. Use model_apply or model_apply_batch.`;
+  const first = organicFirstProblem(value, path);
+  if (first) return first;
   const problem = validate(op, value, path);
   if (problem) return problem;
+  const organic = organicProblem(value, path);
+  if (organic) return organic;
   if ((kind === "pattern" || kind === "mirror") && depth < 4) {
     const inner = (value as { op?: unknown }).op;
     const innerKind = inner && typeof inner === "object" ? (inner as { kind?: unknown }).kind : undefined;
@@ -528,7 +556,7 @@ const curve3dField = {
       required: ["kind", "edges"],
       properties: {
         kind: { const: "edges", description: "Existing solid edges as spine." },
-        edges: edgeList,
+        edges: cappedEdges(500),
       },
     },
   ],
@@ -556,7 +584,7 @@ const sweepSectionItem = {
 
 const loftBoundaryField = {
   type: "object",
-  description: "Start or end loft boundary condition: free, normal, tangent, or curvature.",
+  description: "Start or end loft boundary condition: free, normal, or tangent. A loft steers an end by its direction only.",
   oneOf: [
     { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "free", description: "Natural free end (default)." } } },
     {
@@ -576,16 +604,6 @@ const loftBoundaryField = {
         kind: { const: "tangent", description: "Explicit departure tangent vector." },
         dir: { ...vec3, description: "Tangent direction vector." },
         tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tangent tension (default 1)." },
-      },
-    },
-    {
-      type: "object",
-      additionalProperties: false,
-      required: ["kind"],
-      properties: {
-        kind: { const: "curvature", description: "Curvature-faired G2 boundary." },
-        dir: { ...vec3, description: "Optional tangent direction vector." },
-        tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tension (default 1)." },
       },
     },
   ],
@@ -688,7 +706,7 @@ const sketchOps = [
       endCondition: loftBoundaryField,
       closed: { type: "boolean", description: "Close the last section smoothly back to the first (periodic ring)." },
       smoothing: { type: "boolean", description: "Enable curvature-fairing B-spline smoothing." },
-      maxDegree: { type: "integer", minimum: 2, maximum: 12, description: "Cap maximum U/V B-spline degree (default 8)." },
+      maxDegree: { type: "integer", minimum: 2, maximum: 10, description: "Cap maximum U/V B-spline degree, 2 to 10 (default 8)." },
       label,
     },
   },
@@ -820,7 +838,7 @@ const draftOp = {
 // --- Organic surfaces S4: Open surfaces ("Sheets") and surface-to-solid operations. ---
 const sheetSpecFields = {
   mode: { enum: ["extrude", "revolve", "loft", "planar"], description: "Sheet builder: extrude, revolve, loft, or planar." },
-  curves: { type: "array", minItems: 1, maxItems: 100, items: curve3dField, description: "3D boundary or section curves." },
+  curves: { type: "array", minItems: 1, maxItems: 20, items: curve3dField, description: "3D boundary or section curves, at most 20." },
   dir: { ...vec3, description: "Extrude direction or revolve axis direction." },
   distance: { type: "number", minimum: -1000, maximum: 1000, description: "Extrude distance, mm." },
   axisOrigin: { ...vec3, description: "Revolve axis origin point." },
@@ -875,7 +893,7 @@ const sheetOps = [
     additionalProperties: false,
     required: ["kind", "sheet"],
     properties: {
-      kind: { const: "trimSplit", description: "Split a solid or sheet cleanly with a sculpted surface." },
+      kind: { const: "trimSplit", description: "Split a solid or sheet with a sheet built from curves (extrude, revolve, loft or planar)." },
       sheet: sheetSpecField,
       keep: { enum: ["above", "below", "both"], description: "Which side to keep: above (default), below, or both." },
       label,
@@ -886,8 +904,8 @@ const sheetOps = [
     additionalProperties: false,
     required: ["kind", "face", "sheet"],
     properties: {
-      kind: { const: "replaceFace", description: "Replace a solid face with a sculpted surface." },
-      face: { description: "Target face: an index, or {normal, nearPoint}." },
+      kind: { const: "replaceFace", description: "Replace a solid face with a sheet built from curves (extrude, revolve, loft or planar)." },
+      face: facePick("Target face: an index, or {normal, nearPoint}."),
       sheet: sheetSpecField,
       label,
     },
@@ -903,7 +921,7 @@ const sheetOps = [
         minItems: 1,
         maxItems: 50,
         description: "Faces to split: indexes, or {normal, nearPoint} selectors.",
-        items: { description: "Face index or selector." },
+        items: facePick("Face index or selector."),
       },
       curve: curve3dField,
       direction: { ...vec3, description: "Optional projection direction (default normal projection)." },
@@ -925,9 +943,9 @@ const sheetOps = [
           type: "object",
           additionalProperties: false,
           properties: {
-            edges: { ...edgeList, description: "Edges of this side, in order." },
+            edges: cappedEdges(64, "Edges of this side, in order, at most 64."),
             curve: curve3dField,
-            face: { description: "Support face: an index, or {normal, nearPoint}." },
+            face: facePick("Support face: an index, or {normal, nearPoint}."),
             continuity: { enum: ["g0", "g1", "g2"], description: "g0, g1, or g2. Absent: g1 on an edge that touches a face, otherwise g0." },
           },
         },
@@ -944,8 +962,8 @@ const sheetOps = [
     required: ["kind", "a", "b"],
     properties: {
       kind: { const: "blendSurface", description: "Bridge two open edges or chains with a sheet." },
-      a: { type: "object", additionalProperties: false, description: "Side A: edges and/or a curve.", properties: { edges: edgeList, curve: curve3dField, face: { description: "Support face." }, continuity: { enum: ["g0", "g1", "g2"], description: "This side's continuity." } } },
-      b: { type: "object", additionalProperties: false, description: "Side B: edges and/or a curve.", properties: { edges: edgeList, curve: curve3dField, face: { description: "Support face." }, continuity: { enum: ["g0", "g1", "g2"], description: "This side's continuity." } } },
+      a: { type: "object", additionalProperties: false, description: "Side A: edges and/or a curve.", properties: { edges: cappedEdges(64), curve: curve3dField, face: facePick("Support face."), continuity: { enum: ["g0", "g1", "g2"], description: "This side's continuity." } } },
+      b: { type: "object", additionalProperties: false, description: "Side B: edges and/or a curve.", properties: { edges: cappedEdges(64), curve: curve3dField, face: facePick("Support face."), continuity: { enum: ["g0", "g1", "g2"], description: "This side's continuity." } } },
       continuity: { enum: ["g1", "g2"], description: "G1 or G2. A side's own continuity wins." },
       tensionA: { type: "number", minimum: 0.15, maximum: 4, description: "Side A tension." },
       tensionB: { type: "number", minimum: 0.15, maximum: 4, description: "Side B tension." },
@@ -1276,8 +1294,8 @@ export const OP_SUMMARY: Record<string, string> = {
   sheet: "sheet {mode:extrude|revolve|loft|planar, curves, dir, distance, axisOrigin, angleDeg}: build or add an open surface sheet.",
   sew: "sew {tolerance, capPlanar, makeSolid}: sew open sheets into a shell or watertight solid.",
   thicken: "thicken {thickness, direction:normal|reverse|both}: thicken an open sheet into a printable solid wall.",
-  trimSplit: "trimSplit {sheet, keep:above|below|both}: cut a solid or sheet with a sculpted surface.",
-  replaceFace: "replaceFace {face, sheet}: replace a solid face with a sculpted NURBS surface.",
+  trimSplit: "trimSplit {sheet, keep:above|below|both}: cut a solid or sheet with a sheet built from curves.",
+  replaceFace: "replaceFace {face, sheet}: replace a solid face with a sheet built from curves.",
   splitFace: "splitFace {faces, curve, direction}: imprint a 3D curve onto faces to split them.",
   patch: "patch {boundaries:[{edges|curve, continuity}], guides, points}: fill an opening with a sheet.",
   blendSurface: "blendSurface {a, b, continuity, tensionA, tensionB}: bridge two open edges with a sheet.",
@@ -2074,7 +2092,7 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical; on a belt, from the build direction. Default 45." },
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
-        surfaces: { type: "boolean", description: "Also inspect shared-edge continuity (G0/G1/G2, gaps) and NURBS surface health (degrees, poles, tightest bend radius)." },
+        surfaces: { type: "boolean", description: "Also inspect shared-edge continuity (G0/G1/G2, gaps) and NURBS surface health (degrees, poles, tightest bend radius). continuity.edges lists up to 256 sampled edges, the worst first chosen; edgesTotal and note say when there were more. When surfaces cannot be read, surfaces says why." },
         interference: { type: "boolean", description: "Instead: every pair of the assembly's parts at their assembled poses, clear, touch or crossing, by the mesh pass. Meshes that overlap no deeper than toleranceMm (0.05 mm, the kernel's mesh chord) touch: faces that touch in the solids, an axle in a hole of its size, overlap that much in their meshes." },
         exact: { type: "boolean", description: "With interference: each pair the mesh pass did not clear, touches included, measured by the kernel's common volume; under 0.01 mm³ is a touch." },
         crossingsOnly: { type: "boolean", description: "With interference: omit touches; unmeasured pairs stay." },
@@ -3382,6 +3400,12 @@ export function validateTool(name: string, input: unknown): string | null {
 function checkTool(name: string, input: unknown): string | null {
   const tool = toolByName(name);
   if (!tool) return `There is no tool named ${name}.`;
+  // The organic ops' face fields and list caps say their own sentence, before the schema's generic one.
+  if (OP_TOOLS.has(name) && input && typeof input === "object") {
+    const given = input as { op?: unknown; ops?: unknown };
+    const first = organicFirstProblem(given.op, "op") ?? (Array.isArray(given.ops) ? given.ops.map((one, i) => organicFirstProblem(one, `ops[${i}]`)).find((found) => found !== null) ?? null : null);
+    if (first) return first;
+  }
   const problem = validate(tool.inputSchema, input ?? {});
   if (problem) return problem;
   const record = (input ?? {}) as { op?: unknown; ops?: unknown[] };

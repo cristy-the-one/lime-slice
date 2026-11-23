@@ -142,6 +142,8 @@ pub(super) fn encode_loops(loops: &[ProfileLoop], out: &mut Vec<f64>) {
     }
 }
 
+const KNOTS_AND_MULTS: &str = "NURBS knots and multiplicities must be the same length.";
+
 /// --- Organic surfaces S2: encode `Curve3D` for `decode_curve3d` in kernel.cpp.
 pub(super) fn encode_curve3d(curve: &Curve3D, resolved_edges: &[c_int], out: &mut Vec<f64>) -> Result<(), String> {
     match curve {
@@ -165,7 +167,10 @@ pub(super) fn encode_curve3d(curve: &Curve3D, resolved_edges: &[c_int], out: &mu
             mults,
             periodic,
         } => {
-            let nk = knots.len().min(mults.len());
+            if knots.len() != mults.len() {
+                return Err(KNOTS_AND_MULTS.into());
+            }
+            let nk = knots.len();
             out.extend([
                 2.0,
                 if *periodic { 1.0 } else { 0.0 },
@@ -207,7 +212,10 @@ pub(super) fn encode_curve3d(curve: &Curve3D, resolved_edges: &[c_int], out: &mu
                         mults,
                         to,
                     } => {
-                        let nk = knots.len().min(mults.len());
+                        if knots.len() != mults.len() {
+                            return Err(KNOTS_AND_MULTS.into());
+                        }
+                        let nk = knots.len();
                         out.extend([3.0, to[0], to[1], to[2], poles.len() as f64]);
                         for p in poles {
                             out.extend_from_slice(p);
@@ -242,7 +250,7 @@ pub(super) fn build_sweep_shape(
     which: BooleanOp,
     sections: &[LoftSection],
     spine: &Curve3D,
-    mode: Option<SweepMode>,
+    mode: Option<&SweepMode>,
     transition: Option<SweepTransition>,
     scale: &[[f64; 2]],
     twist_deg: Option<f64>,
@@ -291,13 +299,25 @@ pub(super) fn build_sweep_shape(
     let mut spine_blob = Vec::new();
     encode_curve3d(spine, resolved_edges, &mut spine_blob)?;
     let mut aux_blob = Vec::new();
-    if let Some(aux) = aux_spine {
+    // An auxiliary spine comes as the sweep's `auxSpine` or as `mode: {kind: "auxSpine"}`, never both.
+    let from_mode = match mode {
+        Some(SweepMode::AuxSpine { spine, .. }) => Some(spine.as_ref()),
+        _ => None,
+    };
+    if from_mode.is_some() && aux_spine.is_some() {
+        return Err("Give the auxiliary spine once: as mode {kind: \"auxSpine\"} or as auxSpine, not both.".into());
+    }
+    if let Some(aux) = from_mode.or(aux_spine) {
         encode_curve3d(aux, &[], &mut aux_blob)?;
     }
-    let (mode_id, binormal) = match mode.unwrap_or_default() {
+    // Mode 3 is an auxiliary spine with its two flags, carried in the binormal's numbers, which it does not use.
+    let (mode_id, binormal) = match mode.cloned().unwrap_or_default() {
         SweepMode::CorrectedFrenet => (0, [0.0, 0.0, 1.0]),
         SweepMode::Frenet => (1, [0.0, 0.0, 1.0]),
         SweepMode::FixedBinormal { dir } => (2, dir),
+        SweepMode::AuxSpine { curvilinear, keep_contact, .. } => {
+            (3, [f64::from(u8::from(curvilinear.unwrap_or(true))), f64::from(u8::from(keep_contact.unwrap_or(false))), 0.0])
+        }
     };
     let trans_id = match transition.unwrap_or_default() {
         SweepTransition::Round => 0,
@@ -396,6 +416,12 @@ pub(super) fn build_loft_v2_shape(
                 "Section {index}: A section needs exactly one of radius, profile, loops, or apex."
             ));
         }
+        // The kernel reads no corners for a loop section, so sending them would shift every later section.
+        if has_loops && (section.smooth || !section.corners.is_empty()) {
+            return Err(format!(
+                "Section {index}: smooth and corners are for a point profile. A loop uses arc, spline, and nurbs segments."
+            ));
+        }
         head.extend_from_slice(&section.origin);
         head.extend_from_slice(&section.turn);
         head.push(section.radius.unwrap_or(0.0));
@@ -412,6 +438,13 @@ pub(super) fn build_loft_v2_shape(
             loop_at.push(-1);
         }
         apex_flags.push(0);
+    }
+    // One offset copy of the end section steers an end: that sets a direction, never a curvature.
+    if matches!(start_condition, Some(LoftBoundary::Curvature { .. })) || matches!(end_condition, Some(LoftBoundary::Curvature { .. })) {
+        return Err(
+            "A loft cannot match curvature at an end: it steers an end by its direction only. Use a normal or tangent condition."
+                .into(),
+        );
     }
     let mut guides_blob = Vec::new();
     for g in guides {
@@ -685,8 +718,9 @@ fn encode_surface_blob(
         guides.len() as f64,
         points.len() as f64,
         tolerance.unwrap_or(0.0),
-        tension_a.unwrap_or(0.0),
-        tension_b.unwrap_or(0.0),
+        // NaN is "not sent": the kernel takes 1 then, and refuses a tension sent as 0 or less.
+        tension_a.unwrap_or(f64::NAN),
+        tension_b.unwrap_or(f64::NAN),
         continuity_code(continuity),
     ];
     for bound in bounds {
@@ -980,7 +1014,7 @@ pub(super) struct NurbsSurfaceSpec<'a> {
 /// `[nu, nv, degreeU, degreeV, periodicU, periodicV, nKnotsU, nKnotsV, nWeights, nInsertU, nInsertV, elevateU, elevateV,
 ///  poles (nu*nv*3), weights (nWeights), knotsU, multsU, knotsV, multsV, insertU pairs, insertV pairs]`.
 /// Degree 0 means the kernel's default of 3. Elevate 0 means do not elevate.
-fn encode_nurbs_blob(surface: &NurbsSurfaceSpec<'_>) -> Result<Vec<f64>, String> {
+pub(super) fn encode_nurbs_blob(surface: &NurbsSurfaceSpec<'_>) -> Result<Vec<f64>, String> {
     let nu = surface.poles.len();
     let nv = surface.poles.first().map(|row| row.len()).unwrap_or(0);
     if nu > 0 && surface.poles.iter().any(|row| row.len() != nv) {

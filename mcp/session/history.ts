@@ -12,7 +12,8 @@ import { exportedCommit, exportsPieces } from "../partition.ts";
 import { partStem } from "../../src/modeling/partition-export.ts";
 import { dropRefusal } from "../../src/model-history.ts";
 import { crossEditRequest, exportRequest, gotoRequest, isBrep, keepSketch, probeRequest, wholeTreeRequest } from "../../src/model-request.ts";
-import { readBroken, readBuilt, nodeHandle, parseNode, solidView } from "../../src/modeling/model-calls.ts";
+import { readBroken, readBuilt, nodeHandle, parseNode } from "../../src/modeling/model-calls.ts";
+import { markSheet, showsSheet, solidView } from "./sheet.ts";
 import { historyReply, measureReply } from "../../src/modeling/part-reads.ts";
 import { IDENTITY_POSE, typedPoseOf } from "../../src/model-space.ts";
 import { dropped, jumped, pathTo, redoTarget, reserveId, rootLabel, undoTarget, type PartitionModelOp, type Fingerprint, type ModelOp, type ModelTree, type NodeId } from "../../src/model-tree.ts";
@@ -446,7 +447,11 @@ async function commitObject(this: Session, obj: PlateObject): Promise<string | n
   }
   if (!obj.solid || obj.solid.positions.length < 9) return null;
   await this.brepRoot(obj, tree);
+  // --- Organic surfaces S4. An open sheet goes on the plate as a sheet, marked, as the app keeps one (mcp/session/sheet.ts):
+  // its open borders are what it is, not a mesh to mend, and Slice and the exports stop on the mark.
+  const sheet = showsSheet(obj);
   if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) {
+    markSheet(obj, sheet);
     // A project saved before version 3 keeps the plate's step as STEP: the step is written again as the engine's own
     // solid, which the next open builds from at once. A step that will not write keeps its STEP.
     // Once per solid: an engine that cannot write the binary format keeps the STEP, and is not asked again.
@@ -464,7 +469,7 @@ async function commitObject(this: Session, obj: PlateObject): Promise<string | n
   const mended = closeCracks(obj.solid.positions);
   const closed = edgeReport(mended, 1);
   obj.commitWarning = undefined;
-  if (closed.open > 0 || closed.nonManifold > 0) {
+  if (!sheet && (closed.open > 0 || closed.nonManifold > 0)) {
     const why = notClosedReason(closed);
     const before = obj.bytes.byteLength > 0 && obj.source.length >= 9 ? edgeReport(closeCracks(obj.source), 0) : null;
     const cameOpen = before !== null && (before.open > 0 || before.nonManifold > 0);
@@ -491,6 +496,7 @@ async function commitObject(this: Session, obj: PlateObject): Promise<string | n
   if (this.scaleSince(tree, from, tree.current)) obj.scale = 1;
   obj.platedNode = tree.current;
   obj.tree = { ...obj.tree!, committed: tree.current };
+  markSheet(obj, sheet);
   // A copy edited by hand is its own part from now on; copies linked to this one follow it.
   delete obj.linkedTo;
   await this.syncLinked(obj);
@@ -517,6 +523,8 @@ async function syncLinked(this: Session, obj: PlateObject): Promise<void> {
     copy.scale = obj.scale;
     copy.stepTolerance = obj.stepTolerance;
     copy.commitWarning = obj.commitWarning;
+    if (obj.sheet) copy.sheet = true;
+    else delete copy.sheet;
     if (obj.brep) copy.brep = obj.brep;
     else delete copy.brep;
     if (obj.buildLog) copy.buildLog = structuredClone(obj.buildLog);

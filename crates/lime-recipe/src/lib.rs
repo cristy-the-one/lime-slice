@@ -459,7 +459,14 @@ pub struct Part {
 /// `couple_gears` build an assembly of the parts the run made, where the host can assemble (`context.limits.canAssemble`).
 /// 1.17: an animation's frames fall at whole multiples of `1/fps`, from 0 to the first at or after the end, and
 /// `anim::frame_times` gives those times (docs/plan-pose-animation.md).
-pub const API: (u32, u32) = (1, 17);
+/// 1.18: organic surfaces (docs/plan-organic-surfaces.md, app 7.2.0): `ops::nurbs_seg`, `ops::curve3d_polyline`,
+/// `ops::curve3d_nurbs`, the kernel `ops::sweep` along a 3D spine, `ops::fillet_g2`, `fillet_conic`, `fillet_variable`,
+/// `ops::loft_apex` and `ops::loft`, the open sheets (`sheet_*_spec`, `sheet`, `sew`, `thicken`, `trim_split`,
+/// `replace_face`, `split_face`), `surface_boundary`, `patch` and `blend_surface`, and `ops::nurbs_surface` and
+/// `ops::NurbsSurface` (S6: weights, degrees, knots, periodic, insert, elevate; `.op()` also feeds
+/// `solid_new {feature}`). A host before 7.2.0 does not
+/// build these steps, so a plugin that uses them records 1.18.
+pub const API: (u32, u32) = (1, 18);
 
 /// What a nested plugin run made (API 1.16): the plugin and the version that ran, the part it ended on (`done`), every
 /// part it made and left on the plate, in the order made, and the numbers it ended with. The parts are this run's from
@@ -7056,7 +7063,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 17));
+        assert_eq!(API, (1, 18));
     }
 
     #[test]
