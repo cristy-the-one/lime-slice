@@ -3263,6 +3263,11 @@ LimeShape* lime_tree_trim_split(
             double other_vol = has_solid(other_shape) ? volume_of(other_shape) : 0.0;
             *other_out = hold(other_shape, other_vol).release();
         }
+        // A split of a sheet is the face the cutter left. It has no solid volume,
+        // so adopting it would throw the piece away.
+        if (!has_solid(kept)) {
+            return hold(kept, 0.0).release();
+        }
         return adopt(kept, volume, "Open CASCADE could not split with this surface.", error, from).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
