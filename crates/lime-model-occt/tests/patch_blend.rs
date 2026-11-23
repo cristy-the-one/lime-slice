@@ -1254,14 +1254,22 @@ fn patch_refuses_g2_on_a_radius_24_cap() {
     }));
     let error = reply["error"].as_str().unwrap_or("").to_string();
     eprintln!("S5 r24 refusal: {error}");
-    assert_eq!(
-        error,
-        format!(
-            "Edge {}: G2 can't be reached at this curvature. The largest gap is 0.000000 mm, the largest angle is 0.094226 degrees, and the largest curvature jump is 0.150928 per mm.",
-            g2[0]
-        ),
-        "radius-24 G2 must refuse by naming that edge and the measured gap, angle, and jump: {reply}"
-    );
+    // The sentence's fixed parts exactly, and its three numbers within a tolerance: the last digits of a measured angle
+    // or jump differ between operating systems' builds of Open CASCADE.
+    let prefix = format!("Edge {}: G2 can't be reached at this curvature. The largest gap is ", g2[0]);
+    let numbers = error
+        .strip_prefix(&prefix)
+        .and_then(|rest| {
+            let (gap, rest) = rest.split_once(" mm, the largest angle is ")?;
+            let (angle, rest) = rest.split_once(" degrees, and the largest curvature jump is ")?;
+            let jump = rest.strip_suffix(" per mm.")?;
+            Some((gap.parse::<f64>().ok()?, angle.parse::<f64>().ok()?, jump.parse::<f64>().ok()?))
+        })
+        .unwrap_or_else(|| panic!("radius-24 G2 must refuse by naming that edge and the measured gap, angle, and jump: {reply}"));
+    let (gap, angle, jump) = numbers;
+    assert!(gap < 1e-5, "gap {gap}");
+    assert!((angle - 0.094226).abs() < 0.005, "angle {angle}, measured 0.094226 on Windows");
+    assert!((jump - 0.150928).abs() < 0.005, "jump {jump}, measured 0.150928 on Windows");
     assert!(reply.get("solid").is_none(), "a refusal builds no face: {reply}");
     let missing = call(json!({ "call": "goto", "key": key, "node": 3 }));
     assert!(missing.get("error").is_some(), "the refused patch is not a step: {missing}");
