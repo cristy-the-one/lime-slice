@@ -347,6 +347,38 @@ bool face_parameters(const TopoDS_Face& face, const gp_Pnt& world, double& u, do
     }
 }
 
+bool point_on_face(const TopoDS_Face& face, const gp_Pnt& point, double tol) {
+    if (face.IsNull()) return false;
+    double u = 0.0;
+    double v = 0.0;
+    if (!face_parameters(face, point, u, v)) return false;
+    try {
+        BRepAdaptor_Surface adapt(face);
+        if (adapt.Value(u, v).Distance(point) > tol) return false;
+        const BRepClass_FaceClassifier cls(face, gp_Pnt2d(u, v), tol);
+        const TopAbs_State state = cls.State();
+        return state == TopAbs_IN || state == TopAbs_ON;
+    } catch (const Standard_Failure&) {
+        return false;
+    }
+}
+
+// A rim chain can lie on more than one face. An exact circle extruded from two
+// arcs is two half-cylinders; the first edge's face does not contain the other
+// half. Projecting that half onto the first face flips the cross derivative.
+TopoDS_Face face_touching(const TopoDS_Shape& shape, const TopoDS_Face& hint, const gp_Pnt& point) {
+    constexpr double tol = 1e-4;
+    if (point_on_face(hint, point, tol)) return hint;
+    if (!shape.IsNull()) {
+        for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+            const TopoDS_Face face = TopoDS::Face(ex.Current());
+            if (face.IsSame(hint)) continue;
+            if (point_on_face(face, point, tol)) return face;
+        }
+    }
+    return hint;
+}
+
 struct Transverse {
     bool ok = false;
     gp_Vec Ds;
@@ -498,12 +530,22 @@ struct EdgeReport {
     int asked = 0;
     double gap = 0.0;
     double angle = 0.0;
+    // How far the tangent planes are from the asked match. 180° is the same
+    // plane with the normal reversed, which the blend reads before Sew flips
+    // one wall. The largest raw angle hides that: a side at 180° and a side
+    // at 179.685° report 180°.
+    double angle_dev = 0.0;
     double jump = 0.0;
     double worst_frac = 0.5;
     double score = -1.0;
     bool fail = false;
     bool short_span = false;
 };
+
+double plane_deviation(double angle) {
+    if (!(angle >= 0.0) || !(angle <= 180.0)) return angle;
+    return angle > 90.0 ? 180.0 - angle : angle;
+}
 
 void note_station(EdgeReport& edge, const StationStat& stat, double frac) {
     const double gap_s = stat.gap / kHermiteGapMm;
@@ -516,6 +558,7 @@ void note_station(EdgeReport& edge, const StationStat& stat, double frac) {
     }
     edge.gap = std::max(edge.gap, stat.gap);
     edge.angle = std::max(edge.angle, stat.angle);
+    edge.angle_dev = std::max(edge.angle_dev, plane_deviation(stat.angle));
     edge.jump = std::max(edge.jump, stat.jump);
 }
 
@@ -526,14 +569,51 @@ bool edge_fails(const EdgeReport& edge) {
     return false;
 }
 
-std::string miss_sentence(double gap, double angle, double jump) {
+// Gap is the G0 measure. Angle is the G1 measure, already the deviation from
+// the asked tangent plane. Jump is the G2 measure. A refusal names only the
+// measures the failing edges asked for.
+std::string asked_measures(double gap, double angle, double jump, int asked) {
     std::ostringstream out;
     out.setf(std::ios::fixed);
     out.precision(6);
-    out << "The fill cannot reach the continuity you asked for. The largest gap is " << gap
-        << " mm, the largest angle is " << angle
-        << " degrees, and the largest curvature jump is " << jump << " per mm.";
+    out << "The largest gap is " << gap << " mm";
+    if (asked >= 2) {
+        out << ", the largest angle is " << angle
+            << " degrees, and the largest curvature jump is " << jump << " per mm.";
+    } else if (asked >= 1) {
+        out << " and the largest angle is " << angle << " degrees.";
+    } else {
+        out << ".";
+    }
     return out.str();
+}
+
+struct AskedWorst {
+    double gap = 0.0;
+    double angle = 0.0;
+    double jump = 0.0;
+    int asked = 0;
+    bool any = false;
+};
+
+AskedWorst worst_of(const std::vector<EdgeReport>& reports, bool failing_only) {
+    AskedWorst worst;
+    for (const EdgeReport& report : reports) {
+        if (failing_only && !report.fail) continue;
+        worst.any = true;
+        worst.gap = std::max(worst.gap, report.gap);
+        worst.asked = std::max(worst.asked, report.asked);
+        if (report.asked >= 1) worst.angle = std::max(worst.angle, report.angle_dev);
+        if (report.asked >= 2) worst.jump = std::max(worst.jump, report.jump);
+    }
+    return worst;
+}
+
+std::string miss_sentence(const std::vector<EdgeReport>& reports) {
+    AskedWorst worst = worst_of(reports, true);
+    if (!worst.any) worst = worst_of(reports, false);
+    return std::string("The fill cannot reach the continuity you asked for. ")
+        + asked_measures(worst.gap, worst.angle, worst.jump, worst.asked);
 }
 
 int need_degree(int order) {
@@ -1234,13 +1314,16 @@ BuiltPiece build_one_piece(
 // further, is a refusal. The face is not built. The sentence names the asked edge.
 std::string refusal_sentence(
     const std::vector<EdgeReport>& reports,
-    const std::vector<SidePrep>& sides,
-    double max_gap,
-    double max_angle,
-    double max_jump) {
+    const std::vector<SidePrep>& sides) {
     std::vector<int> edges;
+    AskedWorst g2;
     for (const EdgeReport& report : reports) {
         if (report.asked < 2 || !(report.jump > kHermiteJump)) continue;
+        g2.any = true;
+        g2.gap = std::max(g2.gap, report.gap);
+        g2.angle = std::max(g2.angle, report.angle_dev);
+        g2.jump = std::max(g2.jump, report.jump);
+        g2.asked = 2;
         if (report.side < 0 || report.side >= static_cast<int>(sides.size())) continue;
         const std::vector<int>& ids = sides[static_cast<size_t>(report.side)].edges;
         edges.insert(edges.end(), ids.begin(), ids.end());
@@ -1256,10 +1339,12 @@ std::string refusal_sentence(
             for (size_t i = 1; i + 1 < edges.size(); ++i) out << ", " << edges[i];
             out << " and " << edges.back();
         }
-        out << ": G2 can't be reached at this curvature.";
+        // G2 was asked, so the sentence carries the gap, the plane deviation,
+        // and the curvature jump. It does not carry a raw 180° reading.
+        out << ": G2 can't be reached at this curvature. " << asked_measures(g2.gap, g2.angle, g2.jump, 2);
         return out.str();
     }
-    return miss_sentence(max_gap, max_angle, max_jump);
+    return miss_sentence(reports);
 }
 
 TopoDS_Shape fill_hermite_patch(
@@ -1490,13 +1575,13 @@ TopoDS_Shape fill_hermite_patch(
             refinements = round;
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             for (const EdgeReport& report : reports) {
-                std::fprintf(stderr, "S5 hermite edge=%s side=%d asked=%d gapMm=%.6g angleDeg=%.6g curvatureJump=%.6g\n",
-                             report.which, report.side, report.asked, report.gap, report.angle, report.jump);
+            std::fprintf(stderr, "S5 hermite edge=%s side=%d asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
+                         report.which, report.side, report.asked, report.gap, report.angle, report.angle_dev, report.jump);
             }
             std::fprintf(stderr, "S5 hermite sides=%d maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
                          count, max_order, refinements, ms, max_gap, max_angle, max_jump);
             if (failed) {
-                error = refusal_sentence(reports, sides, max_gap, max_angle, max_jump);
+                error = refusal_sentence(reports, sides);
                 return {};
             }
             break;
@@ -1505,6 +1590,25 @@ TopoDS_Shape fill_hermite_patch(
     TopoDS_Shape acc = current;
     for (const BuiltPiece& piece : pieces) acc = compound_with(acc, piece.face);
     return acc;
+}
+
+void log_blend_weights(const Handle(Geom_BSplineSurface)& surface, int round, const char* when) {
+    if (surface.IsNull() || !(surface->IsURational() || surface->IsVRational())) return;
+    const int n = surface->NbUPoles();
+    const int nv = surface->NbVPoles();
+    std::fprintf(stderr, "S5 hermite blend weights when=%s round=%d rows=%d poles=%d\n", when, round, nv, n);
+    for (int j = 1; j <= nv; ++j) {
+        double lo = 0.0;
+        double hi = 0.0;
+        for (int i = 1; i <= n; ++i) {
+            const double w = surface->Weight(i, j);
+            if (i == 1 || w < lo) lo = w;
+            if (i == 1 || w > hi) hi = w;
+        }
+        const double w1 = surface->Weight(1, j);
+        const double w2 = surface->Weight(std::min(2, n), j);
+        std::fprintf(stderr, "S5 hermite blend weight row=%d pole1=%.8f pole2=%.8f min=%.8f max=%.8f\n", j, w1, w2, lo, hi);
+    }
 }
 
 TopoDS_Shape fill_hermite_blend(
@@ -1577,7 +1681,8 @@ TopoDS_Shape fill_hermite_blend(
             gp_Pnt point;
             gp_Vec tangent;
             curve->D1(t, point, tangent);
-            const Transverse got = transverse_at(support, point, tangent, far_side ? 1 : 0);
+            const TopoDS_Face support_here = face_touching(current, support, point);
+            const Transverse got = transverse_at(support_here, point, tangent, far_side ? 1 : 0);
             if (!got.ok) {
                 error = got.error;
                 return false;
@@ -1608,6 +1713,20 @@ TopoDS_Shape fill_hermite_blend(
             if (!field_at(ua, face_a, tension_a, xi, false, t0[static_cast<size_t>(i)], a0[static_cast<size_t>(i)])) return {};
             if (!field_at(ub, face_b, tension_b, xi, true, t1[static_cast<size_t>(i)], a1[static_cast<size_t>(i)])) return {};
         }
+        // A seam vertex lies on two faces. The classifier can take the other
+        // face's side there, so that one sample points against the rest of the
+        // rim and the normal flips along the edge. The second derivative is
+        // even in that direction, so only the first derivative is reversed.
+        auto align_ribbon = [](std::vector<gp_Vec>& field) {
+            gp_Vec sum(0, 0, 0);
+            for (const gp_Vec& v : field) sum.Add(v);
+            if (sum.SquareMagnitude() < 1e-18) return;
+            for (gp_Vec& v : field) {
+                if (v.Dot(sum) < 0.0) v.Reverse();
+            }
+        };
+        align_ribbon(t0);
+        align_ribbon(t1);
         for (int i = 0; i < n; ++i) {
             const gp_Pnt p0 = grid.Value(i + 1, 1);
             const gp_Pnt p1 = grid.Value(i + 1, nv);
@@ -1631,13 +1750,20 @@ TopoDS_Shape fill_hermite_blend(
         vk.SetValue(2, 1.0);
         vm.SetValue(1, deg_v + 1);
         vm.SetValue(2, deg_v + 1);
+        const bool rational = ua->IsRational() || ub->IsRational();
         try {
-            if (ua->IsRational() || ub->IsRational()) {
+            if (rational) {
                 TColStd_Array2OfReal weights(1, n, 1, nv);
+                // Hermite blend of the rim weights. The rows that carry ∂S/∂v,
+                // and ∂²S/∂v² when the span is quintic, keep that rim's weight.
+                // ∂w/∂v and ∂²w/∂v² are then 0 on the rim, so the Cartesian end
+                // identities are the geometric derivatives. Weight 1 on those
+                // rows leaves a rational circle 0.315° short of the wall.
+                const int hold = deg_v >= 5 ? 3 : 2;
                 for (int i = 1; i <= n; ++i) {
-                    for (int j = 1; j <= nv; ++j) weights.SetValue(i, j, 1.0);
-                    weights.SetValue(i, 1, ua->Weight(i));
-                    weights.SetValue(i, nv, ub->Weight(i));
+                    const double wa = ua->IsRational() ? ua->Weight(i) : 1.0;
+                    const double wb = ub->IsRational() ? ub->Weight(i) : 1.0;
+                    for (int j = 1; j <= nv; ++j) weights.SetValue(i, j, j <= hold ? wa : wb);
                 }
                 surface = new Geom_BSplineSurface(grid, weights, uk, vk, um, vm, deg_u, deg_v);
             } else {
@@ -1653,6 +1779,7 @@ TopoDS_Shape fill_hermite_blend(
             return {};
         }
         face = maker.Face();
+        if (rational && round == 0) log_blend_weights(surface, round, "initial");
         gp_Pnt mid;
         gp_Vec du;
         gp_Vec dv;
@@ -1704,8 +1831,11 @@ TopoDS_Shape fill_hermite_blend(
         if ((!ra.fail && !rb.fail) || too_short || round == kHermiteRefineCap) {
             refinements = round;
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g curvatureJump=%.6g\n", order_a, ra.gap, ra.angle, ra.jump);
-            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g curvatureJump=%.6g\n", order_b, rb.gap, rb.angle, rb.jump);
+            log_blend_weights(surface, round, "final");
+            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
+                         order_a, ra.gap, ra.angle, ra.angle_dev, ra.jump);
+            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
+                         order_b, rb.gap, rb.angle, rb.angle_dev, rb.jump);
             std::fprintf(stderr, "S5 hermite sides=2 maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
                          order, refinements, ms, max_gap, max_angle, max_jump);
             if (ra.fail || rb.fail) {
@@ -1721,7 +1851,7 @@ TopoDS_Shape fill_hermite_blend(
                     error.clear();
                     break;
                 }
-                error = miss_sentence(max_gap, max_angle, max_jump);
+                error = miss_sentence(std::vector<EdgeReport>{ra, rb});
                 return {};
             }
             break;
@@ -1729,6 +1859,11 @@ TopoDS_Shape fill_hermite_blend(
         const double frac = ra.angle >= rb.angle ? ra.worst_frac : rb.worst_frac;
         if (!push_knot(extra, ua, frac, too_short) && too_short) {
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            log_blend_weights(surface, round, "final");
+            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
+                         order_a, ra.gap, ra.angle, ra.angle_dev, ra.jump);
+            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
+                         order_b, rb.gap, rb.angle, rb.angle_dev, rb.jump);
             std::fprintf(stderr, "S5 hermite sides=2 maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
                          order, round, ms, max_gap, max_angle, max_jump);
             const auto plane_angle = [](double angle) { return angle > 90.0 ? 180.0 - angle : angle; };
@@ -1739,7 +1874,7 @@ TopoDS_Shape fill_hermite_blend(
                 error.clear();
                 break;
             }
-            error = miss_sentence(max_gap, max_angle, max_jump);
+            error = miss_sentence(std::vector<EdgeReport>{ra, rb});
             return {};
         }
         (void)nu;

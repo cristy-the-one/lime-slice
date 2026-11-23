@@ -127,8 +127,7 @@ fn circle_arcs(radius: f64, z: f64) -> Value {
 }
 
 fn circle_curve(radius: f64, z: f64) -> Value {
-    // A polynomial spline, not a rational arc. The blend's end derivative is built
-    // as if the rim weights are 1, and a rational circle leaves the normal 0.3° off.
+    // The polynomial rim. Exact rational circles are blend_meets_g1_and_g2_on_exact_circle_rims.
     let count = 24;
     let points: Vec<[f64; 3]> = (0..count)
         .map(|i| {
@@ -1055,11 +1054,14 @@ fn patch_refuses_g2_on_a_radius_24_cap() {
         "op": patch_op(&asked, None)
     }));
     let error = reply["error"].as_str().unwrap_or("").to_string();
-    println!("S5 r24 refusal: {error}");
+    eprintln!("S5 r24 refusal: {error}");
     assert_eq!(
         error,
-        format!("Edge {}: G2 can't be reached at this curvature.", g2[0]),
-        "radius-24 G2 must refuse by naming that edge: {reply}"
+        format!(
+            "Edge {}: G2 can't be reached at this curvature. The largest gap is 0.000000 mm, the largest angle is 0.016724 degrees, and the largest curvature jump is 0.003861 per mm.",
+            g2[0]
+        ),
+        "radius-24 G2 must refuse by naming that edge and the measured gap, angle, and jump: {reply}"
     );
     assert!(reply.get("solid").is_none(), "a refusal builds no face: {reply}");
     let missing = call(json!({ "call": "goto", "key": key, "node": 3 }));
@@ -1070,7 +1072,7 @@ fn patch_refuses_g2_on_a_radius_24_cap() {
     ok(json!({ "call": "close", "key": key }));
 }
 
-fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) -> Value {
+fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) -> (Value, Vec<SideCurve>) {
     let outer_r = 18.0;
     let inner_r = 10.0;
     let height = 16.0;
@@ -1129,8 +1131,11 @@ fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) 
         }
     }
     assert!(!outer.is_empty() && !inner.is_empty(), "circle blend needs both rims");
-    let sides = [side_from_edges(sort_by_angle(outer), continuity), side_from_edges(sort_by_angle(inner), continuity)];
-    call(json!({
+    let sides = vec![
+        side_from_edges(sort_by_angle(outer), continuity),
+        side_from_edges(sort_by_angle(inner), continuity),
+    ];
+    let reply = call(json!({
         "call": "apply",
         "key": key,
         "parent": 2,
@@ -1144,32 +1149,29 @@ fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) 
             "tensionA": 1.0,
             "tensionB": 1.0
         }
-    }))
+    }));
+    (reply, sides)
 }
 
 #[test]
-fn blend_refuses_exact_circle_rims() {
+fn blend_meets_g1_and_g2_on_exact_circle_rims() {
     if !has_occt() {
         return;
     }
-    // Exact circle rims, not the 24-point polynomial. The blend must refuse
-    // instead of leaving a surface whose normal is 0.315° off the wall.
+    // Exact circle rims, not the 24-point polynomial. The same bounds as the
+    // spline blend: gap under 1e-4 mm, angle under 0.1°, G2 jump at most 1e-3
+    // mm^-1 (model_check class G2), sewn solid, no naked edges.
     for continuity in ["g1", "g2"] {
-        let key = format!("s5-circle-{continuity}");
-        let reply = blend_apply(&key, continuity, circle_arcs);
-        let error = reply["error"].as_str().unwrap_or("").to_string();
-        println!("S5 circle-{continuity} refusal: {error}");
-        let expected = if continuity == "g1" {
-            "The fill cannot reach the continuity you asked for. The largest gap is 0.000000 mm, the largest angle is 180.000000 degrees, and the largest curvature jump is 0.750000 per mm."
-        } else {
-            "The fill cannot reach the continuity you asked for. The largest gap is 0.000000 mm, the largest angle is 180.000000 degrees, and the largest curvature jump is 0.002112 per mm."
-        };
-        assert_eq!(error, expected, "exact circles must be refused, got {reply}");
-        assert!(reply.get("solid").is_none(), "a refusal builds no blend face: {reply}");
-        let missing = call(json!({ "call": "goto", "key": key, "node": 3 }));
-        assert!(missing.get("error").is_some(), "the refused blend is not a step: {missing}");
-        let still = ok(json!({ "call": "goto", "key": key, "node": 2, "chordMm": CHORD_MM }));
-        assert_eq!(still["solid"], json!(false));
+        let case_name = format!("blend-circle-{continuity}");
+        let key = format!("s5-{case_name}");
+        let (reply, sides) = blend_apply(&key, continuity, circle_arcs);
+        assert!(
+            reply.get("error").is_none(),
+            "exact circles must meet {continuity}: {reply}"
+        );
+        assert_eq!(reply["solid"], json!(false), "a blend is a sheet until it is sewn");
+        let sewn = finish_sheet(&case_name, &key, 3, 4, false, 0.05);
+        check_opening(&case_name, &key, 4, &sewn, &sides, false, None);
         ok(json!({ "call": "close", "key": key }));
     }
 }
