@@ -10388,8 +10388,61 @@ bool face_frame_at(
     }
 }
 
+/// The plane of the face that ends a filleted edge at `corner`: the one planar face there besides `f1`, `f2` and faces
+/// in their planes. False when there is none, more than one, or it is not planar.
+bool end_plane_at(
+    const TopTools_IndexedDataMapOfShapeListOfShape& vertex_faces,
+    const TopoDS_Vertex& corner,
+    const TopoDS_Face& f1,
+    const TopoDS_Face& f2,
+    gp_Pln& out) {
+    const int at = vertex_faces.FindIndex(corner);
+    if (at <= 0) return false;
+    const auto same_plane = [](const gp_Pln& a, const gp_Pln& b) {
+        return std::abs(a.Axis().Direction().Dot(b.Axis().Direction())) > 1.0 - 1e-9 && a.Distance(b.Location()) < 1e-6;
+    };
+    const gp_Pln p1 = BRepAdaptor_Surface(f1).Plane();
+    const gp_Pln p2 = BRepAdaptor_Surface(f2).Plane();
+    int found = 0;
+    for (const TopoDS_Shape& shape : vertex_faces.FindFromIndex(at)) {
+        const TopoDS_Face face = TopoDS::Face(shape);
+        if (face.IsSame(f1) || face.IsSame(f2)) continue;
+        const BRepAdaptor_Surface surface(face);
+        if (surface.GetType() != GeomAbs_Plane) return false;
+        const gp_Pln plane = surface.Plane();
+        if (same_plane(plane, p1) || same_plane(plane, p2)) continue;
+        if (found > 0 && !same_plane(plane, out)) return false;
+        out = plane;
+        found += 1;
+    }
+    return found > 0;
+}
+
+/// `tool` cut back to the side of `plane` that holds `keep`: a slab `size` across on the plane, `size` deep.
+TopoDS_Shape keep_side(const TopoDS_Shape& tool, const gp_Pln& plane, const gp_Pnt& keep, double size) {
+    gp_Vec normal(plane.Axis().Direction());
+    if (gp_Vec(plane.Location(), keep).Dot(normal) < 0.0) normal.Reverse();
+    const gp_Pnt origin = plane.Location().Translated(normal * plane.Distance(keep) * 0.0);
+    gp_Pln centred(plane.Location(), plane.Axis().Direction());
+    // Centre the slab's face on the foot of `keep`, so `size` covers the tool whatever the plane's own origin.
+    const gp_Pnt foot = keep.Translated(gp_Vec(normal) * -plane.Distance(keep));
+    centred.SetLocation(foot);
+    (void)origin;
+    BRepBuilderAPI_MakeFace face(centred, -size, size, -size, size);
+    if (!face.IsDone()) return {};
+    BRepPrimAPI_MakePrism slab(face.Face(), normal * size);
+    if (!slab.IsDone()) return {};
+    BRepAlgoAPI_Common common(tool, slab.Shape());
+    common.SetFuzzyValue(1e-7);
+    common.Build();
+    if (!common.IsDone() || common.Shape().IsNull()) return {};
+    return common.Shape();
+}
+
 /// Build an exact G2 quintic NURBS (continuity==1) or rational quadratic Conic-rho (continuity==2) cutter solid
-/// for a convex edge between two faces, and subtract it cleanly from `shape`.
+/// for a convex edge between two faces, and subtract it cleanly from `shape`. The cutter is cut back to the planes of the
+/// faces that end the edge, so it removes no material past either end (a wall the edge runs into, a boss beside the
+/// end), and the volume taken must be the fillet's own cross-section swept along the edge, or nothing is kept.
 bool try_exact_edge_surface_fillet(
     const TopoDS_Shape& shape,
     const TopoDS_Edge& edge,
@@ -10455,7 +10508,9 @@ bool try_exact_edge_surface_fillet(
     const double rho = std::clamp(spec.rho, 0.05, 0.95);
     const double w_mid = rho / (1.0 - rho);
 
-    auto make_section_wire = [&](const gp_Pnt& q, double r) -> TopoDS_Wire {
+    // `outer`: the cutter's section, reaching out_eps past both faces. Otherwise the material the fillet removes only:
+    // the region between the fillet curve and the corner, bounded by the two faces.
+    auto make_section_wire = [&](const gp_Pnt& q, double r, bool outer = true) -> TopoDS_Wire {
         const double d = (spec.continuity == 1 ? 1.25 : 1.0) * r / tan_half;
         const gp_Pnt p0 = q.Translated(t1 * d);
         const gp_Pnt p_end = q.Translated(t2 * d);
@@ -10504,6 +10559,11 @@ bool try_exact_edge_surface_fillet(
 
         BRepBuilderAPI_MakeWire mw;
         mw.Add(BRepBuilderAPI_MakeEdge(blend_curve));
+        if (!outer) {
+            mw.Add(BRepBuilderAPI_MakeEdge(p_end, q));
+            mw.Add(BRepBuilderAPI_MakeEdge(q, p0));
+            return mw.IsDone() ? mw.Wire() : TopoDS_Wire();
+        }
         mw.Add(BRepBuilderAPI_MakeEdge(p_end, p_end_out));
         mw.Add(BRepBuilderAPI_MakeEdge(p_end_out, q_out));
         mw.Add(BRepBuilderAPI_MakeEdge(q_out, p0_out));
@@ -10511,44 +10571,69 @@ bool try_exact_edge_surface_fillet(
         return mw.IsDone() ? mw.Wire() : TopoDS_Wire();
     };
 
-    try {
-        TopoDS_Shape cutter;
+    // The faces that end the edge, when each is one plane: the tools are cut back to them.
+    TopTools_IndexedDataMapOfShapeListOfShape vertex_faces;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_VERTEX, TopAbs_FACE, vertex_faces);
+    TopoDS_Vertex v_first;
+    TopoDS_Vertex v_last;
+    TopExp::Vertices(edge, v_first, v_last);
+    if (!v_first.IsNull() && !v_last.IsNull() && BRep_Tool::Pnt(v_first).Distance(q_start) > BRep_Tool::Pnt(v_last).Distance(q_start)) {
+        std::swap(v_first, v_last);
+    }
+    gp_Pln start_plane;
+    gp_Pln end_plane;
+    const bool trim_start = !v_first.IsNull() && end_plane_at(vertex_faces, v_first, f1, f2, start_plane);
+    const bool trim_end = !v_last.IsNull() && end_plane_at(vertex_faces, v_last, f1, f2, end_plane);
+    const double reach = 4.0 * (e_len + 2.0 * pad + 4.0 * spec.size + 4.0 * out_eps + 1.0);
+    const auto trimmed = [&](TopoDS_Shape tool) -> TopoDS_Shape {
+        if (!tool.IsNull() && trim_start) tool = keep_side(tool, start_plane, q_mid, reach);
+        if (!tool.IsNull() && trim_end) tool = keep_side(tool, end_plane, q_mid, reach);
+        return tool;
+    };
+
+    // One tool along the edge from `wire_at(q, r, outer)` sections, padded past both ends.
+    const auto along = [&](bool outer) -> TopoDS_Shape {
         if (is_const) {
             const gp_Pnt q0 = q_start.Translated(e_dir * (-pad));
-            const TopoDS_Wire w = make_section_wire(q0, spec.size);
-            if (w.IsNull()) return false;
+            const TopoDS_Wire w = make_section_wire(q0, spec.size, outer);
+            if (w.IsNull()) return {};
             BRepBuilderAPI_MakeFace mf(w, Standard_True);
-            if (!mf.IsDone()) return false;
+            if (!mf.IsDone()) return {};
             BRepPrimAPI_MakePrism prism(mf.Face(), e_dir * (e_len + 2.0 * pad), Standard_False, Standard_True);
-            if (!prism.IsDone() || prism.Shape().IsNull()) return false;
-            cutter = prism.Shape();
-        } else {
-            BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False, 1e-6);
-            loft.CheckCompatibility(Standard_True);
-            loft.SetSmoothing(Standard_True);
-            loft.SetContinuity(GeomAbs_C2);
-            const int n_steps = 12;
-            // Extend slightly past both ends with constant end radii so end faces trim cleanly.
-            const double r0 = eval_variable_radius(spec.variable, spec.size, 0.0);
-            const double r1 = eval_variable_radius(spec.variable, spec.size, 1.0);
-            const TopoDS_Wire w_pre = make_section_wire(q_start.Translated(e_dir * (-pad)), r0);
-            if (w_pre.IsNull()) return false;
-            loft.AddWire(w_pre);
-            for (int i = 0; i <= n_steps; ++i) {
-                const double t = static_cast<double>(i) / static_cast<double>(n_steps);
-                const gp_Pnt qt = q_start.Translated(e_dir * (e_len * t));
-                const double rt = eval_variable_radius(spec.variable, spec.size, t);
-                const TopoDS_Wire wt = make_section_wire(qt, rt);
-                if (wt.IsNull()) return false;
-                loft.AddWire(wt);
-            }
-            const TopoDS_Wire w_post = make_section_wire(q_end.Translated(e_dir * pad), r1);
-            if (w_post.IsNull()) return false;
-            loft.AddWire(w_post);
-            loft.Build();
-            if (!loft.IsDone() || loft.Shape().IsNull()) return false;
-            cutter = loft.Shape();
+            if (!prism.IsDone() || prism.Shape().IsNull()) return {};
+            return prism.Shape();
         }
+        BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False, 1e-6);
+        loft.CheckCompatibility(Standard_True);
+        loft.SetSmoothing(Standard_True);
+        loft.SetContinuity(GeomAbs_C2);
+        const int n_steps = 12;
+        // Extend slightly past both ends with constant end radii so end faces trim cleanly.
+        const double r0 = eval_variable_radius(spec.variable, spec.size, 0.0);
+        const double r1 = eval_variable_radius(spec.variable, spec.size, 1.0);
+        const TopoDS_Wire w_pre = make_section_wire(q_start.Translated(e_dir * (-pad)), r0, outer);
+        if (w_pre.IsNull()) return {};
+        loft.AddWire(w_pre);
+        for (int i = 0; i <= n_steps; ++i) {
+            const double t = static_cast<double>(i) / static_cast<double>(n_steps);
+            const gp_Pnt qt = q_start.Translated(e_dir * (e_len * t));
+            const double rt = eval_variable_radius(spec.variable, spec.size, t);
+            const TopoDS_Wire wt = make_section_wire(qt, rt, outer);
+            if (wt.IsNull()) return {};
+            loft.AddWire(wt);
+        }
+        const TopoDS_Wire w_post = make_section_wire(q_end.Translated(e_dir * pad), r1, outer);
+        if (w_post.IsNull()) return {};
+        loft.AddWire(w_post);
+        loft.Build();
+        if (!loft.IsDone() || loft.Shape().IsNull()) return {};
+        return loft.Shape();
+    };
+
+    try {
+        const TopoDS_Shape cutter = trimmed(along(true));
+        const TopoDS_Shape region = trimmed(along(false));
+        if (cutter.IsNull() || region.IsNull()) return false;
         BRepAlgoAPI_Cut cut(shape, cutter);
         cut.SetFuzzyValue(1e-5);
         Handle(Message_ProgressIndicator) watch;
@@ -10558,6 +10643,11 @@ bool try_exact_edge_surface_fillet(
         if (solid.IsNull() || !has_solid(solid)) return false;
         const double vol = volume_of(solid);
         if (!(vol > 1e-6) || !BRepCheck_Analyzer(solid).IsValid()) return false;
+        // The fillet takes its own cross-section along the edge and nothing else: a cutter that reached a wall past an
+        // end, or a boss beside the edge, removed more; one whose faces were not where it assumed, less.
+        const double removed = volume_of(shape) - vol;
+        const double expected = volume_of(region);
+        if (!(expected > 0.0) || std::abs(removed - expected) > 1e-4 * expected + 1e-6) return false;
         out_shape = solid;
         return true;
     } catch (const Standard_Failure&) {
