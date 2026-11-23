@@ -2,12 +2,12 @@
  * S6: NURBS sculpting on the open object's own surface (docs/plan-organic-surfaces.md R1.3, R5.3, U7).
  *
  * The tool edits the NURBS step the open object shows: its root, or a later `nurbsSurface` step, or the one History
- * Edit names. The grid stays in the part's own frame (the frame the step is stored in); the preview mesh and the pole
+ * Edit names. The grid stays in the part's own frame (the frame the step is stored in); the live preview and the pole
  * handles are drawn through the open pose. A drag is evaluated locally every frame and committed once, on release, as
  * one Model edit: a root is replaced and the whole history rebuilt on it (the app's feature-root path), a later step is
- * edited as a sibling with the steps under it replayed (the History Edit path). One drag is one Undo step.
- * Commits queue: the latest grid is always the one the kernel ends on. A refusal snaps the preview back to the last
- * grid the kernel built and says why.
+ * edited as a sibling with the steps under it replayed (the History Edit path). One drag is one Undo step, taken in turn
+ * with the other edits of the part. Commits queue: the latest grid is always the one the kernel ends on. A refusal
+ * snaps the preview back to the last grid the kernel built and says why, on that part only.
  */
 import { fx } from "../fx";
 import { modelTrees } from "../model-trees";
@@ -15,10 +15,12 @@ import { state } from "../state";
 import { builtBranch, forked, replayChain, stepIds } from "../../model-edit";
 import { decodeSolid } from "../../model-reply";
 import { editRequest, nurbsSurfaceOp } from "../../model-request";
-import { applyPose, type Affine } from "../../model-space";
-import { ROOT, jumped, pathTo, renumberedSteps, reserveId, withFeatureRoot, type ModelOp, type ModelTree, type NodeId, type NurbsSurfaceOp } from "../../model-tree";
+import { applyPose } from "../../model-space";
+import { ROOT, jumped, pathTo, renumberedSteps, reserveId, withFeatureRoot, withoutBuilds, type ModelOp, type NodeId, type NurbsSurfaceOp } from "../../model-tree";
 import { openModelTool, openSculptTool } from "../../ui/model-chrome";
 import {
+  applyRefinements,
+  axisDragScale,
   bicubicGrid,
   createSurfaceMesher,
   creaseSurface,
@@ -27,11 +29,14 @@ import {
   evalNurbsSurface3D,
   insertSurfaceKnot,
   makeSymmetric,
+  mirrorDirection,
   resolveCurveKnots,
   sculptGrid,
+  surfaceKey,
   surfaceParam,
   surfaceRefusal,
   symmetryPairing,
+  symmetryReason,
   type CvAxis,
   type NurbsSurface3D,
   type SculptHit,
@@ -43,19 +48,25 @@ import { createFeatureSolid } from "./create";
 import { dropInEngine, openWhole, post, treeCall } from "./engine";
 import { readout } from "./pick";
 import { brokenStep, builtSteps, forkSteps, sentence } from "./run-edit";
-import { S, solids } from "./shared";
+import { S, solids, STILL_WORKING } from "./shared";
 import { lastGood, showNode } from "./tree";
 import { syncUndo } from "./undo";
 import { openPose, present } from "./view";
 
 /** Samples along each span of the live preview. */
 const DENSITY = DEFAULT_PREVIEW_DENSITY;
-/** An arrow key moves the chosen axis this far; with Shift, ten times as far. */
+/** An arrow key on an axis handle moves the pole this far along it; with Shift, ten times as far. */
 const KEY_STEP_MM = 0.5;
 /** Arrow presses this close together are one edit, committed once they stop. */
 const KEY_SETTLE_MS = 450;
-/** Below this many pixels per millimetre the axis points at the camera, and the drag reads the pointer's height. */
-const FLAT_AXIS_PX_PER_MM = 0.05;
+/** Above this many poles only the poles near the selection get a handle (a window `WINDOW` wide each way). */
+const ALL_HANDLES_MAX = 256;
+const WINDOW = 4;
+/** The longest a sculpt Undo history gets, per session. */
+const KEEP_STEPS = 64;
+
+const FORESHORTENED = "This axis points almost straight at the camera; turn the view to drag along it.";
+const OWN_MIRROR = "With Symmetry on, this selection is its own mirror image, so it cannot move across the X = 0 plane.";
 
 /** The NURBS step the tool edits: the root of `key`'s tree, or step `node`. */
 interface Source {
@@ -79,15 +90,20 @@ interface Drag {
   button: HTMLButtonElement | null;
 }
 
-/** One Undo step: the grid (a root) or the shown step (a later step) before and after it. */
-type Entry =
-  | { key: string; root: true; before: NurbsSurfaceOp; after: NurbsSurfaceOp }
-  | { key: string; root: false; before: NodeId; after: NodeId };
+/**
+ * One Undo step, with where the part's history stood when it was made (`current`, the plate era), so it is offered
+ * only there, in turn with the part's other edits. A redo entry also keeps `nextId`: any edit that adds a step to the
+ * tree after the Undo moves it on, and the drag can no longer be redone over it.
+ */
+type Entry = { key: string; era: number; current: NodeId; nextId?: number } & (
+  | { root: true; before: NurbsSurfaceOp; after: NurbsSurfaceOp }
+  | { root: false; before: NodeId; after: NodeId }
+);
 
 let source: Source | null = null;
 /** What the view draws, in the part's frame. */
 let spec: NurbsSurface3D | null = null;
-/** The last grid the kernel built for `source`. */
+/** The last grid the kernel built for `source`. The same object as `spec` while nothing is on its way. */
 let committed: NurbsSurface3D | null = null;
 let hit: SculptHit = { iu: 0, iv: 0, mode: "pole" };
 let chosenAxis: CvAxis = "z";
@@ -99,15 +115,19 @@ let forced: { key: string; node: NodeId } | null = null;
 const mesher = createSurfaceMesher();
 let frame = 0;
 let gridDirty = true;
+let previewShown = false;
 let stopCamera: (() => void) | null = null;
+let stopSolid: (() => void) | null = null;
 let keyTimer = 0;
-let overlayGrid = "";
+/** Undo or Redo of a drag is rebuilding: no drag starts until it lands. */
+let stepping = false;
 
 let pending: { source: Source; spec: NurbsSurface3D; record: boolean } | null = null;
 let running: Promise<void> | null = null;
+/** Each later NURBS step a commit replaced, by tree: old id to new, so a commit queued behind it edits the new one. */
+const renamedSteps = new Map<string, Map<NodeId, NodeId>>();
 const undoStack: Entry[] = [];
 const redoStack: Entry[] = [];
-const KEEP_STEPS = 64;
 
 function toolOpen(): boolean {
   return openModelTool() === "sculpt";
@@ -119,7 +139,12 @@ function overlay(): HTMLElement | null {
 
 function note(text: string) {
   const at = document.querySelector<HTMLElement>("#modelNurbsNote");
-  if (at) at.textContent = text;
+  if (at && at.textContent !== text) at.textContent = text;
+}
+
+/** A sentence for the part it is about: never written while another part is open. */
+function say(key: string | null, text: string) {
+  if (key == null || S.open?.key === key) readout(text);
 }
 
 function specOf(op: NurbsSurfaceOp): NurbsSurface3D {
@@ -137,14 +162,16 @@ function specOf(op: NurbsSurfaceOp): NurbsSurface3D {
   };
 }
 
-/** A stored op whose `insert`/`elevate` the kernel applies is shown as the grid it builds, so a drag edits that grid. */
-function bakedSpec(op: NurbsSurfaceOp): NurbsSurface3D {
-  let out: NurbsSurface3D | string = specOf(op);
-  for (const [param, times] of op.insertU ?? []) out = typeof out === "string" ? out : insertSurfaceKnot(out, "u", param, times);
-  for (const [param, times] of op.insertV ?? []) out = typeof out === "string" ? out : insertSurfaceKnot(out, "v", param, times);
-  if (typeof out !== "string" && op.elevateU && op.elevateU > (out.degreeU ?? 3)) out = elevateSurfaceDegree(out, "u", op.elevateU - (out.degreeU ?? 3));
-  if (typeof out !== "string" && op.elevateV && op.elevateV > (out.degreeV ?? 3)) out = elevateSurfaceDegree(out, "v", op.elevateV - (out.degreeV ?? 3));
-  return typeof out === "string" ? specOf(op) : out;
+/**
+ * The grid a stored op builds: its insert and elevate applied with the kernel's order and the same maths, so a drag
+ * edits what is on screen. A sentence when that cannot be done here (a closed surface asking for either).
+ */
+function bakedSpec(op: NurbsSurfaceOp): NurbsSurface3D | string {
+  return applyRefinements(specOf(op), { insertU: op.insertU, insertV: op.insertV, elevateU: op.elevateU, elevateV: op.elevateV });
+}
+
+function sameOp(a: NurbsSurfaceOp, b: NurbsSurfaceOp): boolean {
+  return surfaceKey(a) === surfaceKey(b);
 }
 
 /** The NURBS step on screen: History Edit's, else the last one on the shown branch, else the root. */
@@ -175,9 +202,16 @@ function sameSource(a: Source | null, b: Source | null): boolean {
   return !!a && !!b && a.key === b.key && a.root === b.root && a.node === b.node;
 }
 
+function busyHere(): boolean {
+  return !!drag || !!running || !!pending || !!keyTimer || stepping;
+}
+
 /** Load the grid from the open object, unless a drag or a commit of the same surface is under way. */
 function load() {
   const found = findSource();
+  if (found && sameSource(found.source, source) && busyHere()) return;
+  // Arrow presses still settling belong to the surface on screen until now.
+  flushKeys();
   if (!found) {
     source = null;
     spec = null;
@@ -187,16 +221,32 @@ function load() {
     syncControls();
     return;
   }
-  if (sameSource(found.source, source) && (drag || running || pending)) return;
   const fresh = bakedSpec(found.op);
+  if (typeof fresh === "string") {
+    source = null;
+    spec = null;
+    committed = null;
+    pairing = null;
+    note(`This surface cannot be sculpted here: ${fresh}`);
+    syncControls();
+    return;
+  }
   if (!sameSource(found.source, source)) hit = { iu: Math.min(hit.iu, fresh.poles.length - 1), iv: Math.min(hit.iv, fresh.poles[0]!.length - 1), mode: hit.mode };
   source = found.source;
   spec = fresh;
   committed = fresh;
   gridDirty = true;
   refreshPairing();
-  note("Drag a pole, a row, or a column. Release commits the surface.");
+  noteGrid();
   syncControls();
+}
+
+function noteGrid() {
+  if (!spec) return;
+  const count = spec.poles.length * spec.poles[0]!.length;
+  note(count > ALL_HANDLES_MAX
+    ? `Drag a pole, a row, or a column. Release commits the surface. This grid has ${count} poles: handles show near the selected one, and arrow keys on a handle walk the grid.`
+    : "Drag a pole, a row, or a column. Release commits the surface.");
 }
 
 /** The tool opened, closed, or the open object changed under it. */
@@ -208,17 +258,25 @@ export function syncNurbsTool() {
     forced = null;
     stopCamera?.();
     stopCamera = null;
+    stopSolid?.();
+    stopSolid = null;
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
     if (at) {
       at.hidden = true;
       at.replaceChildren();
     }
-    overlayGrid = "";
-    fx.model?.setNurbsPreview(null);
+    pool.length = 0;
+    axisButtons.length = 0;
+    hidePreview();
     return;
   }
   stopCamera ??= fx.model?.onCameraChange(() => requestPaint()) ?? null;
+  // Another object, or another step of this one, on screen: the tool follows it at once, not at the next camera move.
+  stopSolid ??= fx.model?.onSolidChange(() => {
+    followOpen();
+    requestPaint(true);
+  }) ?? null;
   load();
   requestPaint(true);
 }
@@ -226,6 +284,7 @@ export function syncNurbsTool() {
 /** History Edit on a NURBS step (or a NURBS root): the tool opens on that step's grid. */
 export function openNurbsEdit(node: NodeId) {
   if (!S.open) return;
+  flushKeys();
   forced = { key: S.open.key, node };
   if (toolOpen()) syncNurbsTool();
   else openSculptTool();
@@ -241,9 +300,23 @@ function requestPaint(gridChanged = false) {
 
 /** Another object, or another step, came on screen while the tool stayed open: the tool follows it. */
 function followOpen() {
-  if (drag || running || pending) return;
+  if (busyHere()) return;
   const found = findSource();
   if (found ? !sameSource(found.source, source) : source !== null) load();
+}
+
+function hidePreview() {
+  if (!previewShown) return;
+  previewShown = false;
+  fx.model?.setNurbsPreview(null);
+}
+
+/**
+ * The preview stands in for the part only while the grid on screen is not the one the kernel built: during a drag, a
+ * burst of arrow presses, or a commit on its way. Otherwise the part itself shows, Thicken and all.
+ */
+function live(): boolean {
+  return !!spec && (!!drag || !!keyTimer || spec !== committed);
 }
 
 function paint() {
@@ -253,25 +326,29 @@ function paint() {
   followOpen();
   if (!spec) {
     at.hidden = true;
-    fx.model.setNurbsPreview(null);
+    hidePreview();
     return;
   }
-  if (gridDirty) {
-    gridDirty = false;
-    let made: ReturnType<typeof mesher.mesh>;
-    try {
-      made = mesher.mesh(spec, DENSITY);
-    } catch {
-      made = "This NURBS surface could not be drawn.";
+  if (live()) {
+    if (gridDirty || !previewShown) {
+      gridDirty = false;
+      let made: ReturnType<typeof mesher.mesh>;
+      try {
+        made = mesher.mesh(spec, DENSITY);
+      } catch {
+        made = "This NURBS surface could not be drawn.";
+      }
+      if (typeof made === "string") readout(made);
+      else {
+        fx.model.setNurbsPreview({ positions: made.positions, normals: made.normals, indices: made.indices, density: DENSITY });
+        previewShown = true;
+      }
     }
-    if (typeof made === "string") readout(made);
-    else fx.model.setNurbsPreview({ positions: made.positions, normals: made.normals, indices: made.indices, density: DENSITY });
+  } else {
+    gridDirty = false;
+    hidePreview();
   }
   placeHandles(at);
-}
-
-function onScreen(pose: Affine, pole: readonly number[]): { x: number; y: number } | null {
-  return fx.model?.projectPoint(applyPose(pose, pole)) ?? null;
 }
 
 function selectedNow(iu: number, iv: number): boolean {
@@ -285,87 +362,152 @@ function mirrorOf(iu: number, iv: number): [number, number] | null {
   return pairing === "u" ? [spec.poles.length - 1 - iu, iv] : [iu, spec.poles[0]!.length - 1 - iv];
 }
 
-/** The handles stay the same nodes from frame to frame (focus and pointer capture with them); only their places change. */
+/** The poles that get a handle: all of a grid up to 16 × 16, else the window around the selection. */
+function shownPoles(nu: number, nv: number): [number, number][] {
+  const out: [number, number][] = [];
+  if (nu * nv <= ALL_HANDLES_MAX) {
+    for (let iu = 0; iu < nu; iu += 1) for (let iv = 0; iv < nv; iv += 1) out.push([iu, iv]);
+    return out;
+  }
+  const u0 = Math.max(0, Math.min(nu - (2 * WINDOW + 1), hit.iu - WINDOW));
+  const v0 = Math.max(0, Math.min(nv - (2 * WINDOW + 1), hit.iv - WINDOW));
+  for (let iu = u0; iu < Math.min(nu, u0 + 2 * WINDOW + 1); iu += 1) {
+    for (let iv = v0; iv < Math.min(nv, v0 + 2 * WINDOW + 1); iv += 1) out.push([iu, iv]);
+  }
+  return out;
+}
+
+/** The handle buttons, kept from frame to frame; each frame only says which pole each one stands for and where. */
+const pool: HTMLButtonElement[] = [];
+const axisButtons: HTMLButtonElement[] = [];
+/** What each button was last given, so a frame writes only what changed. */
+const drawn = new WeakMap<HTMLButtonElement, string>();
+let scratch = new Float64Array(0);
+let projected = new Float64Array(0);
+
+function poleButton(): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "nurbs-pole";
+  button.tabIndex = -1;
+  return button;
+}
+
+function ensureAxes(at: HTMLElement) {
+  if (axisButtons.length > 0) return;
+  for (const [axis, label] of [["x", "X"], ["y", "Y"], ["z", "Z"], ["normal", "N"]] as const) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.cvAxis = axis;
+    button.textContent = label;
+    button.setAttribute("aria-label", `Move along ${axis === "normal" ? "the surface normal" : `the part's ${label}`}: drag, or arrow keys`);
+    axisButtons.push(button);
+    at.append(button);
+  }
+}
+
+/**
+ * Place the handles: one projection of every shown pole with one layout read, then only transforms and the few
+ * attributes that changed. A roving tab stop: the selected pole's handle is the one in the tab order.
+ */
 function placeHandles(at: HTMLElement) {
-  if (!spec) return;
+  if (!spec || !fx.model) return;
   const nu = spec.poles.length;
   const nv = spec.poles[0]!.length;
-  const grid = `${nu}x${nv}`;
-  if (grid !== overlayGrid) {
-    const focused = document.activeElement instanceof HTMLElement && at.contains(document.activeElement) ? document.activeElement : null;
-    const keep = focused?.dataset.nurbsIu != null ? [Number(focused.dataset.nurbsIu), Number(focused.dataset.nurbsIv)] : null;
-    const keepAxis = focused?.dataset.cvAxis ?? null;
-    const nodes: HTMLButtonElement[] = [];
-    for (let iu = 0; iu < nu; iu += 1) {
-      for (let iv = 0; iv < nv; iv += 1) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "nurbs-pole";
-        button.dataset.nurbsIu = String(iu);
-        button.dataset.nurbsIv = String(iv);
-        button.setAttribute("aria-label", `Pole ${iu + 1}, ${iv + 1}`);
-        nodes.push(button);
-      }
-    }
-    for (const [axis, label] of [["x", "X"], ["y", "Y"], ["z", "Z"], ["normal", "N"]] as const) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.dataset.cvAxis = axis;
-      button.textContent = label;
-      button.setAttribute("aria-label", `Drag along ${axis === "normal" ? "the surface normal" : `the part's ${label}`}`);
-      nodes.push(button);
-    }
-    at.replaceChildren(...nodes);
-    overlayGrid = grid;
-    const back = keep && keep[0]! < nu && keep[1]! < nv ? at.querySelector<HTMLElement>(`[data-nurbs-iu="${keep[0]}"][data-nurbs-iv="${keep[1]}"]`) : keepAxis ? at.querySelector<HTMLElement>(`[data-cv-axis="${keepAxis}"]`) : null;
-    back?.focus();
+  if (!at.hasAttribute("tabindex")) {
+    at.tabIndex = -1;
+    at.setAttribute("aria-label", "NURBS pole handles");
   }
-  at.hidden = false;
+  ensureAxes(at);
+  const shown = shownPoles(nu, nv);
+  const focused = document.activeElement instanceof HTMLButtonElement && document.activeElement.classList.contains("nurbs-pole") && at.contains(document.activeElement);
+  while (pool.length < shown.length) {
+    const button = poleButton();
+    pool.push(button);
+    at.insertBefore(button, axisButtons[0] ?? null);
+  }
+  while (pool.length > shown.length) pool.pop()!.remove();
+  const pose = openPose();
+  const count = shown.length + 1;
+  if (scratch.length < count * 3) {
+    scratch = new Float64Array(count * 3);
+    projected = new Float64Array(count * 3);
+  }
+  shown.forEach(([iu, iv], i) => {
+    const p = applyPose(pose, spec!.poles[iu]![iv]!);
+    scratch[i * 3] = p[0];
+    scratch[i * 3 + 1] = p[1];
+    scratch[i * 3 + 2] = p[2];
+  });
+  const selected = spec.poles[hit.iu]?.[hit.iv];
+  if (selected) {
+    const p = applyPose(pose, selected);
+    scratch[shown.length * 3] = p[0];
+    scratch[shown.length * 3 + 1] = p[1];
+    scratch[shown.length * 3 + 2] = p[2];
+  }
+  const view = fx.model.projectMany(scratch.subarray(0, count * 3), projected.subarray(0, count * 3));
   // The overlay covers the view and nothing else, so a handle never lands on the panel beside it.
-  const view = document.querySelector<HTMLCanvasElement>("#model")?.getBoundingClientRect();
-  const ox = view?.left ?? 0;
-  const oy = view?.top ?? 0;
-  if (view) {
+  const frameText = `${view.left},${view.top},${view.width},${view.height}`;
+  if (at.dataset.frame !== frameText) {
+    at.dataset.frame = frameText;
     at.style.inset = "auto";
-    at.style.left = `${ox}px`;
-    at.style.top = `${oy}px`;
+    at.style.left = `${view.left}px`;
+    at.style.top = `${view.top}px`;
     at.style.width = `${view.width}px`;
     at.style.height = `${view.height}px`;
   }
-  const pose = openPose();
+  at.hidden = false;
   const mirror = mirrorOf(hit.iu, hit.iv);
-  for (const button of at.querySelectorAll<HTMLButtonElement>("[data-nurbs-iu]")) {
-    const iu = Number(button.dataset.nurbsIu);
-    const iv = Number(button.dataset.nurbsIv);
-    const pole = spec.poles[iu]?.[iv];
-    const place = pole ? onScreen(pose, pole) : null;
-    button.hidden = !place;
-    if (place) {
-      button.style.left = `${place.x - ox}px`;
-      button.style.top = `${place.y - oy}px`;
-    }
+  let focusLost = false;
+  shown.forEach(([iu, iv], i) => {
+    const button = pool[i]!;
+    const visible = projected[i * 3 + 2] === 1;
     const on = selectedNow(iu, iv);
-    button.classList.toggle("on", on);
-    button.classList.toggle("mirror", !on && !!mirror && hit.mode === "pole" && mirror[0] === iu && mirror[1] === iv);
-    button.setAttribute("aria-pressed", on ? "true" : "false");
-    button.textContent = iu === hit.iu && iv === hit.iv ? "•" : "";
-  }
-  const selected = spec.poles[hit.iu]?.[hit.iv];
-  const centre = selected ? onScreen(pose, selected) : null;
-  const offsets: Record<string, [number, number]> = { x: [20, 0], y: [0, -20], z: [-20, 0], normal: [0, 20] };
-  for (const button of at.querySelectorAll<HTMLButtonElement>("[data-cv-axis]")) {
-    const axis = button.dataset.cvAxis!;
-    button.hidden = !centre;
-    button.setAttribute("aria-pressed", axis === chosenAxis ? "true" : "false");
-    if (centre) {
-      button.style.left = `${centre.x - ox + offsets[axis]![0]}px`;
-      button.style.top = `${centre.y - oy + offsets[axis]![1]}px`;
+    const main = iu === hit.iu && iv === hit.iv;
+    const image = !on && !!mirror && hit.mode === "pole" && mirror[0] === iu && mirror[1] === iv;
+    const state = `${iu},${iv},${on ? 1 : 0},${main ? 1 : 0},${image ? 1 : 0},${visible ? 1 : 0}`;
+    if (drawn.get(button) !== state) {
+      drawn.set(button, state);
+      button.dataset.nurbsIu = String(iu);
+      button.dataset.nurbsIv = String(iv);
+      button.setAttribute("aria-label", `Pole ${iu + 1}, ${iv + 1}`);
+      button.classList.toggle("on", on);
+      button.classList.toggle("mirror", image);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+      button.textContent = main ? "•" : "";
+      button.tabIndex = main ? 0 : -1;
+      if (button.hidden !== !visible) {
+        if (!visible && document.activeElement === button) focusLost = true;
+        button.hidden = !visible;
+      }
     }
+    if (visible) button.style.transform = `translate(${projected[i * 3]!.toFixed(1)}px, ${projected[i * 3 + 1]!.toFixed(1)}px) translate(-50%, -50%)`;
+  });
+  // Focus stays on the selected pole's handle while the selection moves (a window reassigns the buttons).
+  if (focused) {
+    const mine = pool.find((button) => button.tabIndex === 0 && !button.hidden);
+    if (mine && document.activeElement !== mine) mine.focus();
+    else if (!mine) focusLost = true;
+  }
+  // A focused handle that went behind the camera hands focus to the overlay, so the keys still reach the tool.
+  if (focusLost) at.focus();
+  const centreVisible = !!selected && projected[shown.length * 3 + 2] === 1;
+  const cx = projected[shown.length * 3]!;
+  const cy = projected[shown.length * 3 + 1]!;
+  const offsets: Record<string, [number, number]> = { x: [20, 0], y: [0, -20], z: [-20, 0], normal: [0, 20] };
+  for (const button of axisButtons) {
+    const axis = button.dataset.cvAxis!;
+    if (button.hidden !== !centreVisible) button.hidden = !centreVisible;
+    const pressed = axis === chosenAxis ? "true" : "false";
+    if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
+    if (centreVisible) button.style.transform = `translate(${(cx + offsets[axis]![0]).toFixed(1)}px, ${(cy + offsets[axis]![1]).toFixed(1)}px) translate(-50%, -50%)`;
   }
   const canvas = document.querySelector<HTMLCanvasElement>("#model");
   if (canvas && selected) {
     canvas.dataset.nurbsPole = selected.join(",");
     canvas.dataset.nurbsGrid = `${nu}x${nv}`;
+    canvas.dataset.nurbsHandles = String(shown.length);
     const image = mirror ? spec.poles[mirror[0]]?.[mirror[1]] : undefined;
     if (image) canvas.dataset.nurbsMirror = image.join(",");
     else delete canvas.dataset.nurbsMirror;
@@ -387,23 +529,30 @@ function refreshPairing() {
   pairing = spec ? symmetryPairing(spec) : null;
 }
 
-/** Fields show the grid as it is: its degrees, the selected pole's weight, and whether Symmetry can be on. */
+/** Fields show the grid as it is: its degrees, the selected pole's weight, and whether Symmetry can be on and why not. */
 function syncControls() {
   const box = input("#modelNurbsSymmetry");
   const why = document.querySelector<HTMLElement>("#modelNurbsSymmetryNote");
   const make = document.querySelector<HTMLButtonElement>("#modelNurbsMakeSymmetric");
   const has = !!spec;
+  const reason = spec && !pairing ? symmetryReason(spec) : null;
+  const text = !has || pairing
+    ? ""
+    : reason === "knots"
+      ? "Symmetry is off: the knots are not spaced the same from both ends (an insert or a crease off the middle does that), so this surface cannot be mirrored."
+      : reason === "closed"
+        ? "Symmetry is off: a closed surface cannot be mirrored across the part's X = 0 plane."
+        : "Symmetry is off: this surface is not symmetric about the part's X = 0 plane. Make symmetric mirrors it first.";
   if (box) {
     box.disabled = !pairing;
     if (!pairing) box.checked = false;
-    const tip = pairing ? "Mirror each drag across the part's own X = 0 plane." : has ? "This surface is not symmetric about the part's X = 0 plane." : "There is no surface to mirror.";
-    box.closest("label")?.setAttribute("data-tip", tip);
+    box.closest("label")?.setAttribute("data-tip", pairing ? "Mirror each drag across the part's own X = 0 plane." : text || "There is no surface to mirror.");
   }
   if (why) {
-    why.hidden = !has || !!pairing;
-    why.textContent = has && !pairing ? "Symmetry is off: this surface is not symmetric about the part's X = 0 plane. Make symmetric mirrors it first." : "";
+    why.hidden = !text;
+    why.textContent = text;
   }
-  if (make) make.hidden = !has || !!pairing;
+  if (make) make.hidden = !has || !!pairing || reason === "knots" || reason === "closed";
   const degreeU = input("#modelNurbsDegreeU");
   const degreeV = input("#modelNurbsDegreeV");
   if (degreeU && spec) degreeU.value = String(spec.degreeU ?? 3);
@@ -416,8 +565,11 @@ function syncControls() {
   }
 }
 
-/** A drawer action or a keyboard nudge: the new grid is drawn and committed, or refused in words with nothing changed. */
-function change(next: NurbsSurface3D | string): boolean {
+/**
+ * A drawer action: the new grid is drawn and committed, or refused in words with nothing changed. `same` is said when
+ * the action would leave the surface as it is, so nothing is sent and no empty Undo step is made.
+ */
+function change(next: NurbsSurface3D | string, same = "That leaves the surface as it is."): boolean {
   if (!spec || !source) return false;
   if (typeof next === "string") {
     readout(next);
@@ -430,9 +582,16 @@ function change(next: NurbsSurface3D | string): boolean {
     syncControls();
     return false;
   }
+  if (surfaceKey(next) === surfaceKey(spec)) {
+    readout(same);
+    syncControls();
+    return false;
+  }
+  flushKeys();
   spec = next;
   hit = { iu: Math.min(hit.iu, next.poles.length - 1), iv: Math.min(hit.iv, next.poles[0]!.length - 1), mode: hit.mode };
   refreshPairing();
+  noteGrid();
   syncControls();
   requestPaint(true);
   void commit(next);
@@ -445,7 +604,7 @@ function degreeTyped(axis: "u" | "v") {
   const want = Math.round(num(axis === "u" ? "#modelNurbsDegreeU" : "#modelNurbsDegreeV", now));
   if (want === now) return;
   if (want < now) {
-    readout("Lowering the degree would move the surface. Raise it, or start a new surface.");
+    readout("Lowering the degree would move the surface, so it is not lowered.");
     syncControls();
     return;
   }
@@ -475,23 +634,20 @@ function knotAction(kind: "insert" | "crease", axis: "u" | "v") {
     return;
   }
   const param = surfaceParam(spec, axis, t);
-  change(kind === "insert" ? insertSurfaceKnot(spec, axis, param, 1) : creaseSurface(spec, axis, param));
+  change(kind === "insert" ? insertSurfaceKnot(spec, axis, param, 1) : creaseSurface(spec, axis, param), "The knot there is already as sharp as the degree allows.");
 }
 
 function makeSymmetricNow() {
   if (!spec) return;
-  const nu = spec.poles.length;
-  const nv = spec.poles[0]!.length;
-  const alongU = Math.abs(spec.poles[nu - 1]![0]![0] - spec.poles[0]![0]![0]);
-  const alongV = Math.abs(spec.poles[0]![nv - 1]![0] - spec.poles[0]![0]![0]);
-  if (change(makeSymmetric(spec, alongV > alongU ? "v" : "u"))) readout("The surface is symmetric about the part's X = 0 plane now. Symmetry can be turned on.");
+  if (change(makeSymmetric(spec, mirrorDirection(spec)), "The surface is already symmetric.")) readout("The surface is symmetric about the part's X = 0 plane now, so Symmetry can be turned on.");
 }
 
 async function newSurface() {
   if (S.busy || S.jumping) {
-    readout("The modeler is still working. Try again in a moment.");
+    readout(STILL_WORKING);
     return;
   }
+  flushKeys();
   forced = null;
   const made = await createFeatureSolid(nurbsSurfaceOp({ poles: bicubicGrid(), degreeU: 3, degreeV: 3 }), undefined, true);
   if (made && toolOpen()) syncNurbsTool();
@@ -520,28 +676,52 @@ function unitAxis(axis: CvAxis, normal: Vec3): Vec3 {
   return normal;
 }
 
-/** The chosen axis on screen at the selected pole, in pixels per millimetre the pole moves along it in the part. */
-function screenAxis(at: NurbsSurface3D, axis: CvAxis, normal: Vec3): { px: number; py: number } {
+/**
+ * The chosen axis on screen at the selected pole, in pixels per millimetre the pole moves along it in the part; null
+ * when it points so much at the camera that the pole would jump (`axisDragScale`).
+ */
+function screenAxis(at: NurbsSurface3D, axis: CvAxis, normal: Vec3): { px: number; py: number } | null {
   const pole = at.poles[hit.iu]![hit.iv]!;
   const pose = openPose();
-  const base = onScreen(pose, pole);
-  if (!base) return { px: 0, py: 0 };
-  const along = (dir: Vec3) => {
-    const tip = onScreen(pose, [pole[0] + dir[0] * 10, pole[1] + dir[1] * 10, pole[2] + dir[2] * 10]);
-    return tip ? { px: (tip.x - base.x) / 10, py: (tip.y - base.y) / 10 } : { px: 0, py: 0 };
+  const dirs = [unitAxis(axis, normal), [1, 0, 0], [0, 1, 0], [0, 0, 1]] as Vec3[];
+  const points = new Float64Array(15);
+  const put = (i: number, p: readonly number[]) => {
+    const q = applyPose(pose, p);
+    points[i * 3] = q[0];
+    points[i * 3 + 1] = q[1];
+    points[i * 3 + 2] = q[2];
   };
-  const want = along(unitAxis(axis, normal));
-  if (Math.hypot(want.px, want.py) >= FLAT_AXIS_PX_PER_MM) return want;
-  // The axis points at the camera: the pointer's height moves it, at the scale the other axes show.
-  const scale = Math.max(...(["x", "y", "z"] as const).map((other) => {
-    const v = along(unitAxis(other, normal));
+  put(0, pole);
+  dirs.forEach((d, i) => put(i + 1, [pole[0] + d[0] * 10, pole[1] + d[1] * 10, pole[2] + d[2] * 10]));
+  const out = new Float64Array(15);
+  fx.model?.projectMany(points, out);
+  if (out[2] !== 1) return null;
+  const along = (i: number) => (out[i * 3 + 2] === 1 ? { px: (out[i * 3]! - out[0]!) / 10, py: (out[i * 3 + 1]! - out[1]!) / 10 } : { px: 0, py: 0 });
+  const others = [2, 3, 4].map((i) => {
+    const v = along(i);
     return Math.hypot(v.px, v.py);
-  }), FLAT_AXIS_PX_PER_MM);
-  return { px: 0, py: -scale };
+  });
+  return axisDragScale(along(1), others);
 }
 
 function symmetryOn(): SymmetryPairing | false {
   return input("#modelNurbsSymmetry")?.checked === true && pairing ? pairing : false;
+}
+
+/** With Symmetry on, an X move of a selection that is its own mirror image cancels out. */
+function ownMirror(axis: CvAxis): boolean {
+  const pair = symmetryOn();
+  if (!pair || axis !== "x" || !spec) return false;
+  const nu = spec.poles.length;
+  const nv = spec.poles[0]!.length;
+  for (let iu = 0; iu < nu; iu += 1) {
+    for (let iv = 0; iv < nv; iv += 1) {
+      if (!selectedNow(iu, iv)) continue;
+      const [mu, mv] = pair === "u" ? [nu - 1 - iu, iv] : [iu, nv - 1 - iv];
+      if (!selectedNow(mu, mv)) return false;
+    }
+  }
+  return true;
 }
 
 /** The grid the drag shows at a pointer offset of (dx, dy) pixels from where it began. */
@@ -553,17 +733,32 @@ function dragged(d: Drag, dx: number, dy: number): NurbsSurface3D {
 
 function startDrag(ev: PointerEvent, axis: CvAxis, button: HTMLButtonElement) {
   if (!spec || !source) return;
+  ev.preventDefault();
+  // Undo, Redo or another edit is rebuilding the part: a drag now would build on a grid about to change.
+  if (stepping || ((S.busy || S.jumping) && !running && !pending)) {
+    readout(STILL_WORKING);
+    return;
+  }
   flushKeys();
+  chosenAxis = axis;
+  if (ownMirror(axis)) {
+    readout(OWN_MIRROR);
+    requestPaint();
+    return;
+  }
   const normal = normalAt(spec, hit.iu, hit.iv);
   const onAxis = screenAxis(spec, axis, normal);
-  chosenAxis = axis;
+  if (!onAxis) {
+    readout(FORESHORTENED);
+    requestPaint();
+    return;
+  }
   drag = { axis, pointer: ev.pointerId, x: ev.clientX, y: ev.clientY, start: spec, px: onAxis.px, py: onAxis.py, normal, button };
   try {
     button.setPointerCapture(ev.pointerId);
   } catch {
     // A synthetic pointer has nothing to capture; the document still hears it.
   }
-  ev.preventDefault();
   requestPaint();
 }
 
@@ -587,7 +782,7 @@ function endDrag(keep: boolean) {
   } catch {
     // Already released.
   }
-  if (!keep || !spec || spec === d.start) {
+  if (!keep || !spec || spec === d.start || surfaceKey(spec) === surfaceKey(d.start)) {
     spec = d.start;
     requestPaint(true);
     return;
@@ -607,6 +802,15 @@ function cancelDrag() {
 
 function nudge(ev: KeyboardEvent, axis: CvAxis) {
   if (!spec || !source) return;
+  if (stepping || ((S.busy || S.jumping) && !running && !pending)) {
+    readout(STILL_WORKING);
+    return;
+  }
+  chosenAxis = axis;
+  if (ownMirror(axis)) {
+    readout(OWN_MIRROR);
+    return;
+  }
   const sign = ev.key === "ArrowUp" || ev.key === "ArrowRight" ? 1 : -1;
   const amount = sign * KEY_STEP_MM * (ev.shiftKey ? 10 : 1);
   spec = { ...spec, poles: sculptGrid(spec.poles, hit, axis, amount, normalAt(spec, hit.iu, hit.iv), num("#modelNurbsFalloff", 0), symmetryOn()) };
@@ -618,7 +822,7 @@ function nudge(ev: KeyboardEvent, axis: CvAxis) {
   }, KEY_SETTLE_MS);
 }
 
-/** Arrow presses still settling are committed now. */
+/** Arrow presses still settling are committed now, for the surface they were made on. */
 function flushKeys() {
   if (!keyTimer) return;
   window.clearTimeout(keyTimer);
@@ -626,11 +830,22 @@ function flushKeys() {
   if (spec) void commit(spec);
 }
 
-// --- Committing ------------------------------------------------------------------------------------------------------
-
-function sameOp(a: NurbsSurfaceOp, b: NurbsSurfaceOp): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+/** Arrow keys on a pole handle walk the grid: Left and Right along U, Up and Down along V. */
+function walk(ev: KeyboardEvent) {
+  if (!spec) return;
+  const nu = spec.poles.length;
+  const nv = spec.poles[0]!.length;
+  const step = ev.shiftKey ? 4 : 1;
+  const du = ev.key === "ArrowRight" ? step : ev.key === "ArrowLeft" ? -step : 0;
+  const dv = ev.key === "ArrowUp" ? step : ev.key === "ArrowDown" ? -step : 0;
+  hit = { iu: Math.max(0, Math.min(nu - 1, hit.iu + du)), iv: Math.max(0, Math.min(nv - 1, hit.iv + dv)), mode: hit.mode };
+  syncControls();
+  const at = overlay();
+  // Placed now, not at the next frame, so focus moves with the selection at once.
+  if (at) placeHandles(at);
 }
+
+// --- Committing ------------------------------------------------------------------------------------------------------
 
 /** Queue `next` for the kernel. The one in flight finishes first; only the latest queued grid is sent after it. */
 export function commit(next: NurbsSurface3D, record = true): Promise<void> {
@@ -642,14 +857,24 @@ export function commit(next: NurbsSurface3D, record = true): Promise<void> {
       while (pending) {
         const job = pending;
         pending = null;
-        await commitOnce(job.source, job.spec, job.record);
+        await commitOnce(resolved(job.source), job.spec, job.record);
       }
     } finally {
       running = null;
       syncUndo();
+      requestPaint(true);
     }
   })();
   return running;
+}
+
+/** A queued job's step, followed through the commits that replaced it while it waited. */
+function resolved(job: Source): Source {
+  if (job.root) return job;
+  const renames = renamedSteps.get(job.key);
+  let node = job.node;
+  for (let guard = 0; renames?.has(node) && guard < 1000; guard += 1) node = renames.get(node)!;
+  return node === job.node ? job : { ...job, node };
 }
 
 /** Apply, with the tool open: anything still settling or queued reaches the kernel. */
@@ -657,7 +882,7 @@ export async function commitNurbs(): Promise<boolean> {
   flushKeys();
   if (drag) endDrag(true);
   if (running) await running;
-  return !!source && !!committed && !!spec && sameOp(nurbsSurfaceOp(committed), nurbsSurfaceOp(spec));
+  return !!source && !!committed && !!spec && spec === committed;
 }
 
 async function waitIdle(): Promise<boolean> {
@@ -670,10 +895,11 @@ async function waitIdle(): Promise<boolean> {
 
 /** The kernel refused `job`: the view snaps back to the last grid it built, unless the person has moved on. */
 function refused(job: Source, why: string) {
-  readout(why);
-  if (!sameSource(job, source) || drag || pending) return;
+  say(job.key, why);
+  if (!sameSource(job, source) || drag || pending || keyTimer) return;
   spec = committed;
   refreshPairing();
+  noteGrid();
   syncControls();
   requestPaint(true);
 }
@@ -692,7 +918,7 @@ function landed(job: Source, next: NurbsSurface3D) {
 function pushEntry(entry: Entry) {
   undoStack.push(entry);
   if (undoStack.length > KEEP_STEPS) undoStack.shift();
-  redoStack.length = 0;
+  for (let i = redoStack.length - 1; i >= 0; i -= 1) if (redoStack[i]!.key === entry.key) redoStack.splice(i, 1);
 }
 
 async function commitOnce(job: Source, next: NurbsSurface3D, record: boolean) {
@@ -702,7 +928,7 @@ async function commitOnce(job: Source, next: NurbsSurface3D, record: boolean) {
     return;
   }
   if (!(await waitIdle())) {
-    refused(job, "The modeler is still working. Try again in a moment.");
+    refused(job, STILL_WORKING);
     return;
   }
   const op = nurbsSurfaceOp(next);
@@ -723,7 +949,8 @@ async function commitOnce(job: Source, next: NurbsSurface3D, record: boolean) {
       return;
     }
     landed(job, next);
-    if (record) pushEntry({ key: job.key, root: true, before, after: op });
+    const now = modelTrees.get(job.key);
+    if (record && now) pushEntry({ key: job.key, era: S.plateEra, current: now.current, root: true, before, after: op });
     return;
   }
   const done = await editStep(job, op);
@@ -731,41 +958,37 @@ async function commitOnce(job: Source, next: NurbsSurface3D, record: boolean) {
     refused(job, done);
     return;
   }
-  landed(job, next);
+  if (done.node !== job.node) {
+    const renames = renamedSteps.get(job.key) ?? new Map<NodeId, NodeId>();
+    renames.set(job.node, done.node);
+    renamedSteps.set(job.key, renames);
+  }
   if (source && sameSource(job, source)) source = { ...source, node: done.node };
-  forced = forced && forced.key === job.key && forced.node === job.node ? { key: job.key, node: done.node } : forced;
-  if (record) pushEntry({ key: job.key, root: false, before: done.before, after: done.after });
+  if (forced && forced.key === job.key && forced.node === job.node) forced = { key: job.key, node: done.node };
+  landed({ ...job, node: done.node }, next);
+  if (record && done.before !== done.after) pushEntry({ key: job.key, era: S.plateEra, current: done.after, root: false, before: done.before, after: done.after });
 }
 
 function forgetSolids(key: string) {
   for (const name of [...solids.keys()]) if (name.startsWith(`${key}#`)) solids.delete(name);
 }
 
-/** Every step's solid changes with the root: no fingerprint, plate mesh, or saved solid of the old surface is kept. */
-function rebuiltFrom(tree: ModelTree): ModelTree {
-  const nodes = new Map(tree.nodes);
-  for (const [id, node] of nodes) {
-    const { mesh: _mesh, ...rest } = node;
-    nodes.set(id, { ...rest, fingerprint: null });
-  }
-  return { ...tree, nodes };
-}
-
 /**
  * A new root grid under the steps already there, as a sketch-started root is replaced: the engine opens the whole tree
  * again on it, so every later step (Thicken, Sew) is rebuilt on the new surface, and the step on screen is shown again.
- * Null when it built; else the kernel's sentence, with the old root put back.
+ * Every build of the old surface goes (`withoutBuilds`: fingerprints, plate meshes, sheet marks), so the plate takes
+ * the new one when Model is left. Null when it built; else the kernel's sentence, with the old root put back.
  */
 async function replaceRoot(job: Source, op: NurbsSurfaceOp): Promise<string | null> {
   const tree = modelTrees.get(job.key)!;
   const previous = tree;
   const back = tree.current;
-  modelTrees.set(job.key, jumped(rebuiltFrom(withFeatureRoot(tree, op)), back));
+  modelTrees.set(job.key, jumped(withoutBuilds(withFeatureRoot(tree, op)), back));
   forgetSolids(job.key);
   const mine = S.ticket;
   S.busy = true;
   syncUndo();
-  readout("Building the surface…");
+  say(job.key, "Building the surface…");
   let problem: string | null;
   try {
     await post({ call: "close", key: job.key });
@@ -806,7 +1029,8 @@ async function replaceRoot(job: Source, op: NurbsSurfaceOp): Promise<string | nu
 
 /**
  * A later NURBS step edited as History Edit does: the new grid is a sibling of the step, the steps under it replay on
- * it in the same engine call, and the view shows the new tip. The old branch stays, so Undo shows it again.
+ * it in the same engine call, and the view shows the new tip. The old branch stays, so Undo shows it again. When the
+ * person has opened another part meanwhile, the edit is still kept in this part's history; only the view stays put.
  */
 async function editStep(job: Source, op: NurbsSurfaceOp): Promise<{ node: NodeId; before: NodeId; after: NodeId } | string> {
   const tree = modelTrees.get(job.key);
@@ -819,10 +1043,12 @@ async function editStep(job: Source, op: NurbsSurfaceOp): Promise<{ node: NodeId
   const replayOps = replayIds.map((id) => tree.nodes.get(id)?.op).filter((step): step is ModelOp => !!step);
   if (replayOps.length !== replayIds.length) return "This surface is no longer in the history.";
   const mine = S.ticket;
+  const here = () => S.open?.key === job.key && state.stage === "model";
   const twin = builtBranch(tree, parent, op, replayOps);
   if (twin != null) {
     const path = pathTo(tree, twin);
     const node = path[path.indexOf(parent) + 1] ?? twin;
+    if (!here()) return "The surface could not be shown.";
     const shown = await showNode(mine, job.objectId, job.key, twin, () => "Surface updated.");
     return shown ? { node, before, after: twin } : "The surface could not be shown.";
   }
@@ -839,7 +1065,7 @@ async function editStep(job: Source, op: NurbsSurfaceOp): Promise<{ node: NodeId
   const chord = state.stepTolerance;
   S.busy = true;
   syncUndo();
-  readout("Building the surface…");
+  say(job.key, "Building the surface…");
   let body: Record<string, unknown>;
   try {
     body = await treeCall(job.key, parent, editRequest(job.key, parent, ids[0]!, op, replay, chord));
@@ -848,13 +1074,14 @@ async function editStep(job: Source, op: NurbsSurfaceOp): Promise<{ node: NodeId
     syncUndo();
   }
   const latest = modelTrees.get(job.key);
-  if (mine !== S.ticket || state.stage !== "model" || !latest) {
+  if (!latest) {
+    // The part is gone (the plate was cleared or the project closed): nothing to keep the edit in.
     if (typeof body.error !== "string") void dropInEngine(job.key, ids[0]!);
-    return "The part changed before the surface was built.";
+    return "This surface is no longer open.";
   }
   if (typeof body.error === "string" && body.error) {
     const why = sentence(body.error);
-    failed(job.key, body);
+    if (here()) failed(job.key, body);
     return why;
   }
   const parsed = decodeSolid(body);
@@ -867,9 +1094,9 @@ async function editStep(job: Source, op: NurbsSurfaceOp): Promise<{ node: NodeId
   const steps = forkSteps(latest, { key: job.key, parent, node: ids[0]!, op, replay, old: [job.node, ...replayIds] }, built, broken);
   modelTrees.set(job.key, forked(latest, parent, steps, parsed.id));
   keepSolid(job.key, parsed.id, chord, parsed);
-  S.editBack = null;
-  if (S.open?.key === job.key) {
-    S.open = { ...S.open, solid: parsed };
+  if (here()) {
+    S.editBack = null;
+    S.open = { ...S.open!, solid: parsed };
     present(parsed, broken ? `Surface updated. ${sentence(broken.error)}` : "Surface updated.");
   }
   return { node: ids[0]!, before, after: parsed.id };
@@ -877,20 +1104,49 @@ async function editStep(job: Source, op: NurbsSurfaceOp): Promise<{ node: NodeId
 
 // --- Undo and Redo ---------------------------------------------------------------------------------------------------
 
-function entryHolds(entry: Entry | undefined, side: "before" | "after"): boolean {
+/** Entries of a cleared plate or a closed project, or of a tree no longer open, go. */
+function prune() {
+  for (const stack of [undoStack, redoStack]) {
+    for (let i = stack.length - 1; i >= 0; i -= 1) {
+      const entry = stack[i]!;
+      if (entry.era !== S.plateEra || !modelTrees.has(entry.key)) stack.splice(i, 1);
+    }
+  }
+}
+
+/** The part's history stands where `entry` was made (undo) or undone (redo). */
+function entryHolds(entry: Entry | undefined, way: "undo" | "redo"): boolean {
   if (!entry || S.open?.key !== entry.key) return false;
   const tree = modelTrees.get(entry.key);
   if (!tree) return false;
-  if (entry.root) return tree.root.kind === "feature" && tree.root.op.kind === "nurbsSurface" && sameOp(tree.root.op, entry[side]);
-  return tree.current === entry[side] && tree.nodes.has(entry.before) && tree.nodes.has(entry.after);
+  if (way === "redo" && entry.nextId !== undefined && tree.nextId !== entry.nextId) return false;
+  if (entry.root) {
+    const rootOp = tree.root.kind === "feature" && tree.root.op.kind === "nurbsSurface" ? tree.root.op : null;
+    return !!rootOp && tree.current === entry.current && sameOp(rootOp, way === "undo" ? entry.after : entry.before);
+  }
+  return tree.current === (way === "undo" ? entry.after : entry.before) && tree.nodes.has(entry.before) && tree.nodes.has(entry.after);
 }
 
 const history = {
   can(way: "undo" | "redo"): boolean {
-    if (running || pending || drag) return false;
-    return way === "undo" ? entryHolds(undoStack.at(-1), "after") : entryHolds(redoStack.at(-1), "before");
+    if (stepping || drag) return false;
+    prune();
+    // Arrow presses still settling are the newest edit: Undo takes them (they are committed first).
+    if (way === "undo" && keyTimer && source && S.open?.key === source.key) return true;
+    if (running || pending) return false;
+    if (way === "redo") {
+      // A redo entry no longer where it was undone (another edit, or a jump) can never be redone: it goes.
+      const top = redoStack.at(-1);
+      if (top && S.open?.key === top.key && !entryHolds(top, "redo")) {
+        for (let i = redoStack.length - 1; i >= 0; i -= 1) if (redoStack[i]!.key === top.key) redoStack.splice(i, 1);
+      }
+      return entryHolds(redoStack.at(-1), "redo");
+    }
+    return entryHolds(undoStack.at(-1), "undo");
   },
   async step(way: "undo" | "redo") {
+    flushKeys();
+    if (running) await running;
     const from = way === "undo" ? undoStack : redoStack;
     const to = way === "undo" ? redoStack : undoStack;
     const entry = from.at(-1);
@@ -898,18 +1154,23 @@ const history = {
     from.pop();
     const target = way === "undo" ? entry.before : entry.after;
     let ok = false;
-    if (entry.root) {
-      const at = S.open!;
-      const job: Source = { key: entry.key, objectId: at.objectId, root: true, node: ROOT };
-      const why = await replaceRoot(job, target as NurbsSurfaceOp);
-      ok = !why;
-      if (why) readout(why);
-      else readout(way === "undo" ? "Surface drag undone." : "Surface drag redone.");
-    } else {
-      const at = S.open!;
-      ok = await showNode(S.ticket, at.objectId, entry.key, target as NodeId, () => (way === "undo" ? "Surface drag undone." : "Surface drag redone."));
+    stepping = true;
+    try {
+      if (entry.root) {
+        const at = S.open!;
+        const job: Source = { key: entry.key, objectId: at.objectId, root: true, node: ROOT };
+        const why = await replaceRoot(job, target as NurbsSurfaceOp);
+        ok = !why;
+        say(entry.key, why ?? (way === "undo" ? "Surface drag undone." : "Surface drag redone."));
+      } else {
+        const at = S.open!;
+        ok = await showNode(S.ticket, at.objectId, entry.key, target as NodeId, () => (way === "undo" ? "Surface drag undone." : "Surface drag redone."));
+      }
+    } finally {
+      stepping = false;
     }
-    if (ok) to.push(entry);
+    const tree = modelTrees.get(entry.key);
+    if (ok) to.push(way === "undo" ? { ...entry, nextId: tree?.nextId } : { ...entry, nextId: undefined });
     else from.push(entry);
     if (ok && S.open?.key === entry.key) {
       // The surface on screen now is the one on the branch Undo or Redo showed.
@@ -929,7 +1190,7 @@ const history = {
 function onPointerDown(ev: PointerEvent) {
   if (!toolOpen()) return;
   const target = ev.target instanceof Element ? ev.target : null;
-  if (target?.closest("#modelNurbsOverlay") && !drag && !running && !pending) {
+  if (target?.closest("#modelNurbsOverlay") && !busyHere()) {
     const found = findSource();
     if (found ? !sameSource(found.source, source) : source !== null) {
       // The handles were drawn for a surface no longer on screen.
@@ -987,6 +1248,11 @@ function onClick(ev: MouseEvent) {
   else if (target.closest("#modelNurbsElevateV") && spec) change(elevateSurfaceDegree(spec, "v", 1));
 }
 
+/**
+ * Keys on the handles. On a pole handle (or the overlay itself), the arrows walk the grid: Left and Right along U, Up
+ * and Down along V, Shift four at a time. On an axis handle (X, Y, Z, N), the arrows move the selection along that
+ * axis: Up or Right one way, Down or Left the other, 0.5 mm a press, Shift 5 mm. Escape mid-drag cancels the drag.
+ */
 function onKeyDown(ev: KeyboardEvent) {
   if (!toolOpen()) return;
   if (ev.key === "Escape" && drag) {
@@ -1000,11 +1266,9 @@ function onKeyDown(ev: KeyboardEvent) {
   if (ev.key !== "ArrowUp" && ev.key !== "ArrowDown" && ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
   ev.preventDefault();
   ev.stopImmediatePropagation();
-  const pole = target.closest<HTMLElement>("[data-nurbs-iu]");
-  if (pole) hit = { iu: Number(pole.dataset.nurbsIu), iv: Number(pole.dataset.nurbsIv), mode: hit.mode };
   const axis = target.closest<HTMLElement>("[data-cv-axis]")?.dataset.cvAxis as CvAxis | undefined;
-  if (axis) chosenAxis = axis;
-  nudge(ev, chosenAxis);
+  if (axis) nudge(ev, axis);
+  else walk(ev);
 }
 
 let installed = false;
@@ -1049,4 +1313,3 @@ export function installNurbsSculpt() {
 export function nurbsState(): { spec: NurbsSurface3D | null; committed: NurbsSurface3D | null; busy: boolean } {
   return { spec, committed, busy: !!running || !!pending };
 }
-

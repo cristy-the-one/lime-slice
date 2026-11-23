@@ -293,7 +293,7 @@ const DOCK = `
                     <button type="button" data-sculpt-mode="column" aria-pressed="false">Column</button>
                   </div>
                   <label data-tip="Poles within this distance of the selection follow it, less the farther they are. 0 moves the selection alone.">Falloff (mm)<input id="modelNurbsFalloff" type="range" min="0" max="80" step="1" value="0"></label>
-                  <label class="sculpt-check" data-tip="Mirror each drag across the part's own X = 0 plane."><input id="modelNurbsSymmetry" type="checkbox"> Symmetry (part X = 0)</label>
+                  <label class="sculpt-check" data-tip="Mirror each drag across the part's own X = 0 plane."><input id="modelNurbsSymmetry" type="checkbox" aria-describedby="modelNurbsSymmetryNote"> Symmetry (part X = 0)</label>
                   <p id="modelNurbsSymmetryNote" hidden></p>
                   <button type="button" id="modelNurbsMakeSymmetric" hidden data-tip="Each pole and its mirror pole meet halfway, so the surface is symmetric about the part's X = 0 plane.">Make symmetric</button>
                   <details>
