@@ -110,6 +110,9 @@ export interface SurfaceHealthSummary {
   maxUDegree: number;
   maxVDegree: number;
   maxPoles: number;
+  /** Distinct knot spans. Absent on a reply from before S6. */
+  maxUSpans?: number;
+  maxVSpans?: number;
   rationalFaces: number;
   highDegreeFaces: number;
   heavyFaces: number;

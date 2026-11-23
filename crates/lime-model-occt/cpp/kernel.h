@@ -1076,6 +1076,13 @@ TopoDS_Shape build_blend(
     const BlendBuildSpec& spec,
     std::string& error);
 
+/// S6: One NURBS sheet from the blob `build_nurbs_shape` writes. `current` is empty when the surface starts a part.
+TopoDS_Shape build_nurbs_surface(
+    const TopoDS_Shape& current,
+    const double* blob,
+    int len,
+    std::string& error);
+
 /// S4: Project/imprint a 3D curve onto `target_faces` of a solid or sheet, splitting those faces cleanly.
 TopoDS_Shape build_split_face(
     const TopoDS_Shape& current,

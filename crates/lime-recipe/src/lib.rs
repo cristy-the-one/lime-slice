@@ -1905,6 +1905,12 @@ pub mod ops {
         Json::obj().set("kind", "patch").set("boundaries", Json::arr(boundaries))
     }
 
+    /// S6: An M by N NURBS sheet. `poles` is one row per U index. Degree defaults to 3 when left out.
+    pub fn nurbs_surface(poles: Vec<Vec<[f64; 3]>>) -> Json {
+        let rows: Vec<Json> = poles.into_iter().map(Json::from).collect();
+        Json::obj().set("kind", "nurbsSurface").set("poles", rows)
+    }
+
     /// S5: Bridge two open edges or chains at `"g1"` or `"g2"`, with a tension on each side.
     pub fn blend_surface(a: Json, b: Json, continuity: &str, tension_a: f64, tension_b: f64) -> Json {
         Json::obj()
@@ -8060,6 +8066,9 @@ mod animation_tests {
         assert_eq!(blend.get("kind").and_then(Json::as_str), Some("blendSurface"));
         assert_eq!(blend.get("continuity").and_then(Json::as_str), Some("g1"));
         assert_eq!(blend.get("tensionB").and_then(Json::as_f64), Some(1.4));
+        let surface = ops::nurbs_surface(vec![vec![[0.0, 0.0, 0.0], [0.0, 10.0, 0.0]], vec![[10.0, 0.0, 0.0], [10.0, 10.0, 1.0]]]);
+        assert_eq!(surface.get("kind").and_then(Json::as_str), Some("nurbsSurface"));
+        assert_eq!(surface.at("poles.1.1.2").and_then(Json::as_f64), Some(1.0));
     }
 
     #[test]

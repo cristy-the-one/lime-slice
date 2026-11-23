@@ -9,6 +9,7 @@ use super::ffi::{
     lime_tree_extrude_loops_extent,
     lime_tree_loft_loops,
     lime_tree_loft_v2,
+    lime_tree_nurbs_surface,
     lime_tree_patch,
     lime_tree_replace_face,
     lime_tree_revolve_loops,
@@ -952,4 +953,100 @@ pub(super) fn push_shape(p: &mut Vec<f64>, smooth: bool, corners: &[u32]) {
     p.push(f64::from(u8::from(smooth)));
     p.push(corners.len() as f64);
     p.extend(corners.iter().map(|&c| f64::from(c)));
+}
+
+/// S6 blob, matching `build_nurbs_surface` in kernel.cpp:
+/// `[nu, nv, degreeU, degreeV, periodicU, periodicV, nKnotsU, nKnotsV, nWeights, nInsertU, nInsertV, elevateU, elevateV,
+///  poles (nu*nv*3), weights (nWeights), knotsU, multsU, knotsV, multsV, insertU pairs, insertV pairs]`.
+/// Degree 0 means the kernel's default of 3. Elevate 0 means do not elevate.
+fn encode_nurbs_blob(
+    poles: &[Vec<[f64; 3]>],
+    weights: &[Vec<f64>],
+    degree_u: Option<u32>,
+    degree_v: Option<u32>,
+    knots_u: &[f64],
+    mults_u: &[u32],
+    knots_v: &[f64],
+    mults_v: &[u32],
+    periodic_u: bool,
+    periodic_v: bool,
+    insert_u: &[[f64; 2]],
+    insert_v: &[[f64; 2]],
+    elevate_u: Option<u32>,
+    elevate_v: Option<u32>,
+) -> Result<Vec<f64>, String> {
+    let nu = poles.len();
+    let nv = poles.first().map(|row| row.len()).unwrap_or(0);
+    if nu > 0 && poles.iter().any(|row| row.len() != nv) {
+        return Err("Every row of this surface needs the same number of poles.".into());
+    }
+    let mut out = Vec::with_capacity(13 + nu * nv * 3 + weights.len() * nv);
+    out.extend_from_slice(&[
+        nu as f64,
+        nv as f64,
+        degree_u.unwrap_or(0) as f64,
+        degree_v.unwrap_or(0) as f64,
+        f64::from(u8::from(periodic_u)),
+        f64::from(u8::from(periodic_v)),
+        knots_u.len() as f64,
+        knots_v.len() as f64,
+        if weights.is_empty() { 0.0 } else { (nu * nv) as f64 },
+        insert_u.len() as f64,
+        insert_v.len() as f64,
+        elevate_u.unwrap_or(0) as f64,
+        elevate_v.unwrap_or(0) as f64,
+    ]);
+    for row in poles {
+        for pole in row {
+            out.extend_from_slice(pole);
+        }
+    }
+    if !weights.is_empty() {
+        if weights.len() != nu || weights.iter().any(|row| row.len() != nv) {
+            // The kernel counts these and refuses a grid that does not match.
+            out[8] = weights.iter().map(|row| row.len()).sum::<usize>() as f64;
+        }
+        for row in weights {
+            for weight in row {
+                out.push(*weight);
+            }
+        }
+    }
+    out.extend_from_slice(knots_u);
+    out.extend(mults_u.iter().map(|m| *m as f64));
+    out.extend_from_slice(knots_v);
+    out.extend(mults_v.iter().map(|m| *m as f64));
+    for pair in insert_u {
+        out.extend_from_slice(pair);
+    }
+    for pair in insert_v {
+        out.extend_from_slice(pair);
+    }
+    Ok(out)
+}
+
+/// S6: one NURBS sheet. `from` is None when the surface starts a part.
+pub(super) fn build_nurbs_shape(
+    from: Option<&Shape>,
+    poles: &[Vec<[f64; 3]>],
+    weights: &[Vec<f64>],
+    degree_u: Option<u32>,
+    degree_v: Option<u32>,
+    knots_u: &[f64],
+    mults_u: &[u32],
+    knots_v: &[f64],
+    mults_v: &[u32],
+    periodic_u: bool,
+    periodic_v: bool,
+    insert_u: &[[f64; 2]],
+    insert_v: &[[f64; 2]],
+    elevate_u: Option<u32>,
+    elevate_v: Option<u32>,
+) -> Result<Shape, String> {
+    let blob = encode_nurbs_blob(
+        poles, weights, degree_u, degree_v, knots_u, mults_u, knots_v, mults_v, periodic_u, periodic_v, insert_u,
+        insert_v, elevate_u, elevate_v,
+    )?;
+    let raw_from = from.map_or(std::ptr::null(), Shape::raw);
+    Shape::made(|error| unsafe { lime_tree_nurbs_surface(raw_from, blob.as_ptr(), blob.len() as c_int, error) })
 }

@@ -228,6 +228,7 @@ const TOOL_TITLES: Partial<Record<ModelTool, string>> = {
   draft: "Draft",
   patch: "Patch",
   blend: "Blend",
+  sculpt: "NURBS",
 };
 
 function toolTitle(next: ModelTool): string {
@@ -297,7 +298,7 @@ const BED_KEY = "lime-slice-model-bed";
 /** Tools that leave the open solid as it is, so they run on surfaces with no closed solid too. */
 const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place", "workplane", "check"]);
 /** Patch and blend run on an open sheet, which is not an editable solid. */
-const SHEET_TOOLS: ReadonlySet<string> = new Set(["patch", "blend"]);
+const SHEET_TOOLS: ReadonlySet<string> = new Set(["patch", "blend", "sculpt"]);
 let sheetMode = false;
 const WP_FIELDS = ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"] as const;
 
@@ -483,6 +484,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     const featureItem = target?.closest<HTMLButtonElement>("#modelFeatureMenu [data-tool]");
+    if (featureItem?.dataset.tool === "sculpt") {
+      closeFeatureMenu();
+      toggleTool("sculpt");
+      return;
+    }
     if (featureItem?.dataset.tool && isFeatureTool(featureItem.dataset.tool)) {
       if (featureItem.getAttribute("aria-disabled") === "true") {
         const why = featureItem.dataset.tip || featureItem.title;
@@ -917,7 +923,7 @@ export function openModelTool(): ModelTool | null {
 export function setSheetMode(next: boolean) {
   sheetMode = next;
   // On a solid these two stay in the Features menu, so the rail keeps the height the layout specs measure.
-  for (const id of ["#modelToolPatch", "#modelToolBlend"]) {
+  for (const id of ["#modelToolPatch", "#modelToolBlend", "#modelToolNurbs"]) {
     document.querySelector<HTMLElement>(id)?.toggleAttribute("hidden", !next);
   }
   refreshTools();
@@ -1092,6 +1098,7 @@ function toggleTool(next: ModelTool, editing = false) {
   hooks?.paramsChanged();
   // --- A7 model check --- after the panel is shown, so the note it writes is the one on screen.
   if (next === "check") openModelCheck();
+  document.dispatchEvent(new CustomEvent("lime-nurbs"));
 }
 
 /**
@@ -1252,6 +1259,7 @@ function closeTool() {
   if (ended) hooks?.editClosed();
   refreshDatum();
   hooks?.paramsChanged();
+  document.dispatchEvent(new CustomEvent("lime-nurbs"));
 }
 
 /** Boolean is open on another object rather than a primitive. */
@@ -2444,6 +2452,8 @@ function refreshNote() {
     text = "Pick the edges around the opening.";
   } else if (tool === "blend" && selectedEdges(picks).length < 2) {
     text = "Pick an open edge on each side.";
+  } else if (tool === "sculpt") {
+    text = "Drag a pole, a row, or a column. Release commits the surface.";
   } else if (tool === "scale") {
     text = "About the centre. Placement scale becomes 100%.";
   } else if (tool === "measure") {

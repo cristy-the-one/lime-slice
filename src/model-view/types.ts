@@ -214,6 +214,11 @@ export interface ModelView {
   onFacePointer(cb: (pointer: FacePointer) => void): void;
   /** P1. A model-space point, in page pixels. Null when it is behind the camera. */
   projectPoint(at: Vec3): { x: number; y: number } | null;
+  /**
+   * The live NURBS preview, evaluated already. Null hides it. `timeFrom` is `performance.now()`
+   * from before the evaluation, so the recorded frame includes evaluation, the mesh update and Zebra.
+   */
+  setNurbsPreview(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array } | null, timeFrom?: number): void;
   /** P1. A dotted line in model space, or null to hide it. */
   setAlign(ends: [Vec3, Vec3] | null): void;
   /** P1. The distance under the pointer, for tests. Null clears it. */

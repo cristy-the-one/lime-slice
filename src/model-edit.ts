@@ -125,7 +125,7 @@ function hasPanel(op: ModelOp): boolean {
   if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") return true;
   // P1. A push/pull reopens Push/Pull on its faces. A move with a distance per face has no one field to show.
   if (op.kind === "moveFaces") return op.faces.length > 0 && op.faces.every((row) => row.distance === op.faces[0]!.distance);
-  if (op.kind === "sheet" || op.kind === "sew" || op.kind === "thicken" || op.kind === "trimSplit" || op.kind === "replaceFace" || op.kind === "splitFace" || op.kind === "patch" || op.kind === "blendSurface") return false;
+  if (op.kind === "sheet" || op.kind === "sew" || op.kind === "thicken" || op.kind === "trimSplit" || op.kind === "replaceFace" || op.kind === "splitFace" || op.kind === "patch" || op.kind === "blendSurface" || op.kind === "nurbsSurface") return false;
   return true;
 }
 
@@ -511,6 +511,7 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "splitFace":
     case "patch":
     case "blendSurface":
+    case "nurbsSurface":
     case "partition":
     case "transition":
     // --- Text with real fonts: a step of a text group; the group reopens the card.

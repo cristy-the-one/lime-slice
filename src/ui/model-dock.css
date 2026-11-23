@@ -402,6 +402,12 @@ html:not(.layout-compact) .model-dock .model-stress .model-params-main { padding
 .stress-table { width: 100%; border-collapse: collapse; font-size: var(--fs-1); }
 .stress-table th, .stress-table td { text-align: left; padding: 2px 4px; vertical-align: top; }
 #modelEdgeBadges { position: fixed; inset: 0; pointer-events: none; z-index: 4; }
+#modelNurbsOverlay { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+#modelNurbsOverlay button { position: absolute; pointer-events: auto; transform: translate(-50%, -50%); min-width: 1.4rem; padding: 0.05rem 0.3rem; border-radius: 999px; border: 1px solid var(--line, #888); background: var(--panel, #fff); color: inherit; font: inherit; font-size: 0.7rem; }
+#modelNurbsOverlay button[data-cv-axis="x"] { color: #c0392b; }
+#modelNurbsOverlay button[data-cv-axis="y"] { color: #1e8449; }
+#modelNurbsOverlay button[data-cv-axis="z"] { color: #1a5276; }
+#modelNurbsOverlay button.on { outline: 2px solid var(--accent, #3b6); }
 #modelEdgeBadges button { position: absolute; pointer-events: auto; transform: translate(-50%, -50%); min-width: 2.2rem; padding: 0.1rem 0.35rem; border-radius: 999px; border: 1px solid var(--line, #888); background: var(--panel, #fff); color: inherit; font: inherit; font-size: 0.75rem; }
 .stress-legend {
   position: absolute;

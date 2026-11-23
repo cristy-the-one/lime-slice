@@ -115,6 +115,8 @@ check("a fillet names edges, which no pose moves", toSolidOp(fillet, skew) === f
 const group: ModelOp = { kind: "group", label: "Two cuts", source: { kind: "pocket" }, steps: [box, hole] };
 eq("a turned pose moves each step of a group", toSolidOp(group, skew), { ...group, steps: [toSolidOp(box, skew), toSolidOp(hole, skew)] });
 check("with no pose a group is the op typed", toSolidOp(group, IDENTITY_POSE) === group);
+const nurbs: ModelOp = { kind: "nurbsSurface", poles: [[[0, 0, 0], [0, 10, 0]], [[10, 0, 1], [10, 10, 1]]], degreeU: 3, degreeV: 3 };
+eq("a move stores a NURBS grid in the part's frame", toSolidOp(nurbs, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 10] }), { ...nurbs, poles: [[[0, 0, -10], [0, 10, -10]], [[10, 0, -9], [10, 10, -9]]] });
 
 // History labels name the step in the part's own frame, so moving the part later never renames it.
 const raisedTen: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 10] };

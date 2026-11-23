@@ -520,3 +520,28 @@ test("a two second knob drag on a 3,000 face part stays with the orbit @perf", a
   expect(serialAfter, "a size drag does not rebuild the ghost").toBe(serialBefore);
   expect(step, "the drag moved through many values").toBeGreaterThanOrEqual(50);
 });
+
+test("@perf an 8×8 pole drag stays inside one 60 fps frame at the default preview density", async ({ page }) => {
+  await modeler(page);
+  await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelFeatureMenu [data-tool=sculpt]").click();
+  const axis = page.locator("#modelNurbsOverlay [data-cv-axis=z]");
+  await expect(axis).toBeVisible();
+  const box = await axis.boundingBox();
+  expect(box).toBeTruthy();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+  for (let i = 0; i < 24; i += 1) await page.mouse.move(box!.x + box!.width / 2, box!.y - 4 - i * 2);
+  await page.mouse.up();
+  const samples = await page.evaluate(() => (window as unknown as { __nurbsFrameSamples?: number[] }).__nurbsFrameSamples ?? []);
+  const sorted = [...samples].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] ?? Number.POSITIVE_INFINITY;
+  const p95 = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] ?? Number.POSITIVE_INFINITY;
+  const density = await page.locator("#model").getAttribute("data-nurbs-density");
+  console.log(`NURBS_FRAME medianMs=${median.toFixed(3)} p95Ms=${p95.toFixed(3)} samples=${samples.length} density=${density}`);
+  expect(density, "default preview density").toBe("4");
+  expect(samples.length, "the drag evaluated a frame per move").toBeGreaterThanOrEqual(12);
+  expect(median, `median ${median} ms`).toBeLessThanOrEqual(16.7);
+  expect(p95, `p95 ${p95} ms`).toBeLessThanOrEqual(16.7);
+});

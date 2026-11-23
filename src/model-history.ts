@@ -245,7 +245,8 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
     node.op?.kind === "sheet"
     || node.op?.kind === "patch"
     || node.op?.kind === "blendSurface"
-    || (node.id === ROOT && ofTree.root.kind === "feature" && ofTree.root.op.kind === "sheet")
+    || node.op?.kind === "nurbsSurface"
+    || (node.id === ROOT && ofTree.root.kind === "feature" && (ofTree.root.op.kind === "sheet" || ofTree.root.op.kind === "nurbsSurface"))
     || (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0);
 
   /**

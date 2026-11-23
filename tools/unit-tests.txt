@@ -341,3 +341,4 @@ mcp/nurbs-sweep.test.ts
 mcp/loft-fillet-v2.test.ts
 mcp/open-sheets.test.ts
 mcp/patch-blend.test.ts
+mcp/nurbs-surface.test.ts

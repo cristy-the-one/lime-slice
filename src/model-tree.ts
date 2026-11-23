@@ -122,7 +122,8 @@ type ModelOpBase =
   | ReplaceFaceOp
   | SplitFaceOp
   | PatchOp
-  | BlendSurfaceOp;
+  | BlendSurfaceOp
+  | NurbsSurfaceOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -339,6 +340,26 @@ export interface PatchOp {
   guides?: Curve3D[];
   points?: Vec3[];
   tolerance?: number;
+}
+
+/** S6: An M by N NURBS pole grid. A sheet, so Sew, Thicken and TrimSplit run on it. */
+export interface NurbsSurfaceOp {
+  kind: "nurbsSurface";
+  poles: Vec3[][];
+  weights?: number[][];
+  degreeU?: number;
+  degreeV?: number;
+  knotsU?: number[];
+  multsU?: number[];
+  knotsV?: number[];
+  multsV?: number[];
+  periodicU?: boolean;
+  periodicV?: boolean;
+  /** Each pair is `[parameter, times]`. */
+  insertU?: [number, number][];
+  insertV?: [number, number][];
+  elevateU?: number;
+  elevateV?: number;
 }
 
 /** S5: Bridge two open edges or chains at G1 or G2, with a tension on each side. */
@@ -674,11 +695,11 @@ export interface RunMark {
   n: number;
 }
 
-/** An extrude, a revolve, a loft, a sweep, or an open sheet that can start a part on its own (K2 / S2 / S4). */
-export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp | SweepOp | SheetOp;
+/** An extrude, a revolve, a loft, a sweep, an open sheet, or a NURBS surface that can start a part on its own (K2 / S2 / S4 / S6). */
+export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp | SweepOp | SheetOp | NurbsSurfaceOp;
 
 export function isFeatureOp(op: ModelOp): op is FeatureOp {
-  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "sweep" || op.kind === "sheet";
+  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "sweep" || op.kind === "sheet" || op.kind === "nurbsSurface";
 }
 
 /**
@@ -1060,7 +1081,7 @@ function primitiveTitle(spec: PrimitiveSpec): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft", sweep: "Sweep", sheet: "Sheet" } as const;
+const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft", sweep: "Sweep", sheet: "Sheet", nurbsSurface: "NURBS" } as const;
 
 /**
  * --- F1/E1. A group of extrudes that came from one sketch: no composite `source`, so it is not a pocket,
@@ -1243,6 +1264,8 @@ export function opLabel(op: ModelOp, parts?: number): string {
       return `Patch ${op.boundaries.length} sides`;
     case "blendSurface":
       return `Blend ${op.continuity === "g2" ? "G2" : "G1"}`;
+    case "nurbsSurface":
+      return `NURBS ${op.poles.length}×${op.poles[0]?.length ?? 0}`;
   }
 }
 

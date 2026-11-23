@@ -48,7 +48,7 @@ interface SavedNode {
 /**
  * The root is exactly one of a STEP, `rootStep` (bytes in the app, a base64 record in the file), a primitive,
  * `rootPrimitive` (a new solid's few numbers, built again on open), or a feature, `rootFeature` (an extrude, a
- * revolve, or a loft built against nothing). Old files have no `rootFeature`.
+ * revolve, a loft, a sheet, or a NURBS surface built against nothing). Old files have no `rootFeature`.
  */
 export type SavedTree<Step> = SavedTreeBody & (
   | { rootStep: Step; rootPrimitive?: undefined; rootFeature?: undefined }
@@ -204,7 +204,7 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   if (value.rootFeature != null) {
     if (value.rootPrimitive != null || value.rootStep !== undefined) return null;
     const op = readOp(value.rootFeature);
-    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft" && op.kind !== "sweep" && op.kind !== "sheet")) return null;
+    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft" && op.kind !== "sweep" && op.kind !== "sheet" && op.kind !== "nurbsSurface")) return null;
     return { ...body, rootFeature: op };
   }
   if (value.rootPrimitive != null) {
@@ -801,9 +801,74 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
       };
     }
+    case "nurbsSurface": {
+      if (!Array.isArray(value.poles) || value.poles.length < 1) return undefined;
+      const poles: Vec3[][] = [];
+      for (const raw of value.poles) {
+        const row = readPoints(raw);
+        if (!row || row.length < 1) return undefined;
+        poles.push(row);
+      }
+      const nv = poles[0]!.length;
+      if (poles.some((row) => row.length !== nv)) return undefined;
+      const weights = value.weights === undefined ? undefined : readWeightGrid(value.weights, poles.length, nv);
+      if (value.weights !== undefined && !weights) return undefined;
+      const degreeU = optionalInt(value.degreeU);
+      const degreeV = optionalInt(value.degreeV);
+      if (value.degreeU !== undefined && degreeU === undefined) return undefined;
+      if (value.degreeV !== undefined && degreeV === undefined) return undefined;
+      const knotsU = optionalNumbers(value.knotsU);
+      const knotsV = optionalNumbers(value.knotsV);
+      const multsU = optionalInts(value.multsU);
+      const multsV = optionalInts(value.multsV);
+      if (value.knotsU !== undefined && !knotsU) return undefined;
+      if (value.knotsV !== undefined && !knotsV) return undefined;
+      if (value.multsU !== undefined && !multsU) return undefined;
+      if (value.multsV !== undefined && !multsV) return undefined;
+      return {
+        kind: "nurbsSurface",
+        poles,
+        ...(weights ? { weights } : {}),
+        ...(degreeU !== undefined ? { degreeU } : {}),
+        ...(degreeV !== undefined ? { degreeV } : {}),
+        ...(knotsU ? { knotsU } : {}),
+        ...(multsU ? { multsU } : {}),
+        ...(knotsV ? { knotsV } : {}),
+        ...(multsV ? { multsV } : {}),
+        ...(value.periodicU === true ? { periodicU: true } : {}),
+        ...(value.periodicV === true ? { periodicV: true } : {}),
+      };
+    }
     default:
       return undefined;
   }
+}
+
+function optionalInt(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : undefined;
+}
+
+function optionalNumbers(value: unknown): number[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "number" || !Number.isFinite(item))) return undefined;
+  return [...value];
+}
+
+function optionalInts(value: unknown): number[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "number" || !Number.isInteger(item) || item < 1)) return undefined;
+  return [...value];
+}
+
+function readWeightGrid(value: unknown, nu: number, nv: number): number[][] | undefined {
+  if (!Array.isArray(value) || value.length !== nu) return undefined;
+  const weights: number[][] = [];
+  for (const raw of value) {
+    if (!Array.isArray(raw) || raw.length !== nv || raw.some((item) => typeof item !== "number" || !(item > 0))) return undefined;
+    weights.push([...raw]);
+  }
+  return weights;
 }
 
 /** A primitive as the engine stores it. Fields it defaults may be absent; the newer ones are kept only when there. */

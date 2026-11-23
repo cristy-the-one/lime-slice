@@ -753,6 +753,13 @@ extern "C" {
         len: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    /// S6: one NURBS sheet from an M by N pole grid. `from` is null when the surface starts a part.
+    pub(super) fn lime_tree_nurbs_surface(
+        from: *const RawShape,
+        blob: *const f64,
+        len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     pub(super) fn lime_tree_distance(
         shape: *const RawShape,
         a_kind: *const c_char,

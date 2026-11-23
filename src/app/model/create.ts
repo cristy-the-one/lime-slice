@@ -71,9 +71,9 @@ export async function createSolid() {
  * A new plate object whose root is an extrude, a revolve, or a loft, with no primitive under it (K2). The sketch
  * editor (F1) calls this for "New object". Cut and intersect are refused: the feature is the solid.
  */
-export async function createFeatureSolid(op: FeatureOp, pose?: Affine): Promise<boolean> {
+export async function createFeatureSolid(op: FeatureOp, pose?: Affine, keepTool = false): Promise<boolean> {
   if (S.busy || S.jumping || state.stage !== "model") return false;
-  if (op.kind !== "sheet" && op.op !== "fuse") {
+  if (op.kind !== "sheet" && op.kind !== "nurbsSurface" && op.op !== "fuse") {
     const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
     readout(`A new solid is the ${noun} itself. Cut and intersect need a part that is already there.`);
     return false;
@@ -85,6 +85,7 @@ export async function createFeatureSolid(op: FeatureOp, pose?: Affine): Promise<
     root: from,
     bounds: (positions) => boundsOf(positions),
     ...(pose ? { pose } : {}),
+    ...(keepTool ? { keepTool: true } : {}),
   });
 }
 
@@ -96,6 +97,8 @@ async function finishNewSolid(made: {
   bounds: (positions: Float32Array) => Bounds;
   /** Where the solid's own frame sits in model space. Absent stands it beside the other objects. */
   pose?: Affine;
+  /** S6 sculpt stays open so the next drag commits the same surface again. */
+  keepTool?: boolean;
 }): Promise<boolean> {
   const id = freshPlateId();
   const key = freshTreeKey(id);
@@ -104,7 +107,7 @@ async function finishNewSolid(made: {
   S.busy = true;
   syncUndo();
   const feature = made.root.kind === "feature" ? made.root.op : null;
-  readout(feature?.kind === "loft" ? (feature.drawing?.sweep ? "Sweeping…" : "Lofting…") : "Building the solid…");
+  readout(feature?.kind === "nurbsSurface" ? "Building the surface…" : feature?.kind === "loft" ? (feature.drawing?.sweep ? "Sweeping…" : "Lofting…") : "Building the solid…");
   const body = await post(made.request(key, chord));
   if (mine === S.ticket) S.busy = false;
   syncUndo();
@@ -145,7 +148,7 @@ async function finishNewSolid(made: {
   S.picks = [];
   S.parked = null;
   S.shownFor = id;
-  closeModelTool();
+  if (!made.keepTool) closeModelTool();
   S.open = { objectId: id, key, solid: parsed };
   present(parsed, `${name}. ${about(parsed)} Pick a face or an edge.`);
   return true;

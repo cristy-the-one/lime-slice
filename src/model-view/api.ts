@@ -11,9 +11,21 @@ import { polylinePairs, readAccent } from "./helpers";
 import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
 import { treeRaycast } from "./solid-ray";
 import type { ViewCtx } from "./ctx";
+import { createZebraMaterial, syncZebraMaterial } from "./analysis-shaders";
+import { DEFAULT_PREVIEW_DENSITY } from "../modeling/nurbs-eval.ts";
 
 export function buildApi(ctx: ViewCtx): ModelView {
   const { alignLine, bedRef, body, camera, canvas, contextMat, controls, datum, edgeMaterial, handleGroup, nakedEdgeMaterial, projected, raycaster, renderer, sheetBackMaterial, sketchGroup, snapLineMat, solidMaterial, targetMat } = ctx;
+  const nurbsGeometry = new THREE.BufferGeometry();
+  const nurbsMaterial = createZebraMaterial();
+  const nurbsMesh = new THREE.Mesh(nurbsGeometry, nurbsMaterial);
+  nurbsMesh.visible = false;
+  nurbsMesh.frustumCulled = false;
+  const nurbsTimed = new THREE.Scene();
+  if (ctx.scene) {
+    ctx.scene.add(nurbsMesh);
+    nurbsTimed.add(new THREE.Mesh(nurbsGeometry, nurbsMaterial));
+  }
 
 
   return {
@@ -384,6 +396,29 @@ export function buildApi(ctx: ViewCtx): ModelView {
         x: rect.left + (projected.x * 0.5 + 0.5) * rect.width,
         y: rect.top + (-projected.y * 0.5 + 0.5) * rect.height,
       };
+    },
+    setNurbsPreview(mesh, timeFrom) {
+      const started = timeFrom ?? performance.now();
+      if (!mesh) {
+        nurbsMesh.visible = false;
+        delete canvas.dataset.nurbsFrameMs;
+        ctx.kick();
+        return;
+      }
+      nurbsGeometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
+      nurbsGeometry.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
+      nurbsGeometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+      nurbsGeometry.computeBoundingSphere();
+      syncZebraMaterial(nurbsMaterial, ctx.look, false);
+      nurbsMesh.visible = true;
+      renderer.render(nurbsTimed, camera);
+      const ms = performance.now() - started;
+      const samples = ((window as unknown as { __nurbsFrameSamples?: number[] }).__nurbsFrameSamples ??= []);
+      samples.push(ms);
+      if (samples.length > 180) samples.shift();
+      canvas.dataset.nurbsFrameMs = ms.toFixed(3);
+      canvas.dataset.nurbsDensity = String(DEFAULT_PREVIEW_DENSITY);
+      ctx.kick();
     },
     setAlign(ends) {
       if (!ends) {

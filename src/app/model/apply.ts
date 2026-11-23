@@ -142,6 +142,11 @@ export async function applyTool() {
     return;
   }
   const tool = modelTool();
+  if (tool === "sculpt") {
+    const { commitNurbs } = await import("./nurbs-sculpt.ts");
+    await commitNurbs();
+    return;
+  }
   if (S.editing) {
     if (button && !button.disabled) await runEdit(S.editing);
     return;

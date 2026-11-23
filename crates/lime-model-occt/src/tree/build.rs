@@ -28,7 +28,7 @@ use super::ffi::{
 use super::group::{build_combined, build_group};
 use super::joints::{joined_of, keep_built, stored_joints, Joined};
 use super::k1::{
-    build_blend_shape, build_k1_loops, build_loft_v2_shape, build_patch_shape, build_replace_face_shape,
+    build_blend_shape, build_k1_loops, build_loft_v2_shape, build_nurbs_shape, build_patch_shape, build_replace_face_shape,
     build_sew_shape, build_sheet_shape, build_split_face_shape, build_sweep_shape, build_thicken_shape,
     build_trim_split_shape, k1_has_loops, loft_needs_v2, push_shape,
 };
@@ -737,6 +737,38 @@ pub(super) fn build(
             tension_b,
             tolerance,
         } => build_blend_shape(from, a, b, *continuity, *tension_a, *tension_b, *tolerance),
+        Op::NurbsSurface {
+            poles,
+            weights,
+            degree_u,
+            degree_v,
+            knots_u,
+            mults_u,
+            knots_v,
+            mults_v,
+            periodic_u,
+            periodic_v,
+            insert_u,
+            insert_v,
+            elevate_u,
+            elevate_v,
+        } => build_nurbs_shape(
+            Some(from),
+            poles,
+            weights,
+            *degree_u,
+            *degree_v,
+            knots_u,
+            mults_u,
+            knots_v,
+            mults_v,
+            *periodic_u,
+            *periodic_v,
+            insert_u,
+            insert_v,
+            *elevate_u,
+            *elevate_v,
+        ),
     };
     match kept {
         Ok(kept) => Ok(Built {

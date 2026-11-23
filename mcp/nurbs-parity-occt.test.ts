@@ -214,6 +214,33 @@ try {
   check("bicubic-surface", false, err instanceof Error ? err.message : String(err));
 }
 
+const weightedPoles = surfacePoles.map((row) => row.map((pole) => [...pole] as Xyz));
+const weightedWeights = weightedPoles.map((row, iu) => row.map((_, iv) => (iu === 1 && iv === 1 ? 2 : iu === 2 && iv === 2 ? 0.5 : 1)));
+const weighted: NurbsSurface3D = { poles: weightedPoles, weights: weightedWeights, degreeU: 3, degreeV: 3 };
+try {
+  const text = await engine.modelTree(JSON.stringify({
+    call: "evalNurbs",
+    surface: { poles: weightedPoles, weights: weightedWeights, degreeU: 3, degreeV: 3, params: surfaceParams },
+  }));
+  const reply = JSON.parse(text) as { error?: string; points?: Xyz[] };
+  if (reply.error || !reply.points) throw new Error(reply.error ?? "no points");
+  let worst = 0;
+  let at: [number, number] = [0, 0];
+  for (let i = 0; i < surfaceParams.length; i += 1) {
+    const uv = surfaceParams[i]!;
+    const ts = evalNurbsSurface3D(weighted, uv[0], uv[1]).point;
+    const d = dist3(ts, reply.points[i]!);
+    if (d > worst) {
+      worst = d;
+      at = uv;
+    }
+  }
+  console.log(`NURBS_PARITY weighted-surface maxDistanceMm=${worst.toExponential(12)} samples=${surfaceParams.length} at=${at[0]},${at[1]}`);
+  check("weighted-surface within 1e-6 mm", worst < TOL_MM && surfaceParams.length >= 50, `max=${worst} samples=${surfaceParams.length}`);
+} catch (err) {
+  check("weighted-surface", false, err instanceof Error ? err.message : String(err));
+}
+
 if (failed) {
   console.error(`nurbs-parity-occt: ${failed} failed`);
   process.exit(1);

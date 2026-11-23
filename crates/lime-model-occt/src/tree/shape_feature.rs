@@ -14,7 +14,7 @@ use super::ffi::{
     lime_tree_primitive,
 };
 use super::group::extrude_cells;
-use super::k1::{build_loft_v2_shape, build_patch_shape, build_sheet_shape, build_sweep_shape, encode_loops, extent_flags, k1_has_loops, loft_needs_v2, push_shape};
+use super::k1::{build_loft_v2_shape, build_nurbs_shape, build_patch_shape, build_sheet_shape, build_sweep_shape, encode_loops, extent_flags, k1_has_loops, loft_needs_v2, push_shape};
 use super::gear::build_gear;
 use super::part::build_part;
 use super::ops::{Op, Primitive, Solid};
@@ -236,6 +236,38 @@ impl Shape {
                     build_patch_shape(None, boundaries, guides, points, *tolerance)
                 }
             }
+            Op::NurbsSurface {
+                poles,
+                weights,
+                degree_u,
+                degree_v,
+                knots_u,
+                mults_u,
+                knots_v,
+                mults_v,
+                periodic_u,
+                periodic_v,
+                insert_u,
+                insert_v,
+                elevate_u,
+                elevate_v,
+            } => build_nurbs_shape(
+                None,
+                poles,
+                weights,
+                *degree_u,
+                *degree_v,
+                knots_u,
+                mults_u,
+                knots_v,
+                mults_v,
+                *periodic_u,
+                *periodic_v,
+                insert_u,
+                insert_v,
+                *elevate_u,
+                *elevate_v,
+            ),
             _ => Err("A new solid starts from an extrude, a revolve, a loft, a sweep, a sheet, or a patch.".into()),
         }
     }

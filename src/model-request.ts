@@ -7,7 +7,7 @@ import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
 import { partitionNumbers } from "./modeling/partition.ts";
-import { savedNodes, type BlendSurfaceOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftBoundary, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type PatchOp, type ProfileLoop, type ProfileSegment, type ReplaceFaceOp, type RevolveOp, type SewOp, type SheetOp, type SheetSpec, type ShellOp, type SplitFaceOp, type SurfaceBoundary, type SurfaceContinuity, type SweepMode, type SweepOp, type SweepTransition, type ThickenDirection, type ThickenOp, type TrimKeep, type TrimSplitOp, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BlendSurfaceOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftBoundary, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type NurbsSurfaceOp, type PatchOp, type ProfileLoop, type ProfileSegment, type ReplaceFaceOp, type RevolveOp, type SewOp, type SheetOp, type SheetSpec, type ShellOp, type SplitFaceOp, type SurfaceBoundary, type SurfaceContinuity, type SweepMode, type SweepOp, type SweepTransition, type ThickenDirection, type ThickenOp, type TrimKeep, type TrimSplitOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project names its solids without loading these requests (./brep-file.ts).
 export { isBrep, solidFileName } from "./brep-file.ts";
@@ -365,6 +365,43 @@ export function patchOp(boundaries: readonly SurfaceBoundary[], options: { guide
     ...(options.guides && options.guides.length > 0 ? { guides: options.guides.map(copyCurve3D) } : {}),
     ...(options.points && options.points.length > 0 ? { points: options.points.map((point) => [...point] as Vec3) } : {}),
     ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
+  };
+}
+
+/** S6: A NURBS sheet from the same poles, weights and knots the preview evaluated. */
+export function nurbsSurfaceOp(spec: {
+  poles: readonly (readonly Vec3[])[];
+  weights?: readonly (readonly number[])[];
+  degreeU?: number;
+  degreeV?: number;
+  knotsU?: readonly number[];
+  multsU?: readonly number[];
+  knotsV?: readonly number[];
+  multsV?: readonly number[];
+  periodicU?: boolean;
+  periodicV?: boolean;
+  insertU?: readonly (readonly [number, number])[];
+  insertV?: readonly (readonly [number, number])[];
+  elevateU?: number;
+  elevateV?: number;
+}): NurbsSurfaceOp {
+  const copyRow = (pole: Vec3): Vec3 => [pole[0], pole[1], pole[2]];
+  return {
+    kind: "nurbsSurface",
+    poles: spec.poles.map((row) => row.map(copyRow)),
+    ...(spec.weights ? { weights: spec.weights.map((row) => [...row]) } : {}),
+    ...(spec.degreeU !== undefined ? { degreeU: spec.degreeU } : {}),
+    ...(spec.degreeV !== undefined ? { degreeV: spec.degreeV } : {}),
+    ...(spec.knotsU ? { knotsU: [...spec.knotsU] } : {}),
+    ...(spec.multsU ? { multsU: [...spec.multsU] } : {}),
+    ...(spec.knotsV ? { knotsV: [...spec.knotsV] } : {}),
+    ...(spec.multsV ? { multsV: [...spec.multsV] } : {}),
+    ...(spec.periodicU ? { periodicU: true } : {}),
+    ...(spec.periodicV ? { periodicV: true } : {}),
+    ...(spec.insertU && spec.insertU.length > 0 ? { insertU: spec.insertU.map((pair) => [pair[0], pair[1]] as [number, number]) } : {}),
+    ...(spec.insertV && spec.insertV.length > 0 ? { insertV: spec.insertV.map((pair) => [pair[0], pair[1]] as [number, number]) } : {}),
+    ...(spec.elevateU !== undefined ? { elevateU: spec.elevateU } : {}),
+    ...(spec.elevateV !== undefined ? { elevateV: spec.elevateV } : {}),
   };
 }
 
