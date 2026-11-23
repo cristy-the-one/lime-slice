@@ -83,26 +83,45 @@ fn ready() -> bool {
     true
 }
 
-/// Triangle counts of the default mesh on origin/main at 146a5ec1 (Angle 0.5, no normals), by shape and chord: this
-/// file's meshing run on a detached worktree of that commit printed them.
-const REFERENCE: &[(&str, f64, usize)] = &[
-    ("filleted box", 0.05, 788),
-    ("filleted box", 0.1, 628),
-    ("cylinder", 0.05, 176),
-    ("cylinder", 0.1, 124),
+/// The default mesh on origin/main at 146a5ec1 (Angle 0.5, no normals), by shape and chord: triangle count and FNV-1a
+/// hash of the positions and triangles bytes. This file's meshing run on a detached worktree of that commit, built
+/// against OCCT 7.9.2 with MSVC on Windows, printed them. The hashes are asserted on Windows, where they were made: the
+/// mesh is the same algorithm on every platform, but float rounding in another compiler's build of Open CASCADE can
+/// move a node in its last bit. Elsewhere the counts are asserted and the hashes printed.
+const REFERENCE: &[(&str, f64, usize, u64)] = &[
+    ("filleted box", 0.05, 788, 0x1dff_cbee_a035_b94d),
+    ("filleted box", 0.1, 628, 0x1565_029c_a2a1_58c5),
+    ("cylinder", 0.05, 176, 0xd76b_db78_1aa0_ed1e),
+    ("cylinder", 0.1, 124, 0x0bb3_663e_be10_d455),
 ];
+
+/// The same for the STEP paths (`step_meshes`): meshStep and opening a STEP file, on the filleted box as the kernel
+/// writes it to STEP.
+const STEP_REFERENCE: &[(&str, f64, usize, u64)] = &[
+    ("meshStep", 0.05, 788, 0xd215_5f5d_559e_ee21),
+    ("open STEP", 0.05, 788, 0xd215_5f5d_559e_ee21),
+    ("meshStep", 0.1, 628, 0x9136_8f20_a1a0_a9fc),
+    ("open STEP", 0.1, 628, 0x9136_8f20_a1a0_a9fc),
+];
+
+fn same_as_main(what: &str, count: usize, hash: u64, expected: usize, expected_hash: u64) {
+    println!("{what}: {count} triangles, soup hash {hash:#x} (main {expected}, {expected_hash:#x})");
+    assert_eq!(count, expected, "{what}: the default mesh must be main's");
+    if cfg!(windows) {
+        assert_eq!(hash, expected_hash, "{what}: the default mesh must be main's, byte for byte");
+    }
+}
 
 #[test]
 fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
     if !ready() {
         return;
     }
-    for &(name, chord, expected) in REFERENCE {
+    for &(name, chord, expected, expected_hash) in REFERENCE {
         let key = format!("angle-{name}-{chord}");
         let standard = meshed(name, &key, chord, None);
         let count = triangles(&standard);
-        println!("{name} chord {chord}: default {count} triangles (main {expected}), soup hash {:#x}", soup_hash(&standard));
-        assert_eq!(count, expected, "{name} at {chord}: the default mesh must be main's");
+        same_as_main(&format!("{name} at {chord}"), count, soup_hash(&standard), expected, expected_hash);
         assert!(standard.get("normals").is_none(), "{name}: the default mesh sends no normals");
 
         let node = standard["id"].clone();
@@ -190,4 +209,34 @@ fn pieces_keep_the_standard_mesh_and_an_unknown_quality_is_refused() {
     assert_eq!(again["positions"], piece["positions"]);
     ok(json!({ "call": "close", "key": "quality-split" }));
     ok(json!({ "call": "close", "key": "quality-piece" }));
+}
+
+/// The STEP paths: `meshStep` (what the slicer and the MCP engine install) and opening a STEP file as a tree, each at
+/// two chords, on a STEP the kernel writes of the filleted box. Returns (path, chord, triangles, soup hash).
+fn step_meshes() -> Vec<(&'static str, f64, usize, u64)> {
+    let source = meshed("filleted box", "step-source", 0.1, None);
+    let written = ok(json!({ "call": "export", "key": "step-source", "node": source["id"], "format": "step" }));
+    ok(json!({ "call": "close", "key": "step-source" }));
+    let data = written["bytesBase64"].clone();
+    let mut out = Vec::new();
+    for chord in [0.05, 0.1] {
+        let step = ok(json!({ "call": "meshStep", "dataB64": data, "chordMm": chord }));
+        out.push(("meshStep", chord, triangles(&step), soup_hash(&step)));
+        let key = format!("step-open-{chord}");
+        let opened = ok(json!({ "call": "open", "key": key, "dataB64": data, "chordMm": chord }));
+        out.push(("open STEP", chord, triangles(&opened), soup_hash(&opened)));
+        ok(json!({ "call": "close", "key": key }));
+    }
+    out
+}
+
+#[test]
+fn the_step_paths_mesh_as_main_did() {
+    if !ready() {
+        return;
+    }
+    for ((path, chord, count, hash), &(want_path, want_chord, want_count, want_hash)) in step_meshes().into_iter().zip(STEP_REFERENCE) {
+        assert_eq!((path, chord), (want_path, want_chord));
+        same_as_main(&format!("{path} at {chord}"), count, hash, want_count, want_hash);
+    }
 }
