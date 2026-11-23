@@ -11175,10 +11175,16 @@ TopoDS_Shape build_sheet_only(const SheetSpec& spec, const Held* held_for_edges,
             return loft.Shape();
         }
         if (spec.mode == 3) {
-            // Planar face bounded by a closed 3D curve.
+            // Planar face bounded by a closed 3D curve. Further curves are holes.
             TopoDS_Wire w = curve3d_wire(spec.curves[0], held_for_edges, error);
             if (w.IsNull()) return {};
             BRepBuilderAPI_MakeFace mf(w, Standard_True);
+            for (size_t hole_index = 1; hole_index < spec.curves.size(); ++hole_index) {
+                TopoDS_Wire hole = curve3d_wire(spec.curves[hole_index], held_for_edges, error);
+                if (hole.IsNull()) return {};
+                hole.Reverse();
+                mf.Add(hole);
+            }
             if (!mf.IsDone() || mf.Face().IsNull()) {
                 error = "The boundary curve is not a closed planar loop.";
                 return {};
@@ -11796,6 +11802,13 @@ TopoDS_Shape build_split_face(
     }
 }
 
+// Test-only, and only in a debug build. The app and the MCP never set this:
+// there is no op field for it. -1 leaves every ribbon alone. 0 or 1 reverses
+// that blend side's cross derivative.
+#ifdef LIME_OCCT_TEST_HOOKS
+thread_local int g_blend_reverse_side = -1;
+#endif
+
 namespace {
 
 constexpr double kPatchJoinMm = 0.05;
@@ -12175,3 +12188,10 @@ extern "C" void lime_model_occt_watson_mesher(int on) { g_watson_mesher = on != 
 
 /// Non-zero leaves the faces Delabella could not mesh empty, instead of meshing them with Watson. For tests.
 extern "C" void lime_model_occt_mesher_fallback(int on) { g_no_mesher_fallback = on == 0; }
+
+/// Reverses one blend ribbon. Debug tests only. Not an op, and not in a release build.
+#ifdef LIME_OCCT_TEST_HOOKS
+extern "C" void lime_model_occt_test_reverse_blend_ribbon(int side) {
+    lime_occt::g_blend_reverse_side = side;
+}
+#endif

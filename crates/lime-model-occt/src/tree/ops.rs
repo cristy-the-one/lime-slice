@@ -1072,6 +1072,7 @@ pub enum SheetMode {
 #[serde(rename_all = "camelCase")]
 pub struct SheetSpec {
     pub mode: SheetMode,
+    /// Planar mode: the first closed curve is the outline and any further closed curves are holes.
     pub curves: Vec<Curve3D>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<[f64; 3]>,

@@ -379,10 +379,51 @@ TopoDS_Face face_touching(const TopoDS_Shape& shape, const TopoDS_Face& hint, co
     return hint;
 }
 
+// A seam vertex lies on two faces, so the hint classifies there and its outward
+// B can point into the wall. The curve's tangent leaves that vertex on one face.
+TopoDS_Face face_along(const TopoDS_Shape& shape, const TopoDS_Face& hint, const gp_Pnt& point, const gp_Vec& tangent) {
+    const TopoDS_Face touching = face_touching(shape, hint, point);
+    if (shape.IsNull() || tangent.Magnitude() < 1e-12) return touching;
+    bool shared = false;
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+        const TopoDS_Face face = TopoDS::Face(ex.Current());
+        if (face.IsSame(touching)) continue;
+        if (point_on_face(face, point, 1e-4)) {
+            shared = true;
+            break;
+        }
+    }
+    if (!shared) return touching;
+    gp_Vec dir = tangent;
+    dir.Normalize();
+    for (double step : {0.2, 0.05, 1.0}) {
+        for (double sign : {1.0, -1.0}) {
+            const gp_Pnt ahead(point.XYZ() + dir.XYZ() * (sign * step));
+            TopoDS_Face found;
+            int hits = 0;
+            if (point_on_face(touching, ahead, 1e-4)) {
+                found = touching;
+                ++hits;
+            }
+            for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+                const TopoDS_Face face = TopoDS::Face(ex.Current());
+                if (face.IsSame(touching)) continue;
+                if (!point_on_face(face, ahead, 1e-4)) continue;
+                found = face;
+                ++hits;
+            }
+            if (hits == 1) return found;
+        }
+    }
+    return touching;
+}
+
 struct Transverse {
     bool ok = false;
     gp_Vec Ds;
     gp_Vec Dss;
+    // Outward unit transverse of the face that was sampled (plan step 6).
+    gp_Vec B;
     gp_Dir normal;
     std::string error;
 };
@@ -423,21 +464,56 @@ Transverse transverse_at(const TopoDS_Face& face, const gp_Pnt& point, const gp_
         B.Normalize();
         // A short step from a boundary point often classifies ON. Walk farther until
         // the point is clearly in the face or clearly outside it, so every station
-        // on one edge picks the same side.
-        double step = 0.5;
-        for (int attempt = 0; attempt < 5; ++attempt) {
-            const gp_Pnt stepped(point.XYZ() + B.XYZ() * step);
+        // on one edge picks the same side. A seam is itself a straight edge, so a
+        // step along B stays ON it; only then step off that edge.
+        auto classify_step = [&](const gp_Pnt& stepped) -> TopAbs_State {
             double su = 0.0;
             double sv = 0.0;
-            if (!face_parameters(face, stepped, su, sv)) break;
-            const BRepClass_FaceClassifier cls(face, gp_Pnt2d(su, sv), 1e-6);
-            if (cls.State() == TopAbs_IN) {
-                B.Reverse();
-                break;
+            if (!face_parameters(face, stepped, su, sv)) return TopAbs_UNKNOWN;
+            try {
+                const BRepClass_FaceClassifier cls(face, gp_Pnt2d(su, sv), 1e-6);
+                return cls.State();
+            } catch (const Standard_Failure&) {
+                return TopAbs_UNKNOWN;
             }
-            if (cls.State() == TopAbs_OUT) break;
-            step *= 3.0;
+        };
+        auto walk = [&]() -> int {
+            double step = 0.5;
+            for (int attempt = 0; attempt < 5; ++attempt) {
+                const TopAbs_State state = classify_step(gp_Pnt(point.XYZ() + B.XYZ() * step));
+                if (state == TopAbs_IN) return -1;
+                // The first step that leaves the face says B points out. A later
+                // OUT, after steps that stayed ON, has walked through the face
+                // and out the other side. That is not a direction.
+                if (state == TopAbs_OUT) return attempt == 0 ? 1 : 0;
+                if (state == TopAbs_UNKNOWN) return 0;
+                step *= 3.0;
+            }
+            return 0;
+        };
+        int side = walk();
+        // A vertical seam classifies ON for every step along B. A step that also
+        // leaves the seam, into the face, tells which way B points.
+        if (side == 0) {
+            gp_Vec rim = gp_Vec(normal).Crossed(B);
+            if (rim.Magnitude() > 1e-12) {
+                rim.Normalize();
+                double step = 0.5;
+                for (int attempt = 0; attempt < 4 && side == 0; ++attempt) {
+                    for (double sign_b : {1.0, -1.0}) {
+                        if (side != 0) break;
+                        for (double sign_r : {1.0, -1.0}) {
+                            const gp_Vec offset = B.Multiplied(sign_b * step) + rim.Multiplied(sign_r * 0.05);
+                            if (classify_step(gp_Pnt(point.XYZ() + offset.XYZ())) != TopAbs_IN) continue;
+                            side = sign_b > 0.0 ? -1 : 1;
+                            break;
+                        }
+                    }
+                    step *= 3.0;
+                }
+            }
         }
+        if (side < 0) B.Reverse();
         const gp_Vec Su = props.D1U();
         const gp_Vec Sv = props.D1V();
         const double E = Su.Dot(Su);
@@ -452,6 +528,10 @@ Transverse transverse_at(const TopoDS_Face& face, const gp_Pnt& point, const gp_
         const double b = (E * Sv.Dot(B) - F * Su.Dot(B)) / delta;
         out.Ds = Su.Multiplied(a).Added(Sv.Multiplied(b));
         out.Dss = props.D2U().Multiplied(a * a).Added(props.DUV().Multiplied(2.0 * a * b)).Added(props.D2V().Multiplied(b * b));
+        // Ds is the face derivative along B. If a seam sample comes back against
+        // that outward direction, turn it around. Dss is even in B, so it stays.
+        if (out.Ds.Dot(B) < 0.0) out.Ds.Reverse();
+        out.B = B;
         out.normal = normal;
         out.ok = true;
         return out;
@@ -540,6 +620,10 @@ struct EdgeReport {
     double score = -1.0;
     bool fail = false;
     bool short_span = false;
+    // Every sampled station has the blend leaving the edge along this face's
+    // outward B. A 180° reading with this set is an orientation flip. With it
+    // clear, the same angle is a fold.
+    bool side_ok = true;
 };
 
 double plane_deviation(double angle) {
@@ -567,6 +651,45 @@ bool edge_fails(const EdgeReport& edge) {
     if (edge.asked >= 1 && !(edge.angle < kHermiteAngleDeg)) return true;
     if (edge.asked >= 2 && edge.jump > kHermiteJump) return true;
     return false;
+}
+
+// Anti-parallel normals, within the same angle bound. This is not a folded
+// angle: a reading near 0° does not take this path.
+bool anti_parallel_normals(double angle) {
+    return angle >= 0.0 && angle <= 180.0 && (180.0 - angle) < kHermiteAngleDeg;
+}
+
+// The leaving derivative points back into the face. Anti-parallel normals are
+// the fold the 180° reading used to accept. A reversed ribbon is the same fold
+// after the blend face is turned to agree with the wall: the angle reads about
+// 0° and the side test still fails. An angle that is neither is a miss.
+bool blend_is_fold(const EdgeReport& edge) {
+    if (edge.asked < 1 || edge.side_ok) return false;
+    if (edge.angle < kHermiteAngleDeg) return true;
+    return anti_parallel_normals(edge.angle);
+}
+
+bool blend_orientation_ok(const EdgeReport& edge) {
+    if (edge.asked < 1) return true;
+    if (edge.angle < kHermiteAngleDeg) return true;
+    return anti_parallel_normals(edge.angle) && edge.side_ok;
+}
+
+std::string fold_sentence(const EdgeReport& a, const EdgeReport& b) {
+    const bool fa = blend_is_fold(a);
+    const bool fb = blend_is_fold(b);
+    if (fa && fb) return "Edges A and B fold back into the face.";
+    if (fb) return "Edge B folds back into the face.";
+    return "Edge A folds back into the face.";
+}
+
+// Gap and an asked G2 jump still have to meet the bounds. A 180° side is handed
+// to Sew only when its cross derivative leaves along B.
+bool blend_hand_to_sew(const EdgeReport& a, const EdgeReport& b) {
+    if (blend_is_fold(a) || blend_is_fold(b)) return false;
+    const bool gaps = a.gap < kHermiteGapMm && b.gap < kHermiteGapMm;
+    const bool jumps = (a.asked < 2 || !(a.jump > kHermiteJump)) && (b.asked < 2 || !(b.jump > kHermiteJump));
+    return gaps && jumps && blend_orientation_ok(a) && blend_orientation_ok(b);
 }
 
 // Gap is the G0 measure. Angle is the G1 measure, already the deviation from
@@ -1681,7 +1804,7 @@ TopoDS_Shape fill_hermite_blend(
             gp_Pnt point;
             gp_Vec tangent;
             curve->D1(t, point, tangent);
-            const TopoDS_Face support_here = face_touching(current, support, point);
+            const TopoDS_Face support_here = face_along(current, support, point, tangent);
             const Transverse got = transverse_at(support_here, point, tangent, far_side ? 1 : 0);
             if (!got.ok) {
                 error = got.error;
@@ -1699,7 +1822,15 @@ TopoDS_Shape fill_hermite_blend(
             // one of them to make one shell, so the far derivative points the other
             // way and the oriented normals agree after that reversal.
             gp_Vec Ds = got.Ds;
+            // The sample has to leave along this face's own outward B. A sum of
+            // the samples is not a direction: around a flat ellipse it cancels,
+            // and correct ribbons get reversed.
+            if (Ds.Dot(got.B) < 0.0) Ds.Reverse();
             if (far_side) Ds.Reverse();
+#ifdef LIME_OCCT_TEST_HOOKS
+            // Debug tests only. Reverses one side so a fold can be told from an orientation flip.
+            if (g_blend_reverse_side == (far_side ? 1 : 0)) Ds.Reverse();
+#endif
             T = Ds.Multiplied(lambda);
             A = got.Dss.Multiplied(lambda * lambda);
             return true;
@@ -1713,20 +1844,6 @@ TopoDS_Shape fill_hermite_blend(
             if (!field_at(ua, face_a, tension_a, xi, false, t0[static_cast<size_t>(i)], a0[static_cast<size_t>(i)])) return {};
             if (!field_at(ub, face_b, tension_b, xi, true, t1[static_cast<size_t>(i)], a1[static_cast<size_t>(i)])) return {};
         }
-        // A seam vertex lies on two faces. The classifier can take the other
-        // face's side there, so that one sample points against the rest of the
-        // rim and the normal flips along the edge. The second derivative is
-        // even in that direction, so only the first derivative is reversed.
-        auto align_ribbon = [](std::vector<gp_Vec>& field) {
-            gp_Vec sum(0, 0, 0);
-            for (const gp_Vec& v : field) sum.Add(v);
-            if (sum.SquareMagnitude() < 1e-18) return;
-            for (gp_Vec& v : field) {
-                if (v.Dot(sum) < 0.0) v.Reverse();
-            }
-        };
-        align_ribbon(t0);
-        align_ribbon(t1);
         for (int i = 0; i < n; ++i) {
             const gp_Pnt p0 = grid.Value(i + 1, 1);
             const gp_Pnt p1 = grid.Value(i + 1, nv);
@@ -1822,6 +1939,30 @@ TopoDS_Shape fill_hermite_blend(
                 if (stat.samples) note_station(rb, stat, frac);
             }
         }
+        // The derivative that leaves the edge into the blend must point along
+        // that wall's outward B. At v = 1 the parameter runs into the edge, so
+        // the leaving direction is −∂S/∂v.
+        auto leaving_outward = [&](const Handle(Geom_BSplineCurve)& curve, const TopoDS_Face& wall, double u, double v, double into) -> bool {
+            gp_Pnt point;
+            gp_Vec du;
+            gp_Vec dv;
+            surface->D1(u, v, point, du, dv);
+            gp_Pnt on_curve;
+            gp_Vec tangent;
+            curve->D1(u, on_curve, tangent);
+            const Transverse got = transverse_at(face_along(current, wall, point, tangent), point, tangent, 0);
+            if (!got.ok) return false;
+            return dv.Multiplied(into).Dot(got.B) >= 0.0;
+        };
+        ra.side_ok = true;
+        rb.side_ok = true;
+        if (order_a >= 1 || order_b >= 1) {
+            for (int s = 0; s < kHermiteStations; ++s) {
+                const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1));
+                if (order_a >= 1 && !leaving_outward(ua, face_a, frac, 0.0, 1.0)) ra.side_ok = false;
+                if (order_b >= 1 && !leaving_outward(ub, face_b, frac, 1.0, -1.0)) rb.side_ok = false;
+            }
+        }
         ra.fail = edge_fails(ra);
         rb.fail = edge_fails(rb);
         const double max_gap = std::max(ra.gap, rb.gap);
@@ -1832,22 +1973,24 @@ TopoDS_Shape fill_hermite_blend(
             refinements = round;
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             log_blend_weights(surface, round, "final");
-            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
-                         order_a, ra.gap, ra.angle, ra.angle_dev, ra.jump);
-            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
-                         order_b, rb.gap, rb.angle, rb.angle_dev, rb.jump);
+            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g sideOk=%d\n",
+                         order_a, ra.gap, ra.angle, ra.angle_dev, ra.jump, ra.side_ok ? 1 : 0);
+            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g sideOk=%d\n",
+                         order_b, rb.gap, rb.angle, rb.angle_dev, rb.jump, rb.side_ok ? 1 : 0);
             std::fprintf(stderr, "S5 hermite sides=2 maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
                          order, refinements, ms, max_gap, max_angle, max_jump);
+            // Anti-parallel normals are an orientation flip when the blend
+            // leaves along B, and a fold when it does not. A reversed ribbon
+            // reads about 0° after the face is turned over, and the side test
+            // still fails: that is a fold too. The angle is not folded to make
+            // the bound pass.
+            const bool fold = blend_is_fold(ra) || blend_is_fold(rb);
+            if (fold && (too_short || round == kHermiteRefineCap || (!ra.fail && !rb.fail))) {
+                error = fold_sentence(ra, rb);
+                return {};
+            }
             if (ra.fail || rb.fail) {
-                const auto plane_angle = [](double angle) { return angle > 90.0 ? 180.0 - angle : angle; };
-                const bool planes = ra.gap < kHermiteGapMm && rb.gap < kHermiteGapMm
-                    && (ra.asked < 1 || plane_angle(ra.angle) < kHermiteAngleDeg)
-                    && (rb.asked < 1 || plane_angle(rb.angle) < kHermiteAngleDeg);
-                // The two walls share one extrusion orientation. Sew reverses one of
-                // them, so a pre-sew reading of 180° is anti-parallel normals on the
-                // same tangent plane. Once the span can take no more knots, hand the
-                // sheet to Sew and let model_check read the oriented angle.
-                if (planes && (too_short || round == kHermiteRefineCap)) {
+                if (blend_hand_to_sew(ra, rb) && (too_short || round == kHermiteRefineCap)) {
                     error.clear();
                     break;
                 }
@@ -1860,17 +2003,17 @@ TopoDS_Shape fill_hermite_blend(
         if (!push_knot(extra, ua, frac, too_short) && too_short) {
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             log_blend_weights(surface, round, "final");
-            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
-                         order_a, ra.gap, ra.angle, ra.angle_dev, ra.jump);
-            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
-                         order_b, rb.gap, rb.angle, rb.angle_dev, rb.jump);
+            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g sideOk=%d\n",
+                         order_a, ra.gap, ra.angle, ra.angle_dev, ra.jump, ra.side_ok ? 1 : 0);
+            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g sideOk=%d\n",
+                         order_b, rb.gap, rb.angle, rb.angle_dev, rb.jump, rb.side_ok ? 1 : 0);
             std::fprintf(stderr, "S5 hermite sides=2 maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
                          order, round, ms, max_gap, max_angle, max_jump);
-            const auto plane_angle = [](double angle) { return angle > 90.0 ? 180.0 - angle : angle; };
-            const bool planes = ra.gap < kHermiteGapMm && rb.gap < kHermiteGapMm
-                && (ra.asked < 1 || plane_angle(ra.angle) < kHermiteAngleDeg)
-                && (rb.asked < 1 || plane_angle(rb.angle) < kHermiteAngleDeg);
-            if (planes) {
+            if ((blend_is_fold(ra) || blend_is_fold(rb)) && (too_short || (!ra.fail && !rb.fail))) {
+                error = fold_sentence(ra, rb);
+                return {};
+            }
+            if (blend_hand_to_sew(ra, rb)) {
                 error.clear();
                 break;
             }

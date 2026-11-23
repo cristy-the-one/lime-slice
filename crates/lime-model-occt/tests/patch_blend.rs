@@ -126,6 +126,30 @@ fn circle_arcs(radius: f64, z: f64) -> Value {
     })
 }
 
+fn ellipse_curve(a: f64, b: f64, z: f64) -> Value {
+    // Four rational quadrants. The middle weight is √2/2, the same conic weight as a circle.
+    let w = std::f64::consts::SQRT_2 * 0.5;
+    let quadrant = |px: f64, py: f64, tx: f64, ty: f64| {
+        json!({
+            "kind": "nurbs",
+            "poles": [[px, py, z]],
+            "weights": [1.0, w, 1.0],
+            "degree": 2,
+            "to": [tx, ty, z]
+        })
+    };
+    json!({
+        "kind": "segments",
+        "start": [a, 0.0, z],
+        "segments": [
+            quadrant(a, b, 0.0, b),
+            quadrant(-a, b, -a, 0.0),
+            quadrant(-a, -b, 0.0, -b),
+            quadrant(a, -b, a, 0.0)
+        ]
+    })
+}
+
 fn circle_curve(radius: f64, z: f64) -> Value {
     // The polynomial rim. Exact rational circles are blend_meets_g1_and_g2_on_exact_circle_rims.
     let count = 24;
@@ -1174,4 +1198,84 @@ fn blend_meets_g1_and_g2_on_exact_circle_rims() {
         check_opening(&case_name, &key, 4, &sewn, &sides, false, None);
         ok(json!({ "call": "close", "key": key }));
     }
+}
+
+#[test]
+fn blend_meets_g1_between_concentric_elliptical_faces() {
+    if !has_occt() {
+        return;
+    }
+    // Two flat annular faces. Each is an ellipse with a concentric elliptical hole,
+    // at two heights. The outward ribbon of the outer rim turns a full revolution,
+    // so a sum of the samples cancels. Same bounds as the other blends.
+    let a = 22.0;
+    let b = 12.0;
+    let lower_z = 0.0;
+    let upper_z = 10.0;
+    let case_name = "blend-ellipse-g1";
+    let key = format!("s5-{case_name}");
+    let annulus = |z: f64| json!([ellipse_curve(a, b, z), ellipse_curve(a * 0.5, b * 0.5, z)]);
+    ok(json!({
+        "call": "open",
+        "key": key,
+        "chordMm": CHORD_MM,
+        "feature": {
+            "kind": "sheet",
+            "mode": "planar",
+            "curves": annulus(lower_z)
+        }
+    }));
+    let both = ok(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 0,
+        "node": 1,
+        "chordMm": CHORD_MM,
+        "op": {
+            "kind": "sheet",
+            "mode": "planar",
+            "curves": annulus(upper_z)
+        }
+    }));
+    let mut lower = Vec::new();
+    let mut upper_edges = Vec::new();
+    for edge in sampled_edges(&both) {
+        let z = centroid(&edge.points)[2];
+        let rho = edge.points.iter().map(|p| ((p[0] / a).powi(2) + (p[1] / b).powi(2)).sqrt()).sum::<f64>()
+            / edge.points.len() as f64;
+        // The hole is the inner ellipse. The blend is the outer rim.
+        if rho < 0.75 {
+            continue;
+        }
+        if z < (lower_z + upper_z) * 0.5 {
+            lower.push(edge);
+        } else {
+            upper_edges.push(edge);
+        }
+    }
+    assert!(lower.len() >= 2 && upper_edges.len() >= 2, "each outer ellipse needs its edges");
+    let sides = vec![
+        side_from_edges(sort_by_angle(lower), "g1"),
+        side_from_edges(sort_by_angle(upper_edges), "g1"),
+    ];
+    let reply = call(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 1,
+        "node": 2,
+        "chordMm": CHORD_MM,
+        "op": {
+            "kind": "blendSurface",
+            "a": { "edges": sides[0].edges, "continuity": "g1" },
+            "b": { "edges": sides[1].edges, "continuity": "g1" },
+            "continuity": "g1",
+            "tensionA": 1.0,
+            "tensionB": 1.0
+        }
+    }));
+    assert!(reply.get("error").is_none(), "elliptical faces must meet g1: {reply}");
+    assert_eq!(reply["solid"], json!(false), "a blend is a sheet until it is sewn");
+    let sewn = finish_sheet(case_name, &key, 2, 3, true, 0.05);
+    check_opening(case_name, &key, 3, &sewn, &sides, false, None);
+    ok(json!({ "call": "close", "key": key }));
 }
