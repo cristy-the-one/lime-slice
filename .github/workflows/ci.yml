@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/haptic]
   pull_request:
-    branches: [main]
+    branches: [main, feature/haptic]
 
 env:
   CARGO_TERM_COLOR: always
