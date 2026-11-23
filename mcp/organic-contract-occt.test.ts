@@ -537,6 +537,26 @@ try {
     );
   });
 
+  await testCase("an open sheet on the plate refuses slice; thickened, it slices", async () => {
+    // The kernel's reply marks the committed sheet (mcp/session/sheet.ts); thicken and a new commit clear the mark.
+    const made = await build("slice-sheet", SMALL, [{ kind: "sheet", mode: "planar", curves: [square(10, 100)] }]);
+    if (made.reply.ok !== true) throw new Error(why(made.reply));
+    const object = made.reply.object as string;
+    await isolateAbove(object);
+    const committed = await call("model_commit", { object });
+    await call("object_select", { object });
+    const refused = await call("slice_start", { wait: true });
+    const thick = await apply(object, { kind: "thicken", thickness: 2, direction: "normal" });
+    const recommitted = await call("model_commit", { object });
+    const sliced = await call("slice_start", { wait: true });
+    check(
+      "an open sheet on the plate refuses slice; thickened, it slices",
+      committed.ok === true && refused.ok === false && refused.code === "open-sheet" && refused.object === object
+        && thick.reply.ok === true && recommitted.ok === true && sliced.ok === true && sliced.status === "done",
+      `commit ${why(committed)}; first slice ${JSON.stringify({ ok: refused.ok, code: refused.code, reason: refused.reason })}; thicken ${why(thick.reply)}; recommit ${why(recommitted)}; slice ${JSON.stringify({ ok: sliced.ok, status: sliced.status, reason: sliced.reason })}`,
+    );
+  });
+
   await testCase("thicken: a 20 mm square, normal 2 and both 3", async () => {
     const one = await build("thicken-normal", SMALL, [{ kind: "sheet", mode: "planar", curves: [square(10, 100)] }]);
     if (one.reply.ok !== true) throw new Error(why(one.reply));

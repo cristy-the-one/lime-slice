@@ -10,7 +10,7 @@ import { fanDefaults } from "../../src/fan.ts";
 import { ID_MATRIX, settleBy, type Mat3 } from "../../src/mesh-place.ts";
 import type { Vec3 } from "../../src/pivot.ts";
 import { solidFileName, wholeTreeRequest } from "../../src/model-request.ts";
-import { solidView } from "../../src/modeling/model-calls.ts";
+import { markSheet, showsSheet, solidView, treeMarked } from "./sheet.ts";
 import type { Affine } from "../../src/model-space.ts";
 import { jumped, type PluginStamp } from "../../src/model-tree.ts";
 import { DEFAULT_PRESET } from "../../src/presets.ts";
@@ -406,6 +406,9 @@ async function adoptHistory(this: Session, obj: PlateObject, saved: NonNullable<
     else if (!seed && steps > 0 && seconds >= 5) note = `${shownName(obj.name)}: this file keeps no solid in the engine's own format (a project saved before version 3 keeps STEP), so its ${steps} steps were replayed, in ${seconds} s. project_save writes version 4, which opens at once.`;
     const solid = solidView(reply);
     if (solid) obj.solid = solid;
+    // --- Organic surfaces S4. A sheet saved on the plate stays a sheet: the saved mark, or the committed shape read now.
+    if (at === tree.committed) markSheet(obj, treeMarked(obj.tree) || showsSheet(obj));
+    else if (treeMarked(obj.tree)) obj.sheet = true;
     if (stepPlate && solid && solid.positions.length >= 9) {
       const copy = Float32Array.from(solid.positions);
       obj.brep = obj.bytes;

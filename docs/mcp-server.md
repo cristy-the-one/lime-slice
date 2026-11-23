@@ -444,6 +444,7 @@ Every refusal is `{ok: false, code, reason}`. `reason` is the sentence a person 
 - `step-kept`: The step cannot be dropped from the history.
 - `history-start`: The model history has nothing to undo or redo.
 - `commit-failed`: The part's open Model history could not be committed to the plate.
+- `open-sheet`: A plate object is an open sheet, not a solid: it is not sliced or exported until it is thickened or sewn shut.
 - `step-guard`: A guard caught a step that removed too much of the solid or only touches an edge; the step was taken back.
 - `bad-op`: The op is malformed or cannot be baked into a step.
 - `bad-anchor`: An anchor label or reference does not resolve.

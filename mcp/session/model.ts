@@ -11,7 +11,8 @@ import { gearOf, rootSpec, type PrimitiveSpec } from "../../src/model-primitive.
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
 import { decodeSurfaceInspect } from "../../src/model-reply.ts";
 import { listedContinuity } from "../organic-checks.ts";
-import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, solidView, stepGuard } from "../../src/modeling/model-calls.ts";
+import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, stepGuard } from "../../src/modeling/model-calls.ts";
+import { solidView } from "./sheet.ts";
 import { onFaceIndex } from "../../src/modeling/bake.ts";
 import { checkReply } from "../../src/modeling/part-reads.ts";
 import { exprLeaves } from "../../src/modeling/links.ts";
