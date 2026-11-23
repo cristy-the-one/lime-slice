@@ -4288,6 +4288,39 @@ int lime_tree_eval_nurbs_surface(
     }
 }
 
+/// Debug builds only, for tests: points on the surface `nurbsSurface` commits for `blob` (k1.rs encode_nurbs_blob), at
+/// each `(u, v)` of `params`, into `out` (three numbers a point). 0, and `error` set, when the op would refuse.
+int lime_tree_eval_built_nurbs_surface(const double* blob, int len, const double* params, int nparams, double* out, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        const TopoDS_Shape shape = build_nurbs_surface(TopoDS_Shape(), blob, len, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "This NURBS surface could not be built." : message);
+            return 0;
+        }
+        TopExp_Explorer faces(shape, TopAbs_FACE);
+        if (!faces.More()) {
+            set_error(error, "This NURBS surface could not be built.");
+            return 0;
+        }
+        const Handle(Geom_Surface) surface = BRep_Tool::Surface(TopoDS::Face(faces.Current()));
+        for (int i = 0; i < nparams; ++i) {
+            const gp_Pnt point = surface->Value(params[i * 2], params[i * 2 + 1]);
+            out[i * 3] = point.X();
+            out[i * 3 + 1] = point.Y();
+            out[i * 3 + 2] = point.Z();
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+
 /// Debug builds only, for tests: a curve read off a null edge on the shape's first face. That is the access violation
 /// inside TKBRep (BRep_Tool::CurveOnSurface) a wall push beside raised lettering hit, so a test can prove the guard.
 int lime_tree_test_fault(const LimeShape* shape, char** error) {

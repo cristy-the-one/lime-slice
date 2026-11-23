@@ -1014,7 +1014,7 @@ pub(super) struct NurbsSurfaceSpec<'a> {
 /// `[nu, nv, degreeU, degreeV, periodicU, periodicV, nKnotsU, nKnotsV, nWeights, nInsertU, nInsertV, elevateU, elevateV,
 ///  poles (nu*nv*3), weights (nWeights), knotsU, multsU, knotsV, multsV, insertU pairs, insertV pairs]`.
 /// Degree 0 means the kernel's default of 3. Elevate 0 means do not elevate.
-fn encode_nurbs_blob(surface: &NurbsSurfaceSpec<'_>) -> Result<Vec<f64>, String> {
+pub(super) fn encode_nurbs_blob(surface: &NurbsSurfaceSpec<'_>) -> Result<Vec<f64>, String> {
     let nu = surface.poles.len();
     let nv = surface.poles.first().map(|row| row.len()).unwrap_or(0);
     if nu > 0 && surface.poles.iter().any(|row| row.len() != nv) {

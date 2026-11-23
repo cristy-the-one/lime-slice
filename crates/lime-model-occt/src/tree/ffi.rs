@@ -597,6 +597,15 @@ extern "C" {
         out: *mut f64,
         error: *mut *mut c_char,
     ) -> c_int;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_eval_built_nurbs_surface(
+        blob: *const f64,
+        len: c_int,
+        params: *const f64,
+        nparams: c_int,
+        out: *mut f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
     pub(super) fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
     // --- A10.
     pub(super) fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;

@@ -17,6 +17,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -12497,6 +12498,15 @@ namespace {
 
 /// S6 blob header. See `encode_nurbs_blob` in k1.rs.
 constexpr int kNurbsHeader = 13;
+constexpr int kNurbsMaxDegree = 8;
+constexpr int kNurbsMaxPoles = 64;
+constexpr int kNurbsMaxInserts = 32;
+
+/// A knot multiplicity from the blob: a whole number from 0 to 1000, else 0 (which knots_match refuses).
+int small_int(double value) {
+    if (!std::isfinite(value) || value < 0.0 || value > 1000.0 || value != std::floor(value)) return 0;
+    return static_cast<int>(value);
+}
 
 std::string knot_sentence(const char* axis) {
     return std::string("The ") + axis + " knots do not match this surface. They must increase, and their multiplicities must add up to the poles and the degree.";
@@ -12512,9 +12522,10 @@ bool knots_match(const std::vector<double>& knots, const std::vector<int>& mults
         error = sentence;
         return false;
     }
-    int sum = 0;
+    // Each multiplicity is checked before it is added, and the sum is 64-bit, so no input can overflow it.
+    long long sum = 0;
     for (size_t i = 0; i < knots.size(); ++i) {
-        if (!std::isfinite(knots[i]) || mults[i] < 1) {
+        if (!std::isfinite(knots[i]) || mults[i] < 1 || mults[i] > degree + 1) {
             error = sentence;
             return false;
         }
@@ -12535,7 +12546,7 @@ bool knots_match(const std::vector<double>& knots, const std::vector<int>& mults
                 return false;
             }
         }
-        if (sum - mults.front() != npoles) {
+        if (sum - mults.front() != static_cast<long long>(npoles)) {
             error = sentence;
             return false;
         }
@@ -12551,7 +12562,7 @@ bool knots_match(const std::vector<double>& knots, const std::vector<int>& mults
             return false;
         }
     }
-    if (sum != npoles + degree + 1) {
+    if (sum != static_cast<long long>(npoles) + degree + 1) {
         error = sentence;
         return false;
     }
@@ -12609,6 +12620,31 @@ TopoDS_Shape build_nurbs_surface(const TopoDS_Shape& current, const double* blob
     }
     if (degree_u == 0) degree_u = 3;
     if (degree_v == 0) degree_v = 3;
+    // The same limits the app and the MCP check, so no path builds past them.
+    for (const auto& [axis, degree, count, periodic, inserts, elevate] :
+         {std::make_tuple("U", degree_u, nu, periodic_u, ninsert_u, elevate_u),
+          std::make_tuple("V", degree_v, nv, periodic_v, ninsert_v, elevate_v)}) {
+        if (degree > kNurbsMaxDegree) {
+            error = std::string("A NURBS surface's degree in ") + axis + " is 1 to 8; it was " + std::to_string(degree) + ".";
+            return {};
+        }
+        if (count > kNurbsMaxPoles) {
+            error = std::string("A NURBS surface has at most 64 poles in ") + axis + "; it has " + std::to_string(count) + ".";
+            return {};
+        }
+        if (periodic && count < 3) {
+            error = std::string("A surface closed in ") + axis + " needs at least 3 poles in " + axis + ".";
+            return {};
+        }
+        if (inserts > kNurbsMaxInserts) {
+            error = std::string("A NURBS surface takes at most 32 knot inserts in ") + axis + "; it has " + std::to_string(inserts) + ".";
+            return {};
+        }
+        if (elevate > kNurbsMaxDegree) {
+            error = std::string("A NURBS surface's degree in ") + axis + " can be raised to at most 8; it asked for " + std::to_string(elevate) + ".";
+            return {};
+        }
+    }
     if (nu < degree_u + 1) {
         error = pole_sentence("U", degree_u);
         return {};
@@ -12665,7 +12701,7 @@ TopoDS_Shape build_nurbs_surface(const TopoDS_Shape& current, const double* blob
         ku.resize(static_cast<size_t>(nknots_u));
         mu.resize(static_cast<size_t>(nknots_u));
         for (int i = 0; i < nknots_u; ++i) ku[static_cast<size_t>(i)] = blob[at++];
-        for (int i = 0; i < nknots_u; ++i) mu[static_cast<size_t>(i)] = static_cast<int>(std::lround(blob[at++]));
+        for (int i = 0; i < nknots_u; ++i) mu[static_cast<size_t>(i)] = small_int(blob[at++]);
     }
     if (nknots_v == 0) {
         if (periodic_v) default_periodic_knots(nv, kv, mv);
@@ -12674,32 +12710,52 @@ TopoDS_Shape build_nurbs_surface(const TopoDS_Shape& current, const double* blob
         kv.resize(static_cast<size_t>(nknots_v));
         mv.resize(static_cast<size_t>(nknots_v));
         for (int i = 0; i < nknots_v; ++i) kv[static_cast<size_t>(i)] = blob[at++];
-        for (int i = 0; i < nknots_v; ++i) mv[static_cast<size_t>(i)] = static_cast<int>(std::lround(blob[at++]));
+        for (int i = 0; i < nknots_v; ++i) mv[static_cast<size_t>(i)] = small_int(blob[at++]);
     }
     if (!knots_match(ku, mu, nu, degree_u, periodic_u, "U", error)) return {};
     if (!knots_match(kv, mv, nv, degree_v, periodic_v, "V", error)) return {};
     std::vector<std::pair<double, int>> insert_u;
     std::vector<std::pair<double, int>> insert_v;
-    insert_u.reserve(static_cast<size_t>(ninsert_u));
-    insert_v.reserve(static_cast<size_t>(ninsert_v));
-    for (int i = 0; i < ninsert_u; ++i) {
-        const double param = blob[at++];
-        const int times = static_cast<int>(std::lround(blob[at++]));
-        if (!std::isfinite(param) || times < 1) {
-            error = knot_sentence("U");
-            return {};
+    // Each insert: a parameter strictly inside the knot range, `times` a whole number from 1 to the degree, and never
+    // past a knot's full multiplicity (the degree inside the range), counting the inserts before it.
+    const auto read_inserts = [&](int count, const char* axis, int degree, const std::vector<double>& knots,
+                                  const std::vector<int>& mults, std::vector<std::pair<double, int>>& out) {
+        std::vector<std::pair<double, int>> have;
+        for (size_t i = 0; i < knots.size(); ++i) have.emplace_back(knots[i], mults[i]);
+        for (int i = 0; i < count; ++i) {
+            const double param = blob[at++];
+            const double raw_times = blob[at++];
+            if (!std::isfinite(raw_times) || raw_times != std::floor(raw_times) || raw_times < 1.0 || raw_times > degree) {
+                error = std::string("A knot insert in ") + axis + " is 1 to " + std::to_string(degree) + " times, a whole number.";
+                return false;
+            }
+            const int times = static_cast<int>(raw_times);
+            if (!std::isfinite(param) || !(param > knots.front()) || !(param < knots.back())) {
+                std::ostringstream text;
+                text << "A knot insert in " << axis << " must lie strictly inside the knot range, " << knots.front() << " to "
+                     << knots.back() << ".";
+                error = text.str();
+                return false;
+            }
+            auto found = std::find_if(have.begin(), have.end(), [param](const std::pair<double, int>& k) {
+                return std::abs(k.first - param) <= 1e-9;
+            });
+            const int already = found == have.end() ? 0 : found->second;
+            if (already + times > degree) {
+                std::ostringstream text;
+                text << "Inserting the " << axis << " knot " << param << " " << times << " times would give it multiplicity "
+                     << already + times << ", past its full multiplicity " << degree << ".";
+                error = text.str();
+                return false;
+            }
+            if (found == have.end()) have.emplace_back(param, times);
+            else found->second += times;
+            out.emplace_back(param, times);
         }
-        insert_u.emplace_back(param, times);
-    }
-    for (int i = 0; i < ninsert_v; ++i) {
-        const double param = blob[at++];
-        const int times = static_cast<int>(std::lround(blob[at++]));
-        if (!std::isfinite(param) || times < 1) {
-            error = knot_sentence("V");
-            return {};
-        }
-        insert_v.emplace_back(param, times);
-    }
+        return true;
+    };
+    if (!read_inserts(ninsert_u, "U", degree_u, ku, mu, insert_u)) return {};
+    if (!read_inserts(ninsert_v, "V", degree_v, kv, mv, insert_v)) return {};
     const int nku = static_cast<int>(ku.size());
     const int nkv = static_cast<int>(kv.size());
     TColStd_Array1OfReal uk(1, nku);

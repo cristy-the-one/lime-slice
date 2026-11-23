@@ -560,6 +560,20 @@ pub(super) struct EvalNurbsSurface {
     pub(super) knots_v: Vec<f64>,
     #[serde(default)]
     pub(super) mults_v: Vec<i32>,
+    /// With any of the fields below, the surface evaluated is the one `nurbsSurface` commits: built as the op builds
+    /// it, with Open CASCADE's own knot insertion and degree elevation, and periodic knots.
+    #[serde(default)]
+    pub(super) periodic_u: bool,
+    #[serde(default)]
+    pub(super) periodic_v: bool,
+    #[serde(default)]
+    pub(super) insert_u: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub(super) insert_v: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub(super) elevate_u: Option<u32>,
+    #[serde(default)]
+    pub(super) elevate_v: Option<u32>,
     pub(super) params: Vec<[f64; 2]>,
 }
 
