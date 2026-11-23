@@ -7,6 +7,8 @@ import { mirror, linearCopy, polarCopy } from "./edit.ts";
 import { curveOf } from "./geom.ts";
 import { addNurbs, addSpline, creaseSplineAt, emptySketch, insertSplineKnot, readSketch, setSplineWeight, sketchJson, sketchPoint, type Pt, type SketchData, type SketchEntity } from "./model.ts";
 import { sketchRegions } from "./regions.ts";
+import { enterSketch, sketchOff, withSplineMode, withTool } from "./session.ts";
+import { originFrame, planeOf } from "./frame.ts";
 import { readSavedTree } from "../model-tree-file.ts";
 
 let failed = 0;
@@ -157,6 +159,16 @@ const sameSamples = (a: Pt[], b: Pt[]) => a.length === b.length && a.every((p, i
   const mcCurve = mc ? curveOf(m.sketch, mc) : null;
   check("a closed CV spline mirrors as a closed CV spline", !!mc && mc.mode === "cv" && mcCurve?.kind === "spline" && mcCurve.closed);
   void sketchPoint;
+}
+
+// The Spline tool keeps the mode the person chose for the session: a new sketch starts with it (default control points).
+{
+  const fresh = () => withTool(enterSketch(sketchOff(), planeOf(originFrame("XY"))), "spline");
+  check("a first sketch draws control-point splines", fresh().draw.splineMode === "cv");
+  withSplineMode(fresh(), "through");
+  check("after choosing through-points, the next sketch draws through-point splines", fresh().draw.splineMode === "through");
+  withSplineMode(fresh(), "cv");
+  check("and back", fresh().draw.splineMode === "cv");
 }
 
 if (failed) {
