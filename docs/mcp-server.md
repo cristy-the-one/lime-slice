@@ -742,6 +742,10 @@ A turned primitive turns about its middle (`turnCentre` in `src/model-primitive.
 
 `faceExtrude` and `moveFaces` are engine steps too. `faceExtrude` takes `face` (an index or `{normal, nearPoint}`), `distance` along the solid's outward normal, and optionally `draftDeg` and `upTo`. `moveFaces` takes `faces`, each a face and a distance along that face's outward normal; a positive distance grows an outer face, and a negative distance on a hole wall widens the hole. Both are probed like a Boolean. The worked examples are in `lime://guide/ops`.
 
+#### NURBS surfaces (S6)
+
+`nurbsSurface` is `{kind:"nurbsSurface", poles:[[[x, y, z], ...], ...], weights, degreeU, degreeV, knotsU, multsU, knotsV, multsV, periodicU, periodicV, insertU, insertV, elevateU, elevateV}`: poles 2 to 64 each way, one row per U index; weights above 0, one per pole; degree 1 to 8 (3 when left out); multiplicities 1 to 9, adding up to the poles and the degree; a closed (periodic) direction needs at least 3 poles. `insertU`/`insertV` are `[parameter, times]` pairs (at most 32, `times` 1 to that degree, the parameter inside the range, no knot past the degree) and `elevateU`/`elevateV` raise a degree; both are applied before the kernel sees the grid and are refused on a closed grid. The result is a sheet: it is refused on a closed solid, so a part starts from it with `solid_new {feature: <the op>}` (or `{feature: <a sheet op>}`), whose reply gives `openEdges`. `model_edit` on `node_0` with a new `nurbsSurface` (or `sheet`) replaces that root and replays the steps after it. Then `thicken`, `sew {capPlanar}` or `trimSplit` as on any sheet. `mcp/nurbs-surface.test.ts` drives this with the fake engine; `mcp/nurbs-surface-occt.test.ts` against real Open CASCADE (an 8 × 8 grid, thickened to 9800 mm³, a dome sewn shut, saved and reopened, the root edited under a thicken).
+
 #### Reading real geometry and lattices
 
 `docs/plan-recipe-ingredients.md` I5–I7 and I18–I21, and the groovi ask R-B (a mesh measured through the MCP). Each is a tool a recipe calls too.

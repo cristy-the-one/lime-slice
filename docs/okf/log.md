@@ -1,5 +1,9 @@
 # Directory Update Log
 
+## 2026-11-24
+
+* **Update**: [Sketching and features](modeler/sketching.md) describes S6's `nurbsSurface` op, the NURBS panel and `solid_new {feature}`. The sources point at the `organic-surfaces/s6-nurbs-surface` branch; pin them to the merge commit once it reaches main.
+
 ## 2026-11-21
 
 * **Update**: [Simulation](stress/simulation.md) describes the Resist buckling goal, and [Tool catalog](mcp/tools.md) describes `goal.buckling`, `goal.on` and `plan.bucklingFactor`. The sources are on this branch; pin them to the merge commit once it reaches main.

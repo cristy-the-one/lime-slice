@@ -121,11 +121,18 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
   if (refusal) return refuse("step-kept", refusal);
   const baked = this.bake(obj, raw);
   if ("reason" in baked) return refusePartReason(baked.reason, "bad-op");
-  // --- K2 feature root. Reopen from the baked extrude, revolve, or loft. A probe on the solid is not a preview of replacing it, so the engine's open is the check. ---
+  // --- K2 feature root. Reopen from the baked extrude, revolve, or loft, or (S6) a NURBS surface or a sheet, with the
+  // later steps replayed on it. A probe on the solid is not a preview of replacing it, so the engine's open is the check. ---
   if (tree.root.kind === "feature") {
     const op = baked.op;
+    if (op.kind === "nurbsSurface" || op.kind === "sheet") {
+      const root = { kind: "feature" as const, op };
+      const reopened = await this.reopenRoot(obj, tree, node, root);
+      if (reopened) return reopened;
+      return { ok: true, node: nodeHandle(node), stored: op, typed: baked.typed };
+    }
     if (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft") {
-      return refuse("bad-op", "This solid started from a sketch. Replace it with an extrude, a revolve, or a loft.");
+      return refuse("bad-op", "This part started from a sketch or a surface. Replace its first step with an extrude, a revolve, a loft, a nurbsSurface or a sheet.");
     }
     if (op.op !== "fuse") {
       const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
