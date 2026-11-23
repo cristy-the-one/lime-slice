@@ -912,7 +912,9 @@ const history = {
     if (ok) to.push(entry);
     else from.push(entry);
     if (ok && S.open?.key === entry.key) {
+      // The surface on screen now is the one on the branch Undo or Redo showed.
       source = null;
+      forced = null;
       if (toolOpen()) {
         load();
         requestPaint(true);

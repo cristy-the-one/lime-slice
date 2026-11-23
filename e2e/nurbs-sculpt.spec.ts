@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { unpackLime } from "./lime-file";
 
 type V = [number, number, number];
 
@@ -361,4 +362,45 @@ test("a later Thicken is rebuilt on the dragged surface, not dropped", async ({ 
   await expect(page.locator("#modelReadout")).toContainText("Surface updated");
   await expect.poll(() => sculpt.tree.of("goto").at(-1)?.node).toBe(thicken.node);
   await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
+});
+
+test("a later NURBS step: History Edit opens the tool on its own grid, a drag edits it with the Thicken replayed, and Undo goes back", async ({ page }) => {
+  const sculpt = await start(page);
+  await newSurface(page, sculpt);
+  await page.keyboard.press("Escape");
+  await page.locator("#modelSheetThickenGo").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 9800 mm³");
+  // Save, then give the surface a second NURBS step under the Thicken, as a recipe would have built it.
+  await page.locator("#tabPrepare").click();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const { readFile } = await import("node:fs/promises");
+  const doc = JSON.parse(unpackLime(await readFile((await download.path())!)).toString("utf8")) as { objects: { modelTree?: { rootFeature?: { kind?: string }; nodes: Body[]; current: number; committed: number; nextId: number } }[] };
+  const holder = doc.objects.find((obj) => obj.modelTree?.rootFeature?.kind === "nurbsSurface")!.modelTree!;
+  const [root, thicken] = holder.nodes as [Body, Body];
+  const raised = { kind: "nurbsSurface", poles: Array.from({ length: 8 }, (_, iu) => Array.from({ length: 8 }, (_, iv) => [(iu - 3.5) * 10, (iv - 3.5) * 10, 20])), degreeU: 3, degreeV: 3 };
+  holder.nodes = [root, { id: 1, parent: 0, op: raised, fingerprint: null }, { ...thicken, id: 2, parent: 1 }];
+  holder.current = 2;
+  holder.committed = 2;
+  holder.nextId = 3;
+  await page.reload();
+  await page.locator("#projectFile").setInputFiles({ name: "steps.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  await page.locator("#objectList .obj").nth(1).click();
+  await page.locator("#tabModel").click();
+  const stepRow = page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }).nth(1);
+  await stepRow.locator(".mh-edit").click();
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]"), "the step's grid, not the root's").toHaveCount(64);
+  await select(page, 3, 3);
+  expect((await shownPole(page))[2], "the step's own poles").toBe(20);
+  const edits = sculpt.tree.of("edit").length;
+  await dragAxis(page, "z", 0, -40);
+  await expect.poll(() => sculpt.tree.of("edit").length).toBe(edits + 1);
+  const sent = sculpt.tree.of("edit").at(-1)!;
+  expect(sent.parent, "a sibling of the step, on the root").toBe(0);
+  expect((sent.op as { poles: Grid }).poles[3]![3]![2]).toBeGreaterThan(21);
+  expect((sent.replay as { op: { kind: string } }[]).map((step) => step.op.kind), "the Thicken replays on it").toEqual(["thicken"]);
+  await expect(page.locator("#modelReadout")).toContainText("Surface updated");
+  await page.locator("#modelUndo").click();
+  await expect.poll(() => sculpt.tree.of("goto").at(-1)?.node, "Undo shows the branch from before the drag").toBe(2);
+  await expect.poll(async () => (await shownPole(page))[2]).toBe(20);
 });
