@@ -726,6 +726,11 @@ export interface ModelTree {
   committed: NodeId;
   /** The child Redo goes to from each node: the newest one applied or jumped through. */
   lastChild: ReadonlyMap<NodeId, NodeId>;
+  /**
+   * The root was replaced and every node rebuilt under its own id (`withoutBuilds`): the plate's node, even when it is
+   * the one shown, has a new solid to take. Kept until a commit gives that node its mesh again.
+   */
+  rebuilt?: true;
 }
 
 export const ROOT: NodeId = 0;
@@ -1022,7 +1027,7 @@ export function withoutBuilds(tree: ModelTree): ModelTree {
     const { mesh: _mesh, sheet: _sheet, ...rest } = node;
     nodes.set(id, { ...rest, fingerprint: null });
   }
-  return { ...tree, nodes };
+  return { ...tree, nodes, rebuilt: true };
 }
 
 /** The node whose plate mesh is `token`: how a plate restored by Prepare undo finds its place in the tree. */
@@ -1138,7 +1143,9 @@ export interface VisitStep {
 }
 
 export function visitStep(tree: ModelTree): VisitStep | null {
-  if (tree.current === tree.committed) return null;
+  // A root replaced in place (a sketch root or a NURBS grid edited) leaves the plate's node without its mesh: it commits
+  // again though it is the node shown, so the plate takes the new solid.
+  if (tree.current === tree.committed && !(tree.rebuilt && !tree.nodes.get(tree.committed)?.mesh)) return null;
   const keep = tree.nodes.get(tree.current)?.keep ?? null;
   return { from: tree.committed, to: tree.current, keep, resetScale: keep === null && scaleBetween(tree, tree.committed, tree.current) };
 }
