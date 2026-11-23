@@ -356,13 +356,6 @@ export function evalNurbsCurve3D(spec: NurbsCurve3D, uRaw: number): CurveEval3D 
   };
 }
 
-/** Number of knot spans of positive length: the spans `sampleNurbsCurve2D` walks. */
-function liveSpans(rk: ResolvedKnots): number {
-  let spans = 0;
-  for (let s = 0; s + 1 < rk.knots.length; s += 1) if (rk.knots[s + 1]! > rk.knots[s]! + 1e-12) spans += 1;
-  return Math.max(1, spans);
-}
-
 /**
  * A point evaluator for one curve: the knot vector is resolved once and the basis lives in scratch arrays, so
  * sampling allocates nothing but the points it returns. Same arithmetic as `evalNurbsCurve2D` (A2.2 is the first
@@ -468,16 +461,6 @@ export function sampleNurbsCurve2DChord(spec: NurbsCurve2D, chordMm = 0.005, max
   }
   if (rk.periodic && out.length >= 2) out[out.length - 1] = [out[0]![0], out[0]![1]];
   return out;
-}
-
-/**
- * Sample a 2D NURBS curve with about `total` points over the WHOLE curve (at least 2 per span, every knot hit).
- * Callers that size a budget by pole count use this; `sampleNurbsCurve2D` takes a count per span.
- */
-export function sampleNurbsCurve2DTotal(spec: NurbsCurve2D, total: number): Vec2[] {
-  if (spec.poles.length < 2) return spec.poles.map((pt) => [pt[0], pt[1]]);
-  const rk = resolveCurveKnots(spec.poles.length, spec.degree, spec.knots, spec.mults, spec.periodic === true);
-  return sampleNurbsCurve2D(spec, Math.max(2, Math.ceil(Math.max(2, total) / liveSpans(rk))));
 }
 
 /** Sample a 3D NURBS curve span-by-span so interior sharp knots are always hit exactly. */
@@ -1141,7 +1124,7 @@ export function triadDelta(axis: CvAxis, amount: number, normal: Vec3): Vec3 {
   return [(normal[0] / len) * amount, (normal[1] / len) * amount, (normal[2] / len) * amount];
 }
 
-/** Move one pole of a 3D NURBS curve along the triad. */
+/** Move one pole of a 3D NURBS curve along the triad. Tested, not wired into the app yet: no 3D curve tool there edits poles. */
 export function moveCurvePole(poles: readonly Vec3[], index: number, axis: CvAxis, amount: number, normal: Vec3): Vec3[] {
   const delta = triadDelta(axis, amount, normal);
   return poles.map((pole, at) => (at === index ? [pole[0] + delta[0], pole[1] + delta[1], pole[2] + delta[2]] : [pole[0], pole[1], pole[2]]));

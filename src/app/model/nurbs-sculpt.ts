@@ -1312,8 +1312,3 @@ export function installNurbsSculpt() {
   }
   input("#modelNurbsFalloff")?.addEventListener("input", () => requestPaint());
 }
-
-/** For a test: the grid on screen, the one the kernel last built, and whether a commit is on its way. */
-export function nurbsState(): { spec: NurbsSurface3D | null; committed: NurbsSurface3D | null; busy: boolean } {
-  return { spec, committed, busy: !!running || !!pending };
-}

@@ -404,7 +404,8 @@ export interface KernelSweepDraft extends SweepDraft {
 }
 
 /**
- * --- S2. Exact kernel sweep (`BRepOffsetAPI_MakePipeShell`) ---
+ * --- S2. Exact kernel sweep (`BRepOffsetAPI_MakePipeShell`) --- Tested, not wired into the app yet: the Sweep card
+ * builds the loft-based sweep (`buildSketchSweep`), which it was released with; a kernel sweep comes from MCP or a file.
  * Unlike legacy `buildSketchSweep`, this sends a real `Op::Sweep` with exact 3D spine geometry
  * (lines, arcs, exact NURBS, or solid edges), handles sharp corners (Round / Right / Transformed),
  * preserves hollow pipe hole loops, supports Law_Interpol scale stations and smooth twist,
