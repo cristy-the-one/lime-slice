@@ -126,9 +126,32 @@ fn circle_arcs(radius: f64, z: f64) -> Value {
     })
 }
 
+fn ellipse_curve(a: f64, b: f64, z: f64) -> Value {
+    // Four rational quadrants. The middle weight is √2/2, the same conic weight as a circle.
+    let w = std::f64::consts::SQRT_2 * 0.5;
+    let quadrant = |px: f64, py: f64, tx: f64, ty: f64| {
+        json!({
+            "kind": "nurbs",
+            "poles": [[px, py, z]],
+            "weights": [1.0, w, 1.0],
+            "degree": 2,
+            "to": [tx, ty, z]
+        })
+    };
+    json!({
+        "kind": "segments",
+        "start": [a, 0.0, z],
+        "segments": [
+            quadrant(a, b, 0.0, b),
+            quadrant(-a, b, -a, 0.0),
+            quadrant(-a, -b, 0.0, -b),
+            quadrant(a, -b, a, 0.0)
+        ]
+    })
+}
+
 fn circle_curve(radius: f64, z: f64) -> Value {
-    // A polynomial spline, not a rational arc. The blend's end derivative is built
-    // as if the rim weights are 1, and a rational circle leaves the normal 0.3° off.
+    // The polynomial rim. Exact rational circles are blend_meets_g1_and_g2_on_exact_circle_rims.
     let count = 24;
     let points: Vec<[f64; 3]> = (0..count)
         .map(|i| {
@@ -1055,11 +1078,14 @@ fn patch_refuses_g2_on_a_radius_24_cap() {
         "op": patch_op(&asked, None)
     }));
     let error = reply["error"].as_str().unwrap_or("").to_string();
-    println!("S5 r24 refusal: {error}");
+    eprintln!("S5 r24 refusal: {error}");
     assert_eq!(
         error,
-        format!("Edge {}: G2 can't be reached at this curvature.", g2[0]),
-        "radius-24 G2 must refuse by naming that edge: {reply}"
+        format!(
+            "Edge {}: G2 can't be reached at this curvature. The largest gap is 0.000000 mm, the largest angle is 0.016724 degrees, and the largest curvature jump is 0.003861 per mm.",
+            g2[0]
+        ),
+        "radius-24 G2 must refuse by naming that edge and the measured gap, angle, and jump: {reply}"
     );
     assert!(reply.get("solid").is_none(), "a refusal builds no face: {reply}");
     let missing = call(json!({ "call": "goto", "key": key, "node": 3 }));
@@ -1070,7 +1096,7 @@ fn patch_refuses_g2_on_a_radius_24_cap() {
     ok(json!({ "call": "close", "key": key }));
 }
 
-fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) -> Value {
+fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) -> (Value, Vec<SideCurve>) {
     let outer_r = 18.0;
     let inner_r = 10.0;
     let height = 16.0;
@@ -1129,8 +1155,11 @@ fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) 
         }
     }
     assert!(!outer.is_empty() && !inner.is_empty(), "circle blend needs both rims");
-    let sides = [side_from_edges(sort_by_angle(outer), continuity), side_from_edges(sort_by_angle(inner), continuity)];
-    call(json!({
+    let sides = vec![
+        side_from_edges(sort_by_angle(outer), continuity),
+        side_from_edges(sort_by_angle(inner), continuity),
+    ];
+    let reply = call(json!({
         "call": "apply",
         "key": key,
         "parent": 2,
@@ -1144,32 +1173,109 @@ fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) 
             "tensionA": 1.0,
             "tensionB": 1.0
         }
-    }))
+    }));
+    (reply, sides)
 }
 
 #[test]
-fn blend_refuses_exact_circle_rims() {
+fn blend_meets_g1_and_g2_on_exact_circle_rims() {
     if !has_occt() {
         return;
     }
-    // Exact circle rims, not the 24-point polynomial. The blend must refuse
-    // instead of leaving a surface whose normal is 0.315° off the wall.
+    // Exact circle rims, not the 24-point polynomial. The same bounds as the
+    // spline blend: gap under 1e-4 mm, angle under 0.1°, G2 jump at most 1e-3
+    // mm^-1 (model_check class G2), sewn solid, no naked edges.
     for continuity in ["g1", "g2"] {
-        let key = format!("s5-circle-{continuity}");
-        let reply = blend_apply(&key, continuity, circle_arcs);
-        let error = reply["error"].as_str().unwrap_or("").to_string();
-        println!("S5 circle-{continuity} refusal: {error}");
-        let expected = if continuity == "g1" {
-            "The fill cannot reach the continuity you asked for. The largest gap is 0.000000 mm, the largest angle is 180.000000 degrees, and the largest curvature jump is 0.750000 per mm."
-        } else {
-            "The fill cannot reach the continuity you asked for. The largest gap is 0.000000 mm, the largest angle is 180.000000 degrees, and the largest curvature jump is 0.002112 per mm."
-        };
-        assert_eq!(error, expected, "exact circles must be refused, got {reply}");
-        assert!(reply.get("solid").is_none(), "a refusal builds no blend face: {reply}");
-        let missing = call(json!({ "call": "goto", "key": key, "node": 3 }));
-        assert!(missing.get("error").is_some(), "the refused blend is not a step: {missing}");
-        let still = ok(json!({ "call": "goto", "key": key, "node": 2, "chordMm": CHORD_MM }));
-        assert_eq!(still["solid"], json!(false));
+        let case_name = format!("blend-circle-{continuity}");
+        let key = format!("s5-{case_name}");
+        let (reply, sides) = blend_apply(&key, continuity, circle_arcs);
+        assert!(
+            reply.get("error").is_none(),
+            "exact circles must meet {continuity}: {reply}"
+        );
+        assert_eq!(reply["solid"], json!(false), "a blend is a sheet until it is sewn");
+        let sewn = finish_sheet(&case_name, &key, 3, 4, false, 0.05);
+        check_opening(&case_name, &key, 4, &sewn, &sides, false, None);
         ok(json!({ "call": "close", "key": key }));
     }
+}
+
+#[test]
+fn blend_meets_g1_between_concentric_elliptical_faces() {
+    if !has_occt() {
+        return;
+    }
+    // Two flat annular faces. Each is an ellipse with a concentric elliptical hole,
+    // at two heights. The outward ribbon of the outer rim turns a full revolution,
+    // so a sum of the samples cancels. Same bounds as the other blends.
+    let a = 22.0;
+    let b = 12.0;
+    let lower_z = 0.0;
+    let upper_z = 10.0;
+    let case_name = "blend-ellipse-g1";
+    let key = format!("s5-{case_name}");
+    let annulus = |z: f64| json!([ellipse_curve(a, b, z), ellipse_curve(a * 0.5, b * 0.5, z)]);
+    ok(json!({
+        "call": "open",
+        "key": key,
+        "chordMm": CHORD_MM,
+        "feature": {
+            "kind": "sheet",
+            "mode": "planar",
+            "curves": annulus(lower_z)
+        }
+    }));
+    let both = ok(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 0,
+        "node": 1,
+        "chordMm": CHORD_MM,
+        "op": {
+            "kind": "sheet",
+            "mode": "planar",
+            "curves": annulus(upper_z)
+        }
+    }));
+    let mut lower = Vec::new();
+    let mut upper_edges = Vec::new();
+    for edge in sampled_edges(&both) {
+        let z = centroid(&edge.points)[2];
+        let rho = edge.points.iter().map(|p| ((p[0] / a).powi(2) + (p[1] / b).powi(2)).sqrt()).sum::<f64>()
+            / edge.points.len() as f64;
+        // The hole is the inner ellipse. The blend is the outer rim.
+        if rho < 0.75 {
+            continue;
+        }
+        if z < (lower_z + upper_z) * 0.5 {
+            lower.push(edge);
+        } else {
+            upper_edges.push(edge);
+        }
+    }
+    assert!(lower.len() >= 2 && upper_edges.len() >= 2, "each outer ellipse needs its edges");
+    let sides = vec![
+        side_from_edges(sort_by_angle(lower), "g1"),
+        side_from_edges(sort_by_angle(upper_edges), "g1"),
+    ];
+    let reply = call(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 1,
+        "node": 2,
+        "chordMm": CHORD_MM,
+        "op": {
+            "kind": "blendSurface",
+            "a": { "edges": sides[0].edges, "continuity": "g1" },
+            "b": { "edges": sides[1].edges, "continuity": "g1" },
+            "continuity": "g1",
+            "tensionA": 1.0,
+            "tensionB": 1.0
+        }
+    }));
+    assert!(reply.get("error").is_none(), "elliptical faces must meet g1: {reply}");
+    assert_eq!(reply["solid"], json!(false), "a blend is a sheet until it is sewn");
+    let sewn = finish_sheet(case_name, &key, 2, 3, true, 0.05);
+    check_opening(case_name, &key, 3, &sewn, &sides, false, None);
+    ok(json!({ "call": "close", "key": key }));
 }
