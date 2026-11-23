@@ -1006,7 +1006,9 @@ fn patch_fills_three_five_and_six_sided_openings_and_sews_them_solid() {
     // The extruded triangle keeps the three corners where the walls meet.
     fill_opening("3-side", 3, |_, _| "g1", None, true, Some(3));
     // Cut from one ellipsoid, so no two support faces meet at a corner.
-    fill_smooth("5-side", 5, |i, n| if i + 1 == n { "g2" } else { "g1" });
+    // G1 on every side. The same opening with one side at G2 is refused now that the ends of each half are measured:
+    // see patch_refuses_g2_where_a_half_ends_at_the_split.
+    fill_smooth("5-side", 5, |_, _| "g1");
     fill_smooth("6-side", 6, |_, _| "g1");
 }
 
@@ -1213,7 +1215,7 @@ fn patch_refuses_g2_on_a_radius_24_cap() {
     assert_eq!(
         error,
         format!(
-            "Edge {}: G2 can't be reached at this curvature. The largest gap is 0.000000 mm, the largest angle is 0.016724 degrees, and the largest curvature jump is 0.003861 per mm.",
+            "Edge {}: G2 can't be reached at this curvature. The largest gap is 0.000000 mm, the largest angle is 0.094226 degrees, and the largest curvature jump is 0.150928 per mm.",
             g2[0]
         ),
         "radius-24 G2 must refuse by naming that edge and the measured gap, angle, and jump: {reply}"
@@ -1444,5 +1446,28 @@ fn a_patch_on_a_moved_sheet_meets_its_edges() {
     assert_op_time(case_name, "g1");
     let sewn = finish_sheet(case_name, &key, 1, 2, true, 0.05);
     check_opening(case_name, &key, 2, &sewn, &asked, true, None);
+    ok(json!({ "call": "close", "key": key }));
+}
+
+/// The ends of each half side are measured too (the plan leaves out only a sharp vertex). On the smooth five-sided
+/// opening the G2 side meets the bound between the stations but not at its midpoint M, where the half ends at the split:
+/// the curvature jump there stays about 0.036 per mm whatever knots go in. The op refuses, naming that edge.
+#[test]
+fn patch_refuses_g2_where_a_half_ends_at_the_split() {
+    if !has_occt() {
+        return;
+    }
+    let (key, cap, mut asked) = smooth_cap(5);
+    asked.sort_by(|a, b| a.midpoint[1].atan2(a.midpoint[0]).total_cmp(&b.midpoint[1].atan2(b.midpoint[0])));
+    let count = asked.len();
+    for (n, side) in asked.iter_mut().enumerate() {
+        side.continuity = if n + 1 == count { "g2" } else { "g1" };
+    }
+    let g2 = asked.last().expect("a side").edges.clone();
+    let parent = cap["capNode"].as_i64().unwrap_or(1);
+    let reply = call(json!({ "call": "apply", "key": key, "parent": parent, "node": 3, "chordMm": CHORD_MM, "op": patch_op(&asked, None) }));
+    let error = reply["error"].as_str().unwrap_or("").to_string();
+    println!("S5 5-side G2 refusal: {error}");
+    assert!(error.starts_with(&format!("Edge {}: G2 can't be reached at this curvature.", g2[0])), "{reply}");
     ok(json!({ "call": "close", "key": key }));
 }

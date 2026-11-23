@@ -509,6 +509,12 @@ Transverse transverse_at(const TopoDS_Face& face, const gp_Pnt& point, const gp_
                 }
             }
         }
+        if (side == 0) {
+            out.error = "Side " + std::to_string(side_index) +
+                ": which side of the edge its face lies on could not be told at one point, so the fill cannot know which "
+                "way to leave it. Pick edges with their face on one side.";
+            return out;
+        }
         if (side < 0) B.Reverse();
         const gp_Vec Su = props.D1U();
         const gp_Vec Sv = props.D1V();
@@ -553,11 +559,26 @@ double curvature_perp(BRepLProp_SLProps& props, double outward, const gp_Vec& ed
     return (props.MaxCurvature() * c * c + props.MinCurvature() * s * s) * outward;
 }
 
+/// The fractions along an edge an op measures at: 0.1 to 0.9, as model_check does, then the end at 0 and the end at 1
+/// unless that end is a sharp vertex the plan leaves out, and on a closed rim two more either side of its seam.
+std::vector<double> station_fracs(bool with_start, bool with_end, bool closed) {
+    std::vector<double> fracs;
+    if (with_start) fracs.push_back(0.0);
+    if (closed) fracs.push_back(0.02);
+    for (int s = 0; s < kHermiteStations; ++s) fracs.push_back(0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1)));
+    if (closed) fracs.push_back(0.98);
+    if (with_end) fracs.push_back(1.0);
+    return fracs;
+}
+
 struct StationStat {
     double gap = 0.0;
     double angle = 0.0;
     double jump = 0.0;
     bool samples = false;
+    /// Stepping from the rim along the blend's own direction across it leaves the wall instead of entering it: a fold,
+    /// told without the classifier walk that oriented the ribbon.
+    bool fold = false;
 };
 
 StationStat measure_faces(
@@ -779,6 +800,19 @@ StationStat measure_rim(
         stat.samples = true;
         stat.gap = point.Distance(wall_props.Value());
         stat.angle = std::acos(clamp_unit(across.Dot(inward))) * (180.0 / M_PI);
+        // Independent of the ribbon's orientation: step from the rim along the blend's own direction across it, onto the
+        // wall, and ask whether that lands in the wall face.
+        for (double step : {0.2, 0.6, 1.8}) {
+            double fu = 0.0;
+            double fv = 0.0;
+            if (!face_parameters(wall, gp_Pnt(point.XYZ() + across.XYZ() * step), fu, fv)) break;
+            const BRepClass_FaceClassifier cls(wall, gp_Pnt2d(fu, fv), 1e-6);
+            if (cls.State() == TopAbs_IN) break;
+            if (cls.State() == TopAbs_OUT) {
+                stat.fold = true;
+                break;
+            }
+        }
         BRepAdaptor_Surface blend_adapt(face);
         BRepLProp_SLProps blend_props(blend_adapt, 2, 1e-9);
         blend_props.SetParameters(u, v_rim);
@@ -1755,13 +1789,16 @@ TopoDS_Shape fill_hermite_patch(
         for (int i = 0; i < count; ++i) {
             const int prev = (i + count - 1) % count;
             const BuiltPiece& piece = pieces[static_cast<size_t>(i)];
+            // V_i is not measured: at a sharp vertex the plan leaves it out, and at a smooth one the two halves that meet
+            // there run along one rim, so the piece's two boundary tangents are collinear and its normal is not defined.
+            // Every other end is: M_i, where the half meets the split, and both ends of each split.
+            const bool sharp = true;
             EdgeReport outer;
             outer.which = "outer";
             outer.side = i;
             outer.asked = sides[static_cast<size_t>(i)].order;
             if (!sides[static_cast<size_t>(i)].face.IsNull()) {
-                for (int s = 0; s < kHermiteStations; ++s) {
-                    const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1));
+                for (const double frac : station_fracs(!sharp, true, false)) {
                     gp_Pnt point;
                     gp_Vec du;
                     gp_Vec dv;
@@ -1781,8 +1818,7 @@ TopoDS_Shape fill_hermite_patch(
             outer_prev.side = prev;
             outer_prev.asked = sides[static_cast<size_t>(prev)].order;
             if (!sides[static_cast<size_t>(prev)].face.IsNull()) {
-                for (int s = 0; s < kHermiteStations; ++s) {
-                    const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1));
+                for (const double frac : station_fracs(!sharp, true, false)) {
                     gp_Pnt point;
                     gp_Vec du;
                     gp_Vec dv;
@@ -1804,8 +1840,7 @@ TopoDS_Shape fill_hermite_patch(
             split.side = i;
             split.asked = sides[static_cast<size_t>(i)].order;
             if (split.asked < 1 && max_order >= 1) split.asked = 1;
-            for (int s = 0; s < kHermiteStations; ++s) {
-                const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1));
+            for (const double frac : station_fracs(true, true, false)) {
                 gp_Pnt point;
                 gp_Vec du;
                 gp_Vec dv;
@@ -1861,7 +1896,8 @@ TopoDS_Shape fill_hermite_blend(
     const auto closed_curve = [](const Handle(Geom_BSplineCurve)& curve) {
         return curve->StartPoint().Distance(curve->EndPoint()) < kHermiteGapMm;
     };
-    if (closed_curve(a) && closed_curve(b)) {
+    const bool rims_closed = closed_curve(a) && closed_curve(b);
+    if (rims_closed) {
         // Start b at the knot nearest a's start. A knot, not any point: a rim chain's edges meet at knots, so the
         // blend's rim keeps the sheet's own vertices and Sew matches them.
         double t = b->FirstParameter();
@@ -2070,17 +2106,16 @@ TopoDS_Shape fill_hermite_blend(
         rb.asked = order_b;
         bool fold_a = false;
         bool fold_b = false;
-        for (int s = 0; s < kHermiteStations; ++s) {
-            const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1));
+        for (const double frac : station_fracs(true, true, rims_closed)) {
             const StationStat stat_a = measure_rim(surface, face, frac, 0.0, face_a, faces_a, 0);
             if (stat_a.samples) {
                 note_station(ra, stat_a, frac);
-                fold_a = fold_a || (order_a >= 1 && stat_a.angle > 90.0);
+                fold_a = fold_a || (order_a >= 1 && (stat_a.angle > 90.0 || stat_a.fold));
             }
             const StationStat stat_b = measure_rim(surface, face, frac, 1.0, face_b, faces_b, 1);
             if (stat_b.samples) {
                 note_station(rb, stat_b, frac);
-                fold_b = fold_b || (order_b >= 1 && stat_b.angle > 90.0);
+                fold_b = fold_b || (order_b >= 1 && (stat_b.angle > 90.0 || stat_b.fold));
             }
         }
         // A rim that meets no face (G0 to a bare curve) is that curve's poles, so it meets its edge exactly.
