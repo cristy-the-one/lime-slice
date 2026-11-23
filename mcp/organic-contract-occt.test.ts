@@ -564,7 +564,7 @@ try {
     if (made.ok !== true) throw new Error(why(made));
     const object = made.object as string;
     const cutter = { mode: "extrude", curves: [{ kind: "polyline", points: [[0, -20, -5], [0, 20, -5]] }], dir: [0, 0, 1], distance: 20 };
-    const cut = await call("model_apply", { object, op: { kind: "trimSplit", sheet: cutter, keep: "both" } });
+    const cut = await call("model_apply", { object, op: { kind: "trimSplit", sheet: cutter, keep: "both" }, probe: true });
     const other = typeof cut.other === "string" ? cut.other : null;
     if (other) await call("object_select", { object: other });
     const refused = other ? await call("slice_start", { scope: "object", wait: true }) : null;
