@@ -671,6 +671,12 @@ export function combineOrthogonalCurves3D(
 /** Samples along each span of the preview mesh. 8×8 degree 3 is 5 spans, so 4 gives a 21×21 grid. */
 export const DEFAULT_PREVIEW_DENSITY = 4;
 
+/** The highest degree a NURBS surface takes: the schema's cap. */
+export const MAX_SURFACE_DEGREE = 8;
+
+/** How far a pole may sit from its mirror image, in millimetres, for the grid to count as symmetric. */
+export const SYMMETRY_TOLERANCE_MM = 1e-6;
+
 type Hom = [number, number, number, number];
 
 function knotSentence(axis: "U" | "V"): string {
@@ -701,7 +707,7 @@ function knotsRefuse(axis: "U" | "V", knots: readonly number[] | undefined, mult
   return null;
 }
 
-/** The sentence the kernel uses, or null when this grid can be built. */
+/** The sentence the kernel uses, or null when this grid can be built. Every evaluation below is safe once this is null. */
 export function surfaceRefusal(spec: NurbsSurface3D): string | null {
   const nu = spec.poles.length;
   const nv = spec.poles[0]?.length ?? 0;
@@ -709,13 +715,21 @@ export function surfaceRefusal(spec: NurbsSurface3D): string | null {
   const degreeU = spec.degreeU ?? 3;
   const degreeV = spec.degreeV ?? 3;
   if (!Number.isInteger(degreeU) || degreeU < 1 || !Number.isInteger(degreeV) || degreeV < 1) return "This NURBS surface could not be built.";
+  if (degreeU > MAX_SURFACE_DEGREE || degreeV > MAX_SURFACE_DEGREE) return `A NURBS surface's degree is at most ${MAX_SURFACE_DEGREE}.`;
   if (nu < degreeU + 1) return `This surface needs at least ${degreeU + 1} poles in U for degree ${degreeU}.`;
   if (nv < degreeV + 1) return `This surface needs at least ${degreeV + 1} poles in V for degree ${degreeV}.`;
+  if (spec.periodicU === true && nu < 3) return "A surface closed in U needs at least 3 poles in U.";
+  if (spec.periodicV === true && nv < 3) return "A surface closed in V needs at least 3 poles in V.";
+  for (const row of spec.poles) {
+    for (const pole of row) {
+      if (!Number.isFinite(pole[0]) || !Number.isFinite(pole[1]) || !Number.isFinite(pole[2])) return "A pole on this surface is not a number.";
+    }
+  }
   if (spec.weights) {
     if (spec.weights.length !== nu || spec.weights.some((row) => row.length !== nv)) return "The weights do not match this surface's poles.";
     for (const row of spec.weights) {
       for (const weight of row) {
-        if (!(weight > 0)) return "A weight on this surface is 0 or less. Every weight has to be greater than 0.";
+        if (!(weight > 0) || !Number.isFinite(weight)) return "A weight on this surface is 0 or less. Every weight has to be greater than 0.";
       }
     }
   }
@@ -749,49 +763,233 @@ function sampleParams(rk: ResolvedKnots, samplesPerSpan: number): number[] {
   return out;
 }
 
-/** Positions, normals and triangle indexes at `samplesPerSpan` samples along each span. */
-export function surfaceMesh(spec: NurbsSurface3D, samplesPerSpan = DEFAULT_PREVIEW_DENSITY): { positions: Float32Array; normals: Float32Array; indices: Uint32Array } | string {
-  const refusal = surfaceRefusal(spec);
-  if (refusal) return refusal;
-  const nu = spec.poles.length;
-  const nv = spec.poles[0]!.length;
-  const rku = resolveCurveKnots(nu, spec.degreeU ?? 3, spec.knotsU, spec.multsU, spec.periodicU === true);
-  const rkv = resolveCurveKnots(nv, spec.degreeV ?? 3, spec.knotsV, spec.multsV, spec.periodicV === true);
-  const us = sampleParams(rku, samplesPerSpan);
-  const vs = sampleParams(rkv, samplesPerSpan);
-  const positions = new Float32Array(us.length * vs.length * 3);
-  const normals = new Float32Array(us.length * vs.length * 3);
-  let at = 0;
-  for (let i = 0; i < us.length; i += 1) {
-    for (let j = 0; j < vs.length; j += 1) {
-      const ev = evalNurbsSurface3D(spec, us[i]!, vs[j]!);
-      positions[at] = ev.point[0];
-      positions[at + 1] = ev.point[1];
-      positions[at + 2] = ev.point[2];
-      normals[at] = ev.normal[0];
-      normals[at + 1] = ev.normal[1];
-      normals[at + 2] = ev.normal[2];
-      at += 3;
+/** One direction's sample parameters with their span and basis values (and first derivatives), worked out once per knot vector. */
+interface BasisRows {
+  count: number;
+  degree: number;
+  periodic: boolean;
+  spans: Int32Array;
+  /** `n0[k * (degree + 1) + i]`: basis i at sample k. */
+  n0: Float64Array;
+  n1: Float64Array;
+}
+
+function wrapParam(value: number, rk: ResolvedKnots): number {
+  if (!rk.periodic) return Math.max(rk.uMin, Math.min(rk.uMax, value));
+  const period = rk.uMax - rk.uMin;
+  return rk.uMin + ((((value - rk.uMin) % period) + period) % period);
+}
+
+function basisRows(rk: ResolvedKnots, npoles: number, samplesPerSpan: number): BasisRows {
+  const params = sampleParams(rk, samplesPerSpan);
+  const p = rk.degree;
+  const spans = new Int32Array(params.length);
+  const n0 = new Float64Array(params.length * (p + 1));
+  const n1 = new Float64Array(params.length * (p + 1));
+  for (let k = 0; k < params.length; k += 1) {
+    const u = wrapParam(params[k]!, rk);
+    const span = findSpan(rk.periodic ? npoles + p - 1 : npoles - 1, p, u, rk.flat);
+    const ders = basisFunsDerivs(span, u, p, rk.flat, 1);
+    spans[k] = span;
+    for (let i = 0; i <= p; i += 1) {
+      n0[k * (p + 1) + i] = ders[0]![i]!;
+      n1[k * (p + 1) + i] = ders[1]![i]!;
     }
   }
-  const indices = new Uint32Array((us.length - 1) * (vs.length - 1) * 6);
-  let tri = 0;
-  for (let i = 0; i + 1 < us.length; i += 1) {
-    for (let j = 0; j + 1 < vs.length; j += 1) {
-      const a = i * vs.length + j;
-      const b = a + 1;
-      const c = a + vs.length;
-      const d = c + 1;
-      indices[tri] = a;
-      indices[tri + 1] = c;
-      indices[tri + 2] = b;
-      indices[tri + 3] = b;
-      indices[tri + 4] = c;
-      indices[tri + 5] = d;
-      tri += 6;
+  return { count: params.length, degree: p, periodic: rk.periodic, spans, n0, n1 };
+}
+
+/** The preview mesh: positions, normals and triangle indexes, `rows` samples along U by `cols` along V. */
+export interface SurfaceMeshData {
+  positions: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
+  rows: number;
+  cols: number;
+}
+
+/** Points and unit normals at the preview samples, in double precision, row-major (U outer, V inner). */
+export interface SurfaceSamples {
+  points: Float64Array;
+  normals: Float64Array;
+  rows: number;
+  cols: number;
+}
+
+/**
+ * A reusable evaluator for the live preview. The knot vectors are resolved and the basis rows worked out once per
+ * knot layout and density, the grid is evaluated as a tensor product (each U row of the net is blended once, then each
+ * sample along V), and the output arrays are the same objects from one frame to the next while the layout holds, so a
+ * pole drag allocates nothing. The result matches `evalNurbsSurface3D` at each sample to rounding (< 1e-12 mm).
+ */
+export function createSurfaceMesher() {
+  let layout = "";
+  let uRows: BasisRows | null = null;
+  let vRows: BasisRows | null = null;
+  let q0 = new Float64Array(0);
+  let q1 = new Float64Array(0);
+  let points = new Float64Array(0);
+  let normals64 = new Float64Array(0);
+  let positions = new Float32Array(0);
+  let normals = new Float32Array(0);
+  let indices = new Uint32Array(0);
+
+  function prepare(spec: NurbsSurface3D, samplesPerSpan: number) {
+    const nu = spec.poles.length;
+    const nv = spec.poles[0]!.length;
+    const key = JSON.stringify([nu, nv, spec.degreeU ?? 3, spec.degreeV ?? 3, spec.knotsU ?? null, spec.multsU ?? null, spec.knotsV ?? null, spec.multsV ?? null, spec.periodicU === true, spec.periodicV === true, samplesPerSpan]);
+    if (key === layout && uRows && vRows) return;
+    const rku = resolveCurveKnots(nu, spec.degreeU ?? 3, spec.knotsU, spec.multsU, spec.periodicU === true);
+    const rkv = resolveCurveKnots(nv, spec.degreeV ?? 3, spec.knotsV, spec.multsV, spec.periodicV === true);
+    uRows = basisRows(rku, nu, samplesPerSpan);
+    vRows = basisRows(rkv, nv, samplesPerSpan);
+    const rows = uRows.count;
+    const cols = vRows.count;
+    q0 = new Float64Array(nv * 4);
+    q1 = new Float64Array(nv * 4);
+    points = new Float64Array(rows * cols * 3);
+    normals64 = new Float64Array(rows * cols * 3);
+    positions = new Float32Array(rows * cols * 3);
+    normals = new Float32Array(rows * cols * 3);
+    indices = new Uint32Array(Math.max(0, rows - 1) * Math.max(0, cols - 1) * 6);
+    let tri = 0;
+    for (let i = 0; i + 1 < rows; i += 1) {
+      for (let j = 0; j + 1 < cols; j += 1) {
+        const a = i * cols + j;
+        const b = a + 1;
+        const c = a + cols;
+        const d = c + 1;
+        indices[tri] = a;
+        indices[tri + 1] = c;
+        indices[tri + 2] = b;
+        indices[tri + 3] = b;
+        indices[tri + 4] = c;
+        indices[tri + 5] = d;
+        tri += 6;
+      }
+    }
+    layout = key;
+  }
+
+  function evaluate(spec: NurbsSurface3D) {
+    const ur = uRows!;
+    const vr = vRows!;
+    const nu = spec.poles.length;
+    const nv = spec.poles[0]!.length;
+    const pu = ur.degree;
+    const pv = vr.degree;
+    const weights = spec.weights;
+    let at = 0;
+    for (let a = 0; a < ur.count; a += 1) {
+      q0.fill(0);
+      q1.fill(0);
+      const span = ur.spans[a]!;
+      for (let i = 0; i <= pu; i += 1) {
+        const iu = ur.periodic ? (((span - pu + i) % nu) + nu) % nu : span - pu + i;
+        const b0 = ur.n0[a * (pu + 1) + i]!;
+        const b1 = ur.n1[a * (pu + 1) + i]!;
+        if (b0 === 0 && b1 === 0) continue;
+        const row = spec.poles[iu]!;
+        const wrow = weights?.[iu];
+        for (let j = 0; j < nv; j += 1) {
+          const pole = row[j]!;
+          const w = wrow?.[j] ?? 1.0;
+          const x = pole[0] * w;
+          const y = pole[1] * w;
+          const z = pole[2] * w;
+          const o = j * 4;
+          q0[o] += b0 * x;
+          q0[o + 1] += b0 * y;
+          q0[o + 2] += b0 * z;
+          q0[o + 3] += b0 * w;
+          q1[o] += b1 * x;
+          q1[o + 1] += b1 * y;
+          q1[o + 2] += b1 * z;
+          q1[o + 3] += b1 * w;
+        }
+      }
+      for (let b = 0; b < vr.count; b += 1) {
+        const spanV = vr.spans[b]!;
+        let sx = 0, sy = 0, sz = 0, sw = 0;
+        let ux = 0, uy = 0, uz = 0, uw = 0;
+        let vx = 0, vy = 0, vz = 0, vw = 0;
+        for (let j = 0; j <= pv; j += 1) {
+          const iv = vr.periodic ? (((spanV - pv + j) % nv) + nv) % nv : spanV - pv + j;
+          const c0 = vr.n0[b * (pv + 1) + j]!;
+          const c1 = vr.n1[b * (pv + 1) + j]!;
+          const o = iv * 4;
+          sx += c0 * q0[o]!;
+          sy += c0 * q0[o + 1]!;
+          sz += c0 * q0[o + 2]!;
+          sw += c0 * q0[o + 3]!;
+          ux += c0 * q1[o]!;
+          uy += c0 * q1[o + 1]!;
+          uz += c0 * q1[o + 2]!;
+          uw += c0 * q1[o + 3]!;
+          vx += c1 * q0[o]!;
+          vy += c1 * q0[o + 1]!;
+          vz += c1 * q0[o + 2]!;
+          vw += c1 * q0[o + 3]!;
+        }
+        const w0 = sw || 1.0;
+        const px = sx / w0;
+        const py = sy / w0;
+        const pz = sz / w0;
+        const dux = (ux - uw * px) / w0;
+        const duy = (uy - uw * py) / w0;
+        const duz = (uz - uw * pz) / w0;
+        const dvx = (vx - vw * px) / w0;
+        const dvy = (vy - vw * py) / w0;
+        const dvz = (vz - vw * pz) / w0;
+        const nx = duy * dvz - duz * dvy;
+        const ny = duz * dvx - dux * dvz;
+        const nz = dux * dvy - duy * dvx;
+        const nlen = Math.hypot(nx, ny, nz);
+        points[at] = px;
+        points[at + 1] = py;
+        points[at + 2] = pz;
+        if (nlen > 1e-12) {
+          normals64[at] = nx / nlen;
+          normals64[at + 1] = ny / nlen;
+          normals64[at + 2] = nz / nlen;
+        } else {
+          normals64[at] = 0;
+          normals64[at + 1] = 0;
+          normals64[at + 2] = 1;
+        }
+        at += 3;
+      }
     }
   }
-  return { positions, normals, indices };
+
+  return {
+    /** Double-precision samples, for tests and checks. The arrays are reused by the next call. */
+    samples(spec: NurbsSurface3D, samplesPerSpan = DEFAULT_PREVIEW_DENSITY): SurfaceSamples | string {
+      const refusal = surfaceRefusal(spec);
+      if (refusal) return refusal;
+      prepare(spec, samplesPerSpan);
+      evaluate(spec);
+      return { points, normals: normals64, rows: uRows!.count, cols: vRows!.count };
+    },
+    /** The preview mesh. The arrays are the same objects while the knot layout and density hold. */
+    mesh(spec: NurbsSurface3D, samplesPerSpan = DEFAULT_PREVIEW_DENSITY): SurfaceMeshData | string {
+      const refusal = surfaceRefusal(spec);
+      if (refusal) return refusal;
+      prepare(spec, samplesPerSpan);
+      evaluate(spec);
+      for (let i = 0; i < points.length; i += 1) {
+        positions[i] = points[i]!;
+        normals[i] = normals64[i]!;
+      }
+      return { positions, normals, indices, rows: uRows!.count, cols: vRows!.count };
+    },
+  };
+}
+
+/** Positions, normals and triangle indexes at `samplesPerSpan` samples along each span, in fresh arrays. */
+export function surfaceMesh(spec: NurbsSurface3D, samplesPerSpan = DEFAULT_PREVIEW_DENSITY): SurfaceMeshData | string {
+  const made = createSurfaceMesher().mesh(spec, samplesPerSpan);
+  return made;
 }
 
 export type CvAxis = "x" | "y" | "z" | "normal";
@@ -817,18 +1015,28 @@ export interface SculptHit {
   mode: "pole" | "row" | "column";
 }
 
-function smoothFalloff(distance: number, radius: number, selected: boolean): number {
-  if (radius <= 0) return selected ? 1 : 0;
-  if (selected) return 1;
+/** Which index pairs a pole with its mirror image across the part's X = 0 plane: U (`iu` ↔ `nu − 1 − iu`) or V. */
+export type SymmetryPairing = "u" | "v";
+
+function smoothFalloff(distance: number, radius: number): number {
   if (distance >= radius) return 0;
   const t = 1 - distance / radius;
   return t * t * (3 - 2 * t);
 }
 
+function mirrorX(p: readonly number[]): Vec3 {
+  return [-p[0]!, p[1]!, p[2]!];
+}
+
 /**
- * Drag `hit` by `amount` along `axis`. `radius` 0 moves only the selection. A larger radius
- * eases the neighbouring poles. Symmetry mirrors across X and the U index, then copies that
- * side so the net stays exactly symmetric.
+ * Drag `hit` by `amount` along `axis`. `radius` 0 moves only the selection; a larger radius eases the poles around
+ * it, by their distance (before the drag) to the nearest selected pole, so poles at the same distance move the same.
+ * A row is every pole with the hit's `iv`, a column every pole with its `iu`.
+ *
+ * `symmetry` mirrors the MOVE across the part's X = 0 plane onto the mirror poles (paired by U, or by V): each pole
+ * takes the move of whichever of the selection or its mirror image reaches it more strongly, and a pole reached
+ * equally by both (one on the centre row) keeps its X and moves only along the plane. Untouched poles never move, so a
+ * drag never rewrites the other half. It is meant for a grid that is already symmetric (see `symmetryPairing`).
  */
 export function sculptGrid(
   poles: readonly (readonly Vec3[])[],
@@ -837,52 +1045,133 @@ export function sculptGrid(
   amount: number,
   normal: Vec3,
   radius: number,
-  symmetry: boolean,
+  symmetry: boolean | SymmetryPairing,
 ): Vec3[][] {
   const nu = poles.length;
   const nv = poles[0]?.length ?? 0;
   const next = poles.map((row) => row.map((pole) => [pole[0], pole[1], pole[2]] as Vec3));
   if (nu < 1 || nv < 1) return next;
-  const mirror = (iu: number) => nu - 1 - iu;
-  const primaryIu = symmetry ? Math.min(hit.iu, mirror(hit.iu)) : hit.iu;
-  const grabbedMirror = symmetry && hit.iu !== primaryIu;
-  let delta = triadDelta(axis, amount, normal);
-  if (grabbedMirror) delta = [-delta[0], delta[1], delta[2]];
-  const origin = next[primaryIu]![hit.iv]!;
+  const pairing: SymmetryPairing | null = symmetry === true ? "u" : symmetry === false ? null : symmetry;
   const selected = (iu: number, iv: number) => {
     if (hit.mode === "row") return iv === hit.iv;
-    if (hit.mode === "column") return iu === primaryIu;
-    return iu === primaryIu && iv === hit.iv;
+    if (hit.mode === "column") return iu === hit.iu;
+    return iu === hit.iu && iv === hit.iv;
   };
+  // Copies, taken before anything moves: the falloff is measured on the grid as it was.
+  const origins: Vec3[] = [];
   for (let iu = 0; iu < nu; iu += 1) {
-    if (symmetry && iu > mirror(iu)) continue;
-    for (let iv = 0; iv < nv; iv += 1) {
-      const pole = next[iu]![iv]!;
-      const distance = Math.hypot(pole[0] - origin[0], pole[1] - origin[1], pole[2] - origin[2]);
-      const weight = smoothFalloff(distance, radius, selected(iu, iv));
-      if (weight === 0) continue;
-      pole[0] += delta[0] * weight;
-      pole[1] += delta[1] * weight;
-      pole[2] += delta[2] * weight;
-    }
+    for (let iv = 0; iv < nv; iv += 1) if (selected(iu, iv)) origins.push([poles[iu]![iv]![0], poles[iu]![iv]![1], poles[iu]![iv]![2]]);
   }
-  if (symmetry) {
-    for (let iu = 0; iu < nu; iu += 1) {
-      if (iu > mirror(iu)) continue;
-      for (let iv = 0; iv < nv; iv += 1) {
-        const pole = next[iu]![iv]!;
-        const image = next[mirror(iu)]![iv]!;
-        if (iu === mirror(iu)) {
-          pole[0] = 0;
-          continue;
-        }
-        image[0] = -pole[0];
-        image[1] = pole[1];
-        image[2] = pole[2];
-      }
+  if (origins.length === 0) return next;
+  const mirroredOrigins = origins.map(mirrorX);
+  const reach = (iu: number, iv: number, own: (iu: number, iv: number) => boolean, from: readonly Vec3[]): number => {
+    if (own(iu, iv)) return 1;
+    if (!(radius > 0)) return 0;
+    const pole = poles[iu]![iv]!;
+    let best = Number.POSITIVE_INFINITY;
+    for (const o of from) best = Math.min(best, Math.hypot(pole[0] - o[0], pole[1] - o[1], pole[2] - o[2]));
+    return smoothFalloff(best, radius);
+  };
+  const delta = triadDelta(axis, amount, normal);
+  const image = mirrorX(delta);
+  const mirrorSelected = (iu: number, iv: number) => (pairing === "v" ? selected(iu, nv - 1 - iv) : selected(nu - 1 - iu, iv));
+  for (let iu = 0; iu < nu; iu += 1) {
+    for (let iv = 0; iv < nv; iv += 1) {
+      const a = reach(iu, iv, selected, origins);
+      const b = pairing ? reach(iu, iv, mirrorSelected, mirroredOrigins) : 0;
+      if (a === 0 && b === 0) continue;
+      let move: Vec3;
+      if (!pairing || a - b > 1e-12) move = [delta[0] * a, delta[1] * a, delta[2] * a];
+      else if (b - a > 1e-12) move = [image[0] * b, image[1] * b, image[2] * b];
+      else move = [((delta[0] + image[0]) / 2) * a, ((delta[1] + image[1]) / 2) * a, ((delta[2] + image[2]) / 2) * a];
+      const pole = next[iu]![iv]!;
+      pole[0] += move[0];
+      pole[1] += move[1];
+      pole[2] += move[2];
     }
   }
   return next;
+}
+
+function knotsMirror(knots: readonly number[] | undefined, mults: readonly number[] | undefined): boolean {
+  if (!knots?.length) return true;
+  const n = knots.length;
+  const lo = knots[0]!;
+  const hi = knots[n - 1]!;
+  for (let i = 0; i < n; i += 1) {
+    if (Math.abs(knots[i]! - lo - (hi - knots[n - 1 - i]!)) > 1e-9) return false;
+    if ((mults?.[i] ?? 1) !== (mults?.[n - 1 - i] ?? 1)) return false;
+  }
+  return true;
+}
+
+/**
+ * How the grid mirrors across the part's X = 0 plane: "u" when pole `[iu][iv]` is the mirror image of
+ * `[nu − 1 − iu][iv]` (with equal weights and mirrored knots), "v" for `[iu][nv − 1 − iv]`, or null when it is not
+ * symmetric within `tolerance` millimetres. A direction that is closed (periodic) does not pair.
+ */
+export function symmetryPairing(spec: NurbsSurface3D, tolerance = SYMMETRY_TOLERANCE_MM): SymmetryPairing | null {
+  if (surfaceRefusal(spec)) return null;
+  const nu = spec.poles.length;
+  const nv = spec.poles[0]!.length;
+  const matches = (pairing: SymmetryPairing): boolean => {
+    if (pairing === "u" ? spec.periodicU === true : spec.periodicV === true) return false;
+    if (pairing === "u" ? !knotsMirror(spec.knotsU, spec.multsU) : !knotsMirror(spec.knotsV, spec.multsV)) return false;
+    for (let iu = 0; iu < nu; iu += 1) {
+      for (let iv = 0; iv < nv; iv += 1) {
+        const ju = pairing === "u" ? nu - 1 - iu : iu;
+        const jv = pairing === "v" ? nv - 1 - iv : iv;
+        const p = spec.poles[iu]![iv]!;
+        const q = spec.poles[ju]![jv]!;
+        if (Math.hypot(p[0] + q[0], p[1] - q[1], p[2] - q[2]) > tolerance) return false;
+        const wp = spec.weights?.[iu]?.[iv] ?? 1;
+        const wq = spec.weights?.[ju]?.[jv] ?? 1;
+        if (Math.abs(wp - wq) > 1e-9) return false;
+      }
+    }
+    return true;
+  };
+  if (matches("u")) return "u";
+  if (matches("v")) return "v";
+  return null;
+}
+
+/**
+ * Make the grid symmetric across the part's X = 0 plane, pairing poles by U (or by V): each pair meets halfway, as
+ * mirror images, a centre-row pole lands on the plane, and paired weights take their mean. A sentence when the knots
+ * do not mirror or that direction is closed.
+ */
+export function makeSymmetric(spec: NurbsSurface3D, pairing: SymmetryPairing = "u"): NurbsSurface3D | string {
+  const refusal = surfaceRefusal(spec);
+  if (refusal) return refusal;
+  if (pairing === "u" ? spec.periodicU === true : spec.periodicV === true) return "A closed direction cannot be mirrored. Open it first.";
+  if (pairing === "u" ? !knotsMirror(spec.knotsU, spec.multsU) : !knotsMirror(spec.knotsV, spec.multsV)) return "The knots on this surface are not spaced the same from both ends, so it cannot be made symmetric.";
+  const nu = spec.poles.length;
+  const nv = spec.poles[0]!.length;
+  const poles = spec.poles.map((row) => row.map((pole) => [pole[0], pole[1], pole[2]] as Vec3));
+  const weights = spec.weights ? spec.weights.map((row) => [...row]) : undefined;
+  for (let iu = 0; iu < nu; iu += 1) {
+    for (let iv = 0; iv < nv; iv += 1) {
+      const ju = pairing === "u" ? nu - 1 - iu : iu;
+      const jv = pairing === "v" ? nv - 1 - iv : iv;
+      if (ju * nv + jv < iu * nv + iv) continue;
+      const p = spec.poles[iu]![iv]!;
+      const q = spec.poles[ju]![jv]!;
+      const meet: Vec3 = [(p[0] - q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
+      if (ju === iu && jv === iv) {
+        poles[iu]![iv] = [0, meet[1], meet[2]];
+        continue;
+      }
+      poles[iu]![iv] = meet;
+      poles[ju]![jv] = mirrorX(meet);
+      if (weights) {
+        const w = (weights[iu]![iv]! + weights[ju]![jv]!) / 2;
+        weights[iu]![iv] = w;
+        weights[ju]![jv] = w;
+      }
+    }
+  }
+  return { ...spec, poles, ...(weights ? { weights } : {}) };
 }
 
 /** Largest |S(u,v) − reflect(S(1−u, v))| on a clamped surface, in millimetres. */
@@ -970,6 +1259,26 @@ function weightsMatter(weights: number[][]): boolean {
   return weights.some((row) => row.some((weight) => Math.abs(weight - 1) > 1e-9));
 }
 
+/** A parameter in 0..1 of the surface's U (or V) range, as its knot value. */
+export function surfaceParam(spec: NurbsSurface3D, axis: "u" | "v", fraction: number): number {
+  const n = axis === "u" ? spec.poles.length : spec.poles[0]?.length ?? 0;
+  const rk = axis === "u"
+    ? resolveCurveKnots(n, spec.degreeU ?? 3, spec.knotsU, spec.multsU, spec.periodicU === true)
+    : resolveCurveKnots(n, spec.degreeV ?? 3, spec.knotsV, spec.multsV, spec.periodicV === true);
+  const t = Math.max(0, Math.min(1, fraction));
+  return rk.uMin + (rk.uMax - rk.uMin) * t;
+}
+
+/** Each direction's degree and knots as resolved, so a result names both directions in full. */
+function resolvedBoth(spec: NurbsSurface3D): { u: ResolvedKnots; v: ResolvedKnots } {
+  const nu = spec.poles.length;
+  const nv = spec.poles[0]!.length;
+  return {
+    u: resolveCurveKnots(nu, spec.degreeU ?? 3, spec.knotsU, spec.multsU, false),
+    v: resolveCurveKnots(nv, spec.degreeV ?? 3, spec.knotsV, spec.multsV, false),
+  };
+}
+
 /** Insert `times` copies of `param` along U (every column) or V (every row). The surface does not move. */
 export function insertSurfaceKnot(spec: NurbsSurface3D, axis: "u" | "v", param: number, times = 1): NurbsSurface3D | string {
   const refusal = surfaceRefusal(spec);
@@ -978,8 +1287,9 @@ export function insertSurfaceKnot(spec: NurbsSurface3D, axis: "u" | "v", param: 
   const nu = spec.poles.length;
   const nv = spec.poles[0]!.length;
   const count = Math.max(1, Math.floor(times));
+  const both = resolvedBoth(spec);
   if (axis === "u") {
-    const rk = resolveCurveKnots(nu, spec.degreeU ?? 3, spec.knotsU, spec.multsU, false);
+    const rk = both.u;
     const columns = Array.from({ length: nv }, (_, iv) => insertHom(rk.flat, columnPoles(spec, iv), rk.degree, param, count));
     const collapsed = collapseKnots(columns[0]!.flat);
     const poles: Vec3[][] = columns[0]!.pw.map(() => []);
@@ -991,9 +1301,9 @@ export function insertSurfaceKnot(spec: NurbsSurface3D, axis: "u" | "v", param: 
         weights[iu]![iv] = made.weights[iu]!;
       }
     }
-    return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: rk.degree, degreeV: spec.degreeV ?? rk.degree, knotsU: collapsed.knots, multsU: collapsed.mults, knotsV: spec.knotsV ?? resolveCurveKnots(nv, spec.degreeV ?? 3, spec.knotsV, spec.multsV, false).knots, multsV: spec.multsV ?? resolveCurveKnots(nv, spec.degreeV ?? 3, spec.knotsV, spec.multsV, false).mults };
+    return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: rk.degree, degreeV: both.v.degree, knotsU: collapsed.knots, multsU: collapsed.mults, knotsV: both.v.knots, multsV: both.v.mults };
   }
-  const rk = resolveCurveKnots(nv, spec.degreeV ?? 3, spec.knotsV, spec.multsV, false);
+  const rk = both.v;
   const rows = Array.from({ length: nu }, (_, iu) => insertHom(rk.flat, rowPoles(spec, iu), rk.degree, param, count));
   const collapsed = collapseKnots(rows[0]!.flat);
   const poles: Vec3[][] = [];
@@ -1003,8 +1313,7 @@ export function insertSurfaceKnot(spec: NurbsSurface3D, axis: "u" | "v", param: 
     poles.push(made.poles);
     weights.push(made.weights);
   }
-  const other = resolveCurveKnots(nu, spec.degreeU ?? 3, spec.knotsU, spec.multsU, false);
-  return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: spec.degreeU ?? other.degree, degreeV: rk.degree, knotsU: spec.knotsU ?? other.knots, multsU: spec.multsU ?? other.mults, knotsV: collapsed.knots, multsV: collapsed.mults };
+  return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: both.u.degree, degreeV: rk.degree, knotsU: both.u.knots, multsU: both.u.mults, knotsV: collapsed.knots, multsV: collapsed.mults };
 }
 
 /** Raise the multiplicity at `param` to the degree, a sharp crease that does not move the surface. */
@@ -1013,54 +1322,143 @@ export function creaseSurface(spec: NurbsSurface3D, axis: "u" | "v", param: numb
   return insertSurfaceKnot(spec, axis, param, degree);
 }
 
-function elevateCurve(flat: number[], pw: Hom[], degree: number, steps: number): { flat: number[]; pw: Hom[]; degree: number } {
-  let knots = [...flat];
-  let poles = pw.map((pole) => [...pole] as Hom);
-  let p = degree;
-  for (let step = 0; step < steps; step += 1) {
-    const distinct = collapseKnots(knots);
-    for (let i = 1; i + 1 < distinct.knots.length; i += 1) {
-      const have = distinct.mults[i]!;
-      if (have < p) {
-        const inserted = insertHom(knots, poles, p, distinct.knots[i]!, p - have);
-        knots = inserted.flat;
-        poles = inserted.pw;
-      }
-    }
-    const segments = (poles.length - 1) / p;
-    const elevated: Hom[][] = [];
-    for (let s = 0; s < segments; s += 1) {
-      const bezier = poles.slice(s * p, s * p + p + 1);
-      const q = bezier.length - 1;
-      const next: Hom[] = new Array(q + 2);
-      next[0] = bezier[0]!;
-      next[q + 1] = bezier[q]!;
-      for (let i = 1; i <= q; i += 1) {
-        const alpha = i / (q + 1);
-        const prev = bezier[i - 1]!;
-        const cur = bezier[i]!;
-        next[i] = [alpha * prev[0] + (1 - alpha) * cur[0], alpha * prev[1] + (1 - alpha) * cur[1], alpha * prev[2] + (1 - alpha) * cur[2], alpha * prev[3] + (1 - alpha) * cur[3]];
-      }
-      elevated.push(next);
-    }
-    const joined: Hom[] = [];
-    for (let s = 0; s < elevated.length; s += 1) {
-      const piece = elevated[s]!;
-      const from = s === 0 ? 0 : 1;
-      for (let i = from; i < piece.length; i += 1) joined.push(piece[i]!);
-    }
-    const q = p + 1;
-    const spanKnots = collapseKnots(knots).knots;
-    const nextFlat: number[] = [];
-    for (let i = 0; i < spanKnots.length; i += 1) {
-      const mult = i === 0 || i === spanKnots.length - 1 ? q + 1 : q;
-      for (let k = 0; k < mult; k += 1) nextFlat.push(spanKnots[i]!);
-    }
-    poles = joined;
-    knots = nextFlat;
-    p = q;
+function binomial(n: number, k: number): number {
+  if (k < 0 || k > n) return 0;
+  let out = 1;
+  for (let i = 1; i <= k; i += 1) out = (out * (n - k + i)) / i;
+  return out;
+}
+
+function lerpHom(alpha: number, a: Hom, b: Hom): Hom {
+  return [alpha * a[0] + (1 - alpha) * b[0], alpha * a[1] + (1 - alpha) * b[1], alpha * a[2] + (1 - alpha) * b[2], alpha * a[3] + (1 - alpha) * b[3]];
+}
+
+/**
+ * Piegl & Tiller Algorithm A5.9 (DegreeElevateCurve) on homogeneous poles: degree p to p + t. Every distinct knot's
+ * multiplicity grows by t, ends included, so the continuity at each interior knot stays what it was. This is the knot
+ * vector and pole count OCCT's `IncreaseDegree` gives.
+ */
+function elevateCurve(flat: readonly number[], pw: readonly Hom[], p: number, t: number): { flat: number[]; pw: Hom[]; degree: number } {
+  if (t <= 0) return { flat: [...flat], pw: pw.map((pole) => [...pole] as Hom), degree: p };
+  const U = flat;
+  const n = pw.length - 1;
+  const m = n + p + 1;
+  const ph = p + t;
+  const ph2 = Math.floor(ph / 2);
+  const bezalfs: number[][] = Array.from({ length: ph + 1 }, () => new Array<number>(p + 1).fill(0));
+  bezalfs[0]![0] = 1;
+  bezalfs[ph]![p] = 1;
+  for (let i = 1; i <= ph2; i += 1) {
+    const inv = 1 / binomial(ph, i);
+    const mpi = Math.min(p, i);
+    for (let j = Math.max(0, i - t); j <= mpi; j += 1) bezalfs[i]![j] = inv * binomial(p, j) * binomial(t, i - j);
   }
-  return { flat: knots, pw: poles, degree: p };
+  for (let i = ph2 + 1; i <= ph - 1; i += 1) {
+    const mpi = Math.min(p, i);
+    for (let j = Math.max(0, i - t); j <= mpi; j += 1) bezalfs[i]![j] = bezalfs[ph - i]![p - j]!;
+  }
+  let mh = ph;
+  let kind = ph + 1;
+  let r = -1;
+  let a = p;
+  let b = p + 1;
+  let cind = 1;
+  let ua = U[0]!;
+  const Qw: Hom[] = [[...pw[0]!] as Hom];
+  const Uh: number[] = [];
+  for (let i = 0; i <= ph; i += 1) Uh[i] = ua;
+  let bpts: Hom[] = [];
+  for (let i = 0; i <= p; i += 1) bpts[i] = [...pw[i]!] as Hom;
+  const nextbpts: Hom[] = [];
+  const ebpts: Hom[] = new Array<Hom>(ph + 1);
+  const alfs: number[] = new Array<number>(Math.max(1, p)).fill(0);
+  while (b < m) {
+    const i0 = b;
+    while (b < m && U[b] === U[b + 1]) b += 1;
+    const mul = b - i0 + 1;
+    mh = mh + mul + t;
+    const ub = U[b]!;
+    const oldr = r;
+    r = p - mul;
+    const lbz = oldr > 0 ? Math.floor((oldr + 2) / 2) : 1;
+    const rbz = r > 0 ? ph - Math.floor((r + 1) / 2) : ph;
+    if (r > 0) {
+      // Insert ub r times, so this Bezier piece ends at it.
+      const numer = ub - ua;
+      for (let k = p; k > mul; k -= 1) alfs[k - mul - 1] = numer / (U[a + k]! - ua);
+      for (let j = 1; j <= r; j += 1) {
+        const save = r - j;
+        const s = mul + j;
+        for (let k = p; k >= s; k -= 1) bpts[k] = lerpHom(alfs[k - s]!, bpts[k]!, bpts[k - 1]!);
+        nextbpts[save] = [...bpts[p]!] as Hom;
+      }
+    }
+    // Elevate the Bezier piece.
+    for (let i = lbz; i <= ph; i += 1) {
+      const e: Hom = [0, 0, 0, 0];
+      const mpi = Math.min(p, i);
+      for (let j = Math.max(0, i - t); j <= mpi; j += 1) {
+        const c = bezalfs[i]![j]!;
+        const q = bpts[j]!;
+        e[0] += c * q[0];
+        e[1] += c * q[1];
+        e[2] += c * q[2];
+        e[3] += c * q[3];
+      }
+      ebpts[i] = e;
+    }
+    if (oldr > 1) {
+      // Remove the knot ua oldr - 1 times: it was inserted only to cut the pieces apart.
+      let first = kind - 2;
+      let last = kind;
+      const den = ub - ua;
+      const bet = (ub - Uh[kind - 1]!) / den;
+      for (let tr = 1; tr < oldr; tr += 1) {
+        let i = first;
+        let j = last;
+        let kj = j - kind + 1;
+        while (j - i > tr) {
+          if (i < cind) {
+            const alf = (ub - Uh[i]!) / (ua - Uh[i]!);
+            Qw[i] = lerpHom(alf, Qw[i]!, Qw[i - 1]!);
+          }
+          if (j >= lbz) {
+            if (j - tr <= kind - ph + oldr) {
+              const gam = (ub - Uh[j - tr]!) / den;
+              ebpts[kj] = lerpHom(gam, ebpts[kj]!, ebpts[kj + 1]!);
+            } else ebpts[kj] = lerpHom(bet, ebpts[kj]!, ebpts[kj + 1]!);
+          }
+          i += 1;
+          j -= 1;
+          kj -= 1;
+        }
+        first -= 1;
+        last += 1;
+      }
+    }
+    if (a !== p) {
+      for (let i = 0; i < ph - oldr; i += 1) {
+        Uh[kind] = ua;
+        kind += 1;
+      }
+    }
+    for (let j = lbz; j <= rbz; j += 1) {
+      Qw[cind] = [...ebpts[j]!] as Hom;
+      cind += 1;
+    }
+    if (b < m) {
+      bpts = [];
+      for (let j = 0; j < r; j += 1) bpts[j] = nextbpts[j]!;
+      for (let j = r; j <= p; j += 1) bpts[j] = [...pw[b - p + j]!] as Hom;
+      a = b;
+      b += 1;
+      ua = ub;
+    } else {
+      for (let i = 0; i <= ph; i += 1) Uh[kind + i] = ub;
+    }
+  }
+  const nh = mh - ph - 1;
+  return { flat: Uh.slice(0, nh + ph + 2), pw: Qw.slice(0, nh + 1), degree: ph };
 }
 
 /** Raise the degree by `steps` without moving the surface. The new poles and knots are what the commit builds. */
@@ -1069,10 +1467,12 @@ export function elevateSurfaceDegree(spec: NurbsSurface3D, axis: "u" | "v", step
   if (refusal) return refusal;
   if (spec.periodicU || spec.periodicV) return "Degree elevation on this surface is for a clamped grid.";
   const count = Math.max(1, Math.floor(steps));
+  const both = resolvedBoth(spec);
+  if ((axis === "u" ? both.u.degree : both.v.degree) + count > MAX_SURFACE_DEGREE) return `A NURBS surface's degree is at most ${MAX_SURFACE_DEGREE}.`;
   const nu = spec.poles.length;
   const nv = spec.poles[0]!.length;
   if (axis === "u") {
-    const rk = resolveCurveKnots(nu, spec.degreeU ?? 3, spec.knotsU, spec.multsU, false);
+    const rk = both.u;
     const columns = Array.from({ length: nv }, (_, iv) => elevateCurve(rk.flat, columnPoles(spec, iv), rk.degree, count));
     const collapsed = collapseKnots(columns[0]!.flat);
     const poles: Vec3[][] = columns[0]!.pw.map(() => []);
@@ -1084,10 +1484,9 @@ export function elevateSurfaceDegree(spec: NurbsSurface3D, axis: "u" | "v", step
         weights[iu]![iv] = made.weights[iu]!;
       }
     }
-    const other = resolveCurveKnots(nv, spec.degreeV ?? 3, spec.knotsV, spec.multsV, false);
-    return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: columns[0]!.degree, degreeV: spec.degreeV ?? other.degree, knotsU: collapsed.knots, multsU: collapsed.mults, knotsV: spec.knotsV ?? other.knots, multsV: spec.multsV ?? other.mults };
+    return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: columns[0]!.degree, degreeV: both.v.degree, knotsU: collapsed.knots, multsU: collapsed.mults, knotsV: both.v.knots, multsV: both.v.mults };
   }
-  const rk = resolveCurveKnots(nv, spec.degreeV ?? 3, spec.knotsV, spec.multsV, false);
+  const rk = both.v;
   const rows = Array.from({ length: nu }, (_, iu) => elevateCurve(rk.flat, rowPoles(spec, iu), rk.degree, count));
   const collapsed = collapseKnots(rows[0]!.flat);
   const poles: Vec3[][] = [];
@@ -1097,6 +1496,5 @@ export function elevateSurfaceDegree(spec: NurbsSurface3D, axis: "u" | "v", step
     poles.push(made.poles);
     weights.push(made.weights);
   }
-  const other = resolveCurveKnots(nu, spec.degreeU ?? 3, spec.knotsU, spec.multsU, false);
-  return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: spec.degreeU ?? other.degree, degreeV: rows[0]!.degree, knotsU: spec.knotsU ?? other.knots, multsU: spec.multsU ?? other.mults, knotsV: collapsed.knots, multsV: collapsed.mults };
+  return { poles, ...(weightsMatter(weights) ? { weights } : {}), degreeU: both.u.degree, degreeV: rows[0]!.degree, knotsU: both.u.knots, multsU: both.u.mults, knotsV: collapsed.knots, multsV: collapsed.mults };
 }
