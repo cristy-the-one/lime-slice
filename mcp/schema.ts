@@ -902,7 +902,7 @@ const sheetOps = [
     additionalProperties: false,
     required: ["kind", "sheet"],
     properties: {
-      kind: { const: "trimSplit", description: "Split a solid or sheet cleanly with a sculpted surface." },
+      kind: { const: "trimSplit", description: "Split a solid or sheet with a sheet built from curves (extrude, revolve, loft or planar)." },
       sheet: sheetSpecField,
       keep: { enum: ["above", "below", "both"], description: "Which side to keep: above (default), below, or both." },
       label,
@@ -913,7 +913,7 @@ const sheetOps = [
     additionalProperties: false,
     required: ["kind", "face", "sheet"],
     properties: {
-      kind: { const: "replaceFace", description: "Replace a solid face with a sculpted surface." },
+      kind: { const: "replaceFace", description: "Replace a solid face with a sheet built from curves (extrude, revolve, loft or planar)." },
       face: facePick("Target face: an index, or {normal, nearPoint}."),
       sheet: sheetSpecField,
       label,
@@ -1280,8 +1280,8 @@ export const OP_SUMMARY: Record<string, string> = {
   sheet: "sheet {mode:extrude|revolve|loft|planar, curves, dir, distance, axisOrigin, angleDeg}: build or add an open surface sheet.",
   sew: "sew {tolerance, capPlanar, makeSolid}: sew open sheets into a shell or watertight solid.",
   thicken: "thicken {thickness, direction:normal|reverse|both}: thicken an open sheet into a printable solid wall.",
-  trimSplit: "trimSplit {sheet, keep:above|below|both}: cut a solid or sheet with a sculpted surface.",
-  replaceFace: "replaceFace {face, sheet}: replace a solid face with a sculpted NURBS surface.",
+  trimSplit: "trimSplit {sheet, keep:above|below|both}: cut a solid or sheet with a sheet built from curves.",
+  replaceFace: "replaceFace {face, sheet}: replace a solid face with a sheet built from curves.",
   splitFace: "splitFace {faces, curve, direction}: imprint a 3D curve onto faces to split them.",
   patch: "patch {boundaries:[{edges|curve, continuity}], guides, points}: fill an opening with a sheet.",
   blendSurface: "blendSurface {a, b, continuity, tensionA, tensionB}: bridge two open edges with a sheet.",

@@ -742,6 +742,28 @@ A turned primitive turns about its middle (`turnCentre` in `src/model-primitive.
 
 `faceExtrude` and `moveFaces` are engine steps too. `faceExtrude` takes `face` (an index or `{normal, nearPoint}`), `distance` along the solid's outward normal, and optionally `draftDeg` and `upTo`. `moveFaces` takes `faces`, each a face and a distance along that face's outward normal; a positive distance grows an outer face, and a negative distance on a hole wall widens the hole. Both are probed like a Boolean. The worked examples are in `lime://guide/ops`.
 
+#### Organic surfaces (7.2.0)
+
+The ops of `docs/plan-organic-surfaces.md` S1 to S5, as built. Most of them are MCP and recipe only; the plan's "As shipped in 7.2.0" says which the app has. A 3D curve (`Curve3D`) is `{kind: "polyline", points, closed?}`, `{kind: "spline", through, closed?}`, `{kind: "nurbs", poles, weights?, degree?, knots?, mults?, closed?}` (`closed: true` is a periodic curve), `{kind: "segments", start, segments: [line, arc, spline, nurbs]}` (a `nurbs` segment's `poles` are the inner ones; its weights count the segment's start and end too), or `{kind: "edges", edges}`.
+
+| Op or field | What it does |
+| --- | --- |
+| profile `nurbs` segment | In `loops` of an extrude, revolve, loft or sweep section: `{kind: "nurbs", poles, weights?, degree?, knots?, mults?, to}` from the previous point to `to`. A segment that ends where its loop starts, with two or more inner poles, is closed (periodic). |
+| `sweep` with `spine` | The kernel's sweep (`BRepOffsetAPI_MakePipeShell`) of `sections` (1 to 50, as loft sections) along a `Curve3D`: `transition` round (default), right or transformed at sharp bends; `mode` correctedFrenet (default), frenet, fixedBinormal `{dir}` or auxSpine `{spine}`; `scale` stations `[[u, factor], ...]` with `u` from 0 to 1; `twistDeg`. A sweep takes a `path` (the older tube through points) or a `spine`, not both. |
+| `loft` v2 | A section may be `{apex: [x, y, z]}` alone, first or last; `guides` (up to 20 `Curve3D` rails); `startCondition` and `endCondition` `{kind: free, normal, tangent, curvature, dir?, tension?}`; `closed` (a periodic ring, no apex); `smoothing`; `maxDegree` 2 to 10. |
+| `fillet` v2 | `continuity` g1 (circular, default), g2 or conic, `rho` 0.05 to 0.95 (only with conic), `variable` `[[u, radius], ...]` stations along the edge. |
+| `sheet` | `{mode: extrude, revolve, loft, planar, curves (1 to 20), dir, distance, symmetric, axisOrigin, angleDeg, ruled}`: an open sheet from curves, added to the part. A solid part's own faces stay beside it as loose faces: start from a small box and `trimSplit` it away with a planar cutter to keep only the sheet. |
+| `sew` | `{tolerance, capPlanar, makeSolid}`: sews the part's faces; a closed shell becomes a solid. |
+| `thicken` | `{thickness, direction: normal, reverse, both, tolerance}`: an open sheet into a solid wall. |
+| `trimSplit` | `{sheet: {mode, curves, ...}, keep: above, below, both}`: splits a solid or a sheet with a sheet built from curves; `both` puts the other piece on the plate as a new object. On a sheet it keeps the faces on the kept side. |
+| `replaceFace` | `{face, sheet}`: replaces a solid's face with a sheet built from curves. |
+| `splitFace` | `{faces, curve, direction?}`: imprints a `Curve3D` on faces, splitting them; the volume stays. |
+| `patch` | `{boundaries: [{edges, curve, face?, continuity?}, ...] (2 to 20, a side up to 64 edges), points?, tolerance?}` on a part that is not a closed solid. A clean 2 to 4 side G0 opening is a Coons fill; G1, G2, 5 or more sides or a guide point is N Hermite–Coons pieces. Interior `guides` are refused by the kernel. |
+| `blendSurface` | `{a, b, continuity: g1, g2, tensionA, tensionB (0.15 to 4), tolerance}`: one Hermite sheet between two open edges or chains; sew it to close the seams. |
+| `model_check {surfaces: true}` | Adds `continuity` (G0, G1, G2 and gap counts over every sampled shared edge; `edges`, at most 256 rows, the worst first chosen, with `edgesTotal` and a `note` when there were more; `sharpVertices`, at most 64, with `sharpVerticesTotal`) and `surfaceHealth`. When the surfaces cannot be read, `surfaces` says why. |
+
+The server refuses, in one sentence naming the field, what the kernel would change or drop: weights or knots and multiplicities that do not fit the poles, a degree the poles cannot carry, a scale or variable station outside 0 to 1, `rho` without a conic, fields that do not apply to an apex section or to the kind of sweep, a face that is not an index or a selector, and lists past the kernel's caps (20 sheet curves, 64 edges a patch side, 2000 curve points in one op). `mcp/organic-contract-occt.test.ts` sends every op and field here as a client does, against real Open CASCADE.
+
 #### Reading real geometry and lattices
 
 `docs/plan-recipe-ingredients.md` I5–I7 and I18–I21, and the groovi ask R-B (a mesh measured through the MCP). Each is a tool a recipe calls too.

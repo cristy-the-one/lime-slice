@@ -276,6 +276,25 @@ The engine builds four ops that boxes and cylinders cannot: a profile pushed or 
 
 `tests/sketch.rs`, `tests/extrude_extent.rs`, `tests/loft.rs`, `tests/loops.rs`, `tests/shell.rs`, `tests/faces.rs`, and `tests/feature_edges.rs` check each volume against one worked out by hand, each refusal, and a replay. `extrude_extent.rs` is the second depth, the draft (a 5° frustum on a 10 mm square pushed 10 mm), and an extrude up to a slanted face. `tests/loops.rs` is a washer (a circle with a circular hole) and a rounded rectangle, each against its exact area times the depth, and the refusals for an open loop, crossing loops, and a hole outside the outline. Its second test puts a second depth and a draft on loops: a circle 6 up and 4 down is a 10 mm cylinder, a 5° draft is a frustum, the owner's centred 8.2 mm with 3° is a frustum leaning one way, a closed spline drafts the same way, a draft that closes the circle is refused, a centred 10° draft on a washer matches its two frustums, and one that closes the hole says so.
 
+## Organic surfaces (7.2.0)
+
+Milestones S1 to S5 of `docs/plan-organic-surfaces.md`; S6 (a direct NURBS surface and CV sculpting) is not in 7.2.0. The new steps are kernel ops in `crates/lime-model-occt/src/tree/ops.rs`, built in `kernel.cpp` and `tree.cpp`, stored in the History tree and the `.lime` file like any other step.
+
+In the app:
+
+- **Look menu.** Shading is Normal, Step (colour by step), Zebra (stripe count and direction) or Curvature (bend radius with a warning threshold, Gauss or Mean). Surface grid draws the faces' isoparametric lines. Normals on Open CASCADE parts are the kernel's analytic normals.
+- **Sketch spline.** Control-point mode (exact NURBS, the default) or Through-point mode, a curvature comb, and on a selected control point its weight, a sharp crease and insert knot. The sketch's NURBS evaluator (`src/modeling/nurbs-eval.ts`) matches Open CASCADE within 1e-6 mm.
+- **Fillet panel.** Profile Circular G1 (default), Smooth G2, or Conic with ρ; Variable radius sets start, middle and end radii along the edge.
+- **Open sheets.** A part that is an open sheet shows a bar with Thicken and Cap & Sew, and a Sheet chip on its History row. Patch and Blend show on the rail only for an open sheet (both are in the Features menu); a patch on a closed solid is refused.
+
+Only over MCP and recipes (`lime_recipe` API 1.18; the ops and fields are in `docs/mcp-server.md`, "Organic surfaces"): creating a sheet (`sheet`: extrude, revolve, loft or planar from 3D curves), the kernel sweep along a 3D spine (`sweep` with `spine`, transitions, frame modes, scale and twist), the loft v2 options (apex sections, guides, start and end conditions, closed, smoothing, maxDegree), `trimSplit`, `replaceFace` and `splitFace` (the cutting or replacing sheet is built from curves, not a sculpted surface), and `patch` and `blendSurface` on such sheets. The app opens a part built that way and replays its steps, but has no tool that makes them.
+
+`model_check {surfaces: true}` (MCP) and the Look menu read the same kernel inspection: G0, G1 and G2 per shared edge (gap in mm, normal angle, curvature jump; G2 when the jump is at most 1e-3 mm⁻¹), sharp vertices, and each face's NURBS health. The edge list holds at most 256 rows, the worst first chosen; the counts cover every edge.
+
+### Opening a 7.2.0 project in 7.1.2 or older
+
+A project has no version guard. In 7.1.2, an object whose history has a new step kind (a sweep with a spine, `sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch`, `blendSurface`, a loft with an apex section, or a profile with a `nurbs` segment) cannot be read: the object opens as its saved mesh and its history is dropped. New fields on an old step (a fillet's `continuity`, `rho` and `variable`; a loft's `guides`, `startCondition`, `endCondition`, `closed`, `smoothing` and `maxDegree`) are dropped without a word, and a replay there builds the plain fillet or loft. Saving the project in 7.1.2 makes either loss permanent. This is how `src/model-tree-file.ts` reads a saved tree in 7.1.2: an op or segment kind it does not know makes the tree unreadable, and the fillet and loft readers keep only their old fields.
+
 ## History tree (engine)
 
 The bridge also keeps Model history as a tree: one tree per plate object, one node per edit, and a new edit from an older node starts a branch instead of dropping the newer steps. The client owns node ids, labels, and which branch Redo follows. The engine keeps what is costly to rebuild. The kernel operations are in `cpp/kernel.cpp`; the tree's nodes are built with them in `cpp/tree.cpp`.
