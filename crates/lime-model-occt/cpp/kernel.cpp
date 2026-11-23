@@ -656,7 +656,10 @@ std::atomic<bool> g_no_mesher_fallback{false};
 /// the faces still meet point for point. Delabella gives up on some faces of some parts and leaves them with no
 /// triangles (239 of a 1,900-face STEP cover, which then had 8,917 open edges): when any face of `shape` is left so,
 /// the shape is meshed again with Watson, which keeps every face that has its triangles and meshes the rest.
-/// Curvature-aware angular deflection (radians) from linear chord: finer on smooth/organic inspection chords
+/// `angle` is half a radian for every mesh that is committed, sliced or exported, as it always was. Only the Model
+/// view's display mesh passes mesh_angle_of(chord), on a copy of the shape (display_faces).
+///
+/// The display mesh's angular deflection (radians) from the linear chord: finer on smooth/organic inspection chords
 /// (~0.20 rad at chord <= 0.05 mm) and faster on coarse preview chords (~0.35 rad at chord >= 0.15 mm).
 /// Planar faces are unaffected by Angle and keep minimal triangles.
 double mesh_angle_of(double chord) {
@@ -670,10 +673,10 @@ double mesh_angle_of(double chord) {
     return 0.20 + t * (0.35 - 0.20);
 }
 
-void mesh_faces(const TopoDS_Shape& shape, double chord) {
+void mesh_faces(const TopoDS_Shape& shape, double chord, double angle = 0.5) {
     IMeshTools_Parameters parameters;
     parameters.Deflection = chord;
-    parameters.Angle = mesh_angle_of(chord);
+    parameters.Angle = angle;
     parameters.Relative = Standard_False;
     parameters.InParallel = Standard_True;
     parameters.MeshAlgo = g_watson_mesher.load() ? IMeshTools_MeshAlgoType_Watson : IMeshTools_MeshAlgoType_Delabella;
@@ -730,12 +733,37 @@ bool mesh_around_made(Held& held, double chord) {
     return true;
 }
 
-Mesh tessellate(Held& held, double chord) {
+/// The faces of a copy of `held.shape`, meshed for the Model view at `chord` with mesh_angle_of(chord), in the order
+/// and with the orientation of `held.faces`. Open CASCADE keeps a finer mesh a face already has, so the display mesh
+/// never touches the held faces: their mesh stays the one every commit, slice and export reads. A new chord copies
+/// again, so a coarser chord is not left with the finer mesh of an earlier one.
+const std::vector<TopoDS_Face>& display_faces(Held& held, double chord) {
+    const int faces = held.faces.Extent();
+    if (held.display_meshed == chord && static_cast<int>(held.display_faces.size()) == faces) {
+        return held.display_faces;
+    }
+    BRepBuilderAPI_Copy copy(held.shape, Standard_False, Standard_False);
+    std::vector<TopoDS_Face> copied;
+    copied.reserve(static_cast<size_t>(faces));
+    for (int index = 1; index <= faces; ++index) {
+        const TopoDS_Shape& face = held.faces(index);
+        copied.push_back(TopoDS::Face(copy.ModifiedShape(face).Oriented(face.Orientation())));
+    }
+    mesh_faces(copy.Shape(), chord, mesh_angle_of(chord));
+    held.display_shape = copy.Shape();
+    held.display_faces = std::move(copied);
+    held.display_meshed = chord;
+    return held.display_faces;
+}
+
+Mesh tessellate(Held& held, double chord, bool display) {
     g_stats.tessellations += 1;
     chord = chord_of(chord);
     // Open CASCADE keeps a finer mesh it already has, so a face shared with a solid meshed finer
     // since is what meshing again would leave too.
-    if (held.meshed != chord) {
+    if (display) {
+        display_faces(held, chord);
+    } else if (held.meshed != chord) {
         g_stats.meshes += 1;
         const Timed timed(g_stats.mesh_us);
         if (g_whole_meshes.load() || !mesh_around_made(held, chord)) {
@@ -759,8 +787,11 @@ Mesh tessellate(Held& held, double chord) {
     };
     std::vector<Piece> pieces(static_cast<size_t>(held.faces.Extent()));
     size_t count = 0;
+    const auto face_of = [&held, display](int face_index) {
+        return display ? held.display_faces[static_cast<size_t>(face_index - 1)] : TopoDS::Face(held.faces(face_index));
+    };
     for (int face_index = 1; face_index <= held.faces.Extent(); ++face_index) {
-        const TopoDS_Face face = TopoDS::Face(held.faces(face_index));
+        const TopoDS_Face face = face_of(face_index);
         TopLoc_Location location;
         Piece& piece = pieces[static_cast<size_t>(face_index - 1)];
         piece.tri = BRep_Tool::Triangulation(face, location);
@@ -771,19 +802,26 @@ Mesh tessellate(Held& held, double chord) {
         }
     }
 
-    // --- Organic surfaces S1: compute exact outward analytic surface normals per triangulation node in parallel.
-    // Planar faces use their exact plane axis (O(1)); curved faces evaluate BRepLProp_SLProps once per UV node.
-    OSD_Parallel::For(0, static_cast<int>(pieces.size()), [&held, &pieces](int idx) {
+    // --- Organic surfaces S1: compute exact outward analytic surface normals per triangulation node in parallel, for
+    // the display mesh only. Planar faces use their plane's normal (O(1)); curved faces evaluate BRepLProp_SLProps once
+    // per UV node.
+    OSD_Parallel::For(0, display ? static_cast<int>(pieces.size()) : 0, [&face_of, &pieces](int idx) {
         Piece& piece = pieces[static_cast<size_t>(idx)];
         if (piece.tri.IsNull() || piece.tri->NbTriangles() == 0) {
             return;
         }
-        const TopoDS_Face face = TopoDS::Face(held.faces(idx + 1));
+        const TopoDS_Face face = face_of(idx + 1);
         const double sign = piece.reversed ? -1.0 : 1.0;
         try {
             BRepAdaptor_Surface surf(face);
             if (surf.GetType() == GeomAbs_Plane) {
-                gp_Dir d = surf.Plane().Axis().Direction();
+                // The surface's own normal is D1U x D1V: the axis for a direct placement, its reverse for an indirect
+                // one (mirrored geometry, a left-handed STEP placement).
+                const gp_Pln plane = surf.Plane();
+                gp_Dir d = plane.Axis().Direction();
+                if (!plane.Position().Direct()) {
+                    d.Reverse();
+                }
                 if (piece.reversed) {
                     d.Reverse();
                 }
@@ -824,7 +862,9 @@ Mesh tessellate(Held& held, double chord) {
 
     Mesh out;
     out.positions.reserve(count * 9);
-    out.normals.reserve(count * 9);
+    if (display) {
+        out.normals.reserve(count * 9);
+    }
     out.triangles.reserve(count);
     for (size_t at = 0; at < pieces.size(); ++at) {
         const size_t face = held.order.empty() ? at : static_cast<size_t>(held.order[at] - 1);
@@ -849,6 +889,9 @@ Mesh tessellate(Held& held, double chord) {
             push_point(out.positions, p3);
             out.triangles.push_back(static_cast<uint32_t>(face));
 
+            if (!display) {
+                continue;
+            }
             if (piece.constant_normal) {
                 for (int k = 0; k < 3; ++k) {
                     out.normals.push_back(piece.plane_normal[0]);
@@ -9153,15 +9196,17 @@ std::string face_loops_json(const TopoDS_Face& face, std::string& error) {
 
 /// --- Organic surfaces S1: lazy surface inspection (per-vertex curvature buffers, trimmed UV isoparms,
 /// shared-edge G0/G1/G2 continuity, and per-face NURBS & bend-radius health).
-SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count) {
+SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count, bool display) {
     SurfaceInspect result;
     chord = chord_of(chord);
     const int n_faces = held.faces.Extent();
     const int n_edges = held.edges.Extent();
 
     // Ensure the faces are meshed at `chord` when curvature buffers are requested so vertex ordering
-    // matches `tessellate(held, chord)` 1-to-1.
-    if (want_curvature && held.meshed != chord) {
+    // matches `tessellate(held, chord, display)` 1-to-1.
+    if (want_curvature && display) {
+        display_faces(held, chord);
+    } else if (want_curvature && held.meshed != chord) {
         if (g_whole_meshes.load() || !mesh_around_made(held, chord)) {
             mesh_faces(held.shape, chord);
         }
@@ -9186,8 +9231,11 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
         };
         std::vector<CurvPiece> pieces(static_cast<size_t>(n_faces));
         size_t total_tris = 0;
+        const auto face_of = [&held, display](int f) {
+            return display ? held.display_faces[static_cast<size_t>(f - 1)] : TopoDS::Face(held.faces(f));
+        };
         for (int f = 1; f <= n_faces; ++f) {
-            const TopoDS_Face face = TopoDS::Face(held.faces(f));
+            const TopoDS_Face face = face_of(f);
             TopLoc_Location loc;
             CurvPiece& p = pieces[static_cast<size_t>(f - 1)];
             p.tri = BRep_Tool::Triangulation(face, loc);
@@ -9196,12 +9244,12 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
                 total_tris += static_cast<size_t>(p.tri->NbTriangles());
             }
         }
-        OSD_Parallel::For(0, n_faces, [&held, &pieces](int idx) {
+        OSD_Parallel::For(0, n_faces, [&face_of, &pieces](int idx) {
             CurvPiece& p = pieces[static_cast<size_t>(idx)];
             if (p.tri.IsNull() || p.tri->NbTriangles() == 0) {
                 return;
             }
-            const TopoDS_Face face = TopoDS::Face(held.faces(idx + 1));
+            const TopoDS_Face face = face_of(idx + 1);
             const double outward = p.reversed ? -1.0 : 1.0;
             try {
                 BRepAdaptor_Surface surf(face);

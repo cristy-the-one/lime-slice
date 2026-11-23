@@ -135,11 +135,16 @@ pub fn set_limits(limits: Limits) {
 
 /// Answer one JSON request. See `docs/step-modeler.md` for the calls.
 pub fn call(request: &str) -> String {
+    let request_text = request;
     let request: Request = match serde_json::from_str(request) {
         Ok(request) => request,
         Err(err) => return Failure::Message(format!("Bad tree request: {err}")).json(),
     };
+    // Read apart from the request, so every call takes it the same way. Anything but "display" is the standard mesh.
+    let display = serde_json::from_str::<MeshQualityField>(request_text)
+        .is_ok_and(|field| field.mesh_quality.as_deref() == Some("display"));
     let mut store = lock();
+    store.display = display;
     let transient = matches!(
         &request,
         Request::MeshStep { .. }
@@ -170,6 +175,13 @@ pub fn call(request: &str) -> String {
         }
         Err(failure) => failure.json(),
     }
+}
+
+/// `meshQuality` of any call: "display" asks for the Model view's display mesh. Read apart from `Request`.
+#[derive(serde::Deserialize)]
+struct MeshQualityField {
+    #[serde(rename = "meshQuality")]
+    mesh_quality: Option<String>,
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Store> {
@@ -219,6 +231,8 @@ struct Reply {
     key: String,
     node: NodeId,
     chord: u64,
+    /// The Model view's display mesh, not the one committed, sliced and exported.
+    display: bool,
     text: Arc<String>,
     used: u64,
 }
@@ -229,6 +243,9 @@ struct Store {
     replies: Vec<Reply>,
     clock: u64,
     limits: Limits,
+    /// This call asked for the Model view's display mesh (`meshQuality: "display"`). Every reply it writes, and the
+    /// curvature `surfaceInspect` reads, are then that mesh; otherwise the mesh that is committed, sliced and exported.
+    display: bool,
 }
 
 /// A `root` op builds a new solid's primitive afresh, which only means something right under the root.

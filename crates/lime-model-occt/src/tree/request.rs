@@ -363,6 +363,17 @@ pub(super) enum Request {
     /// for a test that opens a flat face stored as a B-spline.
     #[cfg(lime_occt_test_hooks)]
     TestNurbs { key: String, node: NodeId },
+    /// Debug builds only: step `node`'s shape mirrored in x = 0 (`mirror`), or moved by `offset` as a location, as
+    /// BinTools bytes in base64, for a test that opens it.
+    #[cfg(lime_occt_test_hooks)]
+    TestPlace {
+        key: String,
+        node: NodeId,
+        #[serde(default)]
+        mirror: bool,
+        #[serde(default)]
+        offset: [f64; 3],
+    },
     /// Debug builds only: the cheap checks of a text build next to the exact calls they stand in for, on the face of step `node`'s solid
     /// nearest `point`: the classifier, the edge gap, the validity checks, and the whole solid's volume.
     #[cfg(lime_occt_test_hooks)]

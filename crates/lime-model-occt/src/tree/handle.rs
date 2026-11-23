@@ -26,7 +26,7 @@ impl Store {
                     ));
                 }
                 let mut shape = root_shape(Some(data_b64), None, None, None, None)?;
-                Ok(Answer::Plain(shape.reply(ROOT, chord_mm)?))
+                Ok(Answer::Plain(shape.reply(ROOT, chord_mm, false)?))
             }
             Request::TextFonts => Ok(Answer::Plain(lettering::fonts_reply())),
             Request::TextFontAdd { data_b64, face } => Ok(Answer::Plain(
@@ -360,6 +360,15 @@ impl Store {
                 ))
             }
             #[cfg(lime_occt_test_hooks)]
+            Request::TestPlace { key, node, mirror, offset } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let bytes = shape.test_place(mirror, offset).map_err(Failure::Message)?;
+                Ok(Answer::Plain(
+                    json!({ "dataB64": base64::engine::general_purpose::STANDARD.encode(bytes) }).to_string(),
+                ))
+            }
+            #[cfg(lime_occt_test_hooks)]
             Request::TestMesh { key, node, chord_mm } => {
                 self.ensure(&key, node)?;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
@@ -414,8 +423,9 @@ impl Store {
                 iso_count,
             } => {
                 self.ensure(&key, node)?;
+                let display = self.display;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
-                let text = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count)?;
+                let text = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count, display)?;
                 Ok(Answer::Plain(text))
             }
             // --- I5, I6: read from the solid the node already holds.

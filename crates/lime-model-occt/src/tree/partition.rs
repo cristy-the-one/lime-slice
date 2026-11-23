@@ -293,12 +293,13 @@ pub(super) fn piece_replies(
     pieces: &mut [Shape],
     piece_keys: &[Option<String>],
     chord: f64,
+    display: bool,
 ) -> Result<Vec<Option<String>>, Failure> {
     pieces
         .iter_mut()
         .enumerate()
         .map(|(index, piece)| match piece_keys.get(index) {
-            Some(Some(_)) => piece.reply(ROOT, chord).map(Some),
+            Some(Some(_)) => piece.reply(ROOT, chord, display).map(Some),
             _ => Ok(None),
         })
         .collect()

@@ -24,7 +24,7 @@ use super::ffi::{
 #[cfg(lime_occt_test_hooks)]
 use super::ffi::{
     lime_tree_eval_nurbs_curve, lime_tree_eval_nurbs_surface, lime_tree_test_fault, lime_tree_test_mesh,
-    lime_tree_test_nurbs, lime_tree_test_text,
+    lime_tree_test_nurbs, lime_tree_test_place, lime_tree_test_text,
 };
 #[cfg(lime_occt_test_hooks)]
 use super::request::{EvalNurbsCurve, EvalNurbsSurface};
@@ -204,6 +204,16 @@ impl Shape {
     pub(super) fn test_nurbs(&self) -> Result<Vec<u8>, String> {
         // SAFETY: `self` is held for this call; the kernel returns a new shape or an error.
         Shape::made(|error| unsafe { lime_tree_test_nurbs(self.raw(), error) })?.brep_bytes()
+    }
+
+    /// Debug builds only: this shape mirrored in x = 0, or moved by `offset` as a location, as BinTools bytes.
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn test_place(&self, mirror: bool, offset: [f64; 3]) -> Result<Vec<u8>, String> {
+        // SAFETY: `self` is held for this call; `offset` holds the three numbers the kernel reads.
+        Shape::made(|error| unsafe {
+            lime_tree_test_place(self.raw(), c_int::from(mirror), offset.as_ptr(), error)
+        })?
+        .brep_bytes()
     }
 
     /// Debug builds only: how good the solid's mesh at `chord` is (triangles, the farthest from the surface, the

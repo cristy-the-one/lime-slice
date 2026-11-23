@@ -151,11 +151,11 @@ impl Store {
         } else {
             self.reply(&key, id, chord).and_then(|text| {
             let other = match (built.other.as_mut(), &other_key) {
-                (Some(other), Some(_)) => Some(other.reply(ROOT, chord)?),
+                (Some(other), Some(_)) => Some(other.reply(ROOT, chord, self.display)?),
                 _ => None,
             };
             // --- Split to print: each piece with a key, as the split's other piece.
-            let pieces = piece_replies(&mut built.pieces, &piece_keys, chord)?;
+            let pieces = piece_replies(&mut built.pieces, &piece_keys, chord, self.display)?;
             Ok((text, other, pieces))
             })
         };
@@ -212,7 +212,7 @@ impl Store {
     /// --- Split to print. The pins start their own tree under `pins_key`, as a piece does; the answer is their reply
     /// with that `key`, cached under it.
     pub(super) fn start_pins(&mut self, mut pins: Shape, pins_key: &str, chord: f64) -> Result<String, Failure> {
-        let reply = pins.reply(ROOT, chord)?;
+        let reply = pins.reply(ROOT, chord, self.display)?;
         self.clock += 1;
         self.replies.retain(|cached| cached.key != pins_key);
         let owners = vec![ROOT; pins.fingerprint().faces.max(0) as usize];
@@ -506,6 +506,7 @@ impl Store {
             Err(Failure::Message(message)) => Err(message),
             Err(failure) => return Err(failure),
         };
+        let display = self.display;
         let doc = doc_in(&mut self.docs, key)?;
         // --- A10. Clone before the shape is borrowed: a preview face keeps its parent's node, and a new face is null.
         let parent_owners = doc
@@ -541,7 +542,7 @@ impl Store {
                 // The shape keeps what its reply measured and meshed, so an Apply that takes it meshes nothing again.
                 let shown = preview.and_then(|chord| {
                     let faces = preview_step_faces(&parent_owners, &built.kept.face_from());
-                    let mut text = built.kept.reply(id, chord).ok()?;
+                    let mut text = built.kept.reply(id, chord, display).ok()?;
                     // --- A10.
                     if let Some(faces) = faces {
                         text = with_fields(&text, &[("stepFaces", Part::Json(faces))]);

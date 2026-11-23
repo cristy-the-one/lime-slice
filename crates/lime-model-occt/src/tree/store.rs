@@ -381,11 +381,12 @@ impl Store {
 
     fn cached_reply(&mut self, key: &str, id: NodeId, chord: f64) -> Option<Arc<String>> {
         let chord = chord_key(chord);
+        let display = self.display;
         self.clock += 1;
         let reply = self
             .replies
             .iter_mut()
-            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord)?;
+            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord && reply.display == display)?;
         reply.used = self.clock;
         Some(Arc::clone(&reply.text))
     }
@@ -395,6 +396,7 @@ impl Store {
         if let Some(text) = self.cached_reply(key, id, chord) {
             return Ok(text);
         }
+        let display = self.display;
         let doc = doc_in(&mut self.docs, key)?;
         // --- A10. `stepFaces` rides on the cached solid reply. A face's node is the one that made it.
         let owners = doc
@@ -402,7 +404,7 @@ impl Store {
             .get(&id)
             .map(|node| node.face_owners.clone())
             .unwrap_or_default();
-        let mut text = doc.shape(id).reply(id, chord)?;
+        let mut text = doc.shape(id).reply(id, chord, display)?;
         if !owners.is_empty() {
             text = with_fields(&text, &[("stepFaces", Part::Json(json!(owners).to_string()))]);
         }
@@ -416,6 +418,7 @@ impl Store {
             key: key.to_string(),
             node: id,
             chord: chord_key(chord),
+            display: self.display,
             text,
             used: self.clock,
         });
