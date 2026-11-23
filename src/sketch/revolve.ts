@@ -9,7 +9,7 @@
 import type { DragHandle, Vec3 } from "../model-drag.ts";
 import { revolveOp, type ProfilePlane } from "../model-request.ts";
 import { isSketchRevolveGroup, type BooleanKind, type GroupOp, type ModelOp, type RevolveOp } from "../model-tree.ts";
-import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
+import { loopStartsOffCurve, sampleNurbsSegment } from "./nurbs-seg.ts";
 import { arcFrom3, arcPoint, curveOf, dist, sampleSpline, unit } from "./geom.ts";
 import type { ArcGeom, Pt } from "./geom.ts";
 import { emptySketch, sketchJson, type SketchData } from "./model.ts";
@@ -443,9 +443,12 @@ function loopCrossesAxis(loop: ProfileLoop, axis: RevolveAxis): boolean {
     if (side > hi) hi = side;
   };
   let prev = loop.start;
-  note(prev);
+  // A lone closed nurbs segment starts and ends at a pole, off the outline: only its samples count.
+  const offCurve = loopStartsOffCurve(loop);
+  if (!offCurve) note(prev);
   for (const segment of loop.segments) {
-    noteSides(prev, segment, axis, note);
+    noteSides(prev, segment, axis, offCurve ? () => {} : note);
+    if (offCurve && segment.kind === "nurbs") for (const pt of sampleNurbsSegment(prev, segment)) note(pt);
     prev = segment.to;
   }
   return lo < -AXIS_MM && hi > AXIS_MM;
@@ -466,8 +469,7 @@ function noteSides(from: Pt, segment: ProfileSegment, axis: RevolveAxis, note: (
     return;
   }
   if (segment.kind === "nurbs") {
-    const poles: Pt[] = [from, ...(segment.poles ?? []), segment.to];
-    for (const pt of sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8))) note(pt);
+    for (const pt of sampleNurbsSegment(from, segment)) note(pt);
     return;
   }
   for (const pt of sampleSpline([from, ...segment.through, segment.to], false, 0.25)) note(pt);

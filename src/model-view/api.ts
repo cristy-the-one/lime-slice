@@ -42,6 +42,11 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.ownBox = null;
       ctx.setPosedMatrix(at);
       if (!next || next.positions.length < 9) {
+        // Nothing shown: the shared solid material leaves the sheet's front-only mode for whatever it draws next.
+        if (solidMaterial.side !== THREE.DoubleSide) {
+          solidMaterial.side = THREE.DoubleSide;
+          solidMaterial.needsUpdate = true;
+        }
         delete canvas.dataset.shapeKind;
         delete canvas.dataset.nakedEdges;
         ctx.clearGhosts();

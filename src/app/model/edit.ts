@@ -18,6 +18,7 @@ import {
   isEdgeStep,
   isSketchRevolveGroup,
   withFeatureRoot,
+  withoutBuilds,
   type EdgeRef,
   type ModelOp,
   type ModelTree,
@@ -251,7 +252,9 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   const previous = tree;
   // The later steps build on the new root, up to the step shown before the edit, which the view shows again.
   const back = rootEditFrom != null && tree.nodes.has(rootEditFrom) ? rootEditFrom : tree.current;
-  const cleared = jumped(clearFingerprints(withFeatureRoot(tree, op)), back);
+  // Every node rebuilds under its own id: its old plate mesh and sheet mark go too, or a commit would put the pre-edit
+  // mesh back on the plate (`commitModel` takes a node's stored mesh first).
+  const cleared = jumped(withoutBuilds(withFeatureRoot(tree, op)), back);
   modelTrees.set(at.key, cleared);
   forgetSolids(at.key);
   const mine = S.ticket;
@@ -291,12 +294,6 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   rootEditFrom = null;
   syncUndo();
   return null;
-}
-
-function clearFingerprints(tree: ModelTree): ModelTree {
-  const nodes = new Map(tree.nodes);
-  for (const [id, node] of nodes) nodes.set(id, { ...node, fingerprint: null });
-  return { ...tree, nodes };
 }
 
 function forgetSolids(key: string) {

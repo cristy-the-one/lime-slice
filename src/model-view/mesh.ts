@@ -89,6 +89,7 @@ export function installMesh(ctx: ViewCtx): void {
     if (ctx.mesh && ctx.mesh.material !== activeMat) ctx.mesh.material = activeMat;
     if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = !ctx.preview && ctx.look.shading !== "zebra";
     if (ctx.preview && ctx.preview.mesh.material !== activeMat) ctx.preview.mesh.material = activeMat;
+    if (ctx.preview?.back) ctx.preview.back.visible = ctx.look.shading !== "zebra";
     canvas.dataset.shading = ctx.look.shading;
     canvas.dataset.isoparms = ctx.look.isoparms ? "1" : "0";
     // Rebuild or hide the trimmed UV isoparm overlay.
@@ -111,6 +112,8 @@ export function installMesh(ctx: ViewCtx): void {
 
   function clearPreview() {
     if (!ctx.preview) return;
+    // The back mesh shares the preview's geometry: removed, not disposed twice.
+    if (ctx.preview.back) body.remove(ctx.preview.back);
     for (const object of [ctx.preview.mesh, ctx.preview.lines]) {
       if (!object) continue;
       body.remove(object);
@@ -149,6 +152,15 @@ export function installMesh(ctx: ViewCtx): void {
     const shaded = new THREE.Mesh(geometry, activeMat);
     shaded.raycast = () => undefined;
     body.add(shaded);
+    // A patch or blend preview is a sheet: its back gets the sheet's back tint, as the shown sheet's does (the solid
+    // material draws front faces only while a sheet is shown).
+    let back: THREE.Mesh | null = null;
+    if ((shape.nakedEdges?.length ?? 0) > 0) {
+      back = new THREE.Mesh(geometry, sheetBackMaterial);
+      back.raycast = () => undefined;
+      back.visible = ctx.look.shading !== "zebra";
+      body.add(back);
+    }
     const { segments } = drawnEdgeSegments(shape.edges, shape.seams);
     let lines: THREE.LineSegments | null = null;
     if (segments.length > 0) {
@@ -162,7 +174,7 @@ export function installMesh(ctx: ViewCtx): void {
     if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = false;
     if (ctx.edgeLines) ctx.edgeLines.visible = false;
     if (ctx.nakedEdgeLines) ctx.nakedEdgeLines.visible = false;
-    ctx.preview = { shape, mesh: shaded, lines };
+    ctx.preview = { shape, mesh: shaded, lines, back };
     canvas.dataset.preview = String(shape.volumeMm3.toFixed(2));
     ctx.rebuildCap();
   }
@@ -220,11 +232,15 @@ export function installMesh(ctx: ViewCtx): void {
     return raw;
   }
 
-  function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null): Set<string> {
+  function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null, curvBase?: Float32Array): Set<string> {
     const used = new Set<string>();
     const curv = curvatureValues(shape);
     if (curv) {
-      fillCurvatureColors(into, curv, ctx.look.curvatureMode, ctx.look.curvatureWarnMm);
+      // The heatmap without picks, kept by the caller so a hover repaints two faces from it, not every vertex.
+      if (curvBase && curvBase.length === into.length) {
+        fillCurvatureColors(curvBase, curv, ctx.look.curvatureMode, ctx.look.curvatureWarnMm);
+        into.set(curvBase);
+      } else fillCurvatureColors(into, curv, ctx.look.curvatureMode, ctx.look.curvatureWarnMm);
       if (selected.size > 0 || pickHover != null) {
         const tint = tintNow();
         const byFace = faceTriangles(shape.triangles);
@@ -296,7 +312,7 @@ export function installMesh(ctx: ViewCtx): void {
    * What the solid's colour buffer holds: for which solid, from which inputs, with which face lit by the pointer.
    * `whole` is on from a repaint of every face until the renderer has uploaded the buffer.
    */
-  let painted: { attribute: THREE.BufferAttribute; solid: ModelSolid; key: string; hover: number | null; used: Set<string>; whole: boolean } | null = null;
+  let painted: { attribute: THREE.BufferAttribute; solid: ModelSolid; key: string; hover: number | null; used: Set<string>; whole: boolean; curvBase: Float32Array | null; curvSrc: Float32Array | null } | null = null;
 
   /** Everything a face's colour is worked out from, but the face under the pointer: `painter` and `stressTint` read these and no more. */
   function paintKey(selected: Set<number>): string {
@@ -328,15 +344,24 @@ export function installMesh(ctx: ViewCtx): void {
     const attribute = ctx.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
     const key = paintKey(selected);
-    if (painted && painted.attribute === attribute && painted.solid === ctx.solid && painted.key === key && !curvatureValues(ctx.solid)) {
+    const curvSrc = curvatureValues(ctx.solid);
+    const curving = !!curvSrc;
+    // Curvature shading keeps its heatmap (`curvBase`): a hover puts back the face the pointer left and tints the one
+    // it reached, as the face colours do, instead of recolouring and uploading every vertex.
+    const cached = painted && painted.attribute === attribute && painted.solid === ctx.solid && painted.key === key
+      && (!curving || (painted.curvSrc === curvSrc && painted.curvBase?.length === array.length));
+    if (painted && cached) {
       if (painted.hover !== hoverFace) {
-        const paintOf = painter(ctx.solid, selected, hoverFace);
+        const paintOf = curving ? null : painter(ctx.solid, selected, hoverFace);
+        const base = painted.curvBase;
         const byFace = faceTriangles(ctx.solid.triangles);
         let wrote = false;
         for (const face of [painted.hover, hoverFace]) {
           const tris = face == null ? undefined : byFace.get(face);
           if (face == null || !tris) continue;
-          fillFace(array, tris, paintOf(face).hex);
+          if (paintOf) fillFace(array, tris, paintOf(face).hex);
+          else if (face === hoverFace || selected.has(face)) fillFace(array, tris, tintNow());
+          else if (base) for (let i = 0; i < tris.length; i += 1) array.set(base.subarray(tris[i]! * 9, tris[i]! * 9 + 9), tris[i]! * 9);
           wrote = true;
           if (painted.whole) continue;
           const runs = colourRuns(tris);
@@ -354,15 +379,18 @@ export function installMesh(ctx: ViewCtx): void {
       if (!ctx.preview) publishFaceColours(painted.used);
       return;
     }
-    const used = paintColours(ctx.solid, array, selected, hoverFace);
+    const curvBase = curving ? (painted?.curvBase?.length === array.length ? painted.curvBase : new Float32Array(array.length)) : null;
+    const used = paintColours(ctx.solid, array, selected, hoverFace, curvBase ?? undefined);
     if (painted?.attribute === attribute) {
       painted.solid = ctx.solid;
       painted.key = key;
       painted.hover = hoverFace;
       painted.used = used;
       painted.whole = true;
+      painted.curvBase = curvBase;
+      painted.curvSrc = curvSrc;
     } else {
-      const record = { attribute, solid: ctx.solid, key, hover: hoverFace, used, whole: true };
+      const record = { attribute, solid: ctx.solid, key, hover: hoverFace, used, whole: true, curvBase, curvSrc };
       painted = record;
       // The renderer says when the buffer is on the card; until then a repaint of two faces must not narrow the upload.
       attribute.onUpload(() => {

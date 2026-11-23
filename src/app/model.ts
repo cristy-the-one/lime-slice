@@ -13,6 +13,7 @@ import { bindPlugins } from "./model/plugin-panel";
 import { bindPull } from "./model/pull";
 import { releaseModelTrees } from "./model/save";
 import { bindSplitPrint, exportedPart, exportSplitNote } from "./model/split-print";
+import { sheetObjectNote, sheetPart } from "./model/sheet-gate";
 import { bindTransition, keepStale, requestReaim, transitionStaleNote } from "./model/transition";
 import { bindAutoRibs } from "./model/auto-ribs";
 import { bindInspect, bindLook, refreshModelContext } from "./model/view";
@@ -49,4 +50,4 @@ export function bindModelView() {
   bindLook();
 }
 
-Object.assign(fx, { refreshModelContext, commitModel, exportedPart, exportSplitNote, transitionStaleNote, requestReaim, keepStale, forgetModelTrees, followSelection, releaseModelTrees });
+Object.assign(fx, { refreshModelContext, commitModel, exportedPart, exportSplitNote, sheetPart, sheetObjectNote, transitionStaleNote, requestReaim, keepStale, forgetModelTrees, followSelection, releaseModelTrees });

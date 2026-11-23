@@ -76,6 +76,8 @@ export function installCardClicks(): void {
       publish("values");
       return;
     }
+    // A weight, crease or knot button the spline cannot take (through-point or closed) explains itself in its tip.
+    if ((target.dataset.sketchCvWeight != null || target.dataset.sketchCvCrease != null || target.dataset.sketchCvKnot != null) && target.getAttribute("aria-disabled") === "true") return;
     const cvWeight = target.dataset.sketchCvWeight;
     if (cvWeight === "up" || cvWeight === "down" || cvWeight === "reset") {
       const sketch = activeSketch(S.editor);

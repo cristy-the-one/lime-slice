@@ -44,6 +44,7 @@ import {
   addCircle,
   addLine,
   addPoint,
+  addNurbs,
   addSpline,
   pointNear,
   prunePoints,
@@ -1043,7 +1044,17 @@ function copyWith(sketch: SketchData, entityIds: readonly number[], xform: (pt: 
       next = addCircle(next, centre, entity.radius, entity.construction).sketch;
     } else {
       const through = entity.through.map((pid) => pointFor(pid));
-      next = addSpline(next, through, entity.construction).sketch;
+      // A control-point spline is copied as one, weights and knots with it: each pole maps, so the copy is the
+      // mapped curve (a mirror keeps the pole order and its knots; no reversal is needed).
+      next = entity.mode === "cv"
+        ? addNurbs(next, through, {
+            ...(entity.weights ? { weights: entity.weights } : {}),
+            ...(entity.degree !== undefined ? { degree: entity.degree } : {}),
+            ...(entity.knots ? { knots: entity.knots } : {}),
+            ...(entity.mults ? { mults: entity.mults } : {}),
+            ...(entity.construction ? { construction: true } : {}),
+          }).sketch
+        : addSpline(next, through, entity.construction).sketch;
     }
   }
   if (!copied) return { sketch, error: "Select something to copy." };
