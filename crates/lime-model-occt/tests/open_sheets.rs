@@ -493,7 +493,7 @@ fn thicken_on_a_tight_tube_builds_the_exact_wall_or_refuses() {
             "op": { "kind": "thicken", "thickness": thickness, "direction": direction } }));
         if let Some(error) = reply["error"].as_str() {
             println!("thicken {direction}: refused: {error}");
-            assert!(error.contains("bends tighter"), "{error}");
+            assert_eq!(error, format!("Open CASCADE could not offset this sheet by {thickness} mm. Try a thinner wall or the other direction."));
             refused += 1;
         } else {
             let outward = std::f64::consts::PI * ((radius + thickness).powi(2) - radius.powi(2)) * height;

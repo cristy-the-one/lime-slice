@@ -11697,9 +11697,7 @@ TopoDS_Shape build_thicken(
         TopoDS_Shape skin_b = build_offset_skin(base, d_hi, tol);
         if (skin_a.IsNull() || skin_b.IsNull()) {
             std::ostringstream out;
-            out << "Open CASCADE could not offset this surface by " << thickness
-                << " mm: it bends tighter than that somewhere (a radius of curvature under the thickness), or folds. "
-                   "Use a thinner wall or the other direction.";
+            out << "Open CASCADE could not offset this sheet by " << thickness << " mm. Try a thinner wall or the other direction.";
             error = out.str();
             return {};
         }
