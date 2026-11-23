@@ -2003,6 +2003,20 @@ TopoDS_Shape fill_hermite_blend(
             gp_Pnt point;
             gp_Vec tangent;
             curve->D1(t, point, tangent);
+            // A G0 side has no face ribbon: as a patch's G0 half (plan R2.3 step 6), its first derivative runs from the
+            // rim straight to the other rim, scaled by the tension, and its second derivative is 0.
+            if ((far_side ? order_b : order_a) == 0) {
+                gp_Pnt other;
+                (far_side ? ua : ub)->D0(t, other);
+                const gp_Vec chord(point, other);
+                if (chord.Magnitude() < kHermiteGapMm) {
+                    error = "These edges already meet, so there is no gap to bridge.";
+                    return false;
+                }
+                T = (far_side ? chord.Reversed() : chord).Multiplied(tension);
+                A = gp_Vec(0, 0, 0);
+                return true;
+            }
             const TopoDS_Face support_here = face_along(far_side ? faces_b : faces_a, support, point, tangent);
             const Transverse got = transverse_at(support_here, point, tangent, far_side ? 1 : 0);
             if (!got.ok) {

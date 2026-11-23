@@ -12276,7 +12276,10 @@ TopoDS_Face face_beside(
 
 int continuity_of(int asked, bool has_face, bool blend, std::string& error) {
     if (blend) {
-        if (asked <= 0) {
+        // A side set to G0 meets its rim in position only: its cross derivative runs straight to the other rim, so it
+        // needs no face. That is what the refusal below offers for a bare curve.
+        if (asked == 0) return 0;
+        if (asked < 0) {
             error = "A blend is G1 or G2. Set the seam to g1 or g2.";
             return -2;
         }

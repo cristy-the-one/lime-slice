@@ -1514,3 +1514,49 @@ fn patch_refuses_g2_where_a_half_ends_at_the_split() {
     assert!(error.starts_with(&format!("Edge {}: G2 can't be reached at this curvature.", g2[0])), "{reply}");
     ok(json!({ "call": "close", "key": key }));
 }
+
+/// A blend side given as a bare curve has no face, so G1 there is refused with a sentence that offers G0; and G0 on that
+/// side then builds: the rim is met in position, and the other side keeps the continuity asked.
+#[test]
+fn a_blend_side_on_a_bare_curve_builds_at_g0() {
+    if !has_occt() {
+        return;
+    }
+    let key = "s5-blend-bare-curve";
+    let opened = ok(json!({ "call": "open", "key": key, "chordMm": CHORD_MM, "feature": {
+        "kind": "sheet", "mode": "planar",
+        "curves": [{ "kind": "polyline", "points": [[0.0, -20.0, 0.0], [10.0, -20.0, 0.0], [10.0, -10.0, 0.0], [0.0, -10.0, 0.0]], "closed": true }]
+    } }));
+    let rim = sampled_edges(&opened)
+        .into_iter()
+        .find(|edge| edge.points.iter().all(|p| (p[1] + 10.0).abs() < 1e-6))
+        .expect("the sheet's edge on y = -10")
+        .index;
+    let curve = json!({ "kind": "polyline", "points": [[0.0, 0.0, 5.0], [10.0, 0.0, 5.0]] });
+    let blend = |a_continuity: Option<&str>| {
+        let mut a = json!({ "curve": curve });
+        if let Some(c) = a_continuity {
+            a["continuity"] = json!(c);
+        }
+        call(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": CHORD_MM,
+            "op": { "kind": "blendSurface", "a": a, "b": { "edges": [rim] }, "continuity": "g1" } }))
+    };
+    let refused = blend(None);
+    assert_eq!(
+        refused["error"].as_str(),
+        Some("G1 and G2 need the face beside the edge. Pick an edge of the sheet, or set that side to G0."),
+        "{refused}"
+    );
+    let built = blend(Some("g0"));
+    assert!(built.get("error").is_none(), "G0 on the bare curve's side builds: {built}");
+    assert_op_time("blend-bare-curve", "g0");
+    // The sheet's own side kept its G1 at op time.
+    #[cfg(lime_occt_test_hooks)]
+    {
+        let report = call(json!({ "call": "testLastFill" }));
+        let sheet_side = report["edges"].as_array().expect("edges").iter().find(|e| e["side"] == json!(1)).cloned().expect("side B");
+        assert_eq!(sheet_side["asked"], json!(1), "{report}");
+        assert!(sheet_side["angleDeg"].as_f64().unwrap_or(99.0) < G1_ANGLE_DEG, "{report}");
+    }
+    ok(json!({ "call": "close", "key": key }));
+}

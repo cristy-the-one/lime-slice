@@ -174,8 +174,15 @@ pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolv
             tension_b,
             tolerance,
         } => {
-            let (edges_a, _) = resolve_blend(from, &a.edges, "blend", steps)?;
-            let (edges_b, _) = resolve_blend(from, &b.edges, "blend", steps)?;
+            // A side given as a curve has no edges to resolve, as a patch side.
+            let mut side_edges = |edges: &[EdgePick]| -> Result<Vec<EdgePick>, String> {
+                if edges.is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(resolve_blend(from, edges, "blend", steps)?.0)
+            };
+            let edges_a = side_edges(&a.edges)?;
+            let edges_b = side_edges(&b.edges)?;
             let face_of = |face: Option<FacePick>, from: &mut Shape| -> Result<Option<FacePick>, String> {
                 Ok(match face {
                     Some(face) => Some(FacePick::Ref(resolve_one_face(from, face)?)),
