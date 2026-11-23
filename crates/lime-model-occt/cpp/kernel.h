@@ -143,6 +143,8 @@ double faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& about);
 /// `display`: the Model view's finer mesh with analytic normals (mesh_angle_of), on a copy of the shape. Otherwise the
 /// mesh every commit, slice and export uses: half a radian, no normals.
 Mesh tessellate(Held& held, double chord, bool display = false);
+/// The last Hermite patch or blend's own measure at its stations, as JSON, for the tests.
+std::string last_fill_report();
 /// --- Organic surfaces S1: lazy curvature buffers, UV isoparms, shared-edge G0/G1/G2 continuity, and NURBS health.
 SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count, bool display = false);
 /// What a reply says of the shape whatever the chord, as a JSON object: `volumeMm3`, `solid`,

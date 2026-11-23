@@ -690,8 +690,9 @@ fn encode_surface_blob(
         guides.len() as f64,
         points.len() as f64,
         tolerance.unwrap_or(0.0),
-        tension_a.unwrap_or(0.0),
-        tension_b.unwrap_or(0.0),
+        // NaN is "not sent": the kernel takes 1 then, and refuses a tension sent as 0 or less.
+        tension_a.unwrap_or(f64::NAN),
+        tension_b.unwrap_or(f64::NAN),
         continuity_code(continuity),
     ];
     for bound in bounds {

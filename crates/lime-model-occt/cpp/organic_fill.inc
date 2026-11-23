@@ -366,27 +366,24 @@ bool point_on_face(const TopoDS_Face& face, const gp_Pnt& point, double tol) {
 // A rim chain can lie on more than one face. An exact circle extruded from two
 // arcs is two half-cylinders; the first edge's face does not contain the other
 // half. Projecting that half onto the first face flips the cross derivative.
-TopoDS_Face face_touching(const TopoDS_Shape& shape, const TopoDS_Face& hint, const gp_Pnt& point) {
+// `faces` are the faces beside the rim's own edges: only those are searched.
+TopoDS_Face face_touching(const std::vector<TopoDS_Face>& faces, const TopoDS_Face& hint, const gp_Pnt& point) {
     constexpr double tol = 1e-4;
     if (point_on_face(hint, point, tol)) return hint;
-    if (!shape.IsNull()) {
-        for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
-            const TopoDS_Face face = TopoDS::Face(ex.Current());
-            if (face.IsSame(hint)) continue;
-            if (point_on_face(face, point, tol)) return face;
-        }
+    for (const TopoDS_Face& face : faces) {
+        if (face.IsSame(hint)) continue;
+        if (point_on_face(face, point, tol)) return face;
     }
     return hint;
 }
 
 // A seam vertex lies on two faces, so the hint classifies there and its outward
 // B can point into the wall. The curve's tangent leaves that vertex on one face.
-TopoDS_Face face_along(const TopoDS_Shape& shape, const TopoDS_Face& hint, const gp_Pnt& point, const gp_Vec& tangent) {
-    const TopoDS_Face touching = face_touching(shape, hint, point);
-    if (shape.IsNull() || tangent.Magnitude() < 1e-12) return touching;
+TopoDS_Face face_along(const std::vector<TopoDS_Face>& faces, const TopoDS_Face& hint, const gp_Pnt& point, const gp_Vec& tangent) {
+    const TopoDS_Face touching = face_touching(faces, hint, point);
+    if (faces.empty() || tangent.Magnitude() < 1e-12) return touching;
     bool shared = false;
-    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
-        const TopoDS_Face face = TopoDS::Face(ex.Current());
+    for (const TopoDS_Face& face : faces) {
         if (face.IsSame(touching)) continue;
         if (point_on_face(face, point, 1e-4)) {
             shared = true;
@@ -405,8 +402,7 @@ TopoDS_Face face_along(const TopoDS_Shape& shape, const TopoDS_Face& hint, const
                 found = touching;
                 ++hits;
             }
-            for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
-                const TopoDS_Face face = TopoDS::Face(ex.Current());
+            for (const TopoDS_Face& face : faces) {
                 if (face.IsSame(touching)) continue;
                 if (!point_on_face(face, ahead, 1e-4)) continue;
                 found = face;
@@ -620,10 +616,6 @@ struct EdgeReport {
     double score = -1.0;
     bool fail = false;
     bool short_span = false;
-    // Every sampled station has the blend leaving the edge along this face's
-    // outward B. A 180° reading with this set is an orientation flip. With it
-    // clear, the same angle is a fold.
-    bool side_ok = true;
 };
 
 double plane_deviation(double angle) {
@@ -651,45 +643,6 @@ bool edge_fails(const EdgeReport& edge) {
     if (edge.asked >= 1 && !(edge.angle < kHermiteAngleDeg)) return true;
     if (edge.asked >= 2 && edge.jump > kHermiteJump) return true;
     return false;
-}
-
-// Anti-parallel normals, within the same angle bound. This is not a folded
-// angle: a reading near 0° does not take this path.
-bool anti_parallel_normals(double angle) {
-    return angle >= 0.0 && angle <= 180.0 && (180.0 - angle) < kHermiteAngleDeg;
-}
-
-// The leaving derivative points back into the face. Anti-parallel normals are
-// the fold the 180° reading used to accept. A reversed ribbon is the same fold
-// after the blend face is turned to agree with the wall: the angle reads about
-// 0° and the side test still fails. An angle that is neither is a miss.
-bool blend_is_fold(const EdgeReport& edge) {
-    if (edge.asked < 1 || edge.side_ok) return false;
-    if (edge.angle < kHermiteAngleDeg) return true;
-    return anti_parallel_normals(edge.angle);
-}
-
-bool blend_orientation_ok(const EdgeReport& edge) {
-    if (edge.asked < 1) return true;
-    if (edge.angle < kHermiteAngleDeg) return true;
-    return anti_parallel_normals(edge.angle) && edge.side_ok;
-}
-
-std::string fold_sentence(const EdgeReport& a, const EdgeReport& b) {
-    const bool fa = blend_is_fold(a);
-    const bool fb = blend_is_fold(b);
-    if (fa && fb) return "Edges A and B fold back into the face.";
-    if (fb) return "Edge B folds back into the face.";
-    return "Edge A folds back into the face.";
-}
-
-// Gap and an asked G2 jump still have to meet the bounds. A 180° side is handed
-// to Sew only when its cross derivative leaves along B.
-bool blend_hand_to_sew(const EdgeReport& a, const EdgeReport& b) {
-    if (blend_is_fold(a) || blend_is_fold(b)) return false;
-    const bool gaps = a.gap < kHermiteGapMm && b.gap < kHermiteGapMm;
-    const bool jumps = (a.asked < 2 || !(a.jump > kHermiteJump)) && (b.asked < 2 || !(b.jump > kHermiteJump));
-    return gaps && jumps && blend_orientation_ok(a) && blend_orientation_ok(b);
 }
 
 // Gap is the G0 measure. Angle is the G1 measure, already the deviation from
@@ -739,16 +692,144 @@ std::string miss_sentence(const std::vector<EdgeReport>& reports) {
         + asked_measures(worst.gap, worst.angle, worst.jump, worst.asked);
 }
 
+gp_Vec project_off(const gp_Vec& v, const gp_Vec& unit_n) {
+    return v.Subtracted(unit_n.Multiplied(v.Dot(unit_n)));
+}
+
+/// The last Hermite fill's own measure, as JSON, for the tests (lime_tree_test_last_fill): each asked edge's largest gap,
+/// angle and curvature jump at the op's stations, how many refinement rounds it took, and whether it was refused. Per
+/// thread: an op runs on the thread that called, so a test reads its own op's measure.
+thread_local std::string g_last_fill;
+
+void note_last_fill(const std::vector<EdgeReport>& reports, int refinements, bool refused) {
+    std::ostringstream out;
+    out.precision(9);
+    out << "{\"refinements\":" << refinements << ",\"refused\":" << (refused ? "true" : "false") << ",\"edges\":[";
+    for (size_t i = 0; i < reports.size(); ++i) {
+        const EdgeReport& report = reports[i];
+        out << (i ? "," : "") << "{\"which\":\"" << report.which << "\",\"side\":" << report.side
+            << ",\"asked\":" << report.asked << ",\"gapMm\":" << report.gap << ",\"angleDeg\":" << report.angle
+            << ",\"curvatureJump\":" << report.jump << "}";
+    }
+    out << "]}";
+    g_last_fill = out.str();
+}
+
+}  // namespace
+
+std::string last_fill_report() {
+    return g_last_fill;
+}
+
+namespace {
+
+/// "Edge 5", "Edges 5 and 6", or `fallback` when the side came from a curve.
+std::string edges_phrase(const std::vector<int>& ids, const char* fallback) {
+    if (ids.empty()) return fallback;
+    std::ostringstream out;
+    out << (ids.size() == 1 ? "Edge " : "Edges ") << ids[0];
+    for (size_t i = 1; i < ids.size(); ++i) out << (i + 1 == ids.size() ? " and " : ", ") << ids[i];
+    return out.str();
+}
+
+/// A blend's own measure at one station of its rim `v_rim` (0 or 1) against the wall it meets there (the face beside
+/// the rim edge that holds that point, from `faces`):
+/// - the gap from the rim point to the wall;
+/// - the angle between the blend's direction across the rim, continued past it, and the direction from the edge into
+///   the wall. A blend that carries on smoothly into the wall reads 0; one that folds back over the wall reads 180.
+///   This is the angle the oriented normals make once the sheets are sewn into one consistently oriented shell,
+///   whichever way each wall was oriented before, so it is the bound itself at every station;
+/// - the jump in normal curvature across the edge, both sides read against the blend's own normal. Always measured.
+StationStat measure_rim(
+    const Handle(Geom_BSplineSurface)& surface,
+    const TopoDS_Face& face,
+    double u,
+    double v_rim,
+    const TopoDS_Face& hint,
+    const std::vector<TopoDS_Face>& faces,
+    int side) {
+    StationStat stat;
+    try {
+        gp_Pnt point;
+        gp_Vec du;
+        gp_Vec dv;
+        surface->D1(u, v_rim, point, du, dv);
+        const double du_len = du.Magnitude();
+        if (!(du_len > 1e-12)) return stat;
+        const gp_Vec tangent = du / du_len;
+        gp_Vec across = v_rim > 0.5 ? dv : dv.Reversed();
+        across = project_off(across, tangent);
+        if (!(across.Magnitude() > 1e-12)) return stat;
+        across.Normalize();
+        const TopoDS_Face wall = face_along(faces, hint, point, tangent);
+        double su = 0.0;
+        double sv = 0.0;
+        if (!face_parameters(wall, point, su, sv)) return stat;
+        BRepAdaptor_Surface wall_adapt(wall);
+        BRepLProp_SLProps wall_props(wall_adapt, 2, 1e-9);
+        wall_props.SetParameters(su, sv);
+        if (!wall_props.IsNormalDefined()) return stat;
+        const Transverse out_of = transverse_at(wall, wall_props.Value(), tangent, side);
+        if (!out_of.ok || !(out_of.B.Magnitude() > 1e-12)) return stat;
+        gp_Vec inward = project_off(out_of.B.Reversed(), tangent);
+        if (!(inward.Magnitude() > 1e-12)) return stat;
+        inward.Normalize();
+        stat.samples = true;
+        stat.gap = point.Distance(wall_props.Value());
+        stat.angle = std::acos(clamp_unit(across.Dot(inward))) * (180.0 / M_PI);
+        BRepAdaptor_Surface blend_adapt(face);
+        BRepLProp_SLProps blend_props(blend_adapt, 2, 1e-9);
+        blend_props.SetParameters(u, v_rim);
+        if (!blend_props.IsNormalDefined()) return stat;
+        const gp_Vec blend_normal(blend_props.Normal());
+        const double align = gp_Vec(wall_props.Normal()).Dot(blend_normal) < 0.0 ? -1.0 : 1.0;
+        const double ks = curvature_perp(blend_props, 1.0, tangent);
+        const double kw = curvature_perp(wall_props, align, tangent);
+        if (std::isfinite(ks) && std::isfinite(kw)) stat.jump = std::abs(ks - kw);
+    } catch (const Standard_Failure&) {
+        stat.samples = false;
+    }
+    return stat;
+}
+
+/// True when the blend folds back on itself somewhere between its two rims at one of the stations: its normal
+/// vanishes, or turns over between two neighbouring samples across the span. A blend that bends round a U (two walls
+/// of one extrusion) turns its normal gradually through 180 degrees and is not a fold.
+bool blend_folds(const Handle(Geom_BSplineSurface)& surface) {
+    constexpr int kAcross = 32;
+    for (int s = 0; s < kHermiteStations; ++s) {
+        const double u = 0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1));
+        gp_Vec previous;
+        for (int k = 0; k <= kAcross; ++k) {
+            gp_Pnt point;
+            gp_Vec du;
+            gp_Vec dv;
+            surface->D1(u, static_cast<double>(k) / kAcross, point, du, dv);
+            gp_Vec normal = du.Crossed(dv);
+            const double scale = du.Magnitude() * dv.Magnitude();
+            if (!(scale > 1e-18) || normal.Magnitude() < 1e-9 * scale) return true;
+            normal.Normalize();
+            if (k > 0 && normal.Dot(previous) <= 0.0) return true;
+            previous = normal;
+        }
+    }
+    return false;
+}
+
 int need_degree(int order) {
     return order >= 2 ? 5 : 3;
 }
 
+/// The tension a side was sent, or 1 when it was sent none (NaN from Rust). A tension of 0 or less is a refusal.
 double tension_value(double raw, const char* side, std::string& error) {
-    if (raw < 0.0) {
+    if (std::isnan(raw)) {
+        return 1.0;
+    }
+    if (!(raw > 0.0) || !std::isfinite(raw)) {
         error = std::string(side) + " tension must be greater than 0.";
         return -1.0;
     }
-    return raw == 0.0 ? 1.0 : raw;
+    return raw;
 }
 
 struct SidePrep {
@@ -783,9 +864,6 @@ struct SplitPrep {
     gp_Vec A1_next;
 };
 
-gp_Vec project_off(const gp_Vec& v, const gp_Vec& unit_n) {
-    return v.Subtracted(unit_n.Multiplied(v.Dot(unit_n)));
-}
 
 bool shared_normal(
     const SplitPrep& split,
@@ -1336,6 +1414,10 @@ BuiltPiece build_one_piece(
         return {};
     }
 
+    // Step 10. `points` are the guide points that project into this piece. A guide moves only the free interior pole
+    // that weighs most at the guide, along N_c, never a boundary row, a ribbon row (one beside each boundary for G1,
+    // two for G2) or a split row. Moving it changes the surface only where that pole's basis reaches, and that basis
+    // and its first `depth` derivatives are zero on every boundary, so the asked continuity is kept.
     if (!points.empty() && max_radius > 0.0) {
         for (const std::array<double, 3>& raw : points) {
             const gp_Pnt guide(raw[0], raw[1], raw[2]);
@@ -1351,50 +1433,70 @@ BuiltPiece build_one_piece(
             } catch (const Standard_Failure&) {
             }
             const int depth = min_degree >= 5 ? 2 : 1;
-            int best_i = -1;
-            int best_j = -1;
-            double best_d = 1e300;
-            for (int i = 1 + depth; i <= surface->NbUPoles() - depth; ++i) {
-                for (int j = 1 + depth; j <= surface->NbVPoles() - depth; ++j) {
-                    const gp_Pnt pole = surface->Pole(i, j);
-                    const double d = std::abs(pole.Distance(centre) - guide.Distance(centre));
-                    if (d < best_d) {
-                        best_d = d;
-                        best_i = i;
-                        best_j = j;
-                    }
-                }
-            }
-            if (best_i < 0) continue;
-            double uu = 0.0;
-            double vv = 0.0;
-            try {
-                GeomAPI_ProjectPointOnSurf proj(guide, surface);
-                if (proj.NbPoints() > 0) proj.LowerDistanceParameters(uu, vv);
-                else {
-                    uu = 0.5;
-                    vv = 0.5;
-                }
-            } catch (const Standard_Failure&) {
-                uu = 0.5;
-                vv = 0.5;
-            }
-            std::vector<double> bu;
-            std::vector<double> bv;
-            bspline_basis(flat_knots_surface_u(surface), surface->UDegree(), surface->NbUPoles(), uu, bu);
-            bspline_basis(flat_knots_surface_v(surface), surface->VDegree(), surface->NbVPoles(), vv, bv);
-            const double scale = bu[static_cast<size_t>(best_i - 1)] * bv[static_cast<size_t>(best_j - 1)];
-            if (std::abs(scale) < 1e-8) continue;
-            gp_Pnt at;
-            surface->D0(uu, vv, at);
-            const gp_Vec gap(at, guide);
-            const double k = gap.Dot(gp_Vec(centre_normal)) / scale;
-            const gp_Pnt moved(surface->Pole(best_i, best_j).XYZ() + gp_Vec(centre_normal).XYZ() * k);
-            if (moved.Distance(centre) > 2.0 * max_radius) {
-                error = "A guide point would land farther from the centre than the fill allows.";
+            const int first_u = 2 + depth;
+            const int last_u = surface->NbUPoles() - 1 - depth;
+            const int first_v = 2 + depth;
+            const int last_v = surface->NbVPoles() - 1 - depth;
+            if (first_u > last_u || first_v > last_v) {
+                error = "A guide point needs a free pole inside the patch, and this piece has none.";
                 return {};
             }
-            surface->SetPole(best_i, best_j, moved);
+            bool reached = false;
+            for (int attempt = 0; attempt < 30 && !reached; ++attempt) {
+                double uu = 0.5;
+                double vv = 0.5;
+                double off = 1e300;
+                try {
+                    GeomAPI_ProjectPointOnSurf proj(guide, surface);
+                    if (proj.NbPoints() > 0) {
+                        proj.LowerDistanceParameters(uu, vv);
+                        off = proj.LowerDistance();
+                    }
+                } catch (const Standard_Failure&) {
+                }
+                if (off <= 1e-6) {
+                    reached = true;
+                    break;
+                }
+                std::vector<double> bu;
+                std::vector<double> bv;
+                bspline_basis(flat_knots_surface_u(surface), surface->UDegree(), surface->NbUPoles(), uu, bu);
+                bspline_basis(flat_knots_surface_v(surface), surface->VDegree(), surface->NbVPoles(), vv, bv);
+                int best_i = -1;
+                int best_j = -1;
+                double scale = 0.0;
+                for (int i = first_u; i <= last_u; ++i) {
+                    for (int j = first_v; j <= last_v; ++j) {
+                        const double weight = bu[static_cast<size_t>(i - 1)] * bv[static_cast<size_t>(j - 1)];
+                        if (weight > scale) {
+                            scale = weight;
+                            best_i = i;
+                            best_j = j;
+                        }
+                    }
+                }
+                if (best_i < 0 || scale < 1e-8) break;
+                gp_Pnt at;
+                surface->D0(uu, vv, at);
+                const double k = gp_Vec(at, guide).Dot(gp_Vec(centre_normal)) / scale;
+                if (std::abs(k) < 1e-12) break;
+                const gp_Pnt moved(surface->Pole(best_i, best_j).XYZ() + gp_Vec(centre_normal).XYZ() * k);
+                if (moved.Distance(centre) > 2.0 * max_radius) {
+                    error = "A guide point would land farther from the centre than the fill allows.";
+                    return {};
+                }
+                surface->SetPole(best_i, best_j, moved);
+            }
+            double off = 1e300;
+            try {
+                GeomAPI_ProjectPointOnSurf proj(guide, surface);
+                if (proj.NbPoints() > 0) off = proj.LowerDistance();
+            } catch (const Standard_Failure&) {
+            }
+            if (!(off <= kHermiteGapMm)) {
+                error = "A guide point is off the patch along its centre normal, so moving the free pole cannot reach it. Move the point over the opening.";
+                return {};
+            }
         }
     }
 
@@ -1478,7 +1580,6 @@ TopoDS_Shape fill_hermite_patch(
     const std::vector<std::vector<int>>& edge_ids,
     const std::vector<std::array<double, 3>>& points,
     std::string& error) {
-    const auto started = std::chrono::steady_clock::now();
     const int count = static_cast<int>(curves.size());
     if (count < 3 || count > 20 || static_cast<int>(faces.size()) != count || static_cast<int>(orders.size()) != count) {
         error = "A patch needs between 2 and 20 boundary curves or edges.";
@@ -1525,7 +1626,6 @@ TopoDS_Shape fill_hermite_patch(
             cloud.push_back(p);
             samples += 1;
         }
-        std::fprintf(stderr, "S5 hermite side=%d order=%d Ds=%.4f,%.4f,%.4f\n", i, side.order, side.Ds.X(), side.Ds.Y(), side.Ds.Z());
     }
     if (samples == 0) {
         error = "Open CASCADE could not fill this opening.";
@@ -1548,8 +1648,6 @@ TopoDS_Shape fill_hermite_patch(
     }
     double max_radius = 0.0;
     for (const gp_Pnt& p : cloud) max_radius = std::max(max_radius, centre.Distance(p));
-    std::fprintf(stderr, "S5 hermite centre=%.6f,%.6f,%.6f normal=%.4f,%.4f,%.4f\n",
-                 centre.X(), centre.Y(), centre.Z(), centre_normal.X(), centre_normal.Y(), centre_normal.Z());
 
     std::vector<SplitPrep> splits(static_cast<size_t>(count));
     for (int i = 0; i < count; ++i) {
@@ -1599,8 +1697,37 @@ TopoDS_Shape fill_hermite_patch(
     }
 
     const int min_degree = need_degree(max_order);
+    // Each guide point goes to the one piece it lies closest to, built without guides, and moves only that piece.
+    std::vector<std::vector<std::array<double, 3>>> guides_of(static_cast<size_t>(count));
+    if (!points.empty()) {
+        std::vector<Handle(Geom_BSplineSurface)> bare;
+        for (int i = 0; i < count; ++i) {
+            const BuiltPiece piece = build_one_piece(i, count, sides, splits, centre, centre_normal, min_degree, {}, max_radius, error);
+            if (piece.face.IsNull()) return {};
+            bare.push_back(piece.surface);
+        }
+        for (const std::array<double, 3>& raw : points) {
+            const gp_Pnt guide(raw[0], raw[1], raw[2]);
+            int nearest = -1;
+            double best = 1e300;
+            for (int i = 0; i < count; ++i) {
+                try {
+                    GeomAPI_ProjectPointOnSurf proj(guide, bare[static_cast<size_t>(i)]);
+                    if (proj.NbPoints() > 0 && proj.LowerDistance() < best) {
+                        best = proj.LowerDistance();
+                        nearest = i;
+                    }
+                } catch (const Standard_Failure&) {
+                }
+            }
+            if (nearest < 0) {
+                error = "A guide point does not lie over this opening.";
+                return {};
+            }
+            guides_of[static_cast<size_t>(nearest)].push_back(raw);
+        }
+    }
     std::vector<EdgeReport> reports;
-    int refinements = 0;
     bool too_short = false;
     std::vector<BuiltPiece> pieces;
     for (int round = 0; round <= kHermiteRefineCap; ++round) {
@@ -1609,7 +1736,7 @@ TopoDS_Shape fill_hermite_patch(
         bool failed = false;
         error.clear();
         for (int i = 0; i < count; ++i) {
-            BuiltPiece piece = build_one_piece(i, count, sides, splits, centre, centre_normal, min_degree, points, max_radius, error);
+            BuiltPiece piece = build_one_piece(i, count, sides, splits, centre, centre_normal, min_degree, guides_of[static_cast<size_t>(i)], max_radius, error);
             if (piece.face.IsNull()) return {};
             pieces.push_back(piece);
         }
@@ -1693,18 +1820,10 @@ TopoDS_Shape fill_hermite_patch(
             max_angle = std::max(max_angle, report.angle);
             max_jump = std::max(max_jump, report.jump);
         }
-        std::fprintf(stderr, "S5 hermite refine=%d maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n", round, max_gap, max_angle, max_jump);
-        if (!failed || too_short || round == kHermiteRefineCap) {
-            refinements = round;
-            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-            for (const EdgeReport& report : reports) {
-            std::fprintf(stderr, "S5 hermite edge=%s side=%d asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g\n",
-                         report.which, report.side, report.asked, report.gap, report.angle, report.angle_dev, report.jump);
-            }
-            std::fprintf(stderr, "S5 hermite sides=%d maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
-                         count, max_order, refinements, ms, max_gap, max_angle, max_jump);
+        if (!failed || too_short || round == kHermiteRefineCap || past_deadline()) {
+            note_last_fill(reports, round, failed);
             if (failed) {
-                error = refusal_sentence(reports, sides);
+                error = past_deadline() ? deadline_message() : refusal_sentence(reports, sides);
                 return {};
             }
             break;
@@ -1715,37 +1834,21 @@ TopoDS_Shape fill_hermite_patch(
     return acc;
 }
 
-void log_blend_weights(const Handle(Geom_BSplineSurface)& surface, int round, const char* when) {
-    if (surface.IsNull() || !(surface->IsURational() || surface->IsVRational())) return;
-    const int n = surface->NbUPoles();
-    const int nv = surface->NbVPoles();
-    std::fprintf(stderr, "S5 hermite blend weights when=%s round=%d rows=%d poles=%d\n", when, round, nv, n);
-    for (int j = 1; j <= nv; ++j) {
-        double lo = 0.0;
-        double hi = 0.0;
-        for (int i = 1; i <= n; ++i) {
-            const double w = surface->Weight(i, j);
-            if (i == 1 || w < lo) lo = w;
-            if (i == 1 || w > hi) hi = w;
-        }
-        const double w1 = surface->Weight(1, j);
-        const double w2 = surface->Weight(std::min(2, n), j);
-        std::fprintf(stderr, "S5 hermite blend weight row=%d pole1=%.8f pole2=%.8f min=%.8f max=%.8f\n", j, w1, w2, lo, hi);
-    }
-}
-
 TopoDS_Shape fill_hermite_blend(
     const TopoDS_Shape& current,
     Handle(Geom_BSplineCurve) a,
     Handle(Geom_BSplineCurve) b,
     const TopoDS_Face& face_a,
     const TopoDS_Face& face_b,
+    const std::vector<TopoDS_Face>& faces_a,
+    const std::vector<TopoDS_Face>& faces_b,
+    const std::vector<int>& ids_a,
+    const std::vector<int>& ids_b,
     int order_a,
     int order_b,
     double tension_a,
     double tension_b,
     std::string& error) {
-    const auto started = std::chrono::steady_clock::now();
     if (a.IsNull() || b.IsNull()) {
         error = "A blend needs two open edges or chains. Pick one chain on each sheet.";
         return {};
@@ -1769,7 +1872,6 @@ TopoDS_Shape fill_hermite_blend(
     const int deg_v = order >= 2 ? 5 : 3;
     const int nv = deg_v + 1;
     std::vector<double> extra;
-    int refinements = 0;
     bool too_short = false;
     Handle(Geom_BSplineSurface) surface;
     TopoDS_Face face;
@@ -1804,7 +1906,7 @@ TopoDS_Shape fill_hermite_blend(
             gp_Pnt point;
             gp_Vec tangent;
             curve->D1(t, point, tangent);
-            const TopoDS_Face support_here = face_along(current, support, point, tangent);
+            const TopoDS_Face support_here = face_along(far_side ? faces_b : faces_a, support, point, tangent);
             const Transverse got = transverse_at(support_here, point, tangent, far_side ? 1 : 0);
             if (!got.ok) {
                 error = got.error;
@@ -1896,7 +1998,6 @@ TopoDS_Shape fill_hermite_blend(
             return {};
         }
         face = maker.Face();
-        if (rational && round == 0) log_blend_weights(surface, round, "initial");
         gp_Pnt mid;
         gp_Vec du;
         gp_Vec dv;
@@ -1913,6 +2014,9 @@ TopoDS_Shape fill_hermite_blend(
                 if (du.Crossed(dv).Dot(gp_Vec(sn)) < 0.0) face.Reverse();
             }
         }
+        // Every station is measured on its own: the gap under 1e-4 mm, the angle (step measure_rim) under 0.1° where G1
+        // or G2 was asked, the curvature jump at most 1e-3 per mm where G2 was asked. A side whose wall it cannot read
+        // has not met them. Nothing outside those bounds is kept, and nothing is left for Sew to sort out.
         EdgeReport ra;
         ra.which = "outer";
         ra.side = 0;
@@ -1921,106 +2025,51 @@ TopoDS_Shape fill_hermite_blend(
         rb.which = "outer";
         rb.side = 1;
         rb.asked = order_b;
+        bool fold_a = false;
+        bool fold_b = false;
         for (int s = 0; s < kHermiteStations; ++s) {
             const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1));
-            gp_Pnt point;
-            gp_Vec ddu;
-            gp_Vec ddv;
-            surface->D1(frac, 0.0, point, ddu, ddv);
-            double uu = 0.0;
-            double vv = 0.0;
-            if (face_parameters(face_a, point, uu, vv)) {
-                const StationStat stat = measure_faces(face, surface, frac, 0.0, face_a, BRep_Tool::Surface(face_a), uu, vv, ddu);
-                if (stat.samples) note_station(ra, stat, frac);
+            const StationStat stat_a = measure_rim(surface, face, frac, 0.0, face_a, faces_a, 0);
+            if (stat_a.samples) {
+                note_station(ra, stat_a, frac);
+                fold_a = fold_a || (order_a >= 1 && stat_a.angle > 90.0);
             }
-            surface->D1(frac, 1.0, point, ddu, ddv);
-            if (face_parameters(face_b, point, uu, vv)) {
-                const StationStat stat = measure_faces(face, surface, frac, 1.0, face_b, BRep_Tool::Surface(face_b), uu, vv, ddu);
-                if (stat.samples) note_station(rb, stat, frac);
+            const StationStat stat_b = measure_rim(surface, face, frac, 1.0, face_b, faces_b, 1);
+            if (stat_b.samples) {
+                note_station(rb, stat_b, frac);
+                fold_b = fold_b || (order_b >= 1 && stat_b.angle > 90.0);
             }
         }
-        // The derivative that leaves the edge into the blend must point along
-        // that wall's outward B. At v = 1 the parameter runs into the edge, so
-        // the leaving direction is −∂S/∂v.
-        auto leaving_outward = [&](const Handle(Geom_BSplineCurve)& curve, const TopoDS_Face& wall, double u, double v, double into) -> bool {
-            gp_Pnt point;
-            gp_Vec du;
-            gp_Vec dv;
-            surface->D1(u, v, point, du, dv);
-            gp_Pnt on_curve;
-            gp_Vec tangent;
-            curve->D1(u, on_curve, tangent);
-            const Transverse got = transverse_at(face_along(current, wall, point, tangent), point, tangent, 0);
-            if (!got.ok) return false;
-            return dv.Multiplied(into).Dot(got.B) >= 0.0;
-        };
-        ra.side_ok = true;
-        rb.side_ok = true;
-        if (order_a >= 1 || order_b >= 1) {
-            for (int s = 0; s < kHermiteStations; ++s) {
-                const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kHermiteStations - 1));
-                if (order_a >= 1 && !leaving_outward(ua, face_a, frac, 0.0, 1.0)) ra.side_ok = false;
-                if (order_b >= 1 && !leaving_outward(ub, face_b, frac, 1.0, -1.0)) rb.side_ok = false;
-            }
-        }
-        ra.fail = edge_fails(ra);
-        rb.fail = edge_fails(rb);
-        const double max_gap = std::max(ra.gap, rb.gap);
-        const double max_angle = std::max(ra.angle, rb.angle);
-        const double max_jump = std::max(ra.jump, rb.jump);
-        std::fprintf(stderr, "S5 hermite blend refine=%d maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n", round, max_gap, max_angle, max_jump);
-        if ((!ra.fail && !rb.fail) || too_short || round == kHermiteRefineCap) {
-            refinements = round;
-            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-            log_blend_weights(surface, round, "final");
-            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g sideOk=%d\n",
-                         order_a, ra.gap, ra.angle, ra.angle_dev, ra.jump, ra.side_ok ? 1 : 0);
-            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g sideOk=%d\n",
-                         order_b, rb.gap, rb.angle, rb.angle_dev, rb.jump, rb.side_ok ? 1 : 0);
-            std::fprintf(stderr, "S5 hermite sides=2 maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
-                         order, refinements, ms, max_gap, max_angle, max_jump);
-            // Anti-parallel normals are an orientation flip when the blend
-            // leaves along B, and a fold when it does not. A reversed ribbon
-            // reads about 0° after the face is turned over, and the side test
-            // still fails: that is a fold too. The angle is not folded to make
-            // the bound pass.
-            const bool fold = blend_is_fold(ra) || blend_is_fold(rb);
-            if (fold && (too_short || round == kHermiteRefineCap || (!ra.fail && !rb.fail))) {
-                error = fold_sentence(ra, rb);
-                return {};
-            }
-            if (ra.fail || rb.fail) {
-                if (blend_hand_to_sew(ra, rb) && (too_short || round == kHermiteRefineCap)) {
-                    error.clear();
-                    break;
-                }
-                error = miss_sentence(std::vector<EdgeReport>{ra, rb});
-                return {};
-            }
-            break;
-        }
-        const double frac = ra.angle >= rb.angle ? ra.worst_frac : rb.worst_frac;
-        if (!push_knot(extra, ua, frac, too_short) && too_short) {
-            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-            log_blend_weights(surface, round, "final");
-            std::fprintf(stderr, "S5 hermite edge=outer side=0 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g sideOk=%d\n",
-                         order_a, ra.gap, ra.angle, ra.angle_dev, ra.jump, ra.side_ok ? 1 : 0);
-            std::fprintf(stderr, "S5 hermite edge=outer side=1 asked=%d gapMm=%.6g angleDeg=%.6g angleDevDeg=%.6g curvatureJump=%.6g sideOk=%d\n",
-                         order_b, rb.gap, rb.angle, rb.angle_dev, rb.jump, rb.side_ok ? 1 : 0);
-            std::fprintf(stderr, "S5 hermite sides=2 maxContinuity=%d refinements=%d ms=%.3f maxGapMm=%.6g maxAngleDeg=%.6g maxJump=%.6g\n",
-                         order, round, ms, max_gap, max_angle, max_jump);
-            if ((blend_is_fold(ra) || blend_is_fold(rb)) && (too_short || (!ra.fail && !rb.fail))) {
-                error = fold_sentence(ra, rb);
-                return {};
-            }
-            if (blend_hand_to_sew(ra, rb)) {
-                error.clear();
-                break;
-            }
-            error = miss_sentence(std::vector<EdgeReport>{ra, rb});
+        // A rim that meets no face (G0 to a bare curve) is that curve's poles, so it meets its edge exactly.
+        ra.fail = !face_a.IsNull() && (edge_fails(ra) || ra.score < 0.0);
+        rb.fail = !face_b.IsNull() && (edge_fails(rb) || rb.score < 0.0);
+        if (fold_a || fold_b) {
+            note_last_fill({ra, rb}, round, true);
+            const std::string a_text = edges_phrase(ids_a, "Side A");
+            const std::string b_text = edges_phrase(ids_b, "Side B");
+            error = fold_a && fold_b ? a_text + " and " + b_text + " fold back into their faces."
+                : (fold_a ? a_text : b_text) + " folds back into the face.";
             return {};
         }
-        (void)nu;
+        if (blend_folds(surface)) {
+            note_last_fill({ra, rb}, round, true);
+            error = "The blend folds back on itself between " + edges_phrase(ids_a, "side A") + " and "
+                + edges_phrase(ids_b, "side B") + ". Pick edges that face each other, or lower the tension.";
+            return {};
+        }
+        if (!ra.fail && !rb.fail) {
+            note_last_fill({ra, rb}, round, false);
+            break;
+        }
+        // A bound is missed: refine the worst span, and refuse once no span can take another knot.
+        const EdgeReport& worst = ra.score >= rb.score ? ra : rb;
+        const bool pushed = push_knot(extra, ua, worst.worst_frac, too_short);
+        if (round == kHermiteRefineCap || (!pushed && too_short) || past_deadline()) {
+            note_last_fill({ra, rb}, round, true);
+            error = past_deadline() ? deadline_message() : miss_sentence(std::vector<EdgeReport>{ra, rb});
+            return {};
+        }
     }
+    (void)nu;
     return compound_with(current, face);
 }

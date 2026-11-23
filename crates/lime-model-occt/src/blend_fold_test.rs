@@ -163,14 +163,21 @@ fn blend_refuses_a_ribbon_that_folds_back_into_the_face() {
         }
     }));
     let error = reply["error"].as_str().unwrap_or("").to_string();
-    eprintln!("S5 fold refusal: {error}");
     assert!(
         reply.get("solid").is_none(),
         "a fold builds no face: {reply}"
     );
+    let named = |ids: &[usize]| {
+        let mut text = format!("{} {}", if ids.len() == 1 { "Edge" } else { "Edges" }, ids[0]);
+        for (i, id) in ids.iter().enumerate().skip(1) {
+            text += &format!("{}{id}", if i + 1 == ids.len() { " and " } else { ", " });
+        }
+        text
+    };
     assert_eq!(
-        error, "Edge A folds back into the face.",
-        "a reversed ribbon must be refused as a fold, got {reply}"
+        error,
+        format!("{} folds back into the face.", named(&outer)),
+        "a reversed ribbon must be refused as a fold, naming side A's edges, got {reply}"
     );
     ok(json!({ "call": "close", "key": key }));
 }

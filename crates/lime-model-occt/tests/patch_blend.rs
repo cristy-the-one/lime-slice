@@ -17,10 +17,37 @@ use serde_json::{json, Value};
 /// which is the plan's curvature jump of at most 1e-3 mm^-1.
 const G0_GAP_MM: f64 = 1e-4;
 const G1_ANGLE_DEG: f64 = 0.1;
-const G2_JUMP: f64 = 0.05;
+const G2_JUMP: f64 = 1e-3;
 const ON_CURVE_MM: f64 = 1e-3;
 /// Fine enough that a point on the curve is within `ON_CURVE_MM` of the sampled polyline.
 const CHORD_MM: f64 = 5e-4;
+
+/// The blend's or patch's own measure at its stations, as the op took it (debug builds: the `testLastFill` hook). Every
+/// edge must be inside the bounds at the op itself, not only after a Sew.
+fn assert_op_time(case_name: &str, continuity: &str) {
+    #[cfg(lime_occt_test_hooks)]
+    {
+        let report = call(json!({ "call": "testLastFill" }));
+        assert_eq!(report["refused"], json!(false), "{case_name}: {report}");
+        let edges = report["edges"].as_array().cloned().unwrap_or_default();
+        assert!(!edges.is_empty(), "{case_name}: no op-time measure: {report}");
+        for edge in &edges {
+            let gap = edge["gapMm"].as_f64().unwrap_or(99.0);
+            let angle = edge["angleDeg"].as_f64().unwrap_or(99.0);
+            let jump = edge["curvatureJump"].as_f64().unwrap_or(99.0);
+            println!("S5 op-time case={case_name} {edge}");
+            assert!(gap < G0_GAP_MM, "{case_name}: op-time gap {gap} mm: {report}");
+            if continuity != "g0" {
+                assert!(angle < G1_ANGLE_DEG, "{case_name}: op-time angle {angle}°: {report}");
+            }
+            if continuity == "g2" {
+                assert!(jump <= 1e-3, "{case_name}: op-time curvature jump {jump} per mm: {report}");
+            }
+        }
+    }
+    #[cfg(not(lime_occt_test_hooks))]
+    let _ = (case_name, continuity);
+}
 
 fn call(request: Value) -> Value {
     let text = lime_model_occt::tree(&request.to_string());
@@ -733,9 +760,47 @@ fn fill_opening(
         "op": patch_op(&asked, point)
     }));
     assert_eq!(patched["solid"], json!(false), "{case_name} patch stays a sheet");
+    if asked.iter().any(|side| side.continuity != "g0") {
+        assert_op_time(case_name, asked.iter().map(|side| side.continuity).max().unwrap_or("g0"));
+    }
+    if let Some(guide) = point {
+        // The op itself refuses a guide it cannot bring within 1e-4 mm. The mesh, at a 5e-4 mm chord, must pass
+        // within that chord and the bound of the guide.
+        let off = mesh_distance(&patched, guide);
+        println!("S5 report case={case_name} guide={guide:?} meshDistanceMm={off}");
+        assert!(off <= CHORD_MM + G0_GAP_MM, "{case_name}: the patch passes {off} mm from the guide point");
+    }
     let sewn = finish_sheet(case_name, &key, 1, 2, true, 0.05);
     check_opening(case_name, &key, 2, &sewn, &asked, expect_splits, sharp_count);
     ok(json!({ "call": "close", "key": key }));
+}
+
+/// The nearest a reply's triangles come to `point`.
+fn mesh_distance(reply: &Value, point: [f64; 3]) -> f64 {
+    let positions = decode_f32(reply["positions"].as_str().expect("positions"));
+    let corner = |k: usize| [positions[k * 3] as f64, positions[k * 3 + 1] as f64, positions[k * 3 + 2] as f64];
+    (0..positions.len() / 9)
+        .map(|t| point_triangle_distance(point, corner(t * 3), corner(t * 3 + 1), corner(t * 3 + 2)))
+        .fold(f64::MAX, f64::min)
+}
+
+fn point_triangle_distance(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    let n = cross(sub(b, a), sub(c, a));
+    let area2 = norm(n);
+    if area2 > 1e-15 {
+        let unit = scale(n, 1.0 / area2);
+        let h = dot(sub(p, a), unit);
+        let q = sub(p, scale(unit, h));
+        let inside = [(a, b), (b, c), (c, a)]
+            .iter()
+            .all(|(u, v)| dot(cross(sub(*v, *u), sub(q, *u)), n) >= 0.0);
+        if inside {
+            return h.abs();
+        }
+    }
+    point_segment_distance(p, a, b)
+        .min(point_segment_distance(p, b, c))
+        .min(point_segment_distance(p, c, a))
 }
 
 fn plane_distance(point: [f64; 3], origin: [f64; 3], normal: [f64; 3]) -> f64 {
@@ -938,12 +1003,69 @@ fn patch_fills_three_five_and_six_sided_openings_and_sews_them_solid() {
 }
 
 #[test]
-fn patch_uses_geomfill_for_a_clean_g0_quad_and_plate_when_a_guide_point_is_set() {
+fn patch_uses_geomfill_for_a_clean_g0_quad_and_hermite_pieces_when_a_guide_point_is_set() {
     if !has_occt() {
         return;
     }
     fill_opening("4-side-g0", 4, |_, _| "g0", None, false, None);
     fill_opening("4-side-g0-point", 4, |_, _| "g0", Some([0.0, 0.0, 12.0]), true, None);
+}
+
+#[test]
+fn a_guide_point_keeps_g1_on_every_asked_edge() {
+    if !has_occt() {
+        return;
+    }
+    // Over the middle of one piece, 0.5 mm above the patch the opening gets without a guide, so the free pole has to
+    // move. Every side and split is still checked at G1 after the move, and the patch passes through the point.
+    let key = "s5-4-side-g1-plain";
+    let opened = ok(json!({ "call": "open", "key": key, "chordMm": CHORD_MM, "feature": opening_sheet(4) }));
+    let asked = top_sides(&opened, |_, _| "g1");
+    let plain = ok(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": CHORD_MM, "op": patch_op(&asked, None) }));
+    let (x, y) = (7.0, 0.5);
+    let z = height_at(&plain, x, y).expect("the plain patch lies over the guide's x, y");
+    ok(json!({ "call": "close", "key": key }));
+    fill_opening("4-side-g1-point", 4, |_, _| "g1", Some([x, y, z + 0.5]), true, None);
+}
+
+/// The highest point of a reply's triangles straight above or below `x`, `y`.
+fn height_at(reply: &Value, x: f64, y: f64) -> Option<f64> {
+    let positions = decode_f32(reply["positions"].as_str().expect("positions"));
+    let mut best: Option<f64> = None;
+    for t in positions.chunks_exact(9) {
+        let p = |k: usize| [t[k * 3] as f64, t[k * 3 + 1] as f64, t[k * 3 + 2] as f64];
+        let (a, b, c) = (p(0), p(1), p(2));
+        let det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+        if det.abs() < 1e-15 {
+            continue;
+        }
+        let l1 = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / det;
+        let l2 = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / det;
+        let l3 = 1.0 - l1 - l2;
+        if l1 < -1e-9 || l2 < -1e-9 || l3 < -1e-9 {
+            continue;
+        }
+        let z = l1 * a[2] + l2 * b[2] + l3 * c[2];
+        best = Some(best.map_or(z, |have: f64| have.max(z)));
+    }
+    best
+}
+
+#[test]
+fn a_blend_refuses_a_tension_of_zero_or_less() {
+    if !has_occt() {
+        return;
+    }
+    for tension in [0.0, -1.0] {
+        let key = format!("s5-blend-tension-{tension}");
+        let reply = blend_apply_tension(&key, tension);
+        assert_eq!(
+            reply["error"].as_str(),
+            Some("Side A tension must be greater than 0."),
+            "tension {tension}: {reply}"
+        );
+        ok(json!({ "call": "close", "key": key }));
+    }
 }
 
 #[test]
@@ -1039,6 +1161,7 @@ fn blend_surface_meets_g1_and_g2_between_two_sheets() {
             }
         }));
         assert_eq!(blended["solid"], json!(false), "a blend is a sheet until it is sewn");
+        assert_op_time(&case_name, continuity);
         let sewn = finish_sheet(&case_name, &key, 3, 4, false, 0.05);
         check_opening(&case_name, &key, 4, &sewn, &sides, false, None);
         ok(json!({ "call": "close", "key": key }));
@@ -1096,7 +1219,16 @@ fn patch_refuses_g2_on_a_radius_24_cap() {
     ok(json!({ "call": "close", "key": key }));
 }
 
+/// The polynomial-rim tubes, blended at G1 with side A's tension set to `tension`.
+fn blend_apply_tension(key: &str, tension: f64) -> Value {
+    blend_apply_with(key, "g1", circle_curve, tension).0
+}
+
 fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) -> (Value, Vec<SideCurve>) {
+    blend_apply_with(key, continuity, rim, 1.0)
+}
+
+fn blend_apply_with(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value, tension_a: f64) -> (Value, Vec<SideCurve>) {
     let outer_r = 18.0;
     let inner_r = 10.0;
     let height = 16.0;
@@ -1170,7 +1302,7 @@ fn blend_apply(key: &str, continuity: &'static str, rim: fn(f64, f64) -> Value) 
             "a": { "edges": sides[0].edges, "continuity": continuity },
             "b": { "edges": sides[1].edges, "continuity": continuity },
             "continuity": continuity,
-            "tensionA": 1.0,
+            "tensionA": tension_a,
             "tensionB": 1.0
         }
     }));
@@ -1194,6 +1326,7 @@ fn blend_meets_g1_and_g2_on_exact_circle_rims() {
             "exact circles must meet {continuity}: {reply}"
         );
         assert_eq!(reply["solid"], json!(false), "a blend is a sheet until it is sewn");
+        assert_op_time(&case_name, continuity);
         let sewn = finish_sheet(&case_name, &key, 3, 4, false, 0.05);
         check_opening(&case_name, &key, 4, &sewn, &sides, false, None);
         ok(json!({ "call": "close", "key": key }));
@@ -1205,16 +1338,15 @@ fn blend_meets_g1_between_concentric_elliptical_faces() {
     if !has_occt() {
         return;
     }
-    // Two flat annular faces. Each is an ellipse with a concentric elliptical hole,
-    // at two heights. The outward ribbon of the outer rim turns a full revolution,
-    // so a sum of the samples cancels. Same bounds as the other blends.
+    // Two flat elliptical faces at two heights. The outward ribbon of the rim turns a
+    // full revolution, so a sum of the samples cancels. Same bounds as the other blends.
     let a = 22.0;
     let b = 12.0;
     let lower_z = 0.0;
     let upper_z = 10.0;
     let case_name = "blend-ellipse-g1";
     let key = format!("s5-{case_name}");
-    let annulus = |z: f64| json!([ellipse_curve(a, b, z), ellipse_curve(a * 0.5, b * 0.5, z)]);
+    let annulus = |z: f64| json!([ellipse_curve(a, b, z)]);
     ok(json!({
         "call": "open",
         "key": key,
@@ -1243,7 +1375,6 @@ fn blend_meets_g1_between_concentric_elliptical_faces() {
         let z = centroid(&edge.points)[2];
         let rho = edge.points.iter().map(|p| ((p[0] / a).powi(2) + (p[1] / b).powi(2)).sqrt()).sum::<f64>()
             / edge.points.len() as f64;
-        // The hole is the inner ellipse. The blend is the outer rim.
         if rho < 0.75 {
             continue;
         }
@@ -1275,6 +1406,7 @@ fn blend_meets_g1_between_concentric_elliptical_faces() {
     }));
     assert!(reply.get("error").is_none(), "elliptical faces must meet g1: {reply}");
     assert_eq!(reply["solid"], json!(false), "a blend is a sheet until it is sewn");
+    assert_op_time(case_name, "g1");
     let sewn = finish_sheet(case_name, &key, 2, 3, true, 0.05);
     check_opening(case_name, &key, 3, &sewn, &sides, false, None);
     ok(json!({ "call": "close", "key": key }));

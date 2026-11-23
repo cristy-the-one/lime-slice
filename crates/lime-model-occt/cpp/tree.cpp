@@ -4034,6 +4034,11 @@ LimeShape* lime_tree_test_place(const LimeShape* shape, int mirror, const double
     }
 }
 
+/// Debug builds only, for tests: the last Hermite patch or blend's own measure, as JSON (kernel.cpp note_last_fill).
+char* lime_tree_test_last_fill() {
+    return alloc(last_fill_report());
+}
+
 LimeShape* lime_tree_test_nurbs(const LimeShape* shape, char** error) {
     try {
         LIME_CATCH_FAULTS;

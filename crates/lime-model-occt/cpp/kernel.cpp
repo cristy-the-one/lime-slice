@@ -9790,8 +9790,6 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
             }
             if (merged) continue;
             sharp_vertices.push_back(SharpVertex{at, ba, bb, worst});
-            std::fprintf(stderr, "S5 sharpVertex at=%.6g,%.6g,%.6g faces=%d,%d angleDeg=%.6g\n",
-                         at.X(), at.Y(), at.Z(), ba, bb, worst);
         }
     }
 
@@ -11223,16 +11221,10 @@ TopoDS_Shape build_sheet_only(const SheetSpec& spec, const Held* held_for_edges,
             return loft.Shape();
         }
         if (spec.mode == 3) {
-            // Planar face bounded by a closed 3D curve. Further curves are holes.
+            // Planar face bounded by a closed 3D curve.
             TopoDS_Wire w = curve3d_wire(spec.curves[0], held_for_edges, error);
             if (w.IsNull()) return {};
             BRepBuilderAPI_MakeFace mf(w, Standard_True);
-            for (size_t hole_index = 1; hole_index < spec.curves.size(); ++hole_index) {
-                TopoDS_Wire hole = curve3d_wire(spec.curves[hole_index], held_for_edges, error);
-                if (hole.IsNull()) return {};
-                hole.Reverse();
-                mf.Add(hole);
-            }
             if (!mf.IsDone() || mf.Face().IsNull()) {
                 error = "The boundary curve is not a closed planar loop.";
                 return {};
@@ -12186,7 +12178,22 @@ TopoDS_Shape build_blend(
     Handle(Geom_BSplineCurve) curve_a = chain_to_bspline(edges_a, error);
     Handle(Geom_BSplineCurve) curve_b = chain_to_bspline(edges_b, error);
     if (curve_a.IsNull() || curve_b.IsNull()) return {};
-    return fill_hermite_blend(current, curve_a, curve_b, face_a, face_b, order_a, order_b, tension_a, tension_b, error);
+    TopTools_IndexedDataMapOfShapeListOfShape beside;
+    if (!current.IsNull()) TopExp::MapShapesAndAncestors(current, TopAbs_EDGE, TopAbs_FACE, beside);
+    const auto faces_beside = [&beside](const std::vector<TopoDS_Edge>& edges) {
+        std::vector<TopoDS_Face> faces;
+        for (const TopoDS_Edge& edge : edges) {
+            const int at = beside.FindIndex(edge);
+            if (at <= 0) continue;
+            for (const TopoDS_Shape& face : beside.FindFromIndex(at)) {
+                const bool seen = std::any_of(faces.begin(), faces.end(), [&face](const TopoDS_Face& have) { return have.IsSame(face); });
+                if (!seen) faces.push_back(TopoDS::Face(face));
+            }
+        }
+        return faces;
+    };
+    return fill_hermite_blend(current, curve_a, curve_b, face_a, face_b, faces_beside(edges_a), faces_beside(edges_b),
+                              spec.a.edges, spec.b.edges, order_a, order_b, tension_a, tension_b, error);
 }
 
 }  // namespace lime_occt

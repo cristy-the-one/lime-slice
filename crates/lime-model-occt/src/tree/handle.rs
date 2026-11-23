@@ -369,6 +369,10 @@ impl Store {
                 ))
             }
             #[cfg(lime_occt_test_hooks)]
+            Request::TestLastFill => Ok(Answer::Plain(
+                super::shape::take_text(unsafe { super::ffi::lime_tree_test_last_fill() }).unwrap_or_default(),
+            )),
+            #[cfg(lime_occt_test_hooks)]
             Request::TestMesh { key, node, chord_mm } => {
                 self.ensure(&key, node)?;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);

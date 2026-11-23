@@ -552,6 +552,8 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_test_last_fill() -> *mut c_char;
+    #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_nurbs(shape: *const RawShape, error: *mut *mut c_char) -> *mut RawShape;
     #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_mesh(shape: *mut RawShape, chord: f64, error: *mut *mut c_char) -> *mut c_char;
