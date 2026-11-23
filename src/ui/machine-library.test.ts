@@ -381,26 +381,32 @@ const copyKept = ensureBuiltins(userCopy).printers.find((printer) => printer.id 
 check("a user copy of the IR3 V2 is left alone", copyKept?.maxBedC === 120 && copyKept.startGcode === "" && copyKept.startOwnsHoming === false);
 const start = (refreshed?.startGcode ?? "").split("\n");
 check(
-  "the IR3 V2 zig-zag cleans the nozzle first, then the lines across the belt end where Z is zeroed on the part's first wall ({purge_line_z})",
-  start.includes("G1 X6.67 Z23.4 E1.85") && start.indexOf("G1 X6.67 Z23.4 E1.85") < start.indexOf("G1 X250 E25 F2000") && start.indexOf("G1 X0 E25 F2000") + 1 === start.indexOf("G92 E0 Z{purge_line_z}"),
+  "the IR3 V2 zig-zag cleans the nozzle first, then a strip of eight slow lines across the belt ends where Z is zeroed on the part's first wall ({purge_line_z})",
+  start.includes("G1 X6.67 Z23.4 E1.85") && start.indexOf("G1 X6.67 Z23.4 E1.85") < start.indexOf("G1 X250 E25 F1200") && start.filter((line) => / E25 F1200$/.test(line)).length === 8 && start.lastIndexOf("G1 X0 E25 F1200") + 1 === start.indexOf("G92 E0 Z{purge_line_z}") && start.indexOf("G1 Z34 F900") + 2 === start.indexOf("G92 E0 Z{purge_line_z}"),
 );
 const gentle = start.find((line) => line.startsWith("M204 S500"));
 check(
   "the IR3 V2 lays its purge and the lines across at 500 mm/s², set before the first move that extrudes onto the belt",
   gentle !== undefined && start.indexOf(gentle) > start.indexOf("G92 Z0") && start.indexOf(gentle) < start.indexOf("G1 Z0.4 F900") && start.indexOf("G1 Z0.4 F900") < start.indexOf("G1 Z5.4 E1. F1200"),
 );
+// 7.1's text: the strip is the two lines across, placed against the part.
+const stripFrom = start.findIndex((line) => line.startsWith("; a strip across the belt"));
+const stripTo = start.indexOf("G92 E0 Z{purge_line_z}");
+const twoLines = ["; two lines across the belt, there and back, 25 mm of filament each. The belt is zeroed so the", "; line's far edge reaches the middle of the part's first wall ({purge_line_z}, worked out from", "; the file): the line is placed against the part and holds it to the belt.", "G1 X0 F6000", "G1 X250 E25 F2000", "G1 Z28.8 F900", "G1 X0 E25 F2000"];
+const asShipped71 = [...start.slice(0, stripFrom), ...twoLines, ...start.slice(stripTo)].join("\n");
+check("the strip replaces 7.1's two lines across the belt", stripFrom > 0 && stripTo > stripFrom && asShipped71 !== start.join("\n"));
 // 6.12's text: the same, without the gentle purge.
-const asShipped612 = start.filter((line) => line !== gentle).join("\n");
+const asShipped612 = asShipped71.split("\n").filter((line) => line !== gentle).join("\n");
 const across = ["; two lines across the belt, there and back, 25 mm of filament each. Z is zeroed on the", "; second, so the part's first layer starts against it and the line holds it to the belt.", "G1 X0 F6000", "G1 X250 E25 F2000", "G1 Z28.8 F900", "G1 X0 E25 F2000"];
 // 5.2.1's text: the belt zeroed on the second line.
 const asShipped521 = asShipped612
   .split("\n")
   .flatMap((line) => line.startsWith("; two lines across the belt") ? across.slice(0, 2) : line.startsWith("; line's far edge") || line.startsWith("; the file): the line") ? [] : [line === "G92 E0 Z{purge_line_z}" ? "G92 E0 Z0" : line])
   .join("\n");
-check("the current IR3 V2 start says the line is placed against the part", start.some((line) => line.includes("placed against the part")) && !asShipped521.includes("purge_line_z"));
+check("the current IR3 V2 start says the part starts on the strip", start.some((line) => line.includes("the part starts on the strip")) && asShipped71.includes("placed against the part") && !asShipped521.includes("purge_line_z"));
 const zigzagOnly = asShipped521.split("\n").filter((line) => !across.includes(line)).join("\n");
 const linesFirst = zigzagOnly.replace("G1 X0 Z0.4 F6000\n", "G1 X0 Z0.4 F6000\n; two lines across the belt, there and back, 25 mm of filament each\nG1 X250 E25 F2000\nG1 Z0.8 F900\nG1 X0 E25 F2000\n");
-for (const [name, old] of [["the old zig-zag-only start", zigzagOnly], ["#564's lines-first start", linesFirst], ["5.2.1's start, the belt zeroed on the second line", asShipped521], ["6.12's start, without the gentle purge", asShipped612]] as const) {
+for (const [name, old] of [["the old zig-zag-only start", zigzagOnly], ["#564's lines-first start", linesFirst], ["5.2.1's start, the belt zeroed on the second line", asShipped521], ["6.12's start, without the gentle purge", asShipped612], ["7.1's start, two lines across the belt", asShipped71]] as const) {
   const stored = parseLibrary(JSON.stringify({ ...before, printers: before.printers.map((printer) => printer.id === "ideaformer-ir3-v2" ? { ...printer, startGcode: old, endGcode: "PRINT_END" } : printer) }));
   const upgraded = ensureBuiltins(stored).printers.find((printer) => printer.id === "ideaformer-ir3-v2");
   check(`a stored IR3 V2 still on ${name} takes the current one`, upgraded !== undefined && old !== refreshed?.startGcode && upgraded.startGcode === refreshed?.startGcode);

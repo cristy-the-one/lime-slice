@@ -1298,8 +1298,44 @@ const IR3_V2_START_6_12 = IR3_V2_START_5_2_1
 /** The line that makes the purge gentle. The engine's own `M204` after the start block sets the slice's accel back. */
 const IR3_V2_GENTLE_PURGE = "M204 S500 ; the purge and the lines across lie on the belt: gentle, so they stick";
 
-/** The start as built: 6.12's, with the purge and the lines across at 500 mm/s², like the first layer. */
-const IR3_V2_START = IR3_V2_START_6_12.replace("G1 Z0.4 F900\n", `${IR3_V2_GENTLE_PURGE}\nG1 Z0.4 F900\n`);
+/** 7.1's start: 6.12's, with the purge and the lines across at 500 mm/s², like the first layer. */
+const IR3_V2_START_7_1 = IR3_V2_START_6_12.replace("G1 Z0.4 F900\n", `${IR3_V2_GENTLE_PURGE}\nG1 Z0.4 F900\n`);
+
+/**
+ * The strip across the belt that the part starts against: eight lines side by side, 0.8 mm apart along the belt
+ * (each is about 1.2 mm wide, so they fuse), at 20 mm/s. The belt is zeroed on the last one, as on the two lines
+ * it replaces, so the part's first wall starts on the strip's far edge and about 7 mm of strip holds that edge down.
+ */
+const IR3_V2_STRIP = [
+  "; a strip across the belt, eight lines side by side, 25 mm of filament each, slow. The belt is zeroed",
+  "; so the strip's far edge reaches the middle of the part's first wall ({purge_line_z}, worked out from",
+  "; the file): the part starts on the strip, and the strip holds its first edge to the belt.",
+  "G1 X0 F6000",
+  "G1 X250 E25 F1200",
+  "G1 Z29.2 F900",
+  "G1 X0 E25 F1200",
+  "G1 Z30 F900",
+  "G1 X250 E25 F1200",
+  "G1 Z30.8 F900",
+  "G1 X0 E25 F1200",
+  "G1 Z31.6 F900",
+  "G1 X250 E25 F1200",
+  "G1 Z32.4 F900",
+  "G1 X0 E25 F1200",
+  "G1 Z33.2 F900",
+  "G1 X250 E25 F1200",
+  "G1 Z34 F900",
+  "G1 X0 E25 F1200",
+];
+
+/** The start as built: 7.1's, with the two lines across widened to the strip. */
+const IR3_V2_START = (() => {
+  const lines = IR3_V2_START_7_1.split("\n");
+  const from = lines.findIndex((line) => line.startsWith("; two lines across the belt"));
+  const to = lines.indexOf("G92 E0 Z{purge_line_z}");
+  if (from < 0 || to < from) throw new Error("the IR3 V2 start lost its lines across the belt");
+  return [...lines.slice(0, from), ...IR3_V2_STRIP, ...lines.slice(to)].join("\n");
+})();
 
 /** The IR3 V2 purge lines across the belt, as 5.2.1 had them. */
 const IR3_V2_ACROSS = [
@@ -1322,7 +1358,7 @@ const IR3_V2_START_LINES_FIRST = IR3_V2_START_ZIGZAG_ONLY.replace(
 
 /** Built-in start G-code the catalog shipped earlier, by printer id. */
 const PAST_STARTS: Record<string, string[]> = {
-  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST, IR3_V2_START_5_2_1, IR3_V2_START_6_12],
+  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST, IR3_V2_START_5_2_1, IR3_V2_START_6_12, IR3_V2_START_7_1],
 };
 
 /**
