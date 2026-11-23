@@ -84,23 +84,54 @@ const reversed = reversePeriodicNurbs(custom);
 const revGap = paramGap({ ...reversed, periodic: true } as NurbsCurve2D, { ...custom, periodic: true }, 0, 3.1, (u) => 3.1 - u);
 check("custom-knot periodic reversal is exact: C'(u) = C(u0 + u1 - u) within 1e-9 mm", revGap < 1e-9, `gap=${revGap}`);
 
-// --- 2. Sampling cost: a total budget, not a budget per span.
+// --- 2. Sampling: by bending, within the chord tolerance, with a bounded total (not one pole budget per span).
 const zigzag = (n: number): Pt[] => Array.from({ length: n }, (_, i) => [i * 5, (i % 2) * 8] as Pt);
-for (const [n, max] of [[10, 160 + 7 + 1], [30, 480 + 27 + 1]] as const) {
+for (const n of [10, 30]) {
   const s = addNurbs(emptySketch(), zigzag(n)).sketch;
   const c = curveOf(s, s.entities[0]!);
   const count = c && c.kind === "spline" ? c.samples.length : -1;
-  console.log(`CV ${n} poles: ${count} preview samples (budget ${Math.max(24, n * 16)})`);
-  check(`a ${n}-pole CV curve takes about ${Math.max(24, n * 16)} samples, not one budget per span`, count >= Math.max(24, n * 16) && count <= max, `count=${count}`);
+  console.log(`CV ${n} poles: ${count} preview samples (the old per-span budget gave ${n === 10 ? 1121 : 12961})`);
+  check(`a ${n}-pole CV curve takes a bounded number of samples`, count > 0 && count <= 4000 && count < (n === 10 ? 1121 : 12961), `count=${count}`);
 }
-{
+/** Largest distance from the exact curve (dense parameter sampling) to the preview polyline. */
+function chordError(spec: NurbsCurve2D, preview: readonly Pt[]): number {
+  let worst = 0;
+  for (const p of sampleNurbsCurve2D(spec, 400)) {
+    let best = Infinity;
+    for (let i = 0; i + 1 < preview.length; i += 1) {
+      const a = preview[i]!;
+      const b = preview[i + 1]!;
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len2 = dx * dx + dy * dy;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2)) : 0;
+      best = Math.min(best, Math.hypot(a[0] + t * dx - p[0], a[1] + t * dy - p[1]));
+    }
+    worst = Math.max(worst, best);
+  }
+  return worst;
+}
+for (const size of [20, 200]) {
+  const sq: Pt[] = [[0, 0], [size, 0], [size, size], [0, size]];
+  const closedSketch = addNurbs(emptySketch(), [...sq, sq[0]!]).sketch;
+  const closed = curveOf(closedSketch, closedSketch.entities[0]!);
+  const closedErr = closed?.kind === "spline" ? chordError({ poles: sq, periodic: true }, closed.samples) : Infinity;
+  const openPoles: Pt[] = [[0, 0], [size * 0.3, size], [size * 0.7, -size], [size, 0]];
+  const openSketch = addNurbs(emptySketch(), openPoles).sketch;
+  const open = curveOf(openSketch, openSketch.entities[0]!);
+  const openErr = open?.kind === "spline" ? chordError({ poles: openPoles }, open.samples) : Infinity;
+  console.log(`${size} mm: closed square chord error ${closedErr.toFixed(5)} mm (${closed?.kind === "spline" ? closed.samples.length : 0} samples), open curve ${openErr.toFixed(5)} mm (${open?.kind === "spline" ? open.samples.length : 0} samples)`);
+  check(`the closed CV preview of a ${size} mm square is within 0.005 mm of the curve`, closedErr <= 0.005, `err=${closedErr}`);
+  check(`an open CV preview ${size} mm across is within 0.005 mm of the curve`, openErr <= 0.005, `err=${openErr}`);
+}
+for (const n of [30, 60]) {
   // A fresh sketch each round: nothing is cached between calls.
-  const sketches = [0, 1, 2].map((r) => addNurbs(emptySketch(), zigzag(30).map(([x, y]) => [x + r * 1e-3, y] as Pt)).sketch);
+  const sketches = [0, 1, 2].map((r) => addNurbs(emptySketch(), zigzag(n).map(([x, y]) => [x + r * 1e-3, y] as Pt)).sketch);
   const t0 = performance.now();
   for (const s of sketches) sketchRegions(s);
   const ms = (performance.now() - t0) / sketches.length;
-  console.log(`sketchRegions on a 30-pole CV curve: ${ms.toFixed(1)} ms`);
-  check("sketchRegions on a 30-pole CV curve takes under 150 ms", ms < 150, `ms=${ms}`);
+  console.log(`sketchRegions on a ${n}-pole CV curve: ${ms.toFixed(1)} ms`);
+  check(`sketchRegions on a ${n}-pole CV curve takes under 150 ms`, ms < 150, `ms=${ms}`);
 }
 {
   // The preview looks the same: the old dense sampling (the budget per span) sits within 0.01 mm of the new polyline.

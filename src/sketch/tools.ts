@@ -4,7 +4,7 @@
  * Pure geometry and the gesture. The editor shell (`session.ts`) owns undo, snapping, and the
  * heads-up box. No solver: a typed size or a drag places the geometry directly.
  */
-import { sampleNurbsCurve2DTotal } from "../modeling/nurbs-eval.ts";
+import { sampleNurbsCurve2DChord } from "../modeling/nurbs-eval.ts";
 import { cornerLines, filletCorner, filletCorners, offset, offsetWall, trim, trimPieces, type WallOptions } from "./edit.ts";
 import {
   arcFrom3,
@@ -374,7 +374,7 @@ export function drawRubber(sketch: SketchData, state: DrawState, tool: DrawTool,
     const controls = [...points, at];
     if (controls.length < 2) return controls;
     return state.splineMode === "cv"
-      ? sampleNurbsCurve2DTotal({ poles: controls }, Math.max(24, controls.length * 12))
+      ? sampleNurbsCurve2DChord({ poles: controls }, 0.02, 1500)
       : sampleSpline(controls, false);
   }
   // Offset and several corners draw their ghost as separate pieces (`drawGhosts`).

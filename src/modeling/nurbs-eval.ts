@@ -433,6 +433,41 @@ export function sampleNurbsCurve2D(spec: NurbsCurve2D, samplesPerSpan = 16): Vec
 }
 
 /**
+ * Sample a 2D NURBS curve so the polyline stays within `chordMm` of the curve: each knot span gets as many samples as
+ * its bending needs (chord error ~ h^2 |C''| / 8, |C''| read at a few points of the span, with a margin), at least 2,
+ * every knot hit. `maxTotal` bounds the cost: past it every span is thinned in proportion.
+ */
+export function sampleNurbsCurve2DChord(spec: NurbsCurve2D, chordMm = 0.005, maxTotal = 4000): Vec2[] {
+  if (spec.poles.length < 2) return spec.poles.map((pt) => [pt[0], pt[1]]);
+  const rk = resolveCurveKnots(spec.poles.length, spec.degree, spec.knots, spec.mults, spec.periodic === true);
+  const spans: { a: number; b: number; n: number }[] = [];
+  let total = 1;
+  for (let s = 0; s + 1 < rk.knots.length; s += 1) {
+    const a = rk.knots[s]!;
+    const b = rk.knots[s + 1]!;
+    if (!(b > a + 1e-12)) continue;
+    let bend = 0;
+    for (let k = 0; k <= 6; k += 1) {
+      const e = evalNurbsCurve2D(spec, a + ((b - a) * (k === 0 ? 1e-6 : k === 6 ? 1 - 1e-6 : k / 6)));
+      bend = Math.max(bend, Math.hypot(e.d2[0], e.d2[1]));
+    }
+    // 1.5: a margin for the bending between the probes.
+    const n = Math.max(2, Math.ceil(1.5 * (b - a) * Math.sqrt(bend / (8 * Math.max(1e-6, chordMm)))));
+    spans.push({ a, b, n });
+    total += n;
+  }
+  const thin = total > maxTotal ? maxTotal / total : 1;
+  const at = curvePoint2D(spec, rk);
+  const out: Vec2[] = [];
+  for (const { a, b, n } of spans) {
+    const steps = Math.max(2, Math.floor(n * thin));
+    for (let k = out.length === 0 ? 0 : 1; k <= steps; k += 1) out.push(at(a + ((b - a) * k) / steps));
+  }
+  if (rk.periodic && out.length >= 2) out[out.length - 1] = [out[0]![0], out[0]![1]];
+  return out;
+}
+
+/**
  * Sample a 2D NURBS curve with about `total` points over the WHOLE curve (at least 2 per span, every knot hit).
  * Callers that size a budget by pole count use this; `sampleNurbsCurve2D` takes a count per span.
  */

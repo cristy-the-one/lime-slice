@@ -4,7 +4,7 @@
  * the interior poles. Its start is then a pole, not a point on the curve. Every client consumer samples through here,
  * so the preview, the hit tests and the solid agree.
  */
-import { sampleNurbsCurve2DTotal, type NurbsCurve2D } from "../modeling/nurbs-eval.ts";
+import { sampleNurbsCurve2DChord, type NurbsCurve2D } from "../modeling/nurbs-eval.ts";
 
 type P2 = readonly [number, number] | readonly number[];
 
@@ -44,10 +44,10 @@ export function nurbsSegmentCurve(from: P2, segment: NurbsSegmentLike): NurbsCur
   };
 }
 
-/** Points along a `nurbs` segment: about 8 per pole (at least 16) over the whole curve. A closed one starts and ends on the curve, not at its first pole. */
+/** Points along a `nurbs` segment, within 0.005 mm of it (as the sketch draws it). A closed one starts and ends on the curve, not at its first pole. */
 export function sampleNurbsSegment(from: P2, segment: NurbsSegmentLike): [number, number][] {
   const curve = nurbsSegmentCurve(from, segment);
-  return sampleNurbsCurve2DTotal(curve, Math.max(16, curve.poles.length * 8));
+  return sampleNurbsCurve2DChord(curve, 0.005);
 }
 
 /** True when `loop`'s start is a pole of a closed `nurbs` segment rather than a point on the outline. */
