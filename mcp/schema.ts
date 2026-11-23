@@ -909,6 +909,32 @@ const sheetOps = [
       label,
     },
   },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "boundaries"],
+    properties: {
+      kind: { const: "patch", description: "Fill an opening of two to four sides with a G0 sheet." },
+      boundaries: {
+        type: "array",
+        minItems: 2,
+        maxItems: 4,
+        description: "Boundary sides, in order. Each is edges and/or a curve, at G0.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            edges: { ...edgeList, description: "Edges of this side, in order." },
+            curve: curve3dField,
+            face: { description: "The face beside this side: an index, or {normal, nearPoint}." },
+            continuity: { const: "g0", description: "G0. Absent is G0." },
+          },
+        },
+      },
+      tolerance: { type: "number", exclusiveMinimum: 0, maximum: 0.0001, description: "Gap the fill aims for, mm." },
+      label,
+    },
+  },
 ];
 (op.oneOf as unknown[]).splice(5 + sketchOps.length + faceOps.length + 1, 0, ...sheetOps);
 const regionField = {
@@ -1212,6 +1238,7 @@ export const OP_SUMMARY: Record<string, string> = {
   trimSplit: "trimSplit {sheet, keep:above|below|both}: cut a solid or sheet with a sculpted surface.",
   replaceFace: "replaceFace {face, sheet}: replace a solid face with a sculpted NURBS surface.",
   splitFace: "splitFace {faces, curve, direction}: imprint a 3D curve onto faces to split them.",
+  patch: "patch {boundaries:[{edges|curve, continuity:\"g0\"}]}: fill an opening of two to four sides with a G0 sheet.",
   boolean: "boolean {op:cut|fuse|common, primitive, dx, dy, dz | radius, height, origin | centre, turn}.",
   root: "root {primitive, sizes}: a new base solid.",
   join: "join {toolObject, op}: another object's solid as the tool.",

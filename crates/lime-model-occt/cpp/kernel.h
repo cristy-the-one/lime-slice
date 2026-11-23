@@ -1033,6 +1033,48 @@ TopoDS_Shape build_replace_face(
     double& volume,
     std::string& error);
 
+/// S5: One side of a patch or blend. `continuity` is -1 (default), 0 (G0), 1 (G1), or 2 (G2).
+/// `face` is a 0-based face index, or -1 when the side does not name one.
+struct PatchBoundSpec {
+    int continuity = -1;
+    int face = -1;
+    std::vector<int> edges;
+    bool has_curve = false;
+    Curve3DSpec curve;
+};
+
+/// S5: Fill a boundary of two to four sides at G0 with GeomFill.
+struct PatchBuildSpec {
+    std::vector<PatchBoundSpec> bounds;
+    std::vector<Curve3DSpec> guides;
+    std::vector<std::array<double, 3>> points;
+    double tolerance = 0;
+};
+
+/// S5: A blend is not available yet. The call is refused.
+struct BlendBuildSpec {
+    PatchBoundSpec a;
+    PatchBoundSpec b;
+    int continuity = -1;
+    double tension_a = 0;
+    double tension_b = 0;
+    double tolerance = 0;
+};
+
+/// S5: A sheet that fills `spec` on `current` (null when the patch starts a part).
+TopoDS_Shape build_patch(
+    const TopoDS_Shape& current,
+    const Held* held,
+    const PatchBuildSpec& spec,
+    std::string& error);
+
+/// S5: Refuses. A blend is not available yet.
+TopoDS_Shape build_blend(
+    const TopoDS_Shape& current,
+    const Held* held,
+    const BlendBuildSpec& spec,
+    std::string& error);
+
 /// S4: Project/imprint a 3D curve onto `target_faces` of a solid or sheet, splitting those faces cleanly.
 TopoDS_Shape build_split_face(
     const TopoDS_Shape& current,

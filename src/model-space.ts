@@ -293,6 +293,13 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
         curve: moveCurve3D(op.curve, point),
         ...(op.direction ? { direction: turnDir(back, op.direction) } : {}),
       };
+    case "patch":
+      return {
+        ...op,
+        boundaries: op.boundaries.map((bound) => ({ ...bound, ...(bound.curve ? { curve: moveCurve3D(bound.curve, point) } : {}) })),
+        ...(op.guides ? { guides: op.guides.map((curve) => moveCurve3D(curve, point)) } : {}),
+        ...(op.points ? { points: op.points.map((p) => point(p)) } : {}),
+      };
     default:
       return op;
   }

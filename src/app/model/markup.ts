@@ -19,6 +19,7 @@ const RAIL = `
             <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive">New solid</button>
             <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
             <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
+            <button class="model-tool" id="modelToolPatch" type="button" data-tool="patch" hidden aria-pressed="false" data-tip="Patch: fill an opening of two to four sides. Each edge is G0.">Patch</button>
           </div>
         </div>
         <div class="rail-group" data-group="shape" data-solid-only role="group" aria-label="Shape">
@@ -47,7 +48,7 @@ const RAIL = `
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
               <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, plugins, stress, split to print, print transition"></button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, patch, parameters, plugins, stress, split to print, print transition"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -55,6 +56,7 @@ const RAIL = `
                 <button class="model-tool" type="button" role="menuitem" data-tool="array">Array</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="patch">Patch</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
                 <!-- --- Plugins (docs/plan-recipe-plugins.md D13): the library's card, beside Parameters. No rail button. --- -->
@@ -714,6 +716,7 @@ const DOCK = `
 
 const BODY = `
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
+          <div id="modelEdgeBadges" hidden></div>
           <div id="stressLegend" class="stress-legend" hidden>
             <div class="stress-ramp-col">
               <span class="stress-ramp-end" id="stressLegendHigh"></span>

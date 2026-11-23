@@ -132,6 +132,40 @@ pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolv
                 picks: vec![index],
             })
         }
+        Op::Patch {
+            boundaries,
+            guides,
+            points,
+            tolerance,
+        } => {
+            let mut stored = Vec::with_capacity(boundaries.len());
+            for bound in boundaries {
+                let (edges, _) = if bound.edges.is_empty() {
+                    (Vec::new(), Vec::new())
+                } else {
+                    resolve_blend(from, &bound.edges, "patch", steps)?
+                };
+                let face = match bound.face {
+                    Some(face) => Some(FacePick::Ref(resolve_one_face(from, face)?)),
+                    None => None,
+                };
+                stored.push(super::ops::SurfaceBoundary {
+                    curve: bound.curve.clone(),
+                    edges,
+                    face,
+                    continuity: bound.continuity,
+                });
+            }
+            Ok(Resolved {
+                op: Op::Patch {
+                    boundaries: stored,
+                    guides: guides.clone(),
+                    points: points.clone(),
+                    tolerance: *tolerance,
+                },
+                picks: Vec::new(),
+            })
+        }
         Op::SplitFace {
             faces,
             curve,

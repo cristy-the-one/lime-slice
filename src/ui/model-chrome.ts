@@ -38,6 +38,7 @@ import { addFontFile, ensureLibrary, listedFonts, onUserFontsChange, removeUserF
 import type { LetteringOp } from "../model-tree";
 import { curvedLettersGhost, curvedThinNoteOf, lettersGhost, thinNoteOf } from "./text-preview";
 import { lastEdge, modelApplyReady, shellFacesLabel, type ModelPickRef } from "../model-select";
+import { PATCH_NOT_YET, patchLaterNote } from "../model-surface.ts";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
 import { fx } from "../app/fx";
@@ -226,6 +227,7 @@ const TOOL_TITLES: Partial<Record<ModelTool, string>> = {
   pattern: "Pattern",
   mirror: "Mirror",
   draft: "Draft",
+  patch: "Patch",
 };
 
 function toolTitle(next: ModelTool): string {
@@ -294,6 +296,9 @@ const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly
 const BED_KEY = "lime-slice-model-bed";
 /** Tools that leave the open solid as it is, so they run on surfaces with no closed solid too. */
 const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place", "workplane", "check"]);
+/** Patch runs on an open sheet, which is not an editable solid. */
+const SHEET_TOOLS: ReadonlySet<string> = new Set(["patch"]);
+let sheetMode = false;
 const WP_FIELDS = ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"] as const;
 
 // --- A5. Fillet and chamfer: picked edges, or every edge one history step made. ---
@@ -908,10 +913,18 @@ export function openModelTool(): ModelTool | null {
 }
 
 /** Whether the open shape can be edited. Surfaces only can be measured and placed, so the edit tools turn off. */
+/** An open sheet keeps Patch available. A closed solid does not use this. */
+export function setSheetMode(next: boolean) {
+  sheetMode = next;
+  // On a solid the rail button stays in the Features menu, so the rail keeps the height the layout specs measure.
+  document.querySelector<HTMLElement>("#modelToolPatch")?.toggleAttribute("hidden", !next);
+  refreshTools();
+}
+
 export function setModelEditable(next: boolean) {
   editable = next;
   if (!editable && card) closeModelCard();
-  if (!editable && tool && !KEEPS_SOLID.has(tool)) closeTool();
+  if (!editable && tool && !KEEPS_SOLID.has(tool) && !(sheetMode && SHEET_TOOLS.has(tool))) closeTool();
   refreshTools();
 }
 
@@ -2330,7 +2343,7 @@ function refreshTools() {
     const id = button.dataset.tool ?? "";
     button.dataset.tipIdle ??= button.dataset.tip ?? "";
     const held = locked != null && id !== "create" && id !== "check";
-    const viewOnly = !editable && !KEEPS_SOLID.has(id);
+    const viewOnly = !editable && !KEEPS_SOLID.has(id) && !(sheetMode && SHEET_TOOLS.has(id));
     const blocked = held ? locked : viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
     const off = held || viewOnly || !toolAvailable(id, picks, legal);
     // aria-disabled stays in the tab order, so a keyboard user can land on the button and read why.
@@ -2419,6 +2432,10 @@ function refreshNote() {
     }
   } else if ((tool === "fillet" || tool === "chamfer") && selectedEdges(picks).length === 0) {
     text = "Pick an edge.";
+  } else if (tool === "patch" && (patchLaterNote() || selectedEdges(picks).length > 4)) {
+    text = patchLaterNote() ?? PATCH_NOT_YET;
+  } else if (tool === "patch" && selectedEdges(picks).length < 2) {
+    text = "Pick the edges around the opening.";
   } else if (tool === "scale") {
     text = "About the centre. Placement scale becomes 100%.";
   } else if (tool === "measure") {

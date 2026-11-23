@@ -28,8 +28,8 @@ use super::ffi::{
 use super::group::{build_combined, build_group};
 use super::joints::{joined_of, keep_built, stored_joints, Joined};
 use super::k1::{
-    build_k1_loops, build_loft_v2_shape, build_replace_face_shape, build_sew_shape,
-    build_sheet_shape, build_split_face_shape, build_sweep_shape, build_thicken_shape,
+    build_k1_loops, build_loft_v2_shape, build_patch_shape, build_replace_face_shape,
+    build_sew_shape, build_sheet_shape, build_split_face_shape, build_sweep_shape, build_thicken_shape,
     build_trim_split_shape, k1_has_loops, loft_needs_v2, push_shape,
 };
 use super::ops::{FacePick, FilletContinuity, Neutral, Op, Primitive};
@@ -723,6 +723,12 @@ pub(super) fn build(
         Op::SplitFace {
             curve, direction, ..
         } => build_split_face_shape(from, &picks, curve, *direction),
+        Op::Patch {
+            boundaries,
+            guides,
+            points,
+            tolerance,
+        } => build_patch_shape(Some(from), boundaries, guides, points, *tolerance),
     };
     match kept {
         Ok(kept) => Ok(Built {

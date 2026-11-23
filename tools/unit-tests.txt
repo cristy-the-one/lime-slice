@@ -99,6 +99,7 @@ src/belt-purge.test.ts
 src/fuzzy-skin.test.ts
 src/base64.test.ts
 src/model-reply.test.ts
+src/model-surface.test.ts
 src/mesh-edges.test.ts
 src/ui/flat-view.test.ts
 src/settings-rules.test.ts
@@ -339,3 +340,4 @@ src/sketch/nurbs.test.ts
 mcp/nurbs-sweep.test.ts
 mcp/loft-fillet-v2.test.ts
 mcp/open-sheets.test.ts
+mcp/patch-blend.test.ts

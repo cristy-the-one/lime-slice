@@ -89,6 +89,8 @@ export interface ContinuitySummary {
   worstSmoothAngleDeg: number;
   worstCurvatureJump: number;
   notable: SeamContinuityRow[];
+  /** Every sampled shared edge, including a clean G2 seam. Capped at 256. */
+  edges?: SeamContinuityRow[];
 }
 
 export interface SurfaceHealthSummary {

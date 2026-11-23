@@ -57,6 +57,7 @@ export function modelApplyReady(
   probeOk = true,
 ): boolean {
   if (tool === "fillet" || tool === "chamfer") return lastEdge(picks) != null && probeOk;
+  if (tool === "patch") return picks.filter((pick) => pick.kind === "edge").length >= 2 && picks.filter((pick) => pick.kind === "edge").length <= 4 && probeOk;
   if (tool === "scale") return scale > 0 && Math.abs(scale - 1) > 1e-9;
   if (tool === "split") return splitOk;
   if (tool === "create") return true;

@@ -120,7 +120,8 @@ type ModelOpBase =
   | ThickenOp
   | TrimSplitOp
   | ReplaceFaceOp
-  | SplitFaceOp;
+  | SplitFaceOp
+  | PatchOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -317,6 +318,26 @@ export interface SplitFaceOp {
   faces: (number | FaceRef)[];
   curve: Curve3D;
   direction?: Vec3;
+}
+
+/** How a patch side meets the face beside it. A patch is G0. */
+export type SurfaceContinuity = "g0" | "g1" | "g2";
+
+/** One side of a patch. */
+export interface SurfaceBoundary {
+  curve?: Curve3D;
+  edges?: EdgePick[];
+  face?: number | FaceRef;
+  continuity?: SurfaceContinuity;
+}
+
+/** S5: Fill an opening of two to four sides at G0. A sheet, so Sew, Thicken, and auto-promotion still apply. */
+export interface PatchOp {
+  kind: "patch";
+  boundaries: SurfaceBoundary[];
+  guides?: Curve3D[];
+  points?: Vec3[];
+  tolerance?: number;
 }
 
 /** A closed loop on a profile's plane. A loop inside no other is an outline; one inside an outline is its hole. */
@@ -1206,6 +1227,8 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const count = op.faces.length === 1 ? "1 face" : `${op.faces.length} faces`;
       return `Split ${count} by curve`;
     }
+    case "patch":
+      return `Patch ${op.boundaries.length} sides`;
   }
 }
 

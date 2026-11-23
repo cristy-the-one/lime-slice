@@ -8,6 +8,8 @@ import { pathTo, type Vec3 } from "../../model-tree";
 import { averagePoint, contextKind, polylineMid } from "../../context-bar";
 import { hideContextBar, showContextBar } from "../../context-bar-ui";
 import { openModelTool, syncModelChrome } from "../../ui/model-chrome";
+import { selectedEdges } from "../../model-blend";
+import { syncEdgeBadges } from "./surface-tools";
 import { axisWord, curvedValueOf, faceValueOf, sketchOutline, type PickedFaceValue } from "../../recipe/picks";
 import { faceRows as geometryFaceRows } from "../../modeling/solid-geometry";
 import type { SketchChoice } from "../../ui/pick-field";
@@ -141,6 +143,7 @@ export async function onPick(pick: ModelPick | null, shift: boolean, pointer: { 
     paintTextAnchor();
   }
   paintBlendHighlight();
+  syncEdgeBadges(selectedEdges(S.picks));
   // --- A10. Right after the section axis became Face, the pick is that plane too, kept in the solid's frame. A curved face is refused in the menu.
   if (pick?.kind === "face") {
     const own = flatFace(solid, pick.index);

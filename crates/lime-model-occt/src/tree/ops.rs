@@ -982,6 +982,16 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         direction: Option<[f64; 3]>,
     },
+    /// Fill an opening of two, three, or four sides at G0 with GeomFill.
+    Patch {
+        boundaries: Vec<SurfaceBoundary>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guides: Vec<Curve3D>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        points: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
 }
 
 fn default_true() -> bool {
@@ -1002,9 +1012,34 @@ impl Op {
                 | Op::Thicken { .. }
                 | Op::TrimSplit { .. }
                 | Op::SplitFace { .. }
+                | Op::Patch { .. }
                 | Op::Unify
         )
     }
+}
+
+/// How a patch side meets the face beside it. Absent means G0. G1 and G2 are refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SurfaceContinuity {
+    G0,
+    G1,
+    G2,
+}
+
+/// One side of a patch, or one side of a blend. A side is a curve, a chain of edges, or both.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfaceBoundary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<Curve3D>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<EdgePick>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<FacePick>,
+    /// Absent: G1 when the side touches a face, otherwise G0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity: Option<SurfaceContinuity>,
 }
 
 /// S4: How an open sheet is built from 3D curves.

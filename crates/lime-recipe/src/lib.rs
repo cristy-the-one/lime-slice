@@ -1895,6 +1895,16 @@ pub mod ops {
             .set("makeSolid", make_solid)
     }
 
+    /// S5: One side of a patch. `continuity` is `"g0"`.
+    pub fn surface_boundary(edges: Json, continuity: &str) -> Json {
+        Json::obj().set("edges", edges).set("continuity", continuity)
+    }
+
+    /// S5: Fill an opening of two, three, or four sides at G0.
+    pub fn patch(boundaries: Vec<Json>) -> Json {
+        Json::obj().set("kind", "patch").set("boundaries", Json::arr(boundaries))
+    }
+
     /// S4: Thicken an open sheet into a watertight solid wall (`direction`: `"normal"`, `"reverse"`, or `"both"`).
     pub fn thicken(thickness: f64, direction: &str) -> Json {
         Json::obj()
@@ -8026,6 +8036,17 @@ mod animation_tests {
         assert_eq!(loft.get("kind").and_then(Json::as_str), Some("loft"));
         assert_eq!(loft.get("closed").and_then(Json::as_bool), Some(true));
         assert_eq!(loft.get("smoothing").and_then(Json::as_bool), Some(true));
+    }
+
+    #[test]
+    fn s5_patch_op_builds_expected_json() {
+        use crate::ops;
+        let patch = ops::patch(vec![
+            ops::surface_boundary(Json::arr(vec![Json::from(0.0)]), "g0"),
+            ops::surface_boundary(Json::arr(vec![Json::from(1.0)]), "g0"),
+        ]);
+        assert_eq!(patch.get("kind").and_then(Json::as_str), Some("patch"));
+        assert_eq!(patch.at("boundaries.1.continuity").and_then(Json::as_str), Some("g0"));
     }
 
     #[test]

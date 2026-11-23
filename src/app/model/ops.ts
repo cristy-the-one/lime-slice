@@ -35,6 +35,7 @@ import { withPanelExprs } from "./parameters";
 import { repeatNow } from "./repeat";
 import type { Editing } from "./shared";
 import { openPose } from "./view";
+import { continuityOf } from "./surface-tools";
 
 /** What the open panel would build: an edited step's op while one is edited, else the open tool's. */
 export function panelOp(): ModelOp | null {
@@ -175,6 +176,15 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const prism = S.editing?.op.kind === "faceExtrude" ? S.editing.op : null;
       if (prism && faces.length === 1) return { ...prism, face: faces[0]!.index, distance };
       return moveFacesOp(faces.map((pick) => ({ face: pick.index, distance })));
+    }
+    case "patch": {
+      const edges = selectedEdges(S.picks);
+      if (edges.length < 2 || edges.length > 4) return null;
+      if (edges.some((index) => continuityOf(index) !== "g0")) return null;
+      return {
+        kind: "patch",
+        boundaries: edges.map((index) => ({ edges: [index], continuity: continuityOf(index) })),
+      };
     }
     case "draft": {
       // Model space, as the fields show it; `toolOp` turns it into the solid's frame. An edited step keeps its neutral.
