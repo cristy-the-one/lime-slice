@@ -644,3 +644,20 @@ test("a 64 × 64 grid: handles near the selection only, one tab stop, and Insert
   await page.waitForTimeout(300);
   expect(sculpt.nurbsOpens().length, "nothing sent").toBe(opens);
 });
+
+test("a sculpted NURBS root reaches the plate when Model is left: the plate row is the new surface", async ({ page }) => {
+  const sculpt = await start(page);
+  await newSurface(page, sculpt);
+  const row = page.locator("#objectList .obj").nth(1);
+  const before = await row.innerText();
+  // A corner pole up: the sheet the kernel answers (over the grid's corners) is no longer flat.
+  const opensBefore = sculpt.nurbsOpens().length;
+  await select(page, 0, 0);
+  await dragAxis(page, "z", 0, -60);
+  await expect.poll(() => sculpt.nurbsOpens().length, "one commit for the drag").toBe(opensBefore + 1);
+  const raised = lastGrid(sculpt)[0]![0]![2];
+  expect(raised, "the corner went up").toBeGreaterThan(1);
+  await page.locator("#tabPrepare").click();
+  await expect.poll(async () => await row.innerText(), { message: "the plate row shows the sculpted surface" }).not.toBe(before);
+  expect(await row.innerText()).toContain(`70 × 70 × ${Number(raised.toFixed(1))} mm`);
+});
