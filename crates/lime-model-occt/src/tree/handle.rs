@@ -427,6 +427,8 @@ impl Store {
                 iso_count,
             } => {
                 self.ensure(&key, node)?;
+                // With meshQuality "display" the per-vertex buffers describe the display mesh: they match the reply's
+                // `display.positions` corner for corner (tests/surface_inspect.rs). Without it, the plate mesh.
                 let display = self.display;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
                 let text = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count, display)?;

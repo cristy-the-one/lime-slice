@@ -50,8 +50,8 @@ fn analytic_normals_match_exact_sphere_and_box_surfaces() {
         // Analytic normals are the Model view's display mesh only.
         "meshQuality": "display"
     }));
-    let positions = decode_f32(reply["positions"].as_str().expect("positions"));
-    let normals = decode_f32(reply["normals"].as_str().expect("normals"));
+    let positions = decode_f32(reply["display"]["positions"].as_str().expect("display positions"));
+    let normals = decode_f32(reply["display"]["normals"].as_str().expect("display normals"));
     assert_eq!(normals.len(), positions.len(), "one normal per vertex");
     assert!(positions.len() >= 90);
 
@@ -112,7 +112,8 @@ fn surface_inspect_curvatures_isoparms_and_continuity() {
     assert_eq!(rmin.len(), positions.len() / 3);
     // The display mesh's curvature follows the display mesh, corner for corner.
     let shown = ok(json!({ "call": "goto", "key": key, "node": 1, "chordMm": 0.05, "meshQuality": "display" }));
-    let shown_positions = decode_f32(shown["positions"].as_str().expect("positions"));
+    // surfaceInspect with the flag describes the display mesh: its buffers match display.positions corner for corner.
+    let shown_positions = decode_f32(shown["display"]["positions"].as_str().expect("display positions"));
     let shown_inspect = ok(json!({
         "call": "surfaceInspect", "key": key, "node": 1, "chordMm": 0.05, "curvature": true, "meshQuality": "display"
     }));

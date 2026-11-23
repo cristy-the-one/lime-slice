@@ -49,6 +49,28 @@ fn triangles(reply: &Value) -> usize {
     bytes(reply, "triangles").len() / 4
 }
 
+/// The distance from `p` to the triangle `a b c`.
+fn point_triangle(p: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    let sub = |x: [f32; 3], y: [f32; 3]| [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+    let dot = |x: [f32; 3], y: [f32; 3]| x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+    let cross = |x: [f32; 3], y: [f32; 3]| [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+    let segment = |x: [f32; 3], y: [f32; 3]| {
+        let d = sub(y, x);
+        let t = (dot(sub(p, x), d) / dot(d, d).max(1e-20)).clamp(0.0, 1.0);
+        let q = [x[0] + d[0] * t, x[1] + d[1] * t, x[2] + d[2] * t];
+        dot(sub(p, q), sub(p, q)).sqrt()
+    };
+    let n = cross(sub(b, a), sub(c, a));
+    let len = dot(n, n).sqrt();
+    if len > 1e-12 {
+        let inside = [(a, b), (b, c), (c, a)].iter().all(|(x, y)| dot(cross(sub(*y, *x), sub(p, *x)), n) >= 0.0);
+        if inside {
+            return (dot(sub(p, a), n) / len).abs();
+        }
+    }
+    segment(a, b).min(segment(b, c)).min(segment(c, a))
+}
+
 /// A box with its twelve edges rounded 2 mm, and a cylinder, each meshed at `chord` (as `quality`, when given).
 fn meshed(name: &str, key: &str, chord: f64, quality: Option<&str>) -> Value {
     let with_quality = |mut request: Value| {
@@ -124,8 +146,18 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
         same_as_main(&format!("{name} at {chord}"), count, soup_hash(&standard), expected, expected_hash);
         assert!(standard.get("normals").is_none(), "{name}: the default mesh sends no normals");
 
+        assert!(standard.get("display").is_none(), "{name}: no display mesh without the flag");
+
+        // With the flag, a twin opened fresh: everything outside `display` is the same bytes as without it, and as main's.
+        let flagged_key = format!("{key}-flagged");
+        let flagged = meshed(name, &flagged_key, chord, Some("display"));
+        let mut outside = flagged.clone();
+        let display = outside.as_object_mut().expect("object").remove("display").expect("a display mesh with the flag");
+        assert_eq!(outside, standard, "{name}: the plate mesh in a flagged reply is the unflagged reply");
+        same_as_main(&format!("{name} at {chord}, flagged"), triangles(&flagged), soup_hash(&flagged), expected, expected_hash);
+        ok(json!({ "call": "close", "key": flagged_key }));
+
         let node = standard["id"].clone();
-        let display = ok(json!({ "call": "goto", "key": key, "node": node, "chordMm": chord, "meshQuality": "display" }));
         let finer = triangles(&display);
         println!("{name} chord {chord}: display {finer} triangles");
         assert!(finer > count, "{name} at {chord}: the display mesh ({finer}) must be finer than the default ({count})");
@@ -137,6 +169,36 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
             .map(|n| ((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() - 1.0).abs())
             .fold(0.0_f32, f32::max);
         assert!(worst < 1e-4, "{name}: display normals are unit length, worst off by {worst}");
+        // Outward: both shapes are convex, so each corner's normal points away from the solid's middle.
+        let centre: [f32; 3] = if name == "cylinder" { [0.0, 0.0, 10.0] } else { [10.0, 10.0, 5.0] };
+        let inward = positions
+            .chunks_exact(3)
+            .zip(normals.chunks_exact(3))
+            .filter(|(p, n)| (p[0] - centre[0]) * n[0] + (p[1] - centre[1]) * n[1] + (p[2] - centre[2]) * n[2] <= 0.0)
+            .count();
+        assert_eq!(inward, 0, "{name}: every display normal points out");
+        // Every display triangle names a face of the solid, and lies on it: its corners within the chord of that face.
+        let faces = standard["faces"].as_array().expect("faces").len();
+        let owners: Vec<u32> = bytes(&display, "triangles").chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().expect("4"))).collect();
+        assert_eq!(owners.len(), finer);
+        assert!(owners.iter().all(|&f| (f as usize) < faces), "{name}: a display triangle names a face that is not there");
+        let plate_positions = floats(&standard, "positions");
+        let plate_owners: Vec<u32> = bytes(&standard, "triangles").chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().expect("4"))).collect();
+        for t in (0..owners.len()).step_by((owners.len() / 25).max(1)) {
+            let corner = &positions[t * 9..t * 9 + 3];
+            // The nearest triangle of the plate mesh on the same face: the plate mesh lies within its chord of the B-rep
+            // face, so a display corner on that face is within a few chords of it.
+            let nearest = plate_owners
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| **f == owners[t])
+                .map(|(k, _)| {
+                    let q = |c: usize| [plate_positions[k * 9 + c * 3], plate_positions[k * 9 + c * 3 + 1], plate_positions[k * 9 + c * 3 + 2]];
+                    point_triangle([corner[0], corner[1], corner[2]], q(0), q(1), q(2))
+                })
+                .fold(f32::MAX, f32::min);
+            assert!(nearest <= 3.0 * chord as f32, "{name}: display triangle {t} lies {nearest} mm off face {}", owners[t]);
+        }
 
         // The display mesh lives on a copy. Had it meshed the held faces, Open CASCADE would keep its finer triangles
         // and the next default mesh, at a coarser chord, would read them: compare with a twin that never asked.
@@ -163,8 +225,8 @@ fn display_normals_of_a_mirrored_box_point_out() {
     let placed = ok(json!({ "call": "testPlace", "key": "mirror-source", "node": 0, "mirror": true }));
     ok(json!({ "call": "close", "key": "mirror-source" }));
     let shown = ok(json!({ "call": "open", "key": "mirrored", "dataB64": placed["dataB64"], "meshQuality": "display" }));
-    let positions = floats(&shown, "positions");
-    let normals = floats(&shown, "normals");
+    let positions = floats(&shown["display"], "positions");
+    let normals = floats(&shown["display"], "normals");
     assert_eq!(positions.len(), normals.len());
     // The box from (0, 0, 0) to (20, 20, 10), mirrored in x = 0.
     let centre = [-10.0_f32, 10.0, 5.0];
@@ -200,10 +262,10 @@ fn pieces_keep_the_standard_mesh_and_an_unknown_quality_is_refused() {
     ok(json!({ "call": "open", "key": "quality-split", "box": [20.0, 10.0, 10.0], "quiet": true }));
     let applied = ok(json!({ "call": "apply", "key": "quality-split", "parent": 0, "node": 1, "op": cut,
         "pieceKeys": ["quality-piece"], "chordMm": 0.05, "meshQuality": "display" }));
-    assert!(applied.get("normals").is_some(), "the call's own reply is the display mesh");
+    assert!(applied["display"].get("normals").is_some(), "the call's own reply carries the display mesh");
     let piece = &applied["pieces"][0];
     assert!(piece.get("positions").is_some(), "{piece}");
-    assert!(piece.get("normals").is_none(), "a piece for the plate has the standard mesh");
+    assert!(piece.get("display").is_none() && piece.get("normals").is_none(), "a piece for the plate has the plate mesh only");
     // And the piece's own tree, asked again without the flag, is that same mesh.
     let again = ok(json!({ "call": "goto", "key": "quality-piece", "node": 0, "chordMm": 0.05 }));
     assert_eq!(again["positions"], piece["positions"]);

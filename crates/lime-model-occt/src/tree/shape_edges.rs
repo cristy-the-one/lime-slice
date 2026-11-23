@@ -295,9 +295,79 @@ impl Shape {
 
     /// The solid reply for node `id`: the tessellation's arrays as base64 of their little-endian
     /// bytes, its faces and edges as JSON, and the fingerprint. `docs/step-modeler.md` lists the fields.
-    /// `display`: the Model view's finer mesh, with `normals`. Otherwise the mesh that is committed, sliced and exported,
-    /// with no `normals`.
+    ///
+    /// The reply is one JSON object, in this order:
+    /// `{"id": n, "format": "lime-solid-…", <meta: volumeMm3, solid, faces, edgeLengths, edgeSeams?, nakedEdges?>,
+    ///   "fingerprint": {…}, "positions": b64 f32, "triangles": b64 u32, "edgePoints": b64 f32, "edgeOffsets": b64 u32,
+    ///   "display": {"positions": b64 f32, "normals": b64 f32, "triangles": b64 u32}?}`
+    /// - Everything outside `display` is the plate mesh: Open CASCADE's mesh at half a radian, built incrementally on the
+    ///   held faces exactly as main builds it, with no normals. With `display` false the reply ends there and is byte for
+    ///   byte main's reply. With `display` true it is the same bytes up to `edgeOffsets`.
+    /// - `display` (only when `display` is true, the Model view's `meshQuality: "display"`) is the drawing mesh: finer on
+    ///   curved faces (mesh_angle_of), on a copy of the shape. `positions` is nine f32 a triangle (a triangle soup, wound
+    ///   outward), `normals` nine f32 a triangle in the same order (the faces' analytic outward unit normals), and
+    ///   `triangles` one u32 a triangle, the index of the face it lies on, as the top-level `triangles`. Edges are the
+    ///   same curves in both, so `edgePoints` and `edgeOffsets` serve both meshes and are not repeated.
     pub(super) fn reply(&mut self, id: NodeId, chord: f64, display: bool) -> Result<String, Failure> {
+        let plate = self.mesh(chord, false)?;
+        // SAFETY: `mesh` filled `view` with the mesh's own arrays, which live until it drops.
+        let arrays = unsafe {
+            [
+                ("positions", plate.0.bytes(plate.1.positions, plate.1.positions_bytes)),
+                ("triangles", plate.0.bytes(plate.1.triangles, plate.1.triangles_bytes)),
+                ("edgePoints", plate.0.bytes(plate.1.edge_points, plate.1.edge_points_bytes)),
+                ("edgeOffsets", plate.0.bytes(plate.1.edge_offsets, plate.1.edge_offsets_bytes)),
+            ]
+        };
+        let meta = unsafe { CStr::from_ptr(plate.1.meta) }
+            .to_str()
+            .ok()
+            .and_then(|meta| meta.strip_prefix('{')?.strip_suffix('}'))
+            .ok_or_else(|| Failure::Message("Open CASCADE returned a damaged mesh".into()))?;
+        let fingerprint = json!(self.fingerprint()).to_string();
+        let size = arrays
+            .iter()
+            .map(|(name, bytes)| name.len() + bytes.len().div_ceil(3) * 4 + 6)
+            .sum::<usize>()
+            + meta.len()
+            + fingerprint.len()
+            + 64;
+        let mut out = String::with_capacity(size);
+        let _ = write!(
+            out,
+            "{{\"id\":{id},\"format\":\"{SOLID_FORMAT}\",{meta},\"fingerprint\":{fingerprint}"
+        );
+        for (name, bytes) in arrays {
+            let _ = write!(out, ",\"{name}\":\"");
+            base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut out);
+            out.push('"');
+        }
+        drop(plate);
+        if display {
+            let fine = self.mesh(chord, true)?;
+            // SAFETY: as above, for the display mesh.
+            let parts = unsafe {
+                [
+                    ("positions", fine.0.bytes(fine.1.positions, fine.1.positions_bytes)),
+                    ("normals", fine.0.bytes(fine.1.normals, fine.1.normals_bytes)),
+                    ("triangles", fine.0.bytes(fine.1.triangles, fine.1.triangles_bytes)),
+                ]
+            };
+            out.push_str(",\"display\":{");
+            for (at, (name, bytes)) in parts.iter().enumerate() {
+                let _ = write!(out, "{}\"{name}\":\"", if at == 0 { "" } else { "," });
+                base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut out);
+                out.push('"');
+            }
+            out.push('}');
+        }
+        out.push('}');
+        Ok(out)
+    }
+
+    /// One tessellation from the kernel and the view onto its arrays. `display`: the Model view's mesh (on a copy, with
+    /// normals); otherwise the plate mesh on the held faces.
+    fn mesh(&mut self, chord: f64, display: bool) -> Result<(Mesh, MeshView), Failure> {
         let mut view = MeshView {
             positions: std::ptr::null(),
             positions_bytes: 0,
@@ -317,59 +387,7 @@ impl Shape {
         let mesh = NonNull::new(raw).map(Mesh).ok_or_else(|| {
             Failure::Message(message.unwrap_or_else(|| "Open CASCADE failed".into()))
         })?;
-        let meta = unsafe { CStr::from_ptr(view.meta) }
-            .to_str()
-            .ok()
-            .and_then(|meta| meta.strip_prefix('{')?.strip_suffix('}'))
-            .ok_or_else(|| Failure::Message("Open CASCADE returned a damaged mesh".into()))?;
-        // SAFETY: `lime_tree_mesh` filled `view` with `mesh`'s own arrays, which live until it drops.
-        let arrays = unsafe {
-            [
-                (
-                    "positions",
-                    mesh.bytes(view.positions, view.positions_bytes),
-                ),
-                (
-                    "normals",
-                    mesh.bytes(view.normals, view.normals_bytes),
-                ),
-                (
-                    "triangles",
-                    mesh.bytes(view.triangles, view.triangles_bytes),
-                ),
-                (
-                    "edgePoints",
-                    mesh.bytes(view.edge_points, view.edge_points_bytes),
-                ),
-                (
-                    "edgeOffsets",
-                    mesh.bytes(view.edge_offsets, view.edge_offsets_bytes),
-                ),
-            ]
-        };
-        let fingerprint = json!(self.fingerprint()).to_string();
-        let size = arrays
-            .iter()
-            .map(|(name, bytes)| name.len() + bytes.len().div_ceil(3) * 4 + 6)
-            .sum::<usize>()
-            + meta.len()
-            + fingerprint.len()
-            + 64;
-        let mut out = String::with_capacity(size);
-        let _ = write!(
-            out,
-            "{{\"id\":{id},\"format\":\"{SOLID_FORMAT}\",{meta},\"fingerprint\":{fingerprint}"
-        );
-        for (name, bytes) in arrays {
-            if name == "normals" && !display {
-                continue;
-            }
-            let _ = write!(out, ",\"{name}\":\"");
-            base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut out);
-            out.push('"');
-        }
-        out.push('}');
-        Ok(out)
+        Ok((mesh, view))
     }
 
     /// --- Organic surfaces S1: lazy curvature buffers, UV isoparms, shared-edge continuity, and NURBS health.

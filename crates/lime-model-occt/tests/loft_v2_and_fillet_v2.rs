@@ -553,8 +553,8 @@ fn loft_tangent_end_condition_is_measured_and_curvature_is_refused() {
         }
         let key = format!("s3-loft-end-{}", worst.len());
         let shown = ok(json!({ "call": "open", "key": key, "feature": feature, "chordMm": 0.02, "meshQuality": "display" }));
-        let positions = decode_f32(shown["positions"].as_str().expect("positions"));
-        let normals = decode_f32(shown["normals"].as_str().expect("normals"));
+        let positions = decode_f32(shown["display"]["positions"].as_str().expect("positions"));
+        let normals = decode_f32(shown["display"]["normals"].as_str().expect("normals"));
         // The side's normal at the base rim, against the plane square to the asked direction (+Z).
         let angle = positions
             .chunks_exact(3)
