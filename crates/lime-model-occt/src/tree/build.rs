@@ -619,7 +619,7 @@ pub(super) fn build(
             *which,
             sections,
             spine,
-            *mode,
+            mode.as_ref(),
             *transition,
             scale,
             *twist_deg,

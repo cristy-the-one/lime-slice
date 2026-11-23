@@ -129,6 +129,7 @@
 #include <BRepOffset_MakeOffset.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
+#include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <gp_Pnt2d.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 // K3: draft prisms (the LocOpe prism BRepFeat_MakeDPrism::Perform builds) and an extrude that stops on a face.
@@ -10172,7 +10173,11 @@ TopoDS_Shape pipe_solid_from_wires(
     std::string& error) {
     BRepOffsetAPI_MakePipeShell pipe(spine);
     if (!aux_wire.IsNull()) {
-        pipe.SetMode(aux_wire, Standard_True);
+        // Mode 3 (mode {kind: "auxSpine"}) carries its flags in the binormal's numbers: curvilinear, keep contact.
+        const bool curvilinear = spec.mode != 3 || spec.binormal[0] != 0.0;
+        const bool keep_contact = spec.mode == 3 && spec.binormal[1] != 0.0;
+        pipe.SetMode(aux_wire, curvilinear ? Standard_True : Standard_False,
+                     keep_contact ? BRepFill_ContactOnBorder : BRepFill_NoContact);
     } else if (spec.mode == 2) {
         const gp_Vec bv(spec.binormal[0], spec.binormal[1], spec.binormal[2]);
         if (bv.Magnitude() <= 1e-9) {
@@ -10194,6 +10199,35 @@ TopoDS_Shape pipe_solid_from_wires(
         pipe.SetTransitionMode(BRepBuilderAPI_RoundCorner);
     }
 
+    if (section_wires.size() > 1 && spec.scale_stations.size() >= 4) {
+        error = "Scale stations take a sweep of one section. With several sections, each section sets the size where it stands.";
+        return {};
+    }
+    // C: Open CASCADE's transformed corner leaves a damaged solid at a sharp bend of the spine (a 90 degree elbow gave
+    // 115 edges where pieces meet only along a line). Only the right and round corners are built there.
+    if (spec.transition == 2) {
+        gp_Vec previous;
+        bool have = false;
+        for (BRepTools_WireExplorer ex(spine); ex.More(); ex.Next()) {
+            BRepAdaptor_Curve curve(ex.Current());
+            const bool reversed = ex.Current().Orientation() == TopAbs_REVERSED;
+            gp_Pnt point;
+            gp_Vec at_start;
+            gp_Vec at_end;
+            curve.D1(reversed ? curve.LastParameter() : curve.FirstParameter(), point, at_start);
+            curve.D1(reversed ? curve.FirstParameter() : curve.LastParameter(), point, at_end);
+            if (reversed) {
+                at_start.Reverse();
+                at_end.Reverse();
+            }
+            if (have && previous.Magnitude() > 1e-12 && at_start.Magnitude() > 1e-12 && previous.Angle(at_start) > 1e-3) {
+                error = "A transformed corner is not built at a sharp bend of the spine. Use a right or round corner there.";
+                return {};
+            }
+            previous = at_end;
+            have = true;
+        }
+    }
     if (section_wires.size() == 1 && spec.scale_stations.size() >= 4) {
         const int nst = static_cast<int>(spec.scale_stations.size() / 2);
         BRepAdaptor_CompCurve cc(spine);
@@ -12099,17 +12133,43 @@ Handle(Geom_BSplineCurve) chain_to_bspline(const std::vector<TopoDS_Edge>& edges
         error = "A patch side needs a curve or an edge of the sheet.";
         return {};
     }
-    Handle(Geom_BSplineCurve) first = edge_to_bspline(edges[0], error);
-    if (first.IsNull()) return {};
-    if (edges.size() == 1) return first;
-    GeomConvert_CompCurveToBSplineCurve concat(first);
-    for (size_t i = 1; i < edges.size(); ++i) {
-        Handle(Geom_BSplineCurve) next = edge_to_bspline(edges[i], error);
-        if (next.IsNull()) return {};
-        if (concat.BSplineCurve()->EndPoint().Distance(next->EndPoint())
-            < concat.BSplineCurve()->EndPoint().Distance(next->StartPoint())) {
-            next->Reverse();
+    std::vector<Handle(Geom_BSplineCurve)> pieces;
+    for (const TopoDS_Edge& edge : edges) {
+        Handle(Geom_BSplineCurve) piece = edge_to_bspline(edge, error);
+        if (piece.IsNull()) return {};
+        pieces.push_back(piece);
+    }
+    if (pieces.size() == 1) return pieces[0];
+    // Join the pieces end to start, whatever order and direction they were picked in: start from the first, turn it so
+    // its end meets another piece, then take the piece that meets the running end each time.
+    Handle(Geom_BSplineCurve) first = pieces[0];
+    const auto nearest_end = [&pieces](const gp_Pnt& point, size_t skip) {
+        double best = 1e300;
+        for (size_t i = 0; i < pieces.size(); ++i) {
+            if (i == skip) continue;
+            best = std::min(best, std::min(point.Distance(pieces[i]->StartPoint()), point.Distance(pieces[i]->EndPoint())));
         }
+        return best;
+    };
+    if (nearest_end(first->StartPoint(), 0) < nearest_end(first->EndPoint(), 0)) first->Reverse();
+    GeomConvert_CompCurveToBSplineCurve concat(first);
+    std::vector<char> used(pieces.size(), 0);
+    used[0] = 1;
+    for (size_t step = 1; step < pieces.size(); ++step) {
+        const gp_Pnt end = concat.BSplineCurve()->EndPoint();
+        size_t pick = pieces.size();
+        double best = 1e300;
+        for (size_t i = 0; i < pieces.size(); ++i) {
+            if (used[i]) continue;
+            const double d = std::min(end.Distance(pieces[i]->StartPoint()), end.Distance(pieces[i]->EndPoint()));
+            if (d < best) {
+                best = d;
+                pick = i;
+            }
+        }
+        Handle(Geom_BSplineCurve) next = pieces[pick];
+        used[pick] = 1;
+        if (end.Distance(next->EndPoint()) < end.Distance(next->StartPoint())) next->Reverse();
         if (!concat.Add(next, kPatchJoinMm, Standard_True)) {
             error = "These boundary curves do not meet. Move each end so it starts where the previous curve ends.";
             return {};

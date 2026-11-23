@@ -550,13 +550,24 @@ pub enum SweepTransition {
 }
 
 /// Cross-section orientation along a sweep spine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SweepMode {
     #[default]
     CorrectedFrenet,
     Frenet,
     FixedBinormal { dir: [f64; 3] },
+    /// The app, the MCP schema and saved projects send an auxiliary spine this way. The sweep's own `auxSpine` field is
+    /// the older Rust spelling of the same thing; a sweep takes one or the other.
+    AuxSpine {
+        spine: Box<Curve3D>,
+        /// Match the two spines by arc length (default), not by parameter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        curvilinear: Option<bool>,
+        /// Keep the section touching the auxiliary spine.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_contact: bool,
+    },
 }
 
 /// --- Organic surfaces S3 (U5): Fillet cross-section profile continuity.
@@ -1235,6 +1246,16 @@ mod tests {
             }
             let side: SurfaceBoundary = serde_json::from_value(json!({ "curve": curve })).expect("boundary");
             check(side.curve.as_ref().expect("curve"));
+            // The sweep mode the app and the MCP send for an auxiliary spine.
+            match op(json!({ "kind": "sweep", "op": "fuse", "sections": [section()], "spine": spline(),
+                "mode": { "kind": "auxSpine", "spine": curve, "curvilinear": false, "keepContact": true } })) {
+                Op::Sweep { mode: Some(super::SweepMode::AuxSpine { spine, curvilinear, keep_contact }), .. } => {
+                    check(&spine);
+                    assert_eq!(curvilinear, Some(false));
+                    assert!(keep_contact);
+                }
+                other => panic!("{other:?}"),
+            }
         }
     }
 

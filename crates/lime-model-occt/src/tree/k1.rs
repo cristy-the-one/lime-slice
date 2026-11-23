@@ -249,7 +249,7 @@ pub(super) fn build_sweep_shape(
     which: BooleanOp,
     sections: &[LoftSection],
     spine: &Curve3D,
-    mode: Option<SweepMode>,
+    mode: Option<&SweepMode>,
     transition: Option<SweepTransition>,
     scale: &[[f64; 2]],
     twist_deg: Option<f64>,
@@ -298,13 +298,25 @@ pub(super) fn build_sweep_shape(
     let mut spine_blob = Vec::new();
     encode_curve3d(spine, resolved_edges, &mut spine_blob)?;
     let mut aux_blob = Vec::new();
-    if let Some(aux) = aux_spine {
+    // An auxiliary spine comes as the sweep's `auxSpine` or as `mode: {kind: "auxSpine"}`, never both.
+    let from_mode = match mode {
+        Some(SweepMode::AuxSpine { spine, .. }) => Some(spine.as_ref()),
+        _ => None,
+    };
+    if from_mode.is_some() && aux_spine.is_some() {
+        return Err("Give the auxiliary spine once: as mode {kind: \"auxSpine\"} or as auxSpine, not both.".into());
+    }
+    if let Some(aux) = from_mode.or(aux_spine) {
         encode_curve3d(aux, &[], &mut aux_blob)?;
     }
-    let (mode_id, binormal) = match mode.unwrap_or_default() {
+    // Mode 3 is an auxiliary spine with its two flags, carried in the binormal's numbers, which it does not use.
+    let (mode_id, binormal) = match mode.cloned().unwrap_or_default() {
         SweepMode::CorrectedFrenet => (0, [0.0, 0.0, 1.0]),
         SweepMode::Frenet => (1, [0.0, 0.0, 1.0]),
         SweepMode::FixedBinormal { dir } => (2, dir),
+        SweepMode::AuxSpine { curvilinear, keep_contact, .. } => {
+            (3, [f64::from(u8::from(curvilinear.unwrap_or(true))), f64::from(u8::from(keep_contact)), 0.0])
+        }
     };
     let trans_id = match transition.unwrap_or_default() {
         SweepTransition::Round => 0,

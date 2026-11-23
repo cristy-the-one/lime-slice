@@ -1853,11 +1853,50 @@ TopoDS_Shape fill_hermite_blend(
         error = "A blend needs two open edges or chains. Pick one chain on each sheet.";
         return {};
     }
-    const double ss = a->StartPoint().Distance(b->StartPoint());
-    const double se = a->StartPoint().Distance(b->EndPoint());
-    const double es = a->EndPoint().Distance(b->StartPoint());
-    const double ee = a->EndPoint().Distance(b->EndPoint());
-    if (se + es < ss + ee) b->Reverse();
+    // Two closed rims: run them the same way round and start them across from each other, or the blend twists.
+    const auto closed_curve = [](const Handle(Geom_BSplineCurve)& curve) {
+        return curve->StartPoint().Distance(curve->EndPoint()) < kHermiteGapMm;
+    };
+    if (closed_curve(a) && closed_curve(b)) {
+        // Start b at the knot nearest a's start. A knot, not any point: a rim chain's edges meet at knots, so the
+        // blend's rim keeps the sheet's own vertices and Sew matches them.
+        double t = b->FirstParameter();
+        double best = a->StartPoint().Distance(b->StartPoint());
+        for (int k = 2; k < b->NbKnots(); ++k) {
+            const double d = a->StartPoint().Distance(b->Value(b->Knot(k)));
+            if (d < best - 1e-6) {
+                best = d;
+                t = b->Knot(k);
+            }
+        }
+        if (t > b->FirstParameter()) {
+            Handle(Geom_BSplineCurve) tail = Handle(Geom_BSplineCurve)::DownCast(b->Copy());
+            Handle(Geom_BSplineCurve) head = Handle(Geom_BSplineCurve)::DownCast(b->Copy());
+            tail->Segment(t, b->LastParameter());
+            head->Segment(b->FirstParameter(), t);
+            GeomConvert_CompCurveToBSplineCurve joined(tail);
+            if (!joined.Add(head, kHermiteGapMm, Standard_True)) {
+                error = "These closed rims could not be lined up. Give each rim as one closed edge.";
+                return {};
+            }
+            b = joined.BSplineCurve();
+        }
+        gp_Pnt pa;
+        gp_Pnt pb;
+        gp_Vec ta;
+        gp_Vec tb;
+        a->D1(a->FirstParameter(), pa, ta);
+        b->D1(b->FirstParameter(), pb, tb);
+        if (ta.Dot(tb) < 0.0) {
+            b->Reverse();
+        }
+    } else {
+        const double ss = a->StartPoint().Distance(b->StartPoint());
+        const double se = a->StartPoint().Distance(b->EndPoint());
+        const double es = a->EndPoint().Distance(b->StartPoint());
+        const double ee = a->EndPoint().Distance(b->EndPoint());
+        if (se + es < ss + ee) b->Reverse();
+    }
     reparam_01(a);
     reparam_01(b);
     const int order = std::max(order_a, order_b);
