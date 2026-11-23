@@ -1,0 +1,624 @@
+{
+  "run": {},
+  "api": "1.18",
+  "calls": [
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 40,
+        "dy": 40,
+        "dz": 20
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "extrude",
+          "op": "fuse",
+          "origin": [
+            0,
+            0,
+            20
+          ],
+          "depth": 4,
+          "loops": [
+            {
+              "start": [
+                0,
+                0
+              ],
+              "segments": [
+                {
+                  "kind": "line",
+                  "to": [
+                    10,
+                    0
+                  ]
+                },
+                {
+                  "kind": "nurbs",
+                  "to": [
+                    0,
+                    10
+                  ],
+                  "poles": [
+                    [
+                      10,
+                      10
+                    ]
+                  ],
+                  "weights": [
+                    1,
+                    0.7071067811865476,
+                    1
+                  ],
+                  "degree": 2
+                },
+                {
+                  "kind": "line",
+                  "to": [
+                    0,
+                    0
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "sweep",
+          "op": "fuse",
+          "sections": [
+            {
+              "origin": [
+                0,
+                0,
+                20
+              ],
+              "radius": 2
+            }
+          ],
+          "spine": {
+            "kind": "nurbs",
+            "poles": [
+              [
+                0,
+                0,
+                20
+              ],
+              [
+                0,
+                0,
+                30
+              ],
+              [
+                10,
+                0,
+                30
+              ]
+            ],
+            "weights": [
+              1,
+              0.7071067811865476,
+              1
+            ],
+            "degree": 2,
+            "knots": [
+              0,
+              1
+            ],
+            "mults": [
+              3,
+              3
+            ]
+          },
+          "transition": "round",
+          "scale": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              1.5
+            ]
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "sweep",
+          "op": "cut",
+          "sections": [
+            {
+              "origin": [
+                12,
+                0,
+                10
+              ],
+              "turn": [
+                -90,
+                0,
+                0
+              ],
+              "radius": 1
+            }
+          ],
+          "spine": {
+            "kind": "nurbs",
+            "poles": [
+              [
+                12,
+                0,
+                10
+              ],
+              [
+                0,
+                12,
+                10
+              ],
+              [
+                -12,
+                0,
+                10
+              ],
+              [
+                0,
+                -12,
+                10
+              ]
+            ],
+            "degree": 3,
+            "closed": true
+          }
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "fillet",
+          "edges": [
+            0
+          ],
+          "size": 2,
+          "continuity": "g2"
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "fillet",
+          "edges": [
+            1
+          ],
+          "size": 2,
+          "continuity": "conic",
+          "rho": 0.6
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "fillet",
+          "edges": [
+            2
+          ],
+          "size": 1,
+          "variable": [
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              3
+            ]
+          ],
+          "continuity": "g1"
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "loft",
+          "op": "fuse",
+          "sections": [
+            {
+              "origin": [
+                0,
+                0,
+                20
+              ],
+              "radius": 4
+            },
+            {
+              "apex": [
+                0,
+                0,
+                30
+              ]
+            }
+          ],
+          "maxDegree": 6
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "trimSplit",
+          "sheet": {
+            "mode": "extrude",
+            "curves": [
+              {
+                "kind": "polyline",
+                "points": [
+                  [
+                    -20,
+                    -20,
+                    25
+                  ],
+                  [
+                    20,
+                    -20,
+                    25
+                  ]
+                ]
+              }
+            ],
+            "dir": [
+              0,
+              1,
+              0
+            ],
+            "distance": 40
+          },
+          "keep": "below"
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "replaceFace",
+          "face": {
+            "normal": [
+              0,
+              0,
+              1
+            ],
+            "nearPoint": [
+              0,
+              0,
+              25
+            ]
+          },
+          "sheet": {
+            "mode": "extrude",
+            "curves": [
+              {
+                "kind": "polyline",
+                "points": [
+                  [
+                    -20,
+                    -20,
+                    25
+                  ],
+                  [
+                    20,
+                    -20,
+                    25
+                  ]
+                ]
+              }
+            ],
+            "dir": [
+              0,
+              1,
+              0
+            ],
+            "distance": 40
+          }
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "splitFace",
+          "faces": [
+            0
+          ],
+          "curve": {
+            "kind": "polyline",
+            "points": [
+              [
+                -20,
+                -20,
+                25
+              ],
+              [
+                20,
+                -20,
+                25
+              ]
+            ]
+          },
+          "direction": [
+            0,
+            0,
+            -1
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 10,
+        "dy": 10,
+        "dz": 10
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_2",
+        "op": {
+          "mode": "planar",
+          "curves": [
+            {
+              "kind": "polyline",
+              "points": [
+                [
+                  -10,
+                  -10,
+                  100
+                ],
+                [
+                  10,
+                  -10,
+                  100
+                ],
+                [
+                  10,
+                  10,
+                  100
+                ],
+                [
+                  -10,
+                  10,
+                  100
+                ]
+              ],
+              "closed": true
+            }
+          ],
+          "kind": "sheet"
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_2",
+        "op": {
+          "mode": "revolve",
+          "curves": [
+            {
+              "kind": "polyline",
+              "points": [
+                [
+                  30,
+                  0,
+                  100
+                ],
+                [
+                  30,
+                  0,
+                  110
+                ]
+              ]
+            }
+          ],
+          "axisOrigin": [
+            0,
+            0,
+            0
+          ],
+          "dir": [
+            0,
+            0,
+            1
+          ],
+          "angleDeg": 360,
+          "kind": "sheet"
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_2",
+        "op": {
+          "mode": "loft",
+          "curves": [
+            {
+              "kind": "polyline",
+              "points": [
+                [
+                  -20,
+                  -20,
+                  25
+                ],
+                [
+                  20,
+                  -20,
+                  25
+                ]
+              ]
+            },
+            {
+              "kind": "polyline",
+              "points": [
+                [
+                  -20,
+                  20,
+                  25
+                ],
+                [
+                  20,
+                  20,
+                  25
+                ]
+              ]
+            }
+          ],
+          "ruled": true,
+          "kind": "sheet"
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_2",
+        "op": {
+          "kind": "patch",
+          "boundaries": [
+            {
+              "edges": [
+                0
+              ],
+              "continuity": "g1"
+            },
+            {
+              "edges": [
+                1
+              ],
+              "continuity": "g0"
+            }
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_2",
+        "op": {
+          "kind": "blendSurface",
+          "a": {
+            "edges": [
+              2
+            ],
+            "continuity": "g1"
+          },
+          "b": {
+            "edges": [
+              3
+            ],
+            "continuity": "g2"
+          },
+          "continuity": "g2",
+          "tensionA": 1,
+          "tensionB": 1.5
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_2",
+        "op": {
+          "kind": "sew",
+          "capPlanar": true,
+          "makeSolid": true
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_2",
+        "op": {
+          "kind": "thicken",
+          "thickness": 2,
+          "direction": "both"
+        },
+        "probe": true
+      }
+    }
+  ],
+  "ops": [
+    "{\"primitive\":\"box\",\"origin\":[-20,-20,0],\"size\":[40,40,20],\"radius\":0,\"height\":0,\"turn\":[0,0,0]}",
+    "null",
+    "{\"kind\":\"extrude\",\"op\":\"fuse\",\"origin\":[0,0,20],\"turn\":[0,0,0],\"loops\":[{\"start\":[0,0],\"segments\":[{\"kind\":\"line\",\"to\":[10,0]},{\"kind\":\"nurbs\",\"poles\":[[10,10]],\"weights\":[1,0.7071067811865476,1],\"degree\":2,\"to\":[0,10]},{\"kind\":\"line\",\"to\":[0,0]}]}],\"depth\":4}",
+    "{\"kind\":\"sweep\",\"op\":\"fuse\",\"sections\":[{\"origin\":[0,0,20],\"turn\":[0,0,0],\"radius\":2}],\"spine\":{\"kind\":\"nurbs\",\"poles\":[[0,0,20],[0,0,30],[10,0,30]],\"weights\":[1,0.7071067811865476,1],\"degree\":2,\"knots\":[0,1],\"mults\":[3,3]},\"transition\":\"round\",\"scale\":[[0,1],[1,1.5]]}",
+    "{\"kind\":\"sweep\",\"op\":\"cut\",\"sections\":[{\"origin\":[12,0,10],\"turn\":[-90,0,0],\"radius\":1}],\"spine\":{\"kind\":\"nurbs\",\"poles\":[[12,0,10],[0,12,10],[-12,0,10],[0,-12,10]],\"degree\":3,\"closed\":true}}",
+    "{\"kind\":\"fillet\",\"edges\":[0],\"size\":2,\"continuity\":\"g2\"}",
+    "{\"kind\":\"fillet\",\"edges\":[1],\"size\":2,\"continuity\":\"conic\",\"rho\":0.6}",
+    "{\"kind\":\"fillet\",\"edges\":[2],\"size\":1,\"variable\":[[0,1],[1,3]]}",
+    "{\"kind\":\"loft\",\"op\":\"fuse\",\"sections\":[{\"origin\":[0,0,20],\"turn\":[0,0,0],\"radius\":4},{\"origin\":[0,0,30],\"turn\":[0,0,0],\"apex\":[0,0,30]}],\"maxDegree\":6}",
+    "{\"kind\":\"trimSplit\",\"sheet\":{\"mode\":\"extrude\",\"curves\":[{\"kind\":\"polyline\",\"points\":[[-20,-20,25],[20,-20,25]]}],\"dir\":[0,1,0],\"distance\":40},\"keep\":\"below\"}",
+    "{\"kind\":\"replaceFace\",\"face\":0,\"sheet\":{\"mode\":\"extrude\",\"curves\":[{\"kind\":\"polyline\",\"points\":[[-20,-20,25],[20,-20,25]]}],\"dir\":[0,1,0],\"distance\":40}}",
+    "{\"kind\":\"splitFace\",\"faces\":[0],\"curve\":{\"kind\":\"polyline\",\"points\":[[-20,-20,25],[20,-20,25]]},\"direction\":[0,0,-1]}"
+  ],
+  "fingerprint": {
+    "volumeMm3": 32000,
+    "faces": 6,
+    "edges": 12
+  },
+  "metrics": {
+    "helpers": 20
+  },
+  "log": []
+}
