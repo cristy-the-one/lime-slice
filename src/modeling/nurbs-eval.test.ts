@@ -3,15 +3,25 @@
  * Boehm knot insertion, sharp creases, tensor-product surfaces, and 2-sketch 3D curve combining.
  */
 import {
+  bicubicGrid,
   combineOrthogonalCurves3D,
+  creaseSurface,
   curvatureComb2D,
+  DEFAULT_PREVIEW_DENSITY,
+  elevateSurfaceDegree,
   evalNurbsCurve2D,
   evalNurbsCurve3D,
   evalNurbsSurface3D,
   insertNurbsKnot2D,
+  insertSurfaceKnot,
   makeCreaseAtParam2D,
+  moveCurvePole,
   sampleNurbsCurve2D,
   sampleNurbsCurve3D,
+  sculptGrid,
+  surfaceMesh,
+  surfaceRefusal,
+  symmetryError,
   type NurbsCurve2D,
   type NurbsCurve3D,
   type NurbsSurface3D,
@@ -111,6 +121,48 @@ const combined = combineOrthogonalCurves3D(
 );
 check("combineOrthogonalCurves3D produces 3D curve matching both views", Array.isArray(combined) && combined.length === 11 && near(combined[5]![0], 10) && near(combined[5]![1], 5) && near(combined[5]![2], 8));
 check("combineOrthogonalCurves3D refuses same plane", !Array.isArray(combineOrthogonalCurves3D({ plane: "XY", points: [[0, 0], [10, 0]] }, { plane: "XY", points: [[0, 0], [10, 0]] })));
+
+// 9. S6: refusals, knot insertion, degree elevation, symmetry, and the preview grid.
+check("too few poles for degree 3", surfaceRefusal({ poles: bicubicGrid(3, 8) }) === "This surface needs at least 4 poles in U for degree 3.");
+check("too few poles in V", surfaceRefusal({ poles: bicubicGrid(8, 2), degreeV: 3 }) === "This surface needs at least 4 poles in V for degree 3.");
+check("bad knots", surfaceRefusal({ poles: bicubicGrid(4, 4), degreeU: 3, degreeV: 3, knotsU: [0, 0], multsU: [1, 1] }) === "The U knots do not match this surface. They must increase, and their multiplicities must add up to the poles and the degree.");
+const badWeights = bicubicGrid(4, 4).map((row) => row.map(() => 1));
+badWeights[0]![0] = 0;
+const weightedBad: NurbsSurface3D = { poles: bicubicGrid(4, 4), degreeU: 3, degreeV: 3, weights: badWeights };
+check("a weight of 0", surfaceRefusal(weightedBad) === "A weight on this surface is 0 or less. Every weight has to be greater than 0.");
+
+const grid = { poles: bicubicGrid(), degreeU: 3, degreeV: 3 };
+const before = evalNurbsSurface3D(grid, 0.37, 0.62).point;
+const inserted = insertSurfaceKnot(grid, "u", 0.5, 1);
+check("knot insertion keeps the surface", typeof inserted !== "string" && near(evalNurbsSurface3D(inserted, 0.37, 0.62).point[0], before[0], 1e-8) && near(evalNurbsSurface3D(inserted, 0.37, 0.62).point[2], before[2], 1e-8) && inserted.poles.length === 9);
+const creasedSurface = creaseSurface(grid, "v", 0.4);
+check("a crease keeps the surface", typeof creasedSurface !== "string" && near(evalNurbsSurface3D(creasedSurface, 0.37, 0.62).point[1], before[1], 1e-6));
+const elevated = elevateSurfaceDegree(saddle, "u", 1);
+check("degree elevation keeps the bilinear saddle", typeof elevated !== "string" && elevated.degreeU === 2 && near(evalNurbsSurface3D(elevated, 0.5, 0.5).point[2], 1, 1e-8));
+const elevatedGrid = elevateSurfaceDegree(grid, "u", 1);
+let elevateWorst = 0;
+if (typeof elevatedGrid !== "string") {
+  for (let i = 0; i <= 4; i += 1) {
+    for (let j = 0; j <= 4; j += 1) {
+      const a = evalNurbsSurface3D(grid, i / 4, j / 4).point;
+      const b = evalNurbsSurface3D(elevatedGrid, i / 4, j / 4).point;
+      elevateWorst = Math.max(elevateWorst, Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]));
+    }
+  }
+}
+check("degree elevation keeps an 8x8 bicubic", typeof elevatedGrid !== "string" && elevateWorst < 1e-6, `max=${elevateWorst}`);
+
+const sculpted = sculptGrid(grid.poles, { iu: 1, iv: 2, mode: "pole" }, "z", 4, [0, 0, 1], 0, true);
+check("symmetry moves the mirror pole", sculpted[1]![2]![2] === 4 && sculpted[6]![2]![2] === 4 && sculpted[1]![2]![0] === -sculpted[6]![2]![0]);
+const symmetric = symmetryError({ poles: sculpted, degreeU: 3, degreeV: 3 });
+console.log(`NURBS_SYMMETRY maxDiffMm=${symmetric.toExponential(6)}`);
+check("the surface stays symmetric within 1e-6 mm", symmetric < 1e-6, `max=${symmetric}`);
+
+const mesh = surfaceMesh(grid, DEFAULT_PREVIEW_DENSITY);
+check("default preview density is 4 samples per span", DEFAULT_PREVIEW_DENSITY === 4 && typeof mesh !== "string" && mesh.positions.length === 21 * 21 * 3);
+
+const moved = moveCurvePole([[0, 0, 0], [10, 0, 0], [20, 1, 0], [30, 0, 0]], 2, "z", 3, [0, 0, 1]);
+check("the curve triad moves one pole", moved[2]![2] === 3 && moved[1]![0] === 10 && moved[0]![2] === 0);
 
 if (failed) throw new Error(`${failed} nurbs-eval checks failed`);
 console.log("nurbs-eval: ok");

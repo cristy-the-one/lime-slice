@@ -3,6 +3,7 @@
 import { FIRST_TOOLS, GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
 import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
 import { organicFirstProblem, organicProblem } from "./organic-checks.ts";
+import { nurbsSurfaceProblem } from "./nurbs-surface-checks.ts";
 import { ALIGN_RELATIONS } from "../src/place-snap.ts";
 
 const handle = { type: "string", minLength: 1, maxLength: 64, description: "obj_N. Default: the selected." };
@@ -437,7 +438,7 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0, textOk
     if (typeof innerKind !== "string" || !REPEATABLE.has(innerKind)) return `A ${String((value as { kind?: unknown }).kind)} repeats one of ${[...REPEATABLE].join(", ")}; ${typeof innerKind === "string" ? `a ${innerKind}` : "that op"} is applied once per copy instead (${path}.op).`;
     return checkOp(inner, `${path}.op`, false, depth + 1);
   }
-  return null;
+  return nurbsSurfaceProblem(value, path);
 }
 
 const profilePlace = {
@@ -970,6 +971,29 @@ const sheetOps = [
       label,
     },
   },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "poles"],
+    properties: {
+      kind: { const: "nurbsSurface", description: "An M by N NURBS pole grid. The result is a sheet." },
+      poles: { type: "array", minItems: 2, maxItems: 64, description: "Poles, one row per U index, each row along V.", items: { type: "array", minItems: 2, maxItems: 64, items: vec3 } },
+      weights: { type: "array", maxItems: 64, description: "One weight per pole, each greater than 0. Absent means 1.", items: { type: "array", maxItems: 64, items: { type: "number", exclusiveMinimum: 0 } } },
+      degreeU: { type: "integer", minimum: 1, maximum: 8, description: "Degree in U. Absent means 3." },
+      degreeV: { type: "integer", minimum: 1, maximum: 8, description: "Degree in V. Absent means 3." },
+      knotsU: { type: "array", maxItems: 128, items: { type: "number" }, description: "Distinct U knots, strictly increasing. Absent builds a clamped or periodic vector." },
+      multsU: { type: "array", maxItems: 128, items: { type: "integer", minimum: 1, maximum: 9 }, description: "U multiplicities, one per distinct knot: at most the degree inside, the degree + 1 at a clamped end." },
+      knotsV: { type: "array", maxItems: 128, items: { type: "number" }, description: "Distinct V knots, strictly increasing." },
+      multsV: { type: "array", maxItems: 128, items: { type: "integer", minimum: 1, maximum: 9 }, description: "V multiplicities, one per distinct knot: at most the degree inside, the degree + 1 at a clamped end." },
+      periodicU: { type: "boolean", description: "Periodic in U. Absent is clamped." },
+      periodicV: { type: "boolean", description: "Periodic in V. Absent is clamped." },
+      insertU: { type: "array", maxItems: 32, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "U knots to insert, applied before the kernel sees the grid: [parameter inside the U range, times from 1 to the U degree], at most 32. Clamped surfaces only." },
+      insertV: { type: "array", maxItems: 32, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "V knots to insert, applied before the kernel sees the grid: [parameter inside the V range, times from 1 to the V degree], at most 32. Clamped surfaces only." },
+      elevateU: { type: "integer", minimum: 1, maximum: 8, description: "Raise the U degree to this. The surface stays where it is." },
+      elevateV: { type: "integer", minimum: 1, maximum: 8, description: "Raise the V degree to this. The surface stays where it is." },
+      label,
+    },
+  },
 ];
 (op.oneOf as unknown[]).splice(5 + sketchOps.length + faceOps.length + 1, 0, ...sheetOps);
 const regionField = {
@@ -1275,6 +1299,7 @@ export const OP_SUMMARY: Record<string, string> = {
   splitFace: "splitFace {faces, curve, direction}: imprint a 3D curve onto faces to split them.",
   patch: "patch {boundaries:[{edges|curve, continuity}], guides, points}: fill an opening with a sheet.",
   blendSurface: "blendSurface {a, b, continuity, tensionA, tensionB}: bridge two open edges with a sheet.",
+  nurbsSurface: "nurbsSurface {poles, weights, degreeU, degreeV, knots}: an M by N NURBS sheet.",
   boolean: "boolean {op:cut|fuse|common, primitive, dx, dy, dz | radius, height, origin | centre, turn}.",
   root: "root {primitive, sizes}: a new base solid.",
   join: "join {toolObject, op}: another object's solid as the tool.",
@@ -1847,7 +1872,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "solid_new",
-    description: "Add a primitive, a gear, a fastener, a fitting, a plate, an L-bracket, a pulley or a fit coupon, centred on X and Y on Z = 0. Needs Open CASCADE.",
+    description: "Add a primitive, a gear, a fastener, a fitting, a plate, an L-bracket, a pulley or a fit coupon, centred on X and Y on Z = 0, or a part that starts from a NURBS surface or a sheet (feature). Needs Open CASCADE.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1856,6 +1881,7 @@ export const TOOLS: ToolSpec[] = [
         kind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket", "gt2", "v"], description: "With primitive part. Same as partKind." },
         name: objectName,
         gear: { type: "object", description: "guide {kind:\"gear\"}." },
+        feature: { type: "object", description: "Instead of a primitive: a part that starts from a surface, a nurbsSurface or a sheet op as model_apply takes it (guide {kind:\"nurbsSurface\"}). The part is an open sheet until it is thickened or sewn." },
         coupon: {
           type: "object",
           additionalProperties: false,

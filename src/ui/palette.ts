@@ -464,6 +464,15 @@ export function runCommand(id: string) {
     case "model-parameters":
       withModel((model) => model.toggleParameters());
       return;
+    case "model-zebra":
+      withModel((model) => model.toggleZebra());
+      return;
+    case "model-curvature":
+      withModel((model) => model.toggleCurvature());
+      return;
+    case "model-isoparms":
+      withModel((model) => model.toggleIsoparms());
+      return;
     case "model-stress":
       withModel((model) => model.revealStress());
       return;

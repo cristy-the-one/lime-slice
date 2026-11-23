@@ -127,6 +127,12 @@ eq("Shift+H is Model history, H stays Hole", [press("Shift+H"), press("Shift+H",
 eq("Shift+U is the workplane, and only in Model", [press("Shift+U"), press("Shift+U", { stage: "model" }), press("U", { stage: "model" })], [null, "model-workplane", null]);
 eq("Shift+K checks the solid, and K stays Paint seam", [press("Shift+K"), press("Shift+K", { stage: "model" }), press("K")], [null, "model-check", "paint-seam"]);
 eq("Enter applies a model edit, not from Prepare", [press("Enter"), press("Enter", { stage: "model" })], [null, "model-apply"]);
+// Organic surfaces: Alt+Z/C/I are commands. On macOS Option+Z types "Ω" (Option+C "ç", Option+I a dead key), so the physical key decides.
+const option = (key: string, code: string): KeyEventLike => ({ key, code, ctrlKey: false, metaKey: false, shiftKey: false, altKey: true, repeat: false });
+eq("Alt+Z, Alt+C, Alt+I toggle Zebra, Curvature and the surface grid in Model", [press("Alt+Z", { stage: "model" }), press("Alt+C", { stage: "model" }), press("Alt+I", { stage: "model" })], ["model-zebra", "model-curvature", "model-isoparms"]);
+eq("macOS Option+Z / Option+C / Option+I (Ω, ç, dead key) still toggle them", [resolveKey(option("Ω", "KeyZ"), { ...BASE, stage: "model" })?.id, resolveKey(option("ç", "KeyC"), { ...BASE, stage: "model" })?.id, resolveKey(option("Dead", "KeyI"), { ...BASE, stage: "model" })?.id], ["model-zebra", "model-curvature", "model-isoparms"]);
+eq("Alt+Z does nothing outside Model", press("Alt+Z"), null);
+check("the three are listed in help and the palette", ["model-zebra", "model-curvature", "model-isoparms"].every((id) => paletteCommands().some((c) => c.id === id) && helpGroups().some((g) => g.entries.some((e) => (e as { id?: string }).id === id || JSON.stringify(e).includes(id)))));
 eq("a model letter does nothing in a field", press("Q", { stage: "model", typing: true }), null);
 eq("Esc clears a search before it cancels", press("Esc", { running: true, searching: true }), "search-clear");
 eq("Esc closes the sheet", press("Esc", { helpOpen: true, running: true }), "help-close");

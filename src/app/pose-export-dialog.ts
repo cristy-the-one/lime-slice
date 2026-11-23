@@ -5,6 +5,7 @@
  * in STEP (AP242 tree or flat), glTF binary (.glb, optionally with the active animation), 3MF assembly,
  * STL (one file or a ZIP per member), OBJ + MTL, or Pose sheet (.json). Never mutates the assembly.
  */
+import { sheetPartNote } from "../model-sheet";
 import type { Assembly } from "../assembly.ts";
 import { IDENTITY_POSE, type Affine } from "../model-space.ts";
 import { meshSeat, meshTokenOf, modelPoseOf } from "../plate.ts";
@@ -295,6 +296,13 @@ export function showPoseExport(context: PoseExportContext): void {
       const chordMm = Number(chordInput.value);
       if (MESH_FORMATS.has(fmt) && (!Number.isFinite(chordMm) || chordMm < 0.01 || chordMm > 1)) {
         status.textContent = "Mesh detail must be between 0.01 and 1 mm.";
+        return;
+      }
+      // An open sheet is no printable part: a mesh export of the assembly stops with the sheet prompt.
+      const members = new Set(asm.members.map((member) => member.object));
+      const sheet = MESH_FORMATS.has(fmt) ? sheetPartNote(state.plate.objects.filter((obj) => members.has(obj.id))) : null;
+      if (sheet) {
+        status.textContent = sheet;
         return;
       }
       const config = currentConfig();

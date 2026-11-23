@@ -18,6 +18,7 @@ import {
   isEdgeStep,
   isSketchRevolveGroup,
   withFeatureRoot,
+  withoutBuilds,
   type EdgeRef,
   type ModelOp,
   type ModelTree,
@@ -51,6 +52,8 @@ import { startAutoRibsEdit } from "./auto-ribs";
 import { S } from "./shared";
 import { applyOp, keepSolid } from "./apply";
 import { createFeatureSolid } from "./create";
+import { forgetSurfaces } from "./surface-cache";
+import { forgetPlateSolids } from "./plate-mesh";
 import { treeOf } from "./edges";
 import { openWhole, post, treeCall } from "./engine";
 import { paintTextAnchor } from "./features";
@@ -96,6 +99,18 @@ async function startOwnEdit(node: NodeId) {
   const at = S.open;
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return;
+  // --- S6. A NURBS surface, the root or a later step, reopens the NURBS tool on that step's own grid. Each drag then
+  // rebuilds the steps after it, as an Update does.
+  if (editedOp(tree, node)?.kind === "nurbsSurface") {
+    const refusal = editRefusal(tree, node) ?? (S.busy || S.jumping ? STILL_WORKING : null);
+    if (refusal) {
+      readout(refusal);
+      return;
+    }
+    const { nurbsTool } = await import("./nurbs-tool");
+    (await nurbsTool()).openNurbsEdit(node);
+    return;
+  }
   const rootFeature = tree.root.kind === "feature" && tree.nodes.get(node)?.parent === null;
   const feature = editedOp(tree, node);
   // --- E1/F2/F3. An extrude, a revolve, or a loft, including a feature root, reopens its sketch. ---
@@ -239,7 +254,9 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   const previous = tree;
   // The later steps build on the new root, up to the step shown before the edit, which the view shows again.
   const back = rootEditFrom != null && tree.nodes.has(rootEditFrom) ? rootEditFrom : tree.current;
-  const cleared = jumped(clearFingerprints(withFeatureRoot(tree, op)), back);
+  // Every node rebuilds under its own id: its old plate mesh and sheet mark go too, or a commit would put the pre-edit
+  // mesh back on the plate (`commitModel` takes a node's stored mesh first).
+  const cleared = jumped(withoutBuilds(withFeatureRoot(tree, op)), back);
   modelTrees.set(at.key, cleared);
   forgetSolids(at.key);
   const mine = S.ticket;
@@ -277,17 +294,16 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   }
   S.sketchRootEdit = false;
   rootEditFrom = null;
+  // Every node was rebuilt under its own id, the committed one too: the plate takes the new solid at the next commit.
+  S.plateStale.add(at.key);
   syncUndo();
   return null;
 }
 
-function clearFingerprints(tree: ModelTree): ModelTree {
-  const nodes = new Map(tree.nodes);
-  for (const [id, node] of nodes) nodes.set(id, { ...node, fingerprint: null });
-  return { ...tree, nodes };
-}
-
 function forgetSolids(key: string) {
+  // A root edit rebuilds nodes under the same ids: their curvature and isoparm replies go with their solids.
+  forgetSurfaces(key);
+  forgetPlateSolids(key);
   for (const name of [...solids.keys()]) if (name.startsWith(`${key}#`)) solids.delete(name);
 }
 

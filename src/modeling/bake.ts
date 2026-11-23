@@ -15,7 +15,8 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
-import { blendSurfaceOp, draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, patchOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
+import { blendSurfaceOp, draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, nurbsSurfaceOp, patchOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
+import { applyRefinements, surfaceRefusal } from "./nurbs-eval.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
@@ -465,7 +466,7 @@ export function readShape(spec: Record<string, unknown>, points: number): Profil
   return { smooth: true, corners: [...new Set(spec.corners as number[])] };
 }
 
-function readLoftBoundaryField(value: unknown): LoftBoundary | { reason: string } {
+export function readLoftBoundaryField(value: unknown): LoftBoundary | { reason: string } {
   if (!value || typeof value !== "object") return { reason: "Loft boundary condition must be an object." };
   const raw = value as Record<string, unknown>;
   if (raw.kind === "free") return { kind: "free" };
@@ -482,16 +483,9 @@ function readLoftBoundaryField(value: unknown): LoftBoundary | { reason: string 
     if (!dir || Math.hypot(...dir) < 1e-9) return { reason: "Loft tangent boundary needs a non-zero dir [x, y, z]." };
     return { kind: "tangent", dir, ...(tension !== undefined ? { tension } : {}) };
   }
-  if (raw.kind === "curvature") {
-    let dir: Vec3 | undefined;
-    if (raw.dir !== undefined) {
-      const parsed = vec3Of(raw.dir);
-      if (!parsed || Math.hypot(...parsed) < 1e-9) return { reason: "Loft curvature dir must be a non-zero [x, y, z] vector." };
-      dir = parsed;
-    }
-    return { kind: "curvature", ...(dir ? { dir } : {}), ...(tension !== undefined ? { tension } : {}) };
-  }
-  return { reason: "Loft boundary kind must be free, normal, tangent, or curvature." };
+  // The kernel builds no curvature (G2) loft end; a step saved with one still reads, and the kernel says why it fails.
+  if (raw.kind === "curvature") return { reason: "A loft end cannot be held to curvature (G2). Use free, normal, or tangent." };
+  return { reason: "Loft boundary kind must be free, normal, or tangent." };
 }
 
 /** One loft section: origin and turn as a profile's plane, then a radius (radiusV for an ellipse) or a profile, or an apex point cap. */
@@ -1064,6 +1058,55 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
       ...(tolerance !== undefined ? { tolerance } : {}),
     });
     return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "nurbsSurface") {
+    if (!Array.isArray(spec.poles)) return { reason: "A NURBS surface needs a grid of poles." };
+    const poles: Vec3[][] = [];
+    for (const raw of spec.poles) {
+      if (!Array.isArray(raw)) return { reason: "Every row of this surface needs the same number of poles." };
+      const row: Vec3[] = [];
+      for (const point of raw) {
+        const pole = vec3Of(point);
+        if (!pole) return { reason: "A pole on this surface is not a number." };
+        row.push(pole);
+      }
+      poles.push(row);
+    }
+    const made = nurbsSurfaceOp({
+      poles,
+      ...(Array.isArray(spec.weights) ? { weights: spec.weights as number[][] } : {}),
+      ...(typeof spec.degreeU === "number" ? { degreeU: spec.degreeU } : {}),
+      ...(typeof spec.degreeV === "number" ? { degreeV: spec.degreeV } : {}),
+      ...(Array.isArray(spec.knotsU) ? { knotsU: spec.knotsU as number[] } : {}),
+      ...(Array.isArray(spec.multsU) ? { multsU: spec.multsU as number[] } : {}),
+      ...(Array.isArray(spec.knotsV) ? { knotsV: spec.knotsV as number[] } : {}),
+      ...(Array.isArray(spec.multsV) ? { multsV: spec.multsV as number[] } : {}),
+      ...(spec.periodicU === true ? { periodicU: true } : {}),
+      ...(spec.periodicV === true ? { periodicV: true } : {}),
+    });
+    const refusal = surfaceRefusal(made);
+    if (refusal) return { reason: refusal };
+    // --- S6. Knot insertion and degree elevation are applied here, with the same exact maths the sculpt tool uses, so
+    // the stored op is the grid the kernel builds and nothing the call asked for is dropped.
+    const pairs = (value: unknown): [number, number][] | null | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value)) return null;
+      const out: [number, number][] = [];
+      for (const pair of value) {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "number" || typeof pair[1] !== "number") return null;
+        out.push([pair[0], pair[1]]);
+      }
+      return out;
+    };
+    const insertU = pairs(spec.insertU);
+    const insertV = pairs(spec.insertV);
+    if (insertU === null || insertV === null) return { reason: "Each knot to insert is [parameter, times]." };
+    const elevateU = typeof spec.elevateU === "number" ? spec.elevateU : undefined;
+    const elevateV = typeof spec.elevateV === "number" ? spec.elevateV : undefined;
+    const refined = applyRefinements(made, { ...(insertU ? { insertU } : {}), ...(insertV ? { insertV } : {}), ...(elevateU !== undefined ? { elevateU } : {}), ...(elevateV !== undefined ? { elevateV } : {}) });
+    if (typeof refined === "string") return { reason: refined };
+    const baked = nurbsSurfaceOp(refined);
+    return { op: toSolidOp(baked, ctx.pose), typed: { ...baked } };
   }
   // --- A gear (src/model-gear.ts): a boolean whose tool is the gear primitive, placed as a cylinder is. Fuse by default.
   if (kind === "gear") {

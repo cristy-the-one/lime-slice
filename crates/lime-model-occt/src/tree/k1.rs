@@ -9,6 +9,7 @@ use super::ffi::{
     lime_tree_extrude_loops_extent,
     lime_tree_loft_loops,
     lime_tree_loft_v2,
+    lime_tree_nurbs_surface,
     lime_tree_patch,
     lime_tree_replace_face,
     lime_tree_revolve_loops,
@@ -986,4 +987,87 @@ pub(super) fn push_shape(p: &mut Vec<f64>, smooth: bool, corners: &[u32]) {
     p.push(f64::from(u8::from(smooth)));
     p.push(corners.len() as f64);
     p.extend(corners.iter().map(|&c| f64::from(c)));
+}
+
+/// One NURBS sheet: the grid, its knots, and any knot insertion or degree elevation still to apply.
+/// U and V are named fields, so a swapped direction is a different field, not a swapped argument.
+pub(super) struct NurbsSurfaceSpec<'a> {
+    pub(super) poles: &'a [Vec<[f64; 3]>],
+    pub(super) weights: &'a [Vec<f64>],
+    pub(super) degree_u: Option<u32>,
+    pub(super) degree_v: Option<u32>,
+    pub(super) knots_u: &'a [f64],
+    pub(super) knots_v: &'a [f64],
+    pub(super) mults_u: &'a [u32],
+    pub(super) mults_v: &'a [u32],
+    pub(super) periodic_u: bool,
+    pub(super) periodic_v: bool,
+    /// Each pair is `[parameter, times]` in U.
+    pub(super) insert_u: &'a [[f64; 2]],
+    /// Each pair is `[parameter, times]` in V.
+    pub(super) insert_v: &'a [[f64; 2]],
+    pub(super) elevate_u: Option<u32>,
+    pub(super) elevate_v: Option<u32>,
+}
+
+/// S6 blob, matching `build_nurbs_surface` in kernel.cpp:
+/// `[nu, nv, degreeU, degreeV, periodicU, periodicV, nKnotsU, nKnotsV, nWeights, nInsertU, nInsertV, elevateU, elevateV,
+///  poles (nu*nv*3), weights (nWeights), knotsU, multsU, knotsV, multsV, insertU pairs, insertV pairs]`.
+/// Degree 0 means the kernel's default of 3. Elevate 0 means do not elevate.
+fn encode_nurbs_blob(surface: &NurbsSurfaceSpec<'_>) -> Result<Vec<f64>, String> {
+    let nu = surface.poles.len();
+    let nv = surface.poles.first().map(|row| row.len()).unwrap_or(0);
+    if nu > 0 && surface.poles.iter().any(|row| row.len() != nv) {
+        return Err("Every row of this surface needs the same number of poles.".into());
+    }
+    let mut out = Vec::with_capacity(13 + nu * nv * 3 + surface.weights.len() * nv);
+    out.extend_from_slice(&[
+        nu as f64,
+        nv as f64,
+        surface.degree_u.unwrap_or(0) as f64,
+        surface.degree_v.unwrap_or(0) as f64,
+        f64::from(u8::from(surface.periodic_u)),
+        f64::from(u8::from(surface.periodic_v)),
+        surface.knots_u.len() as f64,
+        surface.knots_v.len() as f64,
+        if surface.weights.is_empty() { 0.0 } else { (nu * nv) as f64 },
+        surface.insert_u.len() as f64,
+        surface.insert_v.len() as f64,
+        surface.elevate_u.unwrap_or(0) as f64,
+        surface.elevate_v.unwrap_or(0) as f64,
+    ]);
+    for row in surface.poles {
+        for pole in row {
+            out.extend_from_slice(pole);
+        }
+    }
+    if !surface.weights.is_empty() {
+        if surface.weights.len() != nu || surface.weights.iter().any(|row| row.len() != nv) {
+            // The kernel counts these and refuses a grid that does not match.
+            out[8] = surface.weights.iter().map(|row| row.len()).sum::<usize>() as f64;
+        }
+        for row in surface.weights {
+            for weight in row {
+                out.push(*weight);
+            }
+        }
+    }
+    out.extend_from_slice(surface.knots_u);
+    out.extend(surface.mults_u.iter().map(|m| *m as f64));
+    out.extend_from_slice(surface.knots_v);
+    out.extend(surface.mults_v.iter().map(|m| *m as f64));
+    for pair in surface.insert_u {
+        out.extend_from_slice(pair);
+    }
+    for pair in surface.insert_v {
+        out.extend_from_slice(pair);
+    }
+    Ok(out)
+}
+
+/// S6: one NURBS sheet. `from` is None when the surface starts a part.
+pub(super) fn build_nurbs_shape(from: Option<&Shape>, surface: &NurbsSurfaceSpec<'_>) -> Result<Shape, String> {
+    let blob = encode_nurbs_blob(surface)?;
+    let raw_from = from.map_or(std::ptr::null(), Shape::raw);
+    Shape::made(|error| unsafe { lime_tree_nurbs_surface(raw_from, blob.as_ptr(), blob.len() as c_int, error) })
 }

@@ -148,7 +148,11 @@ export interface StressDraw {
 
 export interface ModelView {
   /** The open solid, in its own frame, drawn at `pose` in model space. The camera stays where it is. */
-  setSolid(solid: ModelSolid | null, pose: Affine): void;
+  /**
+   * `sheet`: draw it as an open sheet (front-only body, back tint, naked edges lit). Model passes `isOpenSheet`
+   * (src/model-sheet.ts), so a surfaces-only STEP looks as on v7.1.2; absent, a shape with naked edges is one.
+   */
+  setSolid(solid: ModelSolid | null, pose: Affine, sheet?: boolean): void;
   /** Move the open solid in model space. Its mesh is not touched. */
   setPose(pose: Affine): void;
   /** Look at `box`, a model-space box, from the direction Model opens with. */
@@ -214,6 +218,20 @@ export interface ModelView {
   onFacePointer(cb: (pointer: FacePointer) => void): void;
   /** P1. A model-space point, in page pixels. Null when it is behind the camera. */
   projectPoint(at: Vec3): { x: number; y: number } | null;
+  /**
+   * S6. The live NURBS preview, already evaluated, in the open part's own frame; null hides it and frees its buffers. The
+   * same arrays from one call to the next are updated in place. While it shows, the committed solid is hidden.
+   */
+  setNurbsPreview(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; density: number } | null): void;
+  /**
+   * S6. Model-space points (x, y, z flat) to view pixels in `out` (x, y, 1 when in front of the camera else 0, flat),
+   * relative to the view's top left, with one layout read for the list. Returns the view's rectangle on the page.
+   */
+  projectMany(points: ArrayLike<number>, out: Float64Array): { left: number; top: number; width: number; height: number };
+  /** S6. Called (after the call returns) whenever the view is given another solid. Returns the way to stop. */
+  onSolidChange(cb: () => void): () => void;
+  /** S6. Called whenever the camera moves (orbit, pan, wheel zoom, a glide, a reset). Returns the way to stop. */
+  onCameraChange(cb: () => void): () => void;
   /** P1. A dotted line in model space, or null to hide it. */
   setAlign(ends: [Vec3, Vec3] | null): void;
   /** P1. The distance under the pointer, for tests. Null clears it. */

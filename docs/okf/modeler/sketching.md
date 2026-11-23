@@ -48,6 +48,12 @@ sources:
   - id: organic-file
     resource: https://github.com/cristy-the-one/lime-slice/blob/feature/organic-surfaces/src/model-tree-file.ts
     title: src/model-tree-file.ts (feature/organic-surfaces)
+  - id: s6-ops
+    resource: https://github.com/cristy-the-one/lime-slice/blob/organic-surfaces/s6-nurbs-surface/crates/lime-model-occt/src/tree/ops.rs
+    title: crates/lime-model-occt/src/tree/ops.rs (organic-surfaces/s6-nurbs-surface)
+  - id: s6-tool
+    resource: https://github.com/cristy-the-one/lime-slice/blob/organic-surfaces/s6-nurbs-surface/src/app/model/nurbs-sculpt.ts
+    title: src/app/model/nurbs-sculpt.ts (organic-surfaces/s6-nurbs-surface)
 ---
 
 # Sketch
@@ -69,6 +75,8 @@ Primitive kinds are `box`, `cylinder`, `sphere`, `ellipsoid`, `cone`, `torus`, `
 Extrude, revolve, and loft can store the sketch on the op. The extrude comment says the kernel never reads that sketch JSON.[^tree] A sweep is not its own kernel op. `SweepDrawing` is "a sweep remembered on the loft it became," with a profile sketch, a path, and a scale. There is no twist field. The kernel never reads the drawing.[^tree]
 
 Holes from a sketch are a `group` whose source is sketch holes, and they require a sketch on a face. Push/pull chooses the op: with nothing else held it is `moveFaces` (neighbours follow); Alt is `faceExtrude` (a prism on that face alone).[^pull]
+
+Since 7.2.0 (S6) `ModelOp` also has `nurbsSurface`: a grid of 2 to 64 poles each way, weights, degree 1 to 8 in U and V, and clamped or periodic knots, built as an open sheet; it starts a part as a feature root.[^s6-ops] The Model tool's NURBS panel makes one (New NURBS surface, an 8 × 8 grid) and shapes it by pole, row or column drags along the part's axes or the normal, with falloff, symmetry about the part's X = 0 plane, and an Exact NURBS drawer for weight, degree, knot insertion and creases; History Edit reopens it. Over MCP `solid_new {feature}` starts a part from a NURBS surface or a sheet.[^s6-tool]
 
 # Workplanes and the rail
 
@@ -94,3 +102,5 @@ Open CASCADE is required for Model. See [Engine](../architecture/engine.md). Wit
 [^organic-ops]: crates/lime-model-occt/src/tree/ops.rs (feature/organic-surfaces)
 [^organic-plan]: docs/plan-organic-surfaces.md (feature/organic-surfaces)
 [^organic-file]: src/model-tree-file.ts (feature/organic-surfaces)
+[^s6-ops]: crates/lime-model-occt/src/tree/ops.rs (organic-surfaces/s6-nurbs-surface)
+[^s6-tool]: src/app/model/nurbs-sculpt.ts (organic-surfaces/s6-nurbs-surface)

@@ -1,5 +1,9 @@
 # Directory Update Log
 
+## 2026-11-24
+
+* **Update**: [Sketching and features](modeler/sketching.md) describes S6's `nurbsSurface` op, the NURBS panel and `solid_new {feature}`. The sources point at the `organic-surfaces/s6-nurbs-surface` branch; pin them to the merge commit once it reaches main.
+
 ## 2026-11-23
 
 * **Update**: [Sketching and features](modeler/sketching.md) describes the organic-surfaces steps of 7.2.0 (S1 to S5): which the app has, which are MCP and recipe only, and what 7.1.2 does with a project that uses them. [Tool catalog](mcp/tools.md) describes `model_check {surfaces: true}` and the organic ops' refusals. The new sources point at the `feature/organic-surfaces` branch; pin them to the merge commit once it reaches main.

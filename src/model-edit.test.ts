@@ -355,6 +355,16 @@ eq("the header names the tool", [toolEditHead(rodTree, 1, "Rod 1"), toolEditHead
   eq("an equal chamfer reopens equal", editPanel({ kind: "chamfer", edges: [3], size: 1 }, IDENTITY, [0, 0, 0]).chamfer, { form: "equal", flip: false });
 }
 
+// --- S6 (H1). A NURBS surface, as a root or as a later step, opens the NURBS tool from History; not through a join.
+const sheetGrid: Vec3[][] = [[[0, 0, 0], [0, 10, 0]], [[10, 0, 0], [10, 10, 2]]];
+const nurbsRoot = { kind: "nurbsSurface" as const, poles: sheetGrid, degreeU: 1, degreeV: 1 };
+const nurbsTree = newTree("nurbs#1", { kind: "feature", op: nurbsRoot }, rootLabel({ kind: "feature", op: nurbsRoot }, "NURBS 1"), null);
+eq("a NURBS root can be edited", editRefusal(nurbsTree, 0), null);
+eq("its edit starts from its grid", editedOp(nurbsTree, 0), nurbsRoot);
+const thickened = apply(apply(nurbsTree, { kind: "nurbsSurface", poles: sheetGrid.map((row) => row.map((p) => [p[0], p[1], p[2] + 5] as Vec3)), degreeU: 1, degreeV: 1 }, 0), { kind: "thicken", thickness: 2 } as ModelOp, 400);
+eq("a later NURBS step can be edited", editRefusal(thickened, 1), null);
+eq("through a join it cannot", toolEditRefusal(thickened, [], 1), "Open the part this NURBS surface belongs to, and edit it there.");
+eq("nor a NURBS root through a join", toolEditRefusal(nurbsTree, [], 0), "Open the part this NURBS surface belongs to, and edit it there.");
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

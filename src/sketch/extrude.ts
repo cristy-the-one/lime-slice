@@ -6,7 +6,7 @@
  * stop at is sent as a point profile, as it always was. An arc, a spline, or a hole sends its
  * loops with those fields: the kernel builds them on the same face.
  */
-import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
+import { loopStartsOffCurve, sampleNurbsSegment } from "./nurbs-seg.ts";
 import { arcFrom3, arcPoint, curveOf, dist, pointOn, projectToArc, projectToSegment, projectToSpline, sampleSpline } from "./geom.ts";
 import { frameOf, toPlane, type SketchFrame } from "./frame.ts";
 import { emptySketch, sketchEntity, sketchJson, type Pt, type SketchData, type Vec3 } from "./model.ts";
@@ -351,7 +351,8 @@ export function sampleLoop(loop: ProfileLoop): Pt[] {
     const last = points[points.length - 1];
     if (!last || dist(last, pt) > 1e-6) points.push(pt);
   };
-  push(prev);
+  // A lone closed nurbs segment starts at its first pole, off the outline.
+  if (!loopStartsOffCurve(loop)) push(prev);
   for (const segment of loop.segments) {
     if (segment.kind === "line") push(segment.to);
     else if (segment.kind === "arc") {
@@ -359,8 +360,7 @@ export function sampleLoop(loop: ProfileLoop): Pt[] {
       if (!arc) push(segment.to);
       else for (let step = 1; step <= 8; step += 1) push(arcPoint(arc, step / 8));
     } else if (segment.kind === "nurbs") {
-      const poles: Pt[] = [prev, ...(segment.poles ?? []), segment.to];
-      for (const pt of sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8))) push(pt);
+      for (const pt of sampleNurbsSegment(prev, segment)) push(pt);
     } else {
       for (const pt of sampleSpline([prev, ...segment.through, segment.to], false, 1)) push(pt);
     }
@@ -446,8 +446,7 @@ function distToSegment(from: Pt, segment: ProfileSegment, pt: Pt): number {
     return arc ? projectToArc(arc, pt).distance : (projectToSegment(from, segment.to, pt)?.distance ?? dist(pt, from));
   }
   if (segment.kind === "nurbs") {
-    const poles: Pt[] = [from, ...(segment.poles ?? []), segment.to];
-    const samples = sampleNurbsCurve2D({ poles, weights: segment.weights, degree: segment.degree, knots: segment.knots, mults: segment.mults }, Math.max(16, poles.length * 8));
+    const samples = sampleNurbsSegment(from, segment);
     return projectToSpline(samples, pt)?.distance ?? dist(pt, from);
   }
   const samples = sampleSpline([from, ...segment.through, segment.to], false, 0.5);

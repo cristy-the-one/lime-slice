@@ -22,6 +22,7 @@ import {
   withChild,
   withFeatureRoot,
   withNode,
+  withoutBuilds,
   type ModelOp,
   type ModelTree,
   type PrepareKeep,
@@ -111,6 +112,9 @@ eq("nor one with a split whose piece roots its own tree", dropped(withNode(jumpe
 // The visit step: what the plate does when it takes the shown node.
 const keep: PrepareKeep = { supportEdits: [], supportPaint: [{ x: 1 } as never], seamPaint: [], reinforcement: [], partScale: 1.5 };
 eq("nothing to commit when the plate holds the shown node", visitStep(root), null);
+// --- A root replaced in place (withoutBuilds) commits the shown node again, once: its mesh comes back with the commit.
+eq("a root rebuilt in place commits the shown node", visitStep(withoutBuilds(root)), { from: 0, to: 0, keep: null, resetScale: false });
+eq("and not again once that node has its mesh", visitStep(withNode(withoutBuilds(root), 0, { mesh: { name: "a.stl", bytes: new ArrayBuffer(84), sourcePos: new Float32Array(0), token: "t" } })), null);
 eq("a node with no saved state starts with empty paint", visitStep(two), { from: 0, to: 2, keep: null, resetScale: false });
 const kept = withNode(two, 0, { keep });
 const backToRoot = { ...jumped(kept, 0), committed: 2 };

@@ -278,7 +278,7 @@ The engine builds four ops that boxes and cylinders cannot: a profile pushed or 
 
 ## Organic surfaces (7.2.0)
 
-Milestones S1 to S5 of `docs/plan-organic-surfaces.md`; S6 (a direct NURBS surface and CV sculpting) is not in 7.2.0. The new steps are kernel ops in `crates/lime-model-occt/src/tree/ops.rs`, built in `kernel.cpp` and `tree.cpp`, stored in the History tree and the `.lime` file like any other step.
+Milestones S1 to S5 of `docs/plan-organic-surfaces.md`; S6 (a direct NURBS surface) is in "NURBS surfaces (S6, 7.2.0)" below. The new steps are kernel ops in `crates/lime-model-occt/src/tree/ops.rs`, built in `kernel.cpp` and `tree.cpp`, stored in the History tree and the `.lime` file like any other step.
 
 In the app:
 
@@ -294,6 +294,15 @@ Only over MCP and recipes (`lime_recipe` API 1.18; the ops and fields are in `do
 ### Opening a 7.2.0 project in 7.1.2 or older
 
 A project has no version guard. In 7.1.2, an object whose history has a new step kind (a sweep with a spine, `sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch`, `blendSurface`, a loft with an apex section, or a profile with a `nurbs` segment) cannot be read: the object opens as its saved mesh and its history is dropped. New fields on an old step (a fillet's `continuity`, `rho` and `variable`; a loft's `guides`, `startCondition`, `endCondition`, `closed`, `smoothing` and `maxDegree`) are dropped without a word, and a replay there builds the plain fillet or loft. Saving the project in 7.1.2 makes either loss permanent. This is how `src/model-tree-file.ts` reads a saved tree in 7.1.2: an op or segment kind it does not know makes the tree unreadable, and the fillet and loft readers keep only their old fields.
+## NURBS surfaces (S6, 7.2.0)
+
+`nurbsSurface` is a kernel op (`crates/lime-model-occt/src/tree/ops.rs`, `build_nurbs_surface` in `kernel.cpp`): a grid of poles, one row per U index, 2 to 64 each way, with optional weights (each above 0), a degree in U and in V (1 to 8, 3 when left out), and clamped or periodic knots (a closed direction needs at least 3 poles). The result is an open sheet; the kernel refuses it on a closed solid. A part starts from one as a feature root, the way the app's NURBS tool and `solid_new {feature}` open it.
+
+- **The NURBS tool.** **New NURBS surface** makes a flat 8 × 8 bicubic surface as a new object beside the others. A drag moves a **Pole**, a **Row** or a **Column**, along the part's X, Y or Z or along the surface normal (the X, Y, Z and N handles), and release commits the surface; one drag is one Undo step. **Falloff (mm)** makes poles within that distance follow the selection, less the farther they are. **Symmetry (part X = 0)** mirrors each drag across the part's own X = 0 plane; on a grid that is not symmetric it offers **Make symmetric** (each pole and its mirror meet halfway) instead of overwriting one side. The **Exact NURBS** drawer has Degree U and V, the selected pole's **Weight**, **Knot at** (where Insert and Crease cut, 0 at one edge, 1 at the other), **Insert U/V knot**, **Crease U/V** and **Raise U/V degree**; each keeps the surface where it is. Keyboard: on a pole handle the arrow keys walk the grid; on an axis handle they move the pole along that axis (Shift ten times as far). Grids are capped at 64 poles each way, degree 8; above 256 poles only the handles near the selection show. History Edit on a NURBS step reopens the tool on that step's grid, with the later steps replayed. The sheet bar's Thicken and Cap & Sew make it a solid.
+- **Over MCP and recipes.** `solid_new {feature:{kind:"nurbsSurface", poles, weights, degreeU, degreeV, knotsU, multsU, knotsV, multsV, periodicU, periodicV, insertU, insertV, elevateU, elevateV}}` starts a part from the surface (`feature` also takes a `sheet` op); the reply gives `openEdges`. `model_edit` on `node_0` with a new `nurbsSurface` replaces the grid and replays the later steps. Knot insertion and degree elevation are applied in TypeScript before the kernel sees the grid (src/modeling/bake.ts `applyRefinements`), so the stored op is the grid the kernel builds; they are for a clamped grid, `times` is 1 to the degree, the parameter inside the range, and no knot passes the degree. In `lime_recipe`, `ops::NurbsSurface::new(poles)` sets every field (`.weights`, `.degrees`, `.knots_u`, `.knots_v`, `.periodic`, `.insert_u`, `.insert_v`, `.elevate`, then `.op()`).
+- **Deferred, with the owner's agreement:** plan U4's "the same handle moves 3D curve poles". The app has no 3D curve tool for it to act on; MCP and recipes take 3D curves (`Curve3D`) as data.
+
+A project that holds a NURBS surface is saved as project version 5 once #824's version rule is on this line; 7.1.2 and older refuse it before reading.
 
 ## History tree (engine)
 

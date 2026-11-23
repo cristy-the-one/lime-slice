@@ -9426,7 +9426,7 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
 
     // 3) Per-face NURBS & tightest-bend health summary.
     int kind_plane = 0, kind_cyl = 0, kind_cone = 0, kind_sphere = 0, kind_torus = 0, kind_bspline = 0, kind_bezier = 0, kind_other = 0;
-    int max_u_deg = 0, max_v_deg = 0, max_poles = 0, rational_faces = 0, high_deg_faces = 0, heavy_faces = 0;
+    int max_u_deg = 0, max_v_deg = 0, max_poles = 0, max_u_spans = 0, max_v_spans = 0, rational_faces = 0, high_deg_faces = 0, heavy_faces = 0;
     double tightest_radius = std::numeric_limits<double>::infinity();
     int tightest_face = -1;
     gp_Pnt tightest_at(0.0, 0.0, 0.0);
@@ -9455,6 +9455,8 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
                     max_u_deg = std::max(max_u_deg, ud);
                     max_v_deg = std::max(max_v_deg, vd);
                     max_poles = std::max(max_poles, poles);
+                    max_u_spans = std::max(max_u_spans, std::max(0, bs->NbUKnots() - 1));
+                    max_v_spans = std::max(max_v_spans, std::max(0, bs->NbVKnots() - 1));
                     if (bs->IsURational() || bs->IsVRational()) rational_faces += 1;
                     if (ud > 5 || vd > 5) high_deg_faces += 1;
                     if (poles > 400) heavy_faces += 1;
@@ -9867,6 +9869,8 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
        << ",\"maxUDegree\":" << max_u_deg
        << ",\"maxVDegree\":" << max_v_deg
        << ",\"maxPoles\":" << max_poles
+       << ",\"maxUSpans\":" << max_u_spans
+       << ",\"maxVSpans\":" << max_v_spans
        << ",\"rationalFaces\":" << rational_faces
        << ",\"highDegreeFaces\":" << high_deg_faces
        << ",\"heavyFaces\":" << heavy_faces;
@@ -12487,6 +12491,276 @@ TopoDS_Shape build_blend(
     };
     return fill_hermite_blend(current, curve_a, curve_b, face_a, face_b, faces_beside(edges_a), faces_beside(edges_b),
                               spec.a.edges, spec.b.edges, order_a, order_b, tension_a, tension_b, error);
+}
+
+namespace {
+
+/// S6 blob header. See `encode_nurbs_blob` in k1.rs.
+constexpr int kNurbsHeader = 13;
+
+std::string knot_sentence(const char* axis) {
+    return std::string("The ") + axis + " knots do not match this surface. They must increase, and their multiplicities must add up to the poles and the degree.";
+}
+
+std::string pole_sentence(const char* axis, int degree) {
+    return std::string("This surface needs at least ") + std::to_string(degree + 1) + " poles in " + axis + " for degree " + std::to_string(degree) + ".";
+}
+
+bool knots_match(const std::vector<double>& knots, const std::vector<int>& mults, int npoles, int degree, bool periodic, const char* axis, std::string& error) {
+    const std::string sentence = knot_sentence(axis);
+    if (knots.size() != mults.size() || knots.empty()) {
+        error = sentence;
+        return false;
+    }
+    int sum = 0;
+    for (size_t i = 0; i < knots.size(); ++i) {
+        if (!std::isfinite(knots[i]) || mults[i] < 1) {
+            error = sentence;
+            return false;
+        }
+        if (i > 0 && !(knots[i] > knots[i - 1])) {
+            error = sentence;
+            return false;
+        }
+        sum += mults[i];
+    }
+    if (periodic) {
+        if (mults.front() != mults.back()) {
+            error = sentence;
+            return false;
+        }
+        for (int mult : mults) {
+            if (mult > degree) {
+                error = sentence;
+                return false;
+            }
+        }
+        if (sum - mults.front() != npoles) {
+            error = sentence;
+            return false;
+        }
+        return true;
+    }
+    if (mults.front() > degree + 1 || mults.back() > degree + 1) {
+        error = sentence;
+        return false;
+    }
+    for (size_t i = 1; i + 1 < mults.size(); ++i) {
+        if (mults[i] > degree) {
+            error = sentence;
+            return false;
+        }
+    }
+    if (sum != npoles + degree + 1) {
+        error = sentence;
+        return false;
+    }
+    return true;
+}
+
+void default_clamped_knots(int npoles, int degree, std::vector<double>& knots, std::vector<int>& mults) {
+    const int spans = std::max(1, npoles - degree);
+    knots.clear();
+    mults.clear();
+    for (int i = 0; i <= spans; ++i) {
+        knots.push_back(static_cast<double>(i) / static_cast<double>(spans));
+        mults.push_back(i == 0 || i == spans ? degree + 1 : 1);
+    }
+}
+
+void default_periodic_knots(int npoles, std::vector<double>& knots, std::vector<int>& mults) {
+    knots.clear();
+    mults.clear();
+    for (int i = 0; i <= npoles; ++i) {
+        knots.push_back(static_cast<double>(i));
+        mults.push_back(1);
+    }
+}
+
+}  // namespace
+
+TopoDS_Shape build_nurbs_surface(const TopoDS_Shape& current, const double* blob, int len, std::string& error) {
+    error.clear();
+    if (blob == nullptr || len < kNurbsHeader) {
+        error = "This NURBS surface could not be built.";
+        return {};
+    }
+    auto take_int = [&](int at) {
+        const double value = blob[at];
+        if (!std::isfinite(value) || value < 0.0 || value > 1000000.0) return -1;
+        return static_cast<int>(std::lround(value));
+    };
+    const int nu = take_int(0);
+    const int nv = take_int(1);
+    int degree_u = take_int(2);
+    int degree_v = take_int(3);
+    const bool periodic_u = blob[4] != 0.0;
+    const bool periodic_v = blob[5] != 0.0;
+    const int nknots_u = take_int(6);
+    const int nknots_v = take_int(7);
+    const int nweights = take_int(8);
+    const int ninsert_u = take_int(9);
+    const int ninsert_v = take_int(10);
+    const int elevate_u = take_int(11);
+    const int elevate_v = take_int(12);
+    if (nu < 1 || nv < 1 || degree_u < 0 || degree_v < 0 || nknots_u < 0 || nknots_v < 0 || nweights < 0 || ninsert_u < 0 || ninsert_v < 0 || elevate_u < 0 || elevate_v < 0) {
+        error = "This NURBS surface could not be built.";
+        return {};
+    }
+    if (degree_u == 0) degree_u = 3;
+    if (degree_v == 0) degree_v = 3;
+    if (nu < degree_u + 1) {
+        error = pole_sentence("U", degree_u);
+        return {};
+    }
+    if (nv < degree_v + 1) {
+        error = pole_sentence("V", degree_v);
+        return {};
+    }
+    const int need = kNurbsHeader + nu * nv * 3 + nweights + nknots_u * 2 + nknots_v * 2 + ninsert_u * 2 + ninsert_v * 2;
+    if (len < need) {
+        error = "This NURBS surface could not be built.";
+        return {};
+    }
+    int at = kNurbsHeader;
+    TColgp_Array2OfPnt poles(1, nu, 1, nv);
+    for (int iu = 0; iu < nu; ++iu) {
+        for (int iv = 0; iv < nv; ++iv) {
+            const double x = blob[at++];
+            const double y = blob[at++];
+            const double z = blob[at++];
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+                error = "A pole on this surface is not a number.";
+                return {};
+            }
+            poles.SetValue(iu + 1, iv + 1, gp_Pnt(x, y, z));
+        }
+    }
+    const bool rational = nweights > 0;
+    if (rational && nweights != nu * nv) {
+        error = "The weights do not match this surface's poles.";
+        return {};
+    }
+    TColStd_Array2OfReal weights(1, nu, 1, nv);
+    if (rational) {
+        for (int iu = 0; iu < nu; ++iu) {
+            for (int iv = 0; iv < nv; ++iv) {
+                const double w = blob[at++];
+                if (!std::isfinite(w) || !(w > 0.0)) {
+                    error = "A weight on this surface is 0 or less. Every weight has to be greater than 0.";
+                    return {};
+                }
+                weights.SetValue(iu + 1, iv + 1, w);
+            }
+        }
+    }
+    std::vector<double> ku;
+    std::vector<int> mu;
+    std::vector<double> kv;
+    std::vector<int> mv;
+    if (nknots_u == 0) {
+        if (periodic_u) default_periodic_knots(nu, ku, mu);
+        else default_clamped_knots(nu, degree_u, ku, mu);
+    } else {
+        ku.resize(static_cast<size_t>(nknots_u));
+        mu.resize(static_cast<size_t>(nknots_u));
+        for (int i = 0; i < nknots_u; ++i) ku[static_cast<size_t>(i)] = blob[at++];
+        for (int i = 0; i < nknots_u; ++i) mu[static_cast<size_t>(i)] = static_cast<int>(std::lround(blob[at++]));
+    }
+    if (nknots_v == 0) {
+        if (periodic_v) default_periodic_knots(nv, kv, mv);
+        else default_clamped_knots(nv, degree_v, kv, mv);
+    } else {
+        kv.resize(static_cast<size_t>(nknots_v));
+        mv.resize(static_cast<size_t>(nknots_v));
+        for (int i = 0; i < nknots_v; ++i) kv[static_cast<size_t>(i)] = blob[at++];
+        for (int i = 0; i < nknots_v; ++i) mv[static_cast<size_t>(i)] = static_cast<int>(std::lround(blob[at++]));
+    }
+    if (!knots_match(ku, mu, nu, degree_u, periodic_u, "U", error)) return {};
+    if (!knots_match(kv, mv, nv, degree_v, periodic_v, "V", error)) return {};
+    std::vector<std::pair<double, int>> insert_u;
+    std::vector<std::pair<double, int>> insert_v;
+    insert_u.reserve(static_cast<size_t>(ninsert_u));
+    insert_v.reserve(static_cast<size_t>(ninsert_v));
+    for (int i = 0; i < ninsert_u; ++i) {
+        const double param = blob[at++];
+        const int times = static_cast<int>(std::lround(blob[at++]));
+        if (!std::isfinite(param) || times < 1) {
+            error = knot_sentence("U");
+            return {};
+        }
+        insert_u.emplace_back(param, times);
+    }
+    for (int i = 0; i < ninsert_v; ++i) {
+        const double param = blob[at++];
+        const int times = static_cast<int>(std::lround(blob[at++]));
+        if (!std::isfinite(param) || times < 1) {
+            error = knot_sentence("V");
+            return {};
+        }
+        insert_v.emplace_back(param, times);
+    }
+    const int nku = static_cast<int>(ku.size());
+    const int nkv = static_cast<int>(kv.size());
+    TColStd_Array1OfReal uk(1, nku);
+    TColStd_Array1OfInteger um(1, nku);
+    TColStd_Array1OfReal vk(1, nkv);
+    TColStd_Array1OfInteger vm(1, nkv);
+    for (int i = 0; i < nku; ++i) {
+        uk.SetValue(i + 1, ku[static_cast<size_t>(i)]);
+        um.SetValue(i + 1, mu[static_cast<size_t>(i)]);
+    }
+    for (int i = 0; i < nkv; ++i) {
+        vk.SetValue(i + 1, kv[static_cast<size_t>(i)]);
+        vm.SetValue(i + 1, mv[static_cast<size_t>(i)]);
+    }
+    Handle(Geom_BSplineSurface) surface;
+    try {
+        surface = rational
+            ? new Geom_BSplineSurface(poles, weights, uk, vk, um, vm, degree_u, degree_v, periodic_u, periodic_v)
+            : new Geom_BSplineSurface(poles, uk, vk, um, vm, degree_u, degree_v, periodic_u, periodic_v);
+        for (const auto& hit : insert_u) {
+            TColStd_Array1OfReal ks(1, 1);
+            TColStd_Array1OfInteger ms(1, 1);
+            ks.SetValue(1, hit.first);
+            ms.SetValue(1, hit.second);
+            surface->InsertUKnots(ks, ms, 1e-9, Standard_True);
+        }
+        for (const auto& hit : insert_v) {
+            TColStd_Array1OfReal ks(1, 1);
+            TColStd_Array1OfInteger ms(1, 1);
+            ks.SetValue(1, hit.first);
+            ms.SetValue(1, hit.second);
+            surface->InsertVKnots(ks, ms, 1e-9, Standard_True);
+        }
+        const int want_u = std::max(surface->UDegree(), elevate_u);
+        const int want_v = std::max(surface->VDegree(), elevate_v);
+        if (want_u > surface->UDegree() || want_v > surface->VDegree()) {
+            surface->IncreaseDegree(want_u, want_v);
+        }
+    } catch (const Standard_Failure&) {
+        error = "This NURBS surface could not be built.";
+        return {};
+    }
+    if (surface.IsNull()) {
+        error = "This NURBS surface could not be built.";
+        return {};
+    }
+    BRepBuilderAPI_MakeFace maker(surface, 1e-7);
+    if (!maker.IsDone()) {
+        error = "This NURBS surface could not be built.";
+        return {};
+    }
+    TopoDS_Face face = maker.Face();
+    ShapeFix_Face fixer(face);
+    fixer.Perform();
+    face = fixer.Face();
+    if (current.IsNull()) return face;
+    if (has_solid(current)) {
+        error = "A NURBS surface is a sheet. This part is already a closed solid.";
+        return {};
+    }
+    return compound_with(current, face);
 }
 
 }  // namespace lime_occt

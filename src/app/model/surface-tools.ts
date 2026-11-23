@@ -34,6 +34,30 @@ function edgeMid(index: number): [number, number, number] | null {
   return [x / count, y / count, z / count];
 }
 
+/** The badges on screen: built once per tool and edge set, then only moved and relabelled each frame. */
+let built: { key: string; buttons: Map<number, HTMLButtonElement> } | null = null;
+
+function badge(index: number, tool: "patch" | "blend", edges: readonly number[]): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.edge = String(index);
+  if (tool === "patch") {
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      chosen.set(index, nextContinuity(continuityOf(index)));
+      paint(edges);
+    });
+  } else {
+    button.disabled = true;
+  }
+  return button;
+}
+
 function paint(edges: readonly number[]) {
   const host = document.querySelector<HTMLElement>("#modelEdgeBadges");
   if (!host) return;
@@ -41,39 +65,37 @@ function paint(edges: readonly number[]) {
   if (tool !== "patch" && tool !== "blend") {
     host.hidden = true;
     host.replaceChildren();
+    built = null;
     return;
   }
   host.hidden = false;
   const keep = new Set(edges);
   for (const index of [...chosen.keys()]) if (!keep.has(index)) chosen.delete(index);
-  host.replaceChildren();
-  for (const index of edges) {
+  // Rebuilt only when the tool or the picked edges change, so a badge keeps focus and a click whose press and release
+  // fall in different frames lands on the same button.
+  const key = `${tool}:${edges.join(",")}`;
+  const first = built?.buttons.values().next().value;
+  if (!built || built.key !== key || (first && !first.isConnected)) {
+    built = { key, buttons: new Map(edges.map((index) => [index, badge(index, tool, edges)])) };
+    host.replaceChildren(...built.buttons.values());
+  }
+  for (const [index, button] of built.buttons) {
     const mid = edgeMid(index);
     const at = mid ? fx.model?.projectPoint(mid) : null;
-    if (!at) continue;
-    const button = document.createElement("button");
-    button.type = "button";
-    const continuity = continuityOf(index);
-    button.textContent = continuity.toUpperCase();
-    button.dataset.edge = String(index);
-    button.style.left = `${at.x}px`;
-    button.style.top = `${at.y}px`;
-    button.title = tool === "patch" ? "Click to change this edge between G0, G1, and G2." : continuity.toUpperCase();
-    if (tool === "patch") {
-      button.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      });
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        chosen.set(index, nextContinuity(continuityOf(index)));
-        paint(edges);
-      });
-    } else {
-      button.disabled = true;
+    if (!at) {
+      button.hidden = true;
+      continue;
     }
-    host.appendChild(button);
+    button.hidden = false;
+    const left = `${at.x}px`;
+    const top = `${at.y}px`;
+    if (button.style.left !== left) button.style.left = left;
+    if (button.style.top !== top) button.style.top = top;
+    const continuity = continuityOf(index);
+    const label = continuity.toUpperCase();
+    if (button.textContent !== label) button.textContent = label;
+    const title = tool === "patch" ? "Click to change this edge between G0, G1, and G2." : label;
+    if (button.title !== title) button.title = title;
   }
 }
 

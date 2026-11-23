@@ -22,6 +22,7 @@ import { fx } from "../fx";
 import { sketchHistoryButtons, sketchRedo, sketchUndo } from "../sketch";
 import { state } from "../state";
 import { applyOp, applyTool } from "./apply";
+import { installNurbsStub } from "./nurbs-tool";
 import { sewOp, thickenOp } from "../../model-request";
 import { gearsInTree, type WorldGear } from "../../gear-pair";
 import { modelTrees } from "../model-trees";
@@ -119,6 +120,7 @@ export function bindToolbar() {
 }
 
 export function bindChrome() {
+  installNurbsStub();
   mountModelChrome({
     clearSelection() {
       if (S.lens && !S.editing && S.open) {

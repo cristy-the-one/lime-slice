@@ -14,6 +14,8 @@ export interface MockSolid {
   seams?: number[];
   /** False for an open sheet. Absent means a closed solid. */
   solid?: boolean;
+  /** Vertex normals, nine per triangle, as the kernel sends its analytic normals. Absent: the view welds its own. */
+  normals?: number[];
   /** Open-border edge indexes on a sheet. */
   nakedEdges?: number[];
   /** --- A10. The node that made each face, when a test wants colour by step. */

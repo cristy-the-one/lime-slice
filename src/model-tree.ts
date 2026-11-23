@@ -122,7 +122,8 @@ type ModelOpBase =
   | ReplaceFaceOp
   | SplitFaceOp
   | PatchOp
-  | BlendSurfaceOp;
+  | BlendSurfaceOp
+  | NurbsSurfaceOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -339,6 +340,26 @@ export interface PatchOp {
   guides?: Curve3D[];
   points?: Vec3[];
   tolerance?: number;
+}
+
+/** S6: An M by N NURBS pole grid. A sheet, so Sew, Thicken and TrimSplit run on it. */
+export interface NurbsSurfaceOp {
+  kind: "nurbsSurface";
+  poles: Vec3[][];
+  weights?: number[][];
+  degreeU?: number;
+  degreeV?: number;
+  knotsU?: number[];
+  multsU?: number[];
+  knotsV?: number[];
+  multsV?: number[];
+  periodicU?: boolean;
+  periodicV?: boolean;
+  /** Each pair is `[parameter, times]`. */
+  insertU?: [number, number][];
+  insertV?: [number, number][];
+  elevateU?: number;
+  elevateV?: number;
 }
 
 /** S5: Bridge two open edges or chains at G1 or G2, with a tension on each side. */
@@ -592,6 +613,11 @@ export interface PlateMesh {
   token: string;
   /** The node's STEP, once written. The plate object carries it as `brep` while it holds this node. */
   step?: ArrayBuffer;
+  /**
+   * --- Organic surfaces S4: the kernel's verdict on this mesh (`sheetVerdict` in src/model-sheet.ts), set where a
+   * mesh is made from a Model reply. Absent: unknown (a part's own imported file), which leaves the object's mark alone.
+   */
+  sheet?: boolean;
 }
 
 export interface ModelNode {
@@ -626,6 +652,11 @@ export interface ModelNode {
    * its own. An app that does not know the mark reads it as an ordinary step.
    */
   builtWith?: NodeId;
+  /**
+   * --- Organic surfaces S4: the kernel's sheet verdict on this node's last reply (`sheetVerdict`), for its History
+   * badge. Not saved: the plate object's mark (`PlateObject.sheet`) is what Slice and Export read.
+   */
+  sheet?: boolean;
 }
 
 /**
@@ -674,11 +705,11 @@ export interface RunMark {
   n: number;
 }
 
-/** An extrude, a revolve, a loft, a sweep, or an open sheet that can start a part on its own (K2 / S2 / S4). */
-export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp | SweepOp | SheetOp;
+/** An extrude, a revolve, a loft, a sweep, an open sheet, or a NURBS surface that can start a part on its own (K2 / S2 / S4 / S6). */
+export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp | SweepOp | SheetOp | NurbsSurfaceOp;
 
 export function isFeatureOp(op: ModelOp): op is FeatureOp {
-  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "sweep" || op.kind === "sheet";
+  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "sweep" || op.kind === "sheet" || op.kind === "nurbsSurface";
 }
 
 /**
@@ -700,6 +731,11 @@ export interface ModelTree {
   committed: NodeId;
   /** The child Redo goes to from each node: the newest one applied or jumped through. */
   lastChild: ReadonlyMap<NodeId, NodeId>;
+  /**
+   * The root was replaced and every node rebuilt under its own id (`withoutBuilds`): the plate's node, even when it is
+   * the one shown, has a new solid to take. Kept until a commit gives that node its mesh again.
+   */
+  rebuilt?: true;
 }
 
 export const ROOT: NodeId = 0;
@@ -914,9 +950,89 @@ export function renumberedSteps(op: ModelOp, ids: ReadonlyMap<NodeId, NodeId>): 
     if (!renamed && steps.every((step, i) => step === op.steps[i])) return op;
     return { ...op, steps, ...(renamed ? { source: { ...(op.source as Record<string, unknown>), of: renamed } } : {}) };
   }
-  if (op.kind !== "fillet" && op.kind !== "chamfer") return op;
-  if (!op.edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))) return op;
-  return { ...op, edges: op.edges.map((edge) => (isEdgeStep(edge) && ids.has(edge.fromNode) ? { ...edge, fromNode: ids.get(edge.fromNode)! } : edge)) };
+  // Every field that can hold an earlier step's edges: blend and transition edges, a curve made of edges (a sweep's
+  // spine or auxiliary spine, a loft's guides, a sheet's curves, a split line), and a patch's or blend's sides.
+  const picks = (edges: EdgePick[]): EdgePick[] =>
+    edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))
+      ? edges.map((edge) => (isEdgeStep(edge) && ids.has(edge.fromNode) ? { ...edge, fromNode: ids.get(edge.fromNode)! } : edge))
+      : edges;
+  const curve = (c: Curve3D): Curve3D => {
+    if (c.kind !== "edges") return c;
+    const edges = picks(c.edges);
+    return edges === c.edges ? c : { ...c, edges };
+  };
+  const curves = (list: Curve3D[]): Curve3D[] => {
+    const next = list.map(curve);
+    return next.every((c, i) => c === list[i]) ? list : next;
+  };
+  const side = (b: SurfaceBoundary): SurfaceBoundary => {
+    const edges = b.edges ? picks(b.edges) : undefined;
+    const c = b.curve ? curve(b.curve) : undefined;
+    return edges === b.edges && c === b.curve ? b : { ...b, ...(edges ? { edges } : {}), ...(c ? { curve: c } : {}) };
+  };
+  const sheet = (spec: SheetSpec): SheetSpec => {
+    const next = curves(spec.curves);
+    return next === spec.curves ? spec : { ...spec, curves: next };
+  };
+  switch (op.kind) {
+    case "fillet":
+    case "chamfer":
+    case "transition": {
+      const edges = picks(op.edges);
+      return edges === op.edges ? op : { ...op, edges };
+    }
+    case "sweep": {
+      const spine = curve(op.spine);
+      const aux = op.mode?.kind === "auxSpine" ? curve(op.mode.spine) : null;
+      if (spine === op.spine && (!aux || (op.mode?.kind === "auxSpine" && aux === op.mode.spine))) return op;
+      return { ...op, spine, ...(aux && op.mode?.kind === "auxSpine" ? { mode: { ...op.mode, spine: aux } } : {}) };
+    }
+    case "loft": {
+      if (!op.guides) return op;
+      const guides = curves(op.guides);
+      return guides === op.guides ? op : { ...op, guides };
+    }
+    case "sheet": {
+      const next = curves(op.curves);
+      return next === op.curves ? op : { ...op, curves: next };
+    }
+    case "trimSplit":
+    case "replaceFace": {
+      const next = sheet(op.sheet);
+      return next === op.sheet ? op : { ...op, sheet: next };
+    }
+    case "splitFace": {
+      const next = curve(op.curve);
+      return next === op.curve ? op : { ...op, curve: next };
+    }
+    case "patch": {
+      const boundaries = op.boundaries.map(side);
+      const guides = op.guides ? curves(op.guides) : undefined;
+      if (boundaries.every((b, i) => b === op.boundaries[i]) && guides === op.guides) return op;
+      return { ...op, boundaries, ...(guides ? { guides } : {}) };
+    }
+    case "blendSurface": {
+      const a = side(op.a);
+      const b = side(op.b);
+      return a === op.a && b === op.b ? op : { ...op, a, b };
+    }
+    default:
+      return op;
+  }
+}
+
+/**
+ * `tree` with everything a build left on its nodes dropped: fingerprints and plate meshes. A root edit
+ * rebuilds every node under the same ids, so a node's old plate mesh must not go back to the plate (`commitModel` takes
+ * a node's stored mesh first). The Prepare state (`keep`) stays.
+ */
+export function withoutBuilds(tree: ModelTree): ModelTree {
+  const nodes = new Map(tree.nodes);
+  for (const [id, node] of nodes) {
+    const { mesh: _mesh, ...rest } = node;
+    nodes.set(id, { ...rest, fingerprint: null });
+  }
+  return { ...tree, nodes, rebuilt: true };
 }
 
 /** The node whose plate mesh is `token`: how a plate restored by Prepare undo finds its place in the tree. */
@@ -1032,7 +1148,9 @@ export interface VisitStep {
 }
 
 export function visitStep(tree: ModelTree): VisitStep | null {
-  if (tree.current === tree.committed) return null;
+  // A root replaced in place (a sketch root or a NURBS grid edited) leaves the plate's node without its mesh: it commits
+  // again though it is the node shown, so the plate takes the new solid.
+  if (tree.current === tree.committed && !(tree.rebuilt && !tree.nodes.get(tree.committed)?.mesh)) return null;
   const keep = tree.nodes.get(tree.current)?.keep ?? null;
   return { from: tree.committed, to: tree.current, keep, resetScale: keep === null && scaleBetween(tree, tree.committed, tree.current) };
 }
@@ -1060,7 +1178,7 @@ function primitiveTitle(spec: PrimitiveSpec): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft", sweep: "Sweep", sheet: "Sheet" } as const;
+const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft", sweep: "Sweep", sheet: "Sheet", nurbsSurface: "NURBS" } as const;
 
 /**
  * --- F1/E1. A group of extrudes that came from one sketch: no composite `source`, so it is not a pocket,
@@ -1243,6 +1361,8 @@ export function opLabel(op: ModelOp, parts?: number): string {
       return `Patch ${op.boundaries.length} sides`;
     case "blendSurface":
       return `Blend ${op.continuity === "g2" ? "G2" : "G1"}`;
+    case "nurbsSurface":
+      return `NURBS ${op.poles.length}×${op.poles[0]?.length ?? 0}`;
   }
 }
 

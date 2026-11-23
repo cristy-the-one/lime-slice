@@ -94,6 +94,9 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
  */
 export const FEATURE_ROOT_EDIT = "This solid started from a sketch. Open the sketch to change it.";
 
+/** --- S6. A NURBS surface is sculpted on its own part, not through another part's join. */
+export const NURBS_TOOL_EDIT = "Open the part this NURBS surface belongs to, and edit it there.";
+
 /** --- Split to print. Its card edits it on its own part; through a join it is another part's step. */
 export const SPLIT_TO_PRINT_EDIT = "Edit this split to print from the part it cut.";
 
@@ -126,6 +129,8 @@ function hasPanel(op: ModelOp): boolean {
   // P1. A push/pull reopens Push/Pull on its faces. A move with a distance per face has no one field to show.
   if (op.kind === "moveFaces") return op.faces.length > 0 && op.faces.every((row) => row.distance === op.faces[0]!.distance);
   if (op.kind === "sheet" || op.kind === "sew" || op.kind === "thicken" || op.kind === "trimSplit" || op.kind === "replaceFace" || op.kind === "splitFace" || op.kind === "patch" || op.kind === "blendSurface") return false;
+  // --- S6. A NURBS surface reopens the NURBS tool on its own grid.
+  if (op.kind === "nurbsSurface") return true;
   return true;
 }
 
@@ -264,6 +269,7 @@ export function crossPlan(tool: ModelTree, joins: readonly ToolLink[], node: Nod
 /** Why step `id` of a tool's tree, reached through `joins`, cannot be edited from the open tree's history, or null. */
 export function toolEditRefusal(tool: ModelTree, joins: readonly ToolLink[], id: NodeId): string | null {
   if (tool.nodes.get(id)?.op?.kind === "partition") return SPLIT_TO_PRINT_EDIT;
+  if (editedOp(tool, id)?.kind === "nurbsSurface") return NURBS_TOOL_EDIT;
   return editRefusal(tool, id) ??joins.map((join) => editRefusal(join.tree, join.id)).find((why) => why != null) ?? null;
 }
 
@@ -511,6 +517,7 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "splitFace":
     case "patch":
     case "blendSurface":
+    case "nurbsSurface":
     case "partition":
     case "transition":
     // --- Text with real fonts: a step of a text group; the group reopens the card.

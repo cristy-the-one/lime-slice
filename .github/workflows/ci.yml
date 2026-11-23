@@ -460,9 +460,11 @@ jobs:
           # Organic surfaces S1–S5: every new op kind and field sent as a client sends it (schema and bake), against
           # the kernel, each with a geometric fact. On this job, which has the most headroom of the Open CASCADE jobs.
           node --experimental-strip-types mcp/organic-contract-occt.test.ts
-          # A closed sketch NURBS through the app's own request, against the kernel (PR #824 adds the file). Guarded so this
-          # job does not fail before #824 is merged; make it unconditional once it is in.
-          if [ -f mcp/sketch-nurbs-closed-occt.test.ts ]; then node --experimental-strip-types mcp/sketch-nurbs-closed-occt.test.ts; fi
+          # A closed sketch NURBS through the app's own request, against the kernel.
+          node --experimental-strip-types mcp/sketch-nurbs-closed-occt.test.ts
+          # S6: a part that starts from a NURBS surface over MCP (solid_new {feature}), thickened, sewn, saved and reopened,
+          # and its root edited under a thicken.
+          node --experimental-strip-types mcp/nurbs-surface-occt.test.ts
 
   # Auto ribs plans that solve many times (load cases, and later the frequency goal and resin vents), on their own
   # so neither the shared Open CASCADE job nor the folded-shell job runs near its 25 minutes. Same setup as those jobs.

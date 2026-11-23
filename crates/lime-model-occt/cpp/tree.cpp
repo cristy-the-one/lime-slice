@@ -3554,6 +3554,28 @@ LimeShape* lime_tree_blend_surface(const LimeShape* from, const double* blob, in
     }
 }
 
+LimeShape* lime_tree_nurbs_surface(const LimeShape* from, const double* blob, int len, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const TopoDS_Shape shape = build_nurbs_surface(base, blob, len, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "This NURBS surface could not be built." : message);
+            return nullptr;
+        }
+        auto made = hold(shape, 0.0);
+        if (from != nullptr) inherit_about(made->held, from->held);
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// 1 and `out` set, or 0 and `error` set.
 int lime_tree_distance(
     const LimeShape* shape,

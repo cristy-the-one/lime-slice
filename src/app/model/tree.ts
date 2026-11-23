@@ -268,6 +268,11 @@ export function redoNode(tree: ModelTree): NodeId | null {
 
 /** Undo is the parent, Redo the child last applied or jumped through, but for an edit, which Undo takes back whole. */
 export async function step(way: "undo" | "redo") {
+  // --- S6. A NURBS drag is one step of its own: Undo puts the grid back as it was before the drag.
+  if (!S.busy && !S.jumping && !S.editing && !S.sketchRootEdit && S.sculptHistory?.can(way)) {
+    await S.sculptHistory.step(way);
+    return;
+  }
   if (!S.busy && !S.jumping && !S.editing && !S.sketchRootEdit && (swapStep(way) || newObjectStep(way))) return;
   const at = S.open;
   const tree = treeOf(at);

@@ -1,4 +1,5 @@
 /** Assembly tools: the common volume of two parts, STEP export of an assembly, and custom-chord tessellation. */
+import { plateRequest } from "../../model-mesh-quality";
 import { type Affine } from "../../model-space";
 import { decodeSolid } from "../../model-reply";
 import { type NodeId } from "../../model-tree";
@@ -155,7 +156,8 @@ export async function tessellateSolidAtChord(obj: PlateObject, chordMm: number):
     const problem = await restoreShared(at.key, at.node);
     if (problem) return null;
   }
-  const body = await treeCall(at.key, at.node, gotoRequest(at.key, at.node, chordMm));
+  // An export: plate quality, never the display mesh.
+  const body = await treeCall(at.key, at.node, plateRequest(gotoRequest(at.key, at.node, chordMm)));
   const solid = decodeSolid(body);
   return typeof solid === "string" ? null : solid.positions;
 }

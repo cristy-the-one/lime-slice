@@ -1021,6 +1021,39 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tolerance: Option<f64>,
     },
+    /// An M by N pole grid. A sheet, so Sew, Thicken and TrimSplit run on it.
+    /// Degree 0 (or absent) means 3. Knot insertion and degree elevation, when set, run in Open CASCADE
+    /// after the stored poles are built. The sculptor bakes those into the poles so the preview matches.
+    NurbsSurface {
+        poles: Vec<Vec<[f64; 3]>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<Vec<f64>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree_u: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree_v: Option<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots_u: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults_u: Vec<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots_v: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults_v: Vec<u32>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        periodic_u: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        periodic_v: bool,
+        /// Each pair is `[parameter, times]`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        insert_u: Vec<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        insert_v: Vec<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elevate_u: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elevate_v: Option<u32>,
+    },
 }
 
 fn default_true() -> bool {
@@ -1029,6 +1062,10 @@ fn default_true() -> bool {
 
 fn is_true(v: &bool) -> bool {
     *v
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl Op {
@@ -1043,6 +1080,7 @@ impl Op {
                 | Op::SplitFace { .. }
                 | Op::Patch { .. }
                 | Op::BlendSurface { .. }
+                | Op::NurbsSurface { .. }
                 | Op::Unify
         )
     }
