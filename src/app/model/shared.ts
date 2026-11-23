@@ -219,11 +219,6 @@ export const S = {
   editing: null as Editing | null,
   /** --- E1. A feature-root edit is not a sibling fork. Undo waits until the sketch closes. --- */
   sketchRootEdit: false as boolean,
-  /**
-   * Trees whose plate mesh is out of date although the shown step is the committed one: a sketch root edit rebuilt
-   * every node under its own id. The next commit puts the shown step on the plate even with nothing to walk.
-   */
-  plateStale: new Set<string>(),
   /** P2. The idle edge knob. Null until the view is bound. */
   edgeDrag: null as { sync(): void; picksChanged(): void; holding(): boolean; end(): void } | null,
   /** --- S2 sketch --- redraws the grid when the solid on screen changes. */
