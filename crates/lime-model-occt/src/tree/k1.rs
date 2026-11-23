@@ -395,6 +395,12 @@ pub(super) fn build_loft_v2_shape(
                 "Section {index}: A section needs exactly one of radius, profile, loops, or apex."
             ));
         }
+        // The kernel reads no corners for a loop section, so sending them would shift every later section.
+        if has_loops && (section.smooth || !section.corners.is_empty()) {
+            return Err(format!(
+                "Section {index}: smooth and corners are for a point profile. A loop uses arc, spline, and nurbs segments."
+            ));
+        }
         head.extend_from_slice(&section.origin);
         head.extend_from_slice(&section.turn);
         head.push(section.radius.unwrap_or(0.0));

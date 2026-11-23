@@ -460,3 +460,59 @@ fn controlled_loft_v2_supports_apex_caps_tangency_closed_periodic_and_3d_nurbs_g
     );
     ok(json!({ "call": "close", "key": "s3-loft-guided" }));
 }
+
+/// A loop section carries no corners: the kernel reads none for it, so a loop section sent with corners would shift
+/// every later section's numbers. The v2 loft refuses it, as the K1 loft does.
+#[test]
+fn loft_v2_refuses_corners_on_a_loop_section() {
+    if !has_occt() {
+        return;
+    }
+    let square = json!([{ "start": [-4.0, -4.0], "segments": [
+        { "kind": "line", "to": [4.0, -4.0] },
+        { "kind": "line", "to": [4.0, 4.0] },
+        { "kind": "line", "to": [-4.0, 4.0] },
+        { "kind": "line", "to": [-4.0, -4.0] }
+    ] }]);
+    let profile = json!([[-4.0, -4.0], [4.0, -4.0], [4.0, 4.0], [-4.0, 4.0]]);
+    let reply = call(json!({
+        "call": "open",
+        "key": "s3-loft-loop-corners",
+        "feature": {
+            "kind": "loft",
+            "op": "fuse",
+            "closed": true,
+            "sections": [
+                { "origin": [20.0, 0.0, 0.0], "turn": [90.0, 0.0, 0.0], "loops": square, "corners": [1] },
+                { "origin": [0.0, 20.0, 0.0], "turn": [90.0, 0.0, 90.0], "profile": profile },
+                { "origin": [-20.0, 0.0, 0.0], "turn": [90.0, 0.0, 180.0], "profile": profile },
+                { "origin": [0.0, -20.0, 0.0], "turn": [90.0, 0.0, -90.0], "profile": profile }
+            ]
+        },
+        "chordMm": 0.1
+    }));
+    assert_eq!(
+        reply["error"].as_str(),
+        Some("Section 0: smooth and corners are for a point profile. A loop uses arc, spline, and nurbs segments."),
+        "{reply}"
+    );
+    // The same loft with the loop section's corners left out builds.
+    let built = ok(json!({
+        "call": "open",
+        "key": "s3-loft-loop-plain",
+        "feature": {
+            "kind": "loft",
+            "op": "fuse",
+            "closed": true,
+            "sections": [
+                { "origin": [20.0, 0.0, 0.0], "turn": [90.0, 0.0, 0.0], "loops": square },
+                { "origin": [0.0, 20.0, 0.0], "turn": [90.0, 0.0, 90.0], "profile": profile },
+                { "origin": [-20.0, 0.0, 0.0], "turn": [90.0, 0.0, 180.0], "profile": profile },
+                { "origin": [0.0, -20.0, 0.0], "turn": [90.0, 0.0, -90.0], "profile": profile }
+            ]
+        },
+        "chordMm": 0.1
+    }));
+    assert!(built["volumeMm3"].as_f64().unwrap_or(0.0) > 0.0, "{built}");
+    ok(json!({ "call": "close", "key": "s3-loft-loop-plain" }));
+}
