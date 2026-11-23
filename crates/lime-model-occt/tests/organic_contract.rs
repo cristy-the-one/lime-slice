@@ -131,26 +131,30 @@ fn a_sweep_with_mode_aux_spine_builds() {
     assert!(both["error"].as_str().is_some_and(|e| e.starts_with("Give the auxiliary spine once")), "{both}");
 }
 
+/// A transformed corner is built and then checked: kept when the solid is clean, refused when it is damaged. A 2.9
+/// degree bend builds with it; the 90 degree elbow either builds a clean solid or is refused with the sentence.
 #[test]
-fn a_transformed_corner_at_a_sharp_bend_is_refused_and_right_and_round_build() {
+fn a_transformed_corner_is_kept_when_clean_and_refused_when_damaged() {
     if !has_occt() {
         return;
     }
-    let elbow = json!({ "kind": "segments", "start": [0.0, 0.0, 0.0], "segments": [
-        { "kind": "line", "to": [0.0, 0.0, 20.0] }, { "kind": "line", "to": [20.0, 0.0, 20.0] }
+    let spine = |to: [f64; 3]| json!({ "kind": "segments", "start": [0.0, 0.0, 0.0], "segments": [
+        { "kind": "line", "to": [0.0, 0.0, 20.0] }, { "kind": "line", "to": to }
     ] });
+    let gentle = feature("contract-bend-transformed", json!({ "kind": "sweep", "op": "fuse", "sections": [ring(3.0, 0.0)],
+        "spine": spine([1.0, 0.0, 40.0]), "transition": "transformed" }));
+    assert!(gentle.get("error").is_none(), "a 2.9 degree bend builds with a transformed corner: {gentle}");
+    println!("2.9 degree bend, transformed: {} mm³", gentle["volumeMm3"]);
+    close("contract-bend-transformed");
     for transition in ["right", "round", "transformed"] {
         let key = format!("contract-elbow-{transition}");
-        let reply = feature(&key, json!({ "kind": "sweep", "op": "fuse", "sections": [ring(3.0, 0.0)], "spine": elbow, "transition": transition }));
-        if transition == "transformed" {
-            assert_eq!(
-                reply["error"].as_str(),
-                Some("A transformed corner is not built at a sharp bend of the spine. Use a right or round corner there."),
-                "{reply}"
-            );
+        let reply = feature(&key, json!({ "kind": "sweep", "op": "fuse", "sections": [ring(3.0, 0.0)], "spine": spine([20.0, 0.0, 20.0]), "transition": transition }));
+        if let Some(error) = reply["error"].as_str() {
+            assert_eq!(transition, "transformed", "{transition}: {reply}");
+            assert_eq!(error, "A transformed corner left a damaged solid at a bend of this spine. Use a right or round corner there.");
+            println!("90 degree elbow, transformed: refused");
         } else {
-            assert!(reply.get("error").is_none(), "{transition}: {reply}");
-            println!("{transition}: {} mm³", reply["volumeMm3"]);
+            println!("90 degree elbow, {transition}: {} mm³", reply["volumeMm3"]);
             close(&key);
         }
     }

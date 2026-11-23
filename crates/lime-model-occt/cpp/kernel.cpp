@@ -130,6 +130,7 @@
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <BOPAlgo_ArgumentAnalyzer.hxx>
 #include <gp_Pnt2d.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 // K3: draft prisms (the LocOpe prism BRepFeat_MakeDPrism::Perform builds) and an extrude that stops on a face.
@@ -10165,6 +10166,33 @@ TopoDS_Wire twist_aux_wire(const TopoDS_Wire& spine, double twist_deg, std::stri
     return mw.Wire();
 }
 
+/// True when `solid` is not a clean closed solid: BRepCheck finds a fault, an edge is not shared by exactly two faces,
+/// or the solid intersects itself (BOPAlgo_ArgumentAnalyzer's self-interference test, the faults a later boolean trips
+/// on).
+bool sweep_damaged(const TopoDS_Shape& solid) {
+    if (!BRepCheck_Analyzer(solid).IsValid()) return true;
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    TopExp::MapShapesAndAncestors(solid, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+    for (int i = 1; i <= edge_faces.Extent(); ++i) {
+        const TopoDS_Edge edge = TopoDS::Edge(edge_faces.FindKey(i));
+        if (BRep_Tool::Degenerated(edge)) continue;
+        TopTools_IndexedMapOfShape distinct;
+        for (const TopoDS_Shape& face : edge_faces(i)) distinct.Add(face);
+        const bool seam = distinct.Extent() == 1 && BRep_Tool::IsClosed(edge, TopoDS::Face(distinct(1)));
+        if (distinct.Extent() != 2 && !seam) return true;
+    }
+    try {
+        BOPAlgo_ArgumentAnalyzer analyzer;
+        analyzer.SetShape1(solid);
+        analyzer.SelfInterMode() = Standard_True;
+        analyzer.Perform();
+        if (analyzer.HasFaulty()) return true;
+    } catch (const Standard_Failure&) {
+        return true;
+    }
+    return false;
+}
+
 TopoDS_Shape pipe_solid_from_wires(
     const TopoDS_Wire& spine,
     const std::vector<TopoDS_Wire>& section_wires,
@@ -10202,31 +10230,6 @@ TopoDS_Shape pipe_solid_from_wires(
     if (section_wires.size() > 1 && spec.scale_stations.size() >= 4) {
         error = "Scale stations take a sweep of one section. With several sections, each section sets the size where it stands.";
         return {};
-    }
-    // C: Open CASCADE's transformed corner leaves a damaged solid at a sharp bend of the spine (a 90 degree elbow gave
-    // 115 edges where pieces meet only along a line). Only the right and round corners are built there.
-    if (spec.transition == 2) {
-        gp_Vec previous;
-        bool have = false;
-        for (BRepTools_WireExplorer ex(spine); ex.More(); ex.Next()) {
-            BRepAdaptor_Curve curve(ex.Current());
-            const bool reversed = ex.Current().Orientation() == TopAbs_REVERSED;
-            gp_Pnt point;
-            gp_Vec at_start;
-            gp_Vec at_end;
-            curve.D1(reversed ? curve.LastParameter() : curve.FirstParameter(), point, at_start);
-            curve.D1(reversed ? curve.FirstParameter() : curve.LastParameter(), point, at_end);
-            if (reversed) {
-                at_start.Reverse();
-                at_end.Reverse();
-            }
-            if (have && previous.Magnitude() > 1e-12 && at_start.Magnitude() > 1e-12 && previous.Angle(at_start) > 1e-3) {
-                error = "A transformed corner is not built at a sharp bend of the spine. Use a right or round corner there.";
-                return {};
-            }
-            previous = at_end;
-            have = true;
-        }
     }
     if (section_wires.size() == 1 && spec.scale_stations.size() >= 4) {
         const int nst = static_cast<int>(spec.scale_stations.size() / 2);
@@ -10289,6 +10292,13 @@ TopoDS_Shape pipe_solid_from_wires(
             error = "The swept solid intersects itself. Make bends gentler or use a smaller profile.";
             return {};
         }
+    }
+    // Open CASCADE's transformed corner can leave a solid that is valid face by face but touches itself at a sharp bend
+    // (a 90 degree elbow gave 115 edges where pieces meet only along a line). Measured, not assumed: such a result is
+    // refused, and a transformed corner that builds clean is kept.
+    if (spec.transition == 2 && sweep_damaged(tool)) {
+        error = "A transformed corner left a damaged solid at a bend of this spine. Use a right or round corner there.";
+        return {};
     }
     return tool;
 }
