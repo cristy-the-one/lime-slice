@@ -720,11 +720,15 @@ gp_Vec project_off(const gp_Vec& v, const gp_Vec& unit_n) {
 /// The last Hermite fill's own measure, as JSON, for the tests (lime_tree_test_last_fill): each asked edge's largest gap,
 /// angle and curvature jump at the op's stations, how many refinement rounds it took, and whether it was refused. Per
 /// thread: an op runs on the thread that called, so a test reads its own op's measure.
+#ifdef LIME_OCCT_TEST_HOOKS
 thread_local std::string g_last_fill;
+#endif
 /// The farthest a guide point is from the patch the op kept, by the op's own projection; -1 with no guide.
 thread_local double g_guide_off = -1.0;
 
+/// Debug builds only: a release build keeps no test state and builds no string.
 void note_last_fill(const std::vector<EdgeReport>& reports, int refinements, bool refused) {
+#ifdef LIME_OCCT_TEST_HOOKS
     std::ostringstream out;
     out.precision(9);
     out << "{\"refinements\":" << refinements << ",\"refused\":" << (refused ? "true" : "false") << ",\"edges\":[";
@@ -736,13 +740,20 @@ void note_last_fill(const std::vector<EdgeReport>& reports, int refinements, boo
     }
     out << "],\"guideMm\":" << g_guide_off << "}";
     g_last_fill = out.str();
+#else
+    (void)reports;
+    (void)refinements;
+    (void)refused;
+#endif
 }
 
 }  // namespace
 
+#ifdef LIME_OCCT_TEST_HOOKS
 std::string last_fill_report() {
     return g_last_fill;
 }
+#endif
 
 namespace {
 
