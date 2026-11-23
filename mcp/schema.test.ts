@@ -3,7 +3,7 @@ import { AREA_NAMES, catalogTools, firstSentence, search, toolDoc } from "./cata
 import { EXAMPLES } from "./examples.ts";
 import { FIRST_TOOLS, groupOf, TOOL_GROUPS } from "./groups.ts";
 import { DISCOVERY_INSTRUCTIONS } from "./protocol.ts";
-import { advertisedTools, annotationsFor, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, UNLISTED_TOOLS, validateTool, type ToolSpec } from "./schema.ts";
+import { advertisedTools, annotationsFor, guideShapes, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, UNLISTED_TOOLS, validateTool, type ToolSpec } from "./schema.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -227,6 +227,25 @@ for (const [name, input] of accepted) check(`accepts ${name}`, validateTool(name
 // stay for an op's fields.
 check("a wrong tool field names the tool's fields", validateTool("workplane_set", { face: 3 }) === "input.face is not a field of this tool. It takes object, source, faceIndex, origin, turn.");
 check("a wrong tool field gets no op hint", !String(validateTool("nugget", { action: "find", name: "x" })).includes("Use label."));
+
+// --- Organic surfaces: guide {tool, schema} writes the 3D curve and the sketch outline once, named where used; put
+// back, it is the schema validation reads, field for field.
+{
+  const apply = TOOLS.find((tool) => tool.name === "model_apply")!;
+  const doc = toolDoc("model_apply", true) as { schema: unknown; shapes?: Record<string, unknown> };
+  const restore = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(restore);
+    if (!value || typeof value !== "object") return value;
+    const row = value as Record<string, unknown>;
+    if (typeof row.shape === "string" && Object.keys(row).length === 1) return doc.shapes![row.shape];
+    return Object.fromEntries(Object.entries(row).map(([key, inner]) => [key, restore(inner)]));
+  };
+  const text = JSON.stringify(doc.schema);
+  check("guide {tool:model_apply, schema} names the 3D curve as a shape, given once", !!doc.shapes?.curve3d && (text.match(/\{"shape":"curve3d"\}/g)?.length ?? 0) > 1 && !text.includes("Exact 3D spine"));
+  check("put back, the guide's schema is the schema validation reads", JSON.stringify(restore(doc.schema)) === JSON.stringify(apply.inputSchema));
+  check("a schema with one use of a shape keeps it inline", guideShapes({ type: "object", properties: {} }).shapes === undefined);
+  console.log(`guide {tool:model_apply, schema}: ~${tokens(JSON.stringify(doc))} tokens, against ~${tokens(JSON.stringify({ ...doc, schema: apply.inputSchema, shapes: undefined }))} written out`);
+}
 
 if (failed) {
   console.error(`${failed} failed`);
