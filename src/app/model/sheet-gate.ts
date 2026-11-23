@@ -1,18 +1,17 @@
 /**
- * --- Organic surfaces S4: the plate's open sheets (the rule is in src/model-sheet.ts). Slice and Export stop on one;
- * Prepare marks it. Model registers these on `fx`, as it does `exportedPart`.
+ * --- Organic surfaces S4: Model's side of the sheet rule (src/model-sheet.ts): the verdict a mesh carries when Model
+ * puts it on the plate.
  */
-import { SHEET_OBJECT_NOTE, sheetPartNote, treeIsSheet } from "../../model-sheet";
-import { modelTrees } from "../model-trees";
+import { sheetVerdict, type SheetShape } from "../../model-sheet";
+import { withSheet } from "../../plate";
 import { state } from "../state";
 
-/** The sentence Slice and Export stop with while a plate object is an open sheet, or null. */
-export function sheetPart(): string | null {
-  return sheetPartNote(state.plate.objects, (key) => modelTrees.get(key));
+/** The plate object `id` takes the verdict of the mesh Model just put on it (`PlateMesh.sheet`; undefined keeps it). */
+export function markSheet(id: string, sheet: boolean | undefined) {
+  state.plate = withSheet(state.plate, id, sheet);
 }
 
-/** Prepare's note on a plate object that is an open sheet, or null. */
-export function sheetObjectNote(objectId: string): string | null {
-  const key = state.plate.objects.find((obj) => obj.id === objectId)?.modelTree;
-  return key && treeIsSheet(modelTrees.get(key)) ? SHEET_OBJECT_NOTE : null;
+/** The verdict a mesh made from this kernel reply carries. */
+export function meshSheet(shape: SheetShape): { sheet: boolean } {
+  return { sheet: sheetVerdict(shape) };
 }

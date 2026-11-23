@@ -10,7 +10,8 @@ import { syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
 import { S } from "./shared";
-import { isOpenSheet } from "../../model-sheet";
+import { isOpenSheet, sheetVerdict } from "../../model-sheet";
+import { markSheet } from "./sheet-gate";
 import { recentSolid } from "./apply";
 import { placePiece } from "./create";
 import { treeOf } from "./edges";
@@ -50,17 +51,15 @@ export function commitModel() {
   if (keep) state.partScale = keep.partScale;
   else if (plan.resetScale) state.partScale = 1;
   setBrep(at.objectId, mesh.step);
-  // --- Organic surfaces S4: an open sheet goes to the plate like any part, so its mesh there follows Model (a sculpt or
-  // an edit shows in Prepare) and it saves and reopens. The node keeps the kernel's verdict (`isOpenSheet`: not a solid,
-  // open borders, never a surfaces-only STEP root): Prepare marks the part, and Slice and Export stop on it
-  // (`sheetPartNote`). A node shown from its stored mesh alone keeps the mark it had.
-  const sheet = solid?.id === plan.to ? isOpenSheet(solid, tree.root, plan.to) : node.sheet === true;
-  const { sheet: _was, ...plain } = tree.nodes.get(plan.to) ?? node;
-  const nodes = new Map(tree.nodes).set(plan.to, { ...plain, mesh, ...(sheet ? { sheet: true as const } : {}) });
-  modelTrees.set(at.key, { ...tree, nodes, committed: plan.to });
+  modelTrees.set(at.key, { ...withNode(tree, plan.to, { mesh }), committed: plan.to });
   // A Prepare undo can have taken off the piece of a split this commit crosses on its way down: the
   // plate gets it back. A piece removed by hand stays removed while the plate stays below its split.
   syncPlateFromState();
+  // --- Organic surfaces S4: an open sheet goes to the plate like any part, so its plate mesh follows Model; the object
+  // takes the kernel's verdict on what was shown (`isOpenSheet`: never a surfaces-only STEP root unless already marked),
+  // else the verdict the stored mesh carries. Slice and Export read the object's mark (src/model-sheet.ts).
+  const marked = state.plate.objects.find((obj) => obj.id === at.objectId)?.sheet === true;
+  markSheet(at.objectId, solid?.id === plan.to ? isOpenSheet(solid, tree.root, plan.to, marked) : mesh.sheet);
   const above = new Set(pathTo(tree, plan.from));
   const down = pathTo(tree, plan.to).filter((id) => !above.has(id));
   // A piece a join on the way down took off the plate stays off: fused back into its part, it is no part of its own.
@@ -159,7 +158,8 @@ export function meshOf(solid: ParsedSolid, named?: string): PlateMesh {
   const name = named ?? stlName(state.mesh?.name ?? "solid");
   const bytes = encodeStl(positions, name);
   setMeshSeat(bytes, seat);
-  return { name, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+  // The kernel's sheet verdict travels with the mesh, to whichever plate object takes it (`markSheet`).
+  return { name, bytes, sourcePos: positions, token: meshTokenOf(bytes), sheet: sheetVerdict(solid) };
 }
 
 /**

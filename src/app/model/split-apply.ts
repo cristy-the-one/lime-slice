@@ -53,6 +53,7 @@ import { partKeys, pinsKeyFor, readPieces, readPins, splitStored, targetName } f
 import { syncUndo } from "./undo";
 import { present, refreshModelContext } from "./view";
 import { sameMat } from "./workplane";
+import { markSheet } from "./sheet-gate";
 
 /**
  * Apply of Split to print's card: the part keeps its plate id and the first piece (D8); every other piece is a new plate
@@ -228,8 +229,10 @@ function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key:
     const mesh = meshOf(shown, `${owner ? stlName(owner.name).replace(/\.stl$/i, "") : `${stem} part ${index}`}.stl`);
     let name = owner?.name ?? null;
     if (held) name = mesh.name;
-    else if (owner) state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, piece.key);
-    else name = placePiece(piece.key, mesh);
+    else if (owner) {
+      state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, piece.key);
+      markSheet(owner.id, mesh.sheet);
+    } else name = placePiece(piece.key, mesh);
     if (!name) {
       keys.push(null);
       return;
@@ -335,8 +338,10 @@ function putPinsObject(at: Opened, node: NodeId, pins: { key: string; solid: Par
   const mesh = meshOf(pins.solid, `${owner ? stlName(owner.name).replace(/\.stl$/i, "") : `${stem} pins`}.stl`);
   let name: string | null = owner?.name ?? null;
   if (held) name = mesh.name;
-  else if (owner) state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, pins.key);
-  else name = placePiece(pins.key, mesh);
+  else if (owner) {
+    state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, pins.key);
+    markSheet(owner.id, mesh.sheet);
+  } else name = placePiece(pins.key, mesh);
   if (!name) return null;
   const root = newTree(pins.key, { kind: "piece", tree: at.key, node, pins: true }, "Pins", pins.solid.fingerprint);
   modelTrees.set(pins.key, { ...withNode(root, ROOT, { mesh }), committed: ROOT });

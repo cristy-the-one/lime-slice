@@ -139,7 +139,11 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   hideEmpty();
   if (!view) learnSeat(parsed);
   setModelLocked(view && !S.editing ? PEEK_LOCK : null);
-  fx.model?.setSolid(parsed, openPose());
+  // One rule for the banner, the sheet tools, the viewport's sheet look and the plate mark (src/model-sheet.ts): a
+  // surfaces-only STEP is no sheet unless its plate object is marked one.
+  const marked = state.plate.objects.find((obj) => obj.id === S.open?.objectId)?.sheet === true;
+  const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id, marked);
+  fx.model?.setSolid(parsed, openPose(), isSheet);
   setInspectVolume(parsed.editable ? `${mm(parsed.volumeMm3)} mm³` : "—");
   if (S.open && S.framedFor !== S.open.objectId) {
     S.framedFor = S.open.objectId;
@@ -149,8 +153,6 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   syncWorkplaneFields();
   refreshModelContext();
   fx.model?.highlight([]);
-  // One rule for the banner, the sheet tools and the commit gate: a surfaces-only STEP is not a sheet (`isOpenSheet`).
-  const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id);
   setSheetMode(isSheet);
   setModelEditable(parsed.editable);
   // --- Organic surfaces S4 (U6): show open-sheet banner with one-click Thicken & Cap & Sew when open.

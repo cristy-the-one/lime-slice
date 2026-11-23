@@ -68,6 +68,7 @@ import { mountPluginAuthor, mountPluginsPanel } from "../../ui/plugins-panel";
 import { cancelPluginFacePick, plateSketches, startPluginFacePick } from "./pick";
 import { appPluginSources, keepUsedPlugins, projectPluginFiles, syncPluginEnv } from "./plugins";
 import { viewed } from "./view";
+import { markSheet, meshSheet } from "./sheet-gate";
 
 /** D9's Use vN: rebuild the row's plugin step with the library's current version of the plugin. Never automatic. */
 export async function useLibraryVersion(row: RowKey): Promise<RowKey | null> {
@@ -272,8 +273,10 @@ function addMadeObjects(rows: readonly MadeRow[], show: MadeRow, title: string, 
     const fileName = `${unique}.stl`;
     const bytes = encodeStl(positions, fileName);
     setMeshSeat(bytes, seat);
-    const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+    const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes), ...meshSheet(row.solid) };
     state.plate = addedSolid(state.plate, { name: unique, fileName, bytes, sourcePos: positions, stepTolerance: state.stepTolerance }, row.part.id, row.tree.key, row.pose, bedX, bedY);
+    // A part a plugin made that is an open sheet is marked, as one made in Model is (src/model-sheet.ts).
+    markSheet(row.part.id, mesh.sheet);
     modelTrees.set(row.tree.key, { ...withNode(row.tree, row.tree.current, { mesh }), committed: row.tree.current });
     keepSolid(row.tree.key, row.tree.current, state.stepTolerance, row.solid);
     // A member of an assembly the run built reads its Model numbers in its own frame, as the run set it.

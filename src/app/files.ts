@@ -1,4 +1,5 @@
 import { dropProjectFonts } from "./user-fonts.ts";
+import { sheetPartNote } from "../model-sheet";
 import { fx } from "./fx";
 import { warmHull } from "./bed-rest";
 import { state, session, STEP_TOLERANCE_DEFAULT } from "./state";
@@ -597,7 +598,7 @@ export async function export3mf() {
     return;
   }
   // --- Organic surfaces S4: an open sheet is on the plate but is no solid: Slice and Export stop with the prompt.
-  const sheet: string | null = fx.sheetPart?.() ?? null;
+  const sheet = sheetPartNote(state.plate.objects);
   if (sheet) {
     state.error = sheet;
     renderChrome();

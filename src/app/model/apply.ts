@@ -27,6 +27,7 @@ import { flushEdit, markModelEdit, noteEdit } from "../history";
 import { closeSketchSession, holdSketchForApply } from "../sketch";
 import { POINT_REFUSAL, holeSizeRefusal } from "../../sketch/holes.ts";
 import { freshTreeKey, modelTrees } from "../model-trees";
+import { sheetVerdict } from "../../model-sheet";
 import { applySelectedToState, syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { splitPrintOp, splitPrintOpen } from "../../ui/split-print.ts";
@@ -92,6 +93,11 @@ export function recentSolid(key: string, node: NodeId, chord: number): ParsedSol
 }
 
 export function keepSolid(key: string, node: NodeId, chord: number, solid: ParsedSolid) {
+  // The node keeps the kernel's sheet verdict for its History badge (the one rule: src/model-sheet.ts).
+  const tree = modelTrees.get(key);
+  const verdict = sheetVerdict(solid);
+  const step = tree?.nodes.get(node);
+  if (tree && step && (step.sheet ?? false) !== verdict) modelTrees.set(key, withNode(tree, node, { sheet: verdict }));
   const name = `${nodeName(key, node)}@${chord}`;
   solids.delete(name);
   solids.set(name, solid);

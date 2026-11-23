@@ -1,4 +1,5 @@
 import { ArrowDownToLine, Copy, Crosshair, LayoutGrid, Plus, RotateCw, createElement, type IconNode } from "lucide";
+import { SHEET_OBJECT_NOTE } from "../model-sheet";
 import { fx } from "./fx";
 import { assemblyClashes, assemblyView, liveAssemblies } from "./assemblies.ts";
 import { assemblyOf } from "../assembly.ts";
@@ -850,7 +851,7 @@ function objectListHtml(): Html | "" {
     const notes = limit(part.bounds);
     const marks = objectMarks(obj);
     const splitNote: string | null = fx.exportSplitNote?.(obj.id) ?? null;
-    const sheetNote: string | null = fx.sheetObjectNote?.(obj.id) ?? null;
+    const sheetNote = obj.sheet ? SHEET_OBJECT_NOTE : null;
     // --- Print transitions (decision 5): steps made for another pose, with Re-aim and Keep.
     const stale: { text: string } | null = fx.transitionStaleNote?.(obj.id) ?? null;
     const selected = obj.id === state.plate.selectedId;

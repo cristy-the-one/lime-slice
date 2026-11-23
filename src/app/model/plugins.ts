@@ -60,6 +60,7 @@ import { setTreeKey } from "./tree";
 import { syncUndo } from "./undo";
 import { present } from "./view";
 import { openObject } from "./workplane";
+import { markSheet } from "./sheet-gate";
 
 export function syncPluginEnv() {
   const plugins = session.plugins;
@@ -388,6 +389,8 @@ function swapMadeSet(at: Opened, ids: readonly string[], made: readonly KeptPart
   });
   noteEdit();
   syncPlateFromState();
+  // Each rebuilt part takes its mesh's sheet verdict (src/model-sheet.ts).
+  meshes.forEach((mesh, i) => markSheet(ids[i]!, mesh.sheet));
   // A root of the run's assembly stays where it stands (the train moves with it); a part the run posed outside an
   // assembly takes that pose; the assembly's members are solved below.
   const roots = new Set(assemblies.flatMap((row) => row.members.filter((member) => member.parent === null).map((member) => member.object)));
@@ -549,6 +552,7 @@ function swapMadeTree(at: Opened, made: RunPart, next: ModelTree, parsed: Parsed
   keepSolid(key, parsed.id, state.stepTolerance, parsed);
   noteEdit();
   syncPlateFromState();
+  markSheet(at.objectId, mesh.sheet);
   setTreeKey(at.objectId, key);
   if (made.posed) state.plate = withModelPose(state.plate, at.objectId, made.modelPose);
   state.mesh = { name: mesh.name, bytes: mesh.bytes };
