@@ -62,5 +62,10 @@ if (!("reason" in baked)) {
   check("the baked grid round-trips through a file", JSON.stringify(stored?.rootFeature) === JSON.stringify(baked.op));
 }
 
+// A 64 × 64 grid (the cap) reads back from a file; a curve's 50-point cap does not apply to it.
+const big = readSavedTree({ rootFeature: { kind: "nurbsSurface", poles: bicubicGrid(64, 64) }, nodes: [{ id: 0, parent: null, op: null, fingerprint: null }], current: 0, committed: 0, nextId: 1 });
+check("a 64 × 64 NURBS grid reads back from a file", (big?.rootFeature as { poles?: unknown[] } | undefined)?.poles?.length === 64);
+check("a 65-row grid does not", readSavedTree({ rootFeature: { kind: "nurbsSurface", poles: bicubicGrid(65, 4) }, nodes: [{ id: 0, parent: null, op: null, fingerprint: null }], current: 0, committed: 0, nextId: 1 }) === null);
+
 if (failed) throw new Error(`${failed} nurbs bake checks failed`);
 console.log("nurbs-bake: ok");

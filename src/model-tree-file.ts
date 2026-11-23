@@ -807,10 +807,11 @@ function readOpBody(value: unknown): SavedOp | undefined {
       };
     }
     case "nurbsSurface": {
-      if (!Array.isArray(value.poles) || value.poles.length < 1) return undefined;
+      // --- S6. Up to 64 poles each way, the schema's cap (a curve's point list stops at 50).
+      if (!Array.isArray(value.poles) || value.poles.length < 1 || value.poles.length > 64) return undefined;
       const poles: Vec3[][] = [];
       for (const raw of value.poles) {
-        const row = readPoints(raw);
+        const row = readPoints(raw, 64);
         if (!row || row.length < 1) return undefined;
         poles.push(row);
       }
@@ -1374,8 +1375,8 @@ function readCurves(value: unknown): Curve3D[] | undefined {
   return curves;
 }
 
-function readPoints(value: unknown): Vec3[] | undefined {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 50) return undefined;
+function readPoints(value: unknown, most = 50): Vec3[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > most) return undefined;
   const points: Vec3[] = [];
   for (const raw of value) {
     const point = vec(raw);
