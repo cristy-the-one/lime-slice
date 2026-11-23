@@ -293,15 +293,18 @@ try {
     const elbow = { kind: "segments", start: [0, 0, 180], segments: [{ kind: "line", to: [0, 0, 200] }, { kind: "line", to: [20, 0, 200] }] };
     const right = await build("sweep-right", BIG, [sweep(elbow, { transition: "right" })]);
     const round = await build("sweep-round", BIG, [sweep(elbow, { transition: "round" })]);
-    const transformed = await build("sweep-transformed", BIG, [sweep(elbow, { transition: "transformed" })]);
+    // A transformed corner left a damaged solid at this 90° bend (115 edges where pieces meet along a line): the
+    // session's guard took it back, and the kernel (#823) refuses it there. Along a smooth spine it builds.
+    const transformedElbow = await build("sweep-transformed-elbow", BIG, [sweep(elbow, { transition: "transformed" })]);
+    const transformed = await build("sweep-transformed", BIG, [sweep(arcSpine, { transition: "transformed" })]);
     // A mitred elbow keeps π r² times the centreline length (20 + 20). A round corner is another shape there (on CI
     // 1123.25 against the mitre's 1130.97), so the volumes differ when the transition is read.
     const mitre = Math.PI * r * r * 40;
     check(
       "sweep corner transitions: right, round, transformed",
-      right.reply.ok === true && round.reply.ok === true && transformed.reply.ok === true
-        && rel(right.solid?.volumeMm3, mitre, 1e-4) && Math.abs((round.solid?.volumeMm3 ?? mitre) - mitre) > 1,
-      `right ${right.solid?.volumeMm3} want ${mitre}; round ${round.solid?.volumeMm3}; transformed ${transformed.solid?.volumeMm3}; ${why(right.reply)} ${why(round.reply)} ${why(transformed.reply)}`,
+      right.reply.ok === true && round.reply.ok === true && transformed.reply.ok === true && transformedElbow.reply.ok === false
+        && rel(right.solid?.volumeMm3, mitre, 1e-4) && Math.abs((round.solid?.volumeMm3 ?? mitre) - mitre) > 1 && rel(transformed.solid?.volumeMm3, torusQuarter, 1e-4),
+      `right ${right.solid?.volumeMm3} want ${mitre}; round ${round.solid?.volumeMm3}; transformed on the arc ${transformed.solid?.volumeMm3} want ${torusQuarter}; on the elbow ${why(transformedElbow.reply)}; ${why(right.reply)} ${why(round.reply)} ${why(transformed.reply)}`,
     );
   });
 
@@ -357,7 +360,7 @@ try {
   await testCase("loft start and end conditions change the frustum", async () => {
     const frustum = [{ origin: [0, 0, 180], radius: 5 }, { origin: [0, 0, 220], radius: 8 }];
     const plain = await build("loft-plain", BIG, [{ kind: "loft", op: "common", sections: frustum }]);
-    const normal = await build("loft-normal", BIG, [{ kind: "loft", op: "common", sections: frustum, startCondition: { kind: "normal", tension: 2 }, endCondition: { kind: "curvature", dir: [0, 0, 1], tension: 1.5 } }]);
+    const normal = await build("loft-normal", BIG, [{ kind: "loft", op: "common", sections: frustum, startCondition: { kind: "normal", tension: 2 }, endCondition: { kind: "tangent", dir: [0, 0, 1], tension: 1.5 } }]);
     const tangent = await build("loft-tangent", BIG, [{ kind: "loft", op: "common", sections: frustum, startCondition: { kind: "tangent", dir: [1, 0, 1], tension: 1 } }]);
     const exact = (Math.PI * 40 * (25 + 40 + 64)) / 3;
     const p = plain.solid?.volumeMm3 ?? NaN;
@@ -365,7 +368,7 @@ try {
       "loft start and end conditions change the frustum",
       plain.reply.ok === true && rel(p, exact, 1e-3) && normal.reply.ok === true && tangent.reply.ok === true
         && Math.abs((normal.solid?.volumeMm3 ?? p) - p) > p * 1e-3 && Math.abs((tangent.solid?.volumeMm3 ?? p) - p) > p * 1e-3,
-      `plain ${p} want ${exact}; normal+curvature ${normal.solid?.volumeMm3}; tangent ${tangent.solid?.volumeMm3}; ${why(normal.reply)} ${why(tangent.reply)}`,
+      `plain ${p} want ${exact}; normal+tangent ${normal.solid?.volumeMm3}; tangent ${tangent.solid?.volumeMm3}; ${why(normal.reply)} ${why(tangent.reply)}`,
     );
   });
 

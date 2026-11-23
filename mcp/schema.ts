@@ -583,7 +583,7 @@ const sweepSectionItem = {
 
 const loftBoundaryField = {
   type: "object",
-  description: "Start or end loft boundary condition: free, normal, tangent, or curvature.",
+  description: "Start or end loft boundary condition: free, normal, or tangent. A loft steers an end by its direction only.",
   oneOf: [
     { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "free", description: "Natural free end (default)." } } },
     {
@@ -603,16 +603,6 @@ const loftBoundaryField = {
         kind: { const: "tangent", description: "Explicit departure tangent vector." },
         dir: { ...vec3, description: "Tangent direction vector." },
         tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tangent tension (default 1)." },
-      },
-    },
-    {
-      type: "object",
-      additionalProperties: false,
-      required: ["kind"],
-      properties: {
-        kind: { const: "curvature", description: "Curvature-faired G2 boundary." },
-        dir: { ...vec3, description: "Optional tangent direction vector." },
-        tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tension (default 1)." },
       },
     },
   ],

@@ -115,6 +115,8 @@ check("every property has a description", undescribed.length === 0, undescribed.
     refusal({ kind: "extrude", op: "fuse", depth: 2, loops: [{ start: [12, 0], segments: [{ kind: "nurbs", poles: [[0, 10], [-12, 0], [0, -10]], weights: [1, 1, 1, 1], to: [12, 0] }] }] }) === "",
   );
   starts("maxDegree is what the kernel applies, 2 to 10", { kind: "loft", op: "fuse", sections: [ring(0), ring(9)], maxDegree: 11 }, "op.maxDegree must be at most 10.");
+  starts("a curvature end condition is refused with the kinds that work", { kind: "loft", op: "fuse", sections: [ring(0), ring(9)], endCondition: { kind: "curvature", dir: [0, 0, 1] } }, 'op.endCondition kind "curvature" is not built: a loft steers an end by its direction only. Use "normal" or "tangent".');
+  check("a tangent end condition passes", refusal({ kind: "loft", op: "fuse", sections: [ring(0), ring(9)], endCondition: { kind: "tangent", dir: [0, 0, 1] } }) === "");
   starts("rho without a conic is refused", { kind: "fillet", edges: [0], size: 1, rho: 0.5 }, "op.rho is the fullness of a conic fillet");
   check("rho on a conic passes", refusal({ kind: "fillet", edges: [0], size: 1, continuity: "conic", rho: 0.5 }) === "");
   starts("a variable station past the edge is refused", { kind: "fillet", edges: [0], size: 1, variable: [[0, 1], [1.2, 2]] }, "op.variable[1] is at u 1.2");

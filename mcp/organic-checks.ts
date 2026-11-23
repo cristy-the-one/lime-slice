@@ -195,6 +195,14 @@ export function organicFirstProblem(value: unknown, path: string): string | null
     ?? (isRec(value.sheet) ? tooMany(`${path}.sheet.curves`, value.sheet.curves, 20, "curves") : null)
     ?? edgeCapProblem(value, path);
   if (caps) return caps;
+  if (value.kind === "loft") {
+    for (const field of ["startCondition", "endCondition"]) {
+      const condition = value[field];
+      if (isRec(condition) && condition.kind === "curvature") {
+        return `${path}.${field} kind "curvature" is not built: a loft steers an end by its direction only. Use "normal" or "tangent".`;
+      }
+    }
+  }
   if (value.kind === "replaceFace") return faceProblem(`${path}.face`, value.face);
   if (value.kind === "splitFace" && Array.isArray(value.faces)) {
     for (let i = 0; i < value.faces.length; i += 1) {
