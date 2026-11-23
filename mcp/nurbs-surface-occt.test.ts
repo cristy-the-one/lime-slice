@@ -121,10 +121,17 @@ try {
   await testCase("thickened 2 mm it is a 70 × 70 × 2 solid, 9800 mm³", async () => {
     if (!flatObject) throw new Error("no flat surface");
     const { reply, solid } = await apply(flatObject, { kind: "thicken", thickness: 2, direction: "normal" });
+    // The box itself is checked by its bounds: a clamped bicubic's border runs through its corner poles, so the sheet is
+    // exactly ±35 mm, and the wall exactly 2 mm. Mesh corners are B-rep vertices, kept in float32 (35 to about 4e-6).
+    // The volume is the kernel's BRepGProp integral over NURBS faces: on CI it read 9799.866507, 1.4e-5 under 9800,
+    // so it is held to 1e-4 relative. A wall that missed the box would fail the bounds, not hide in that tolerance.
+    const box = solid?.bounds;
+    const exact = (value: number | undefined, want: number) => near(value, want, 1e-5);
     check(
       "thickened 2 mm it is a 70 × 70 × 2 solid, 9800 mm³",
-      reply.ok === true && solid?.editable === true && rel(solid?.volumeMm3, 9800, 1e-6),
-      `volume ${solid?.volumeMm3}; ${why(reply)}`,
+      reply.ok === true && solid?.editable === true && rel(solid?.volumeMm3, 9800, 1e-4)
+        && exact(box?.min[0], -35) && exact(box?.max[0], 35) && exact(box?.min[1], -35) && exact(box?.max[1], 35) && exact(box?.min[2], 0) && exact(box?.max[2], 2),
+      `volume ${solid?.volumeMm3}; bounds ${JSON.stringify(box)}; ${why(reply)}`,
     );
   });
 
@@ -137,8 +144,9 @@ try {
     // wall's) and its volume grows with the surface's area.
     check(
       "editing the root's grid under the thicken raises the solid's top",
-      edited.ok === true && solid?.editable === true && (solid?.bounds.max[2] ?? 0) > 3 && (solid?.volumeMm3 ?? 0) > 9800 + 1,
-      `top ${solid?.bounds.max[2]} volume ${solid?.volumeMm3}; ${why(edited)}`,
+      edited.ok === true && edited.current === "node_1" && solid?.editable === true && (solid?.bounds.max[2] ?? 0) > 3 && (solid?.volumeMm3 ?? 0) > 9800 + 1
+        && rel(edited.volumeMm3, solid?.volumeMm3 ?? NaN, 1e-9),
+      `current ${edited.current} top ${solid?.bounds.max[2]} volume ${solid?.volumeMm3} (reply ${edited.volumeMm3}); ${why(edited)}`,
     );
   });
 
