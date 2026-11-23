@@ -346,6 +346,7 @@ src/model-mesh-quality.test.ts
 src/project-version.test.ts
 src/model-tree-renumber.test.ts
 src/app/model/names-topology.test.ts
+src/app/model/surface-cache.test.ts
 mcp/nurbs-sweep.test.ts
 mcp/loft-fillet-v2.test.ts
 mcp/open-sheets.test.ts

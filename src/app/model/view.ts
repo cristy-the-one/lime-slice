@@ -12,7 +12,8 @@ import {
   type Affine,
 } from "../../model-space";
 import { unionBox } from "../../measure";
-import { decodeSurfaceInspect, type DecodedSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { decodeSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { cachedSurface, keepSurface, surfaceKey } from "./surface-cache";
 import { isOpenSheet } from "../../model-sheet";
 import { contextParts } from "../../model-context";
 import { isHidden, isolate, pruneHidden, setHidden, showAll, visibleParts } from "../../model-hidden";
@@ -62,8 +63,6 @@ import { posedFace } from "./workplane";
 /** Each solid's, and each plate mesh's, box in its own frame. */
 const ownBoxes = new WeakMap<Float32Array, Bounds>();
 
-/** --- Organic surfaces S1: lazy surface inspection cache per `<key>#<node>@<chord>`. */
-const surfaceInspectCache = new Map<string, DecodedSurfaceInspect>();
 let surfaceInspectTicket = 0;
 
 async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolean }) {
@@ -74,8 +73,8 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
   const key = S.lens?.key ?? open.key;
   const node = S.lens?.node ?? tree.current;
   const chord = state.stepTolerance;
-  const cacheKey = `${key}#${node}@${chord}`;
-  const cached = surfaceInspectCache.get(cacheKey);
+  const cacheKey = surfaceKey(key, node, chord);
+  const cached = cachedSurface(cacheKey);
   const hasCurv = !need.curvature || !!cached?.minRadiusMm;
   const hasIso = !need.isoparms || cached?.isoPoints !== undefined;
   if (cached && hasCurv && hasIso) {
@@ -102,11 +101,7 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
   if (mine !== surfaceInspectTicket) return;
   const decoded = decodeSurfaceInspect(body);
   if (typeof decoded === "string") return;
-  if (surfaceInspectCache.size > 24) {
-    const oldest = surfaceInspectCache.keys().next().value;
-    if (oldest !== undefined) surfaceInspectCache.delete(oldest);
-  }
-  surfaceInspectCache.set(cacheKey, decoded);
+  keepSurface(cacheKey, decoded);
   // A late reply is kept for its node but shown only while that node is still on screen: isoparm lines carry no
   // vertex count to check against (the curvature buffers are length-checked), so they would draw on another solid.
   const nowTree = treeOf(S.open);
