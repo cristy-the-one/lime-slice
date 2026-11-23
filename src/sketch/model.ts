@@ -194,21 +194,33 @@ export function addNurbs(sketch: SketchData, poles: readonly (Pt | number)[], op
     ids.push(point.id);
   }
   const id = nextEntityId(next);
+  // The kernel refuses a degree above the poles allow and knots without multiplicities: a new curve has neither. The
+  // degree fits the points (as the preview reads it), and knots carry the multiplicities the evaluator would imply.
+  const degree = options.degree !== undefined ? Math.max(1, Math.min(Math.floor(options.degree), ids.length - 1)) : undefined;
+  const knots = options.knots && options.knots.length > 0 ? [...options.knots] : undefined;
+  const mults = knots && options.mults && options.mults.length === knots.length
+    ? [...options.mults]
+    : knots ? impliedMults(knots, degree ?? Math.min(3, ids.length - 1)) : undefined;
   const entity: Extract<SketchEntity, { kind: "spline" }> = {
     id,
     kind: "spline",
     through: ids,
     mode: "cv",
     ...(options.weights && options.weights.length === ids.length ? { weights: [...options.weights] } : {}),
-    ...(options.degree !== undefined ? { degree: options.degree } : {}),
-    ...(options.knots && options.knots.length > 0 ? { knots: [...options.knots] } : {}),
-    ...(options.mults && options.mults.length > 0 ? { mults: [...options.mults] } : {}),
+    ...(degree !== undefined ? { degree } : {}),
+    ...(knots ? { knots } : {}),
+    ...(mults ? { mults } : {}),
     ...(options.construction ? { construction: true as const } : {}),
   };
   return { sketch: { ...next, entities: [...next.entities, entity] }, id };
 }
 
 type SplineEntity = Extract<SketchEntity, { kind: "spline" }>;
+
+/** The multiplicities the evaluator reads knots without any as: clamped ends (degree + 1), 1 inside. */
+export function impliedMults(knots: readonly number[], degree: number): number[] {
+  return knots.map((_, i) => (i === 0 || i === knots.length - 1 ? degree + 1 : 1));
+}
 
 /** True when a spline ends where it starts (the same point, or two points at one place): a periodic curve. */
 export function splineEndsClosed(sketch: SketchData, entity: SplineEntity): boolean {

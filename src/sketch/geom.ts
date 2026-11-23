@@ -9,7 +9,7 @@ import { sampleNurbsCurve2DChord } from "../modeling/nurbs-eval.ts";
 
 /** How far a drawn control-point curve may stray from the exact curve, mm. */
 export const CV_CHORD_MM = 0.005;
-import { sketchPoint, type Pt, type SketchData, type SketchEntity } from "./model.ts";
+import { impliedMults, sketchPoint, type Pt, type SketchData, type SketchEntity } from "./model.ts";
 
 export type { Pt };
 
@@ -459,7 +459,8 @@ export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null 
       ...(weights ? { weights } : {}),
       ...(entity.degree !== undefined ? { degree: entity.degree } : {}),
       ...(entity.knots ? { knots: [...entity.knots] } : {}),
-      ...(entity.mults ? { mults: [...entity.mults] } : {}),
+      // An old curve's knots without multiplicities go out with the ones the preview reads (the kernel needs both).
+      ...(entity.mults ? { mults: [...entity.mults] } : entity.knots && entity.knots.length > 0 ? { mults: periodic ? entity.knots.map(() => 1) : impliedMults(entity.knots, Math.max(1, Math.min(entity.degree ?? 3, poles.length - 1))) } : {}),
       closed: periodic,
     };
     // Samples by bending: within CV_CHORD_MM of the curve, the total bounded (`sampleNurbsCurve2DChord`).
