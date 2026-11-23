@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import {
+  applyRefinements,
   evalNurbsCurve2D,
   evalNurbsCurve3D,
   evalNurbsSurface3D,
@@ -239,6 +240,70 @@ try {
   check("weighted-surface within 1e-6 mm", worst < TOL_MM && surfaceParams.length >= 50, `max=${worst} samples=${surfaceParams.length}`);
 } catch (err) {
   check("weighted-surface", false, err instanceof Error ? err.message : String(err));
+}
+
+// --- S6: grids the TS side bakes (src/modeling/bake.ts applyRefinements: knot insertion and degree elevation) before
+// the kernel sees them. The evalNurbs hook builds a Geom_BSplineSurface from poles, weights, degrees, knots and mults,
+// so the baked grid goes to it as it is, and the kernel's evaluation of that grid is compared with the TS one. The
+// baked grid is also compared with the grid it came from, in TS: the refinement must not move the surface. The hook has
+// no periodic fields and does not evaluate the surface the kernel commits (where OCCT's own InsertUKnots and
+// IncreaseDegree run), so neither is covered here.
+async function kernelPoints(spec: NurbsSurface3D, params: [number, number][]): Promise<Xyz[]> {
+  const text = await engine.modelTree(JSON.stringify({
+    call: "evalNurbs",
+    surface: {
+      poles: spec.poles,
+      ...(spec.weights ? { weights: spec.weights } : {}),
+      degreeU: spec.degreeU ?? 3,
+      degreeV: spec.degreeV ?? 3,
+      ...(spec.knotsU ? { knotsU: spec.knotsU, multsU: spec.multsU } : {}),
+      ...(spec.knotsV ? { knotsV: spec.knotsV, multsV: spec.multsV } : {}),
+      params,
+    },
+  }));
+  const reply = JSON.parse(text) as { error?: string; points?: Xyz[] };
+  if (reply.error || !reply.points) throw new Error(reply.error ?? "no points");
+  return reply.points;
+}
+
+/** A 15 x 15 grid of parameters over the whole surface, plus every distinct knot pair of the baked grid. */
+function refinedParams(spec: NurbsSurface3D): [number, number][] {
+  const ku = resolveCurveKnots(spec.poles.length, spec.degreeU ?? 3, spec.knotsU, spec.multsU, false);
+  const kv = resolveCurveKnots(spec.poles[0]!.length, spec.degreeV ?? 3, spec.knotsV, spec.multsV, false);
+  const out: [number, number][] = [];
+  for (let i = 0; i < 15; i += 1) {
+    for (let j = 0; j < 15; j += 1) out.push([ku.uMin + ((ku.uMax - ku.uMin) * i) / 14, kv.uMin + ((kv.uMax - kv.uMin) * j) / 14]);
+  }
+  for (const u of ku.knots) for (const v of kv.knots) out.push([u, v]);
+  return out;
+}
+
+const refinements: { name: string; ask: Parameters<typeof applyRefinements>[1] }[] = [
+  { name: "inserted-knots-surface", ask: { insertU: [[0.37, 1], [0.6, 2]], insertV: [[0.5, 1]] } },
+  { name: "elevated-surface", ask: { elevateU: 5, elevateV: 4 } },
+  { name: "inserted-and-elevated-surface", ask: { insertU: [[0.25, 1]], elevateV: 5 } },
+];
+for (const { name, ask } of refinements) {
+  try {
+    const baked = applyRefinements(weighted, ask);
+    if (typeof baked === "string") throw new Error(baked);
+    const params = refinedParams(baked);
+    const points = await kernelPoints(baked, params);
+    let kernelWorst = 0;
+    let shapeWorst = 0;
+    for (let i = 0; i < params.length; i += 1) {
+      const [u, v] = params[i]!;
+      const ts = evalNurbsSurface3D(baked, u, v).point;
+      kernelWorst = Math.max(kernelWorst, dist3(ts, points[i]!));
+      shapeWorst = Math.max(shapeWorst, dist3(ts, evalNurbsSurface3D(weighted, u, v).point));
+    }
+    const grid = `${baked.poles.length}x${baked.poles[0]!.length} degree ${baked.degreeU ?? 3}x${baked.degreeV ?? 3}`;
+    console.log(`NURBS_PARITY ${name} ${grid} kernelMaxMm=${kernelWorst.toExponential(12)} shapeMaxMm=${shapeWorst.toExponential(12)} samples=${params.length}`);
+    check(`${name}: the kernel evaluates the TS-baked grid within 1e-6 mm`, kernelWorst < TOL_MM && params.length >= 50, `max=${kernelWorst} ${grid}`);
+    check(`${name}: the baked grid is the original surface within 1e-6 mm`, shapeWorst < TOL_MM, `max=${shapeWorst} ${grid}`);
+  } catch (err) {
+    check(name, false, err instanceof Error ? err.message : String(err));
+  }
 }
 
 if (failed) {
