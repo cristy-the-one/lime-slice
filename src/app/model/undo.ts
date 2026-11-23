@@ -40,8 +40,8 @@ export function syncUndo() {
   const framing = openModelTool() === "workplane";
   // While a step is edited, Cancel is the way back.
   const held = S.busy || S.jumping || !tree || !!S.editing;
-  const unmake = !S.busy && !S.jumping && !S.editing && (canUnmake() || canSwapBack("undo"));
-  const remake = !S.busy && !S.jumping && !S.editing && (canRemake() || canSwapBack("redo"));
+  const unmake = !S.busy && !S.jumping && !S.editing && (canUnmake() || canSwapBack("undo") || S.sculptHistory?.can("undo") === true);
+  const remake = !S.busy && !S.jumping && !S.editing && (canRemake() || canSwapBack("redo") || S.sculptHistory?.can("redo") === true);
   // --- S2: Undo and Redo step the sketch while one is open. ---
   const sketchHist = sketchHistoryButtons();
   const stressHist = stressOpen() && !openModelTool() ? stressUndoState() : { undo: false, redo: false };

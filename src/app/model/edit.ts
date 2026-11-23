@@ -96,6 +96,18 @@ async function startOwnEdit(node: NodeId) {
   const at = S.open;
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return;
+  // --- S6. A NURBS surface, the root or a later step, reopens the NURBS tool on that step's own grid. Each drag then
+  // rebuilds the steps after it, as an Update does.
+  if (editedOp(tree, node)?.kind === "nurbsSurface") {
+    const refusal = editRefusal(tree, node) ?? (S.busy || S.jumping ? STILL_WORKING : null);
+    if (refusal) {
+      readout(refusal);
+      return;
+    }
+    const { nurbsTool } = await import("./nurbs-tool");
+    (await nurbsTool()).openNurbsEdit(node);
+    return;
+  }
   const rootFeature = tree.root.kind === "feature" && tree.nodes.get(node)?.parent === null;
   const feature = editedOp(tree, node);
   // --- E1/F2/F3. An extrude, a revolve, or a loft, including a feature root, reopens its sketch. ---

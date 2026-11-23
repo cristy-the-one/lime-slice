@@ -143,8 +143,8 @@ export async function applyTool() {
   }
   const tool = modelTool();
   if (tool === "sculpt") {
-    const { commitNurbs } = await import("./nurbs-sculpt.ts");
-    await commitNurbs();
+    const { nurbsTool } = await import("./nurbs-tool.ts");
+    await (await nurbsTool()).commitNurbs();
     return;
   }
   if (S.editing) {

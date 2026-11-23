@@ -235,6 +235,11 @@ export const S = {
   /** The last edit, so Undo goes from its tip back to the step shown before it, and Redo forward again. */
   editBack: null as { key: string; tip: NodeId; back: NodeId; undone: boolean } | null,
   /**
+   * --- S6. The NURBS sculpt tool's own Undo and Redo: one step per drag, on the surface the drags changed. Set once the
+   * tool's code has loaded; `can` is true only while the open object is still where the last drag left it.
+   */
+  sculptHistory: null as { can(way: "undo" | "redo"): boolean; step(way: "undo" | "redo"): Promise<void> } | null,
+  /**
    * --- A7 model check --- A probe's hollows and loose pieces, drawn in model space.
    * A check still in flight keeps the boxes already drawn.
    */

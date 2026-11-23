@@ -12,21 +12,19 @@ import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
 import { treeRaycast } from "./solid-ray";
 import type { ViewCtx } from "./ctx";
 import { createZebraMaterial, syncZebraMaterial } from "./analysis-shaders";
-import { DEFAULT_PREVIEW_DENSITY } from "../modeling/nurbs-eval.ts";
 
 export function buildApi(ctx: ViewCtx): ModelView {
   const { alignLine, bedRef, body, camera, canvas, contextMat, controls, datum, edgeMaterial, handleGroup, nakedEdgeMaterial, projected, raycaster, renderer, sheetBackMaterial, sketchGroup, snapLineMat, solidMaterial, targetMat } = ctx;
-  const nurbsGeometry = new THREE.BufferGeometry();
+  // --- S6. The live NURBS preview: one Zebra mesh in the open part's frame (inside `posed`), drawn by the frame loop
+  // like everything else. A drag rewrites its arrays in place; a new knot layout gets a new geometry, the old one disposed.
   const nurbsMaterial = createZebraMaterial();
+  let nurbsGeometry = new THREE.BufferGeometry();
   const nurbsMesh = new THREE.Mesh(nurbsGeometry, nurbsMaterial);
   nurbsMesh.visible = false;
   nurbsMesh.frustumCulled = false;
-  const nurbsTimed = new THREE.Scene();
-  if (ctx.scene) {
-    ctx.scene.add(nurbsMesh);
-    nurbsTimed.add(new THREE.Mesh(nurbsGeometry, nurbsMaterial));
-  }
-
+  ctx.posed?.add(nurbsMesh);
+  let nurbsArrays: Float32Array | null = null;
+  let nurbsSerial = 0;
 
   return {
     setSolid(next, at) {
@@ -397,28 +395,44 @@ export function buildApi(ctx: ViewCtx): ModelView {
         y: rect.top + (-projected.y * 0.5 + 0.5) * rect.height,
       };
     },
-    setNurbsPreview(mesh, timeFrom) {
-      const started = timeFrom ?? performance.now();
+    setNurbsPreview(mesh) {
       if (!mesh) {
+        if (!nurbsArrays && !nurbsMesh.visible) return;
         nurbsMesh.visible = false;
-        delete canvas.dataset.nurbsFrameMs;
+        nurbsGeometry.dispose();
+        nurbsGeometry = new THREE.BufferGeometry();
+        nurbsMesh.geometry = nurbsGeometry;
+        nurbsArrays = null;
+        body.visible = true;
+        delete canvas.dataset.nurbsDensity;
+        delete canvas.dataset.nurbsSerial;
         ctx.kick();
         return;
       }
-      nurbsGeometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
-      nurbsGeometry.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
-      nurbsGeometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
-      nurbsGeometry.computeBoundingSphere();
+      if (mesh.positions !== nurbsArrays) {
+        nurbsGeometry.dispose();
+        nurbsGeometry = new THREE.BufferGeometry();
+        nurbsGeometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
+        nurbsGeometry.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
+        nurbsGeometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+        nurbsMesh.geometry = nurbsGeometry;
+        nurbsArrays = mesh.positions;
+      } else {
+        nurbsGeometry.getAttribute("position").needsUpdate = true;
+        nurbsGeometry.getAttribute("normal").needsUpdate = true;
+      }
       syncZebraMaterial(nurbsMaterial, ctx.look, false);
       nurbsMesh.visible = true;
-      renderer.render(nurbsTimed, camera);
-      const ms = performance.now() - started;
-      const samples = ((window as unknown as { __nurbsFrameSamples?: number[] }).__nurbsFrameSamples ??= []);
-      samples.push(ms);
-      if (samples.length > 180) samples.shift();
-      canvas.dataset.nurbsFrameMs = ms.toFixed(3);
-      canvas.dataset.nurbsDensity = String(DEFAULT_PREVIEW_DENSITY);
+      // The committed surface is the preview's last state: hidden while the preview stands in for it.
+      body.visible = false;
+      nurbsSerial += 1;
+      canvas.dataset.nurbsDensity = String(mesh.density);
+      canvas.dataset.nurbsSerial = String(nurbsSerial);
       ctx.kick();
+    },
+    onCameraChange(cb) {
+      controls.addEventListener("change", cb);
+      return () => controls.removeEventListener("change", cb);
     },
     setAlign(ends) {
       if (!ends) {
