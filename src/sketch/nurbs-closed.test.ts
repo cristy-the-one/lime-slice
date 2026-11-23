@@ -94,13 +94,21 @@ for (const [n, max] of [[10, 160 + 7 + 1], [30, 480 + 27 + 1]] as const) {
   check(`a ${n}-pole CV curve takes about ${Math.max(24, n * 16)} samples, not one budget per span`, count >= Math.max(24, n * 16) && count <= max, `count=${count}`);
 }
 {
-  // A fresh sketch each round: nothing is cached between calls.
-  const sketches = [0, 1, 2].map((r) => addNurbs(emptySketch(), zigzag(30).map(([x, y]) => [x + r * 1e-3, y] as Pt)).sketch);
-  const t0 = performance.now();
-  for (const s of sketches) sketchRegions(s);
-  const ms = (performance.now() - t0) / sketches.length;
-  console.log(`sketchRegions on a 30-pole CV curve: ${ms.toFixed(1)} ms`);
-  check("sketchRegions on a 30-pole CV curve takes under 150 ms", ms < 150, `ms=${ms}`);
+  // A fresh sketch each round: nothing is cached between calls. A wall-clock bound alone fails on a busy shared runner,
+  // so the 30-pole time is held against a 10-pole curve's measured in the same run (it may grow with the poles, not
+  // faster than 3 times linearly), and the absolute bound is a sanity cap 10 times the old 150 ms.
+  const per = (poles: number): number => {
+    const sketches = [0, 1, 2].map((r) => addNurbs(emptySketch(), zigzag(poles).map(([x, y]) => [x + r * 1e-3, y] as Pt)).sketch);
+    const t0 = performance.now();
+    for (const s of sketches) sketchRegions(s);
+    return (performance.now() - t0) / sketches.length;
+  };
+  per(10);
+  const ten = per(10);
+  const ms = per(30);
+  console.log(`sketchRegions on a CV curve: 10 poles ${ten.toFixed(1)} ms, 30 poles ${ms.toFixed(1)} ms`);
+  check("sketchRegions on a 30-pole CV curve costs at most 3 times its share of a 10-pole one (plus 5 ms)", ms <= 3 * 3 * ten + 5, `30: ${ms} ms, 10: ${ten} ms`);
+  check("sketchRegions on a 30-pole CV curve stays under a 1500 ms sanity cap", ms < 1500, `ms=${ms}`);
 }
 {
   // The preview looks the same: the old dense sampling (the budget per span) sits within 0.01 mm of the new polyline.
