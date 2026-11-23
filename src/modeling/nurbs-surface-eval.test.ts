@@ -3,6 +3,7 @@
  * mesher's speed and exactness. Every surface here is curved and most are weighted, and whole sample sets are compared.
  */
 import {
+  applyRefinements,
   bicubicGrid,
   createSurfaceMesher,
   creaseSurface,
@@ -198,7 +199,8 @@ function moved(before: readonly (readonly Vec3[])[], after: readonly (readonly V
 
 // --- M5. Refusals before anything evaluates; nothing throws.
 {
-  check("degree 9 is refused", surfaceRefusal({ poles: bicubicGrid(12, 12), degreeU: 9 }) === "A NURBS surface's degree is at most 8.");
+  check("degree 9 is refused, in the kernel's words", surfaceRefusal({ poles: bicubicGrid(12, 12), degreeU: 9 }) === "A NURBS surface's degree in U is 1 to 8; it was 9.");
+  check("an explicit degree 0 is refused; an absent one is 3", surfaceRefusal({ poles: bicubicGrid(4, 4), degreeV: 0 }) === "A NURBS surface's degree in V is 1 to 8; it was 0." && surfaceRefusal({ poles: bicubicGrid(4, 4) }) === null);
   check("a closed direction with 2 poles is refused", surfaceRefusal({ poles: bicubicGrid(2, 4), degreeU: 1, periodicU: true }) === "A surface closed in U needs at least 3 poles in U.");
   let threw = "";
   try {
@@ -364,6 +366,10 @@ function moved(before: readonly (readonly Vec3[])[], after: readonly (readonly V
     check("apex samples take the neighbouring row's normal, not +Z", plusZ === 0 && unit, `plusZ=${plusZ}`);
   }
 }
+
+// Elevation never lowers: a degree below the current one is refused in a sentence, not ignored.
+check("elevateU below the current degree is refused", applyRefinements({ poles: bicubicGrid(5, 5), degreeU: 3, degreeV: 3 }, { elevateU: 2 }) === "A NURBS surface's degree in U is 3; elevateU raises it and cannot lower it to 2.");
+check("elevateV to the current degree changes nothing", typeof applyRefinements({ poles: bicubicGrid(5, 5), degreeU: 3, degreeV: 3 }, { elevateV: 3 }) !== "string");
 
 if (failed) throw new Error(`${failed} nurbs surface checks failed`);
 console.log("nurbs-surface-eval: ok");

@@ -803,8 +803,8 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
       }
       let maxDegree: number | undefined;
       if (spec.maxDegree !== undefined) {
-        if (typeof spec.maxDegree !== "number" || !Number.isInteger(spec.maxDegree) || spec.maxDegree < 2 || spec.maxDegree > 12) {
-          return { reason: "Loft maxDegree must be an integer from 2 to 12." };
+        if (typeof spec.maxDegree !== "number" || !Number.isInteger(spec.maxDegree) || spec.maxDegree < 2 || spec.maxDegree > 10) {
+          return { reason: "Loft maxDegree must be an integer from 2 to 10." };
         }
         maxDegree = spec.maxDegree;
       }

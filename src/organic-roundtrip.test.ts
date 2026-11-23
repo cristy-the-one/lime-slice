@@ -67,6 +67,14 @@ check("normal and tangent conditions are still taken", !("reason" in readLoftBou
   check("an old entity's knots go out with their implied mults", c?.kind === "spline" && same(c.nurbs?.mults, [4, 1, 4]), JSON.stringify(c && c.kind === "spline" ? c.nurbs : null));
 }
 
+// A loft maxDegree is 2..10, as the kernel takes it. A file written when 11 and 12 were accepted still opens, capped at 10.
+{
+  const loft = { kind: "loft", op: "fuse", sections: [{ origin: [0, 0, 0], turn: [0, 0, 0], radius: 5 }, { origin: [0, 0, 10], turn: [0, 0, 0], radius: 3 }], maxDegree: 12 };
+  const file = { nodes: [{ id: 0, parent: null, op: null, fingerprint: null }, { id: 1, parent: 0, op: loft, fingerprint: null }], current: 1, committed: 1, nextId: 2, rootPrimitive: { primitive: "box", origin: [0, 0, 0], size: [20, 20, 20] } };
+  const read = readSavedTree(file) as { nodes?: { op?: { maxDegree?: number } | null }[] } | null;
+  check("a saved loft with maxDegree 12 opens, capped at 10", read?.nodes?.[1]?.op?.maxDegree === 10, JSON.stringify(read?.nodes?.[1]?.op));
+}
+
 if (failed) {
   console.error(`${failed} checks failed`);
   process.exit(1);
