@@ -140,9 +140,12 @@ pub fn call(request: &str) -> String {
         Ok(request) => request,
         Err(err) => return Failure::Message(format!("Bad tree request: {err}")).json(),
     };
-    // Read apart from the request, so every call takes it the same way. Anything but "display" is the standard mesh.
-    let display = serde_json::from_str::<MeshQualityField>(request_text)
-        .is_ok_and(|field| field.mesh_quality.as_deref() == Some("display"));
+    // Read apart from the request, so every call takes it the same way: "display" or absent, anything else refused.
+    let display = match serde_json::from_str::<MeshQualityField>(request_text).map(|field| field.mesh_quality) {
+        Ok(None) => false,
+        Ok(Some(quality)) if quality == "display" => true,
+        _ => return Failure::Message("meshQuality is 'display' or absent".into()).json(),
+    };
     let mut store = lock();
     store.display = display;
     let transient = matches!(

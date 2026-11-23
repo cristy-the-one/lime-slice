@@ -201,7 +201,7 @@ impl Store {
                 node.pins = pins_key.clone();
             }
             let text = self.reply(key, tip, chord)?;
-            let replies = piece_replies(&mut pieces, piece_keys, chord, self.display)?;
+            let replies = piece_replies(&mut pieces, piece_keys, chord)?;
             let mut fields = vec![
                 (
                     "built",

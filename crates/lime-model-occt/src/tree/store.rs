@@ -409,16 +409,18 @@ impl Store {
             text = with_fields(&text, &[("stepFaces", Part::Json(json!(owners).to_string()))]);
         }
         let text = Arc::new(text);
-        self.remember(key, id, chord, Arc::clone(&text));
+        self.remember(key, id, chord, display, Arc::clone(&text));
         Ok(text)
     }
 
-    pub(super) fn remember(&mut self, key: &str, id: NodeId, chord: f64, text: Arc<String>) {
+    /// `display`: the text is the Model view's display mesh. Pieces and pins that start trees of their own go to the
+    /// plate, so they are always remembered, and meshed, as the standard mesh.
+    pub(super) fn remember(&mut self, key: &str, id: NodeId, chord: f64, display: bool, text: Arc<String>) {
         self.replies.push(Reply {
             key: key.to_string(),
             node: id,
             chord: chord_key(chord),
-            display: self.display,
+            display,
             text,
             used: self.clock,
         });

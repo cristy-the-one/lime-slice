@@ -160,3 +160,34 @@ fn display_normals_of_a_mirrored_box_point_out() {
     assert_eq!(inward, 0, "every display normal of the mirrored box points out");
     ok(json!({ "call": "close", "key": "mirrored" }));
 }
+
+/// A split to print's pieces go to the plate, so they keep the standard mesh even when the call asked for the display
+/// mesh for its own reply; and a meshQuality other than "display" is refused.
+#[test]
+fn pieces_keep_the_standard_mesh_and_an_unknown_quality_is_refused() {
+    if !ready() {
+        return;
+    }
+    let refused = call(json!({ "call": "open", "key": "quality-typo", "box": [10.0, 10.0, 10.0], "meshQuality": "fine" }));
+    assert_eq!(refused["error"].as_str(), Some("meshQuality is 'display' or absent"), "{refused}");
+
+    let cut = json!({
+        "kind": "partition",
+        "cuts": [{ "origin": [10.0, 5.0, 5.0], "normal": [1.0, 0.0, 0.0], "u": [0.0, 1.0, 0.0],
+            "profile": { "kind": "straight" }, "connectors": { "on": false } }],
+        "target": { "printer": "lime-220", "process": "fdm", "volumeMm": [220.0, 220.0, 250.0] },
+        "orient": "keep", "arrange": true, "bedMarginMm": 5.0, "maxPieces": 12.0,
+    });
+    ok(json!({ "call": "open", "key": "quality-split", "box": [20.0, 10.0, 10.0], "quiet": true }));
+    let applied = ok(json!({ "call": "apply", "key": "quality-split", "parent": 0, "node": 1, "op": cut,
+        "pieceKeys": ["quality-piece"], "chordMm": 0.05, "meshQuality": "display" }));
+    assert!(applied.get("normals").is_some(), "the call's own reply is the display mesh");
+    let piece = &applied["pieces"][0];
+    assert!(piece.get("positions").is_some(), "{piece}");
+    assert!(piece.get("normals").is_none(), "a piece for the plate has the standard mesh");
+    // And the piece's own tree, asked again without the flag, is that same mesh.
+    let again = ok(json!({ "call": "goto", "key": "quality-piece", "node": 0, "chordMm": 0.05 }));
+    assert_eq!(again["positions"], piece["positions"]);
+    ok(json!({ "call": "close", "key": "quality-split" }));
+    ok(json!({ "call": "close", "key": "quality-piece" }));
+}
