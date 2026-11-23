@@ -4,7 +4,7 @@
  * Pure geometry and the gesture. The editor shell (`session.ts`) owns undo, snapping, and the
  * heads-up box. No solver: a typed size or a drag places the geometry directly.
  */
-import { sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
+import { sampleNurbsCurve2DTotal } from "../modeling/nurbs-eval.ts";
 import { cornerLines, filletCorner, filletCorners, offset, offsetWall, trim, trimPieces, type WallOptions } from "./edit.ts";
 import {
   arcFrom3,
@@ -372,7 +372,7 @@ export function drawRubber(sketch: SketchData, state: DrawState, tool: DrawTool,
     const controls = [...points, at];
     if (controls.length < 2) return controls;
     return state.splineMode === "cv"
-      ? sampleNurbsCurve2D({ poles: controls }, Math.max(24, controls.length * 12))
+      ? sampleNurbsCurve2DTotal({ poles: controls }, Math.max(24, controls.length * 12))
       : sampleSpline(controls, false);
   }
   // Offset and several corners draw their ghost as separate pieces (`drawGhosts`).
@@ -649,6 +649,11 @@ function splinePointer(sketch: SketchData, state: DrawState, ev: DrawPointer): D
     return { sketch: closed, state: { ...state, gesture: null, note: null, hud: null }, selection: ev.selection, committed: true };
   }
   const added = ensurePoint(sketch, ev.at);
+  // Back on the first point with fewer than three points: a closed control-point curve needs three distinct poles,
+  // so the click is ignored rather than drawing A, B, A.
+  if (state.splineMode === "cv" && gesture.points.length > 0 && added.id === gesture.points[0] && new Set(gesture.points).size < 3) {
+    return { sketch, state: { ...state, gesture }, selection: ev.selection, committed: false };
+  }
   const ids = [...gesture.points, added.id];
   if (ids.length < 2) {
     return { sketch: added.sketch, state: { ...state, gesture: { kind: "spline", points: ids, entity: null }, hud: null }, selection: ev.selection, committed: false };

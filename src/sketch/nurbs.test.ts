@@ -167,45 +167,45 @@ const curve3d = sketchChainToCurve3D(spineSketch);
 check("sketchChainToCurve3D emits exact Curve3D::Nurbs", !!curve3d && curve3d.kind === "nurbs" && curve3d.poles.length === 4);
 
 // 6. A closed control-point spline with custom knots is sampled as the kernel's periodic curve.
+// Reference points at the six knots of one period. They are fixed numbers, not the evaluator run again: the same
+// curve is the "closed-custom-knots" case of mcp/nurbs-parity-occt.test.ts, which holds the evaluator to OCCT's
+// periodic Geom_BSplineCurve within 1e-6 mm in CI. The clamped (open) reading of the same knots misses them by mm.
 const closedPoles: [number, number][] = [[0, 0], [12, 3], [16, 14], [4, 18], [-6, 11], [-4, 2]];
 const closedKnots = [0, 0.35, 0.8, 1.15, 1.7, 2.4, 3.1];
 const closedMults = [1, 1, 1, 1, 1, 1, 1];
-const closedSteps = Math.max(24, closedPoles.length * 16);
+const closedReference: [number, number][] = [
+  [12.444444444444445, 6.222222222222223],
+  [13.727173913043478, 12.676358695652175],
+  [3.722826086956514, 16.154891304347828],
+  [-3.340149176954732, 11.977173353909466],
+  [-3.993589743589745, 3.956794871794874],
+  [1.6820512820512805, 0.9589743589743587],
+];
 const closedAdded = addNurbs(emptySketch(), [...closedPoles, closedPoles[0]!], {
   degree: 3,
   knots: closedKnots,
   mults: closedMults,
 });
 const closedCurve = curveOf(closedAdded.sketch, closedAdded.sketch.entities.find((entity) => entity.id === closedAdded.id)!);
-const periodicSamples = sampleNurbsCurve2D(
-  { poles: closedPoles, degree: 3, knots: closedKnots, mults: closedMults, periodic: true },
-  closedSteps,
-);
-const openSamples = sampleNurbsCurve2D(
-  { poles: closedPoles, degree: 3, knots: closedKnots, mults: closedMults },
-  closedSteps,
-);
-const sampleGap = (a: readonly [number, number][], b: readonly [number, number][]) => {
-  if (a.length !== b.length) return Infinity;
-  let worst = 0;
-  for (let i = 0; i < a.length; i += 1) worst = Math.max(worst, Math.hypot(a[i]![0] - b[i]![0], a[i]![1] - b[i]![1]));
-  return worst;
-};
 const preview = closedCurve && closedCurve.kind === "spline" ? closedCurve.samples : [];
-const periodicGap = sampleGap(preview, periodicSamples);
-// The old path (custom knots, not periodic) has a different span count, so the arrays differ in length.
-// Compare each preview point to the nearest sample of that open curve.
-const openGap = preview.reduce((worst, point) => {
+// Span-by-span sampling lands on every knot, so each reference point is a preview sample.
+const referenceGap = closedReference.reduce((worst, ref) => {
   let nearest = Infinity;
-  for (const other of openSamples) nearest = Math.min(nearest, Math.hypot(point[0] - other[0], point[1] - other[1]));
+  for (const point of preview) nearest = Math.min(nearest, Math.hypot(point[0] - ref[0], point[1] - ref[1]));
+  return Math.max(worst, nearest);
+}, 0);
+const openSamples = sampleNurbsCurve2D({ poles: closedPoles, degree: 3, knots: closedKnots, mults: closedMults }, 16);
+const openGap = closedReference.reduce((worst, ref) => {
+  let nearest = Infinity;
+  for (const point of openSamples) nearest = Math.min(nearest, Math.hypot(point[0] - ref[0], point[1] - ref[1]));
   return Math.max(worst, nearest);
 }, 0);
 const seam = preview.length >= 2 ? Math.hypot(preview[0]![0] - preview[preview.length - 1]![0], preview[0]![1] - preview[preview.length - 1]![1]) : Infinity;
-console.log(`closed-custom-knots preview periodicGapMm=${periodicGap} openGapMm=${openGap} seamMm=${seam} samples=${preview.length}`);
+console.log(`closed-custom-knots preview referenceGapMm=${referenceGap} openGapMm=${openGap} seamMm=${seam} samples=${preview.length}`);
 check(
-  "a closed spline with custom knots is sampled as the periodic curve, seam closed",
-  !!closedCurve && closedCurve.kind === "spline" && closedCurve.closed && periodicGap < 1e-9 && openGap > 0.1 && seam < 1e-9,
-  `periodicGap=${periodicGap} openGap=${openGap} seam=${seam} samples=${preview.length}`,
+  "a closed spline with custom knots is sampled as the periodic curve (fixed reference points), seam closed",
+  !!closedCurve && closedCurve.kind === "spline" && closedCurve.closed && referenceGap < 1e-9 && openGap > 0.1 && seam < 1e-9,
+  `referenceGap=${referenceGap} openGap=${openGap} seam=${seam} samples=${preview.length}`,
 );
 
 if (failed) {
