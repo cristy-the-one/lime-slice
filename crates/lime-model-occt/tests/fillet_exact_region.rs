@@ -124,3 +124,46 @@ fn an_exact_fillet_leaves_a_boss_beside_the_end_of_its_edge_whole() {
         same_removal(&format!("boss {continuity}"), with, reference);
     }
 }
+
+/// Off a straight edge between two flat faces, G2 and conic fall to Open CASCADE's own fillet, which has no rho and no
+/// G2 bound. A conic is refused there; a G2 result is kept only when its seams measure G2 (jump at most 1e-3 per mm),
+/// as surfaceInspect reads them, and is refused otherwise.
+#[test]
+fn g2_and_conic_off_a_straight_flat_edge_are_measured_or_refused() {
+    for continuity in ["g2", "conic"] {
+        let key = format!("curved-{continuity}");
+        let opened = call(json!({ "call": "open", "key": key,
+            "primitive": { "primitive": "cylinder", "origin": [0.0, 0.0, 0.0], "radius": 10.0, "height": 20.0 } }));
+        if opened.get("error").is_some() {
+            assert!(!require(), "OCCT was required: {opened}");
+            return;
+        }
+        let points = floats(&opened, "edgePoints");
+        let offsets = words(&opened, "edgeOffsets");
+        let rim = (0..offsets.len() - 1)
+            .find(|&i| {
+                let row: Vec<f32> = (offsets[i] as usize..offsets[i + 1] as usize).map(|k| points[k * 3 + 2]).collect();
+                row.len() > 4 && row.iter().all(|z| (z - 20.0).abs() < 1e-4)
+            })
+            .expect("the top rim");
+        let mut op = json!({ "kind": "fillet", "edges": [rim], "size": 2.0, "continuity": continuity });
+        if continuity == "conic" {
+            op["rho"] = json!(0.6);
+        }
+        let reply = call(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "op": op }));
+        let error = reply["error"].as_str().unwrap_or("").to_string();
+        println!("{continuity} on a circular edge: {}", if error.is_empty() { "kept" } else { &error });
+        if continuity == "conic" {
+            assert_eq!(error, "A conic fillet is built only on straight edges between two flat faces, as a convex corner.");
+        } else if error.is_empty() {
+            let inspect = ok(json!({ "call": "surfaceInspect", "key": key, "node": 1, "chordMm": 0.1 }));
+            assert!(
+                inspect["continuity"]["worstCurvatureJump"].as_f64().unwrap_or(99.0) <= 1e-3,
+                "a kept G2 fillet measures G2: {inspect}"
+            );
+        } else {
+            assert!(error.starts_with("A G2 fillet is exact only on straight edges between two flat faces"), "{error}");
+        }
+        ok(json!({ "call": "close", "key": key }));
+    }
+}

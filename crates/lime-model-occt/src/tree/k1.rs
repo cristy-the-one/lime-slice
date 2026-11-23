@@ -141,6 +141,8 @@ pub(super) fn encode_loops(loops: &[ProfileLoop], out: &mut Vec<f64>) {
     }
 }
 
+const KNOTS_AND_MULTS: &str = "NURBS knots and multiplicities must be the same length.";
+
 /// --- Organic surfaces S2: encode `Curve3D` for `decode_curve3d` in kernel.cpp.
 pub(super) fn encode_curve3d(curve: &Curve3D, resolved_edges: &[c_int], out: &mut Vec<f64>) -> Result<(), String> {
     match curve {
@@ -164,7 +166,10 @@ pub(super) fn encode_curve3d(curve: &Curve3D, resolved_edges: &[c_int], out: &mu
             mults,
             periodic,
         } => {
-            let nk = knots.len().min(mults.len());
+            if knots.len() != mults.len() {
+                return Err(KNOTS_AND_MULTS.into());
+            }
+            let nk = knots.len();
             out.extend([
                 2.0,
                 if *periodic { 1.0 } else { 0.0 },
@@ -206,7 +211,10 @@ pub(super) fn encode_curve3d(curve: &Curve3D, resolved_edges: &[c_int], out: &mu
                         mults,
                         to,
                     } => {
-                        let nk = knots.len().min(mults.len());
+                        if knots.len() != mults.len() {
+                            return Err(KNOTS_AND_MULTS.into());
+                        }
+                        let nk = knots.len();
                         out.extend([3.0, to[0], to[1], to[2], poles.len() as f64]);
                         for p in poles {
                             out.extend_from_slice(p);
@@ -417,6 +425,13 @@ pub(super) fn build_loft_v2_shape(
             loop_at.push(-1);
         }
         apex_flags.push(0);
+    }
+    // One offset copy of the end section steers an end: that sets a direction, never a curvature.
+    if matches!(start_condition, Some(LoftBoundary::Curvature { .. })) || matches!(end_condition, Some(LoftBoundary::Curvature { .. })) {
+        return Err(
+            "A loft cannot match curvature at an end: it steers an end by its direction only. Use a normal or tangent condition."
+                .into(),
+        );
     }
     let mut guides_blob = Vec::new();
     for g in guides {

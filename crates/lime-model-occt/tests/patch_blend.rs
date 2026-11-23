@@ -1411,3 +1411,30 @@ fn blend_meets_g1_between_concentric_elliptical_faces() {
     check_opening(case_name, &key, 3, &sewn, &sides, false, None);
     ok(json!({ "call": "close", "key": key }));
 }
+
+/// A sheet whose shape carries a location (moved, not rebuilt): the patch must read each edge where it is. The edge's
+/// curve came back with the location applied twice, so the fill was built 30 mm off its opening.
+#[cfg(lime_occt_test_hooks)]
+#[test]
+fn a_patch_on_a_moved_sheet_meets_its_edges() {
+    if !has_occt() {
+        return;
+    }
+    let case_name = "4-side-g1-moved";
+    let source = "s5-moved-source";
+    ok(json!({ "call": "open", "key": source, "chordMm": CHORD_MM, "feature": opening_sheet(4) }));
+    let placed = ok(json!({ "call": "testPlace", "key": source, "node": 0, "offset": [30.0, 0.0, 0.0] }));
+    ok(json!({ "call": "close", "key": source }));
+    let key = format!("s5-{case_name}");
+    let opened = ok(json!({ "call": "open", "key": key, "chordMm": CHORD_MM, "dataB64": placed["dataB64"] }));
+    assert_eq!(opened["solid"], json!(false), "the moved sheet is still a sheet");
+    let asked = top_sides(&opened, |_, _| "g1");
+    assert_eq!(asked.len(), 4);
+    assert!(asked.iter().all(|side| side.midpoint[0] > 10.0), "the opening moved 30 mm along x");
+    let patched = ok(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": CHORD_MM, "op": patch_op(&asked, None) }));
+    assert_eq!(patched["solid"], json!(false));
+    assert_op_time(case_name, "g1");
+    let sewn = finish_sheet(case_name, &key, 1, 2, true, 0.05);
+    check_opening(case_name, &key, 2, &sewn, &asked, true, None);
+    ok(json!({ "call": "close", "key": key }));
+}

@@ -6137,7 +6137,22 @@ Handle(Geom_BSplineCurve) bspline_curve(
         error = periodic ? "A periodic NURBS curve needs at least 3 poles." : "A NURBS curve needs at least 2 poles.";
         return {};
     }
-    const int deg = std::clamp(requested_degree > 0 ? requested_degree : 3, 1, periodic ? n : (n - 1));
+    // A degree that was asked for must fit the poles; only the default (3) is lowered to fit a short curve.
+    const int most = periodic ? n : (n - 1);
+    if (requested_degree > 10) {
+        error = "A NURBS degree can be at most 10.";
+        return {};
+    }
+    if (requested_degree > most) {
+        error = "A NURBS curve of degree " + std::to_string(requested_degree) + " needs at least " +
+            std::to_string(periodic ? requested_degree : requested_degree + 1) + " poles; it has " + std::to_string(n) + ".";
+        return {};
+    }
+    const int deg = std::clamp(requested_degree > 0 ? requested_degree : 3, 1, most);
+    if (in_knots.size() != in_mults.size()) {
+        error = "NURBS knots and multiplicities must be the same length.";
+        return {};
+    }
     TColgp_Array1OfPnt p_arr(1, n);
     for (int i = 0; i < n; ++i) {
         p_arr.SetValue(i + 1, poles[static_cast<size_t>(i)]);
@@ -10657,6 +10672,69 @@ bool try_exact_edge_surface_fillet(
 
 }  // namespace
 
+/// The worst curvature jump, per mm, across the smooth seams a fillet made on `solid`: each edge between a face that is
+/// not in `before` and a face beside it whose normals meet within 1 degree, measured as model_check measures it (the
+/// normal curvature across the edge on each side, at the fractions 0.1 to 0.9 of the edge). -1 when no seam is read.
+double worst_fillet_seam_jump(const TopoDS_Shape& solid, const TopoDS_Shape& before) {
+    TopTools_IndexedMapOfShape old_faces;
+    TopExp::MapShapes(before, TopAbs_FACE, old_faces);
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    TopExp::MapShapesAndAncestors(solid, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+    const auto across = [](BRepLProp_SLProps& props, double outward, const gp_Vec& tangent) {
+        if (!props.IsCurvatureDefined()) return 0.0;
+        gp_Dir n = props.Normal();
+        if (outward < 0.0) n.Reverse();
+        gp_Vec perp = gp_Vec(n).Crossed(tangent);
+        if (!(perp.Magnitude() > 1e-12)) return 0.5 * (props.MaxCurvature() + props.MinCurvature()) * outward;
+        perp.Normalize();
+        gp_Dir dmax;
+        gp_Dir dmin;
+        props.CurvatureDirections(dmax, dmin);
+        const double c = perp.Dot(gp_Vec(dmax));
+        const double sn = perp.Dot(gp_Vec(dmin));
+        return (props.MaxCurvature() * c * c + props.MinCurvature() * sn * sn) * outward;
+    };
+    double worst = -1.0;
+    for (int e = 1; e <= edge_faces.Extent(); ++e) {
+        const TopoDS_Edge edge = TopoDS::Edge(edge_faces.FindKey(e));
+        const TopTools_ListOfShape& faces = edge_faces(e);
+        if (BRep_Tool::Degenerated(edge) || faces.Extent() != 2) continue;
+        const TopoDS_Face fa = TopoDS::Face(faces.First());
+        const TopoDS_Face fb = TopoDS::Face(faces.Last());
+        if (fa.IsSame(fb) || (old_faces.Contains(fa) && old_faces.Contains(fb))) continue;
+        Standard_Real a0 = 0.0, a1 = 0.0, b0 = 0.0, b1 = 0.0;
+        const Handle(Geom2d_Curve) ca = BRep_Tool::CurveOnSurface(edge, fa, a0, a1);
+        const Handle(Geom2d_Curve) cb = BRep_Tool::CurveOnSurface(edge, fb, b0, b1);
+        if (ca.IsNull() || cb.IsNull()) continue;
+        BRepAdaptor_Surface sa(fa);
+        BRepAdaptor_Surface sb(fb);
+        BRepAdaptor_Curve ec(edge);
+        BRepLProp_SLProps pa(sa, 2, 1e-9);
+        BRepLProp_SLProps pb(sb, 2, 1e-9);
+        const double out_a = fa.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+        const double out_b = fb.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+        for (int st = 0; st < 5; ++st) {
+            const double frac = 0.1 + 0.2 * st;
+            const gp_Pnt2d uva = ca->Value(a0 + (a1 - a0) * frac);
+            const gp_Pnt2d uvb = cb->Value(b0 + (b1 - b0) * frac);
+            pa.SetParameters(uva.X(), uva.Y());
+            pb.SetParameters(uvb.X(), uvb.Y());
+            if (!pa.IsNormalDefined() || !pb.IsNormalDefined()) continue;
+            gp_Dir na = pa.Normal();
+            gp_Dir nb = pb.Normal();
+            if (out_a < 0.0) na.Reverse();
+            if (out_b < 0.0) nb.Reverse();
+            if (std::acos(std::clamp(na.Dot(nb), -1.0, 1.0)) * (180.0 / M_PI) > 1.0) continue;
+            gp_Pnt point;
+            gp_Vec tangent;
+            ec.D1(ec.FirstParameter() + (ec.LastParameter() - ec.FirstParameter()) * frac, point, tangent);
+            const double jump = std::abs(across(pa, out_a, tangent) - across(pb, out_b, tangent));
+            if (std::isfinite(jump)) worst = std::max(worst, jump);
+        }
+    }
+    return worst;
+}
+
 bool fillet_v2_build(
     const TopoDS_Shape& current,
     const std::vector<TopoDS_Edge>& edges,
@@ -10771,6 +10849,25 @@ bool fillet_v2_build(
         if (!(solid_volume > 1e-6)) {
             error = failed;
             return false;
+        }
+        // The exact G2 and conic sections are built only on a straight edge between two flat faces. Anything else came
+        // here, to Open CASCADE's own fillet: it has no rho, so a conic is refused, and a G2 result is kept only when
+        // its seams measure G2 as model_check does.
+        if (spec.continuity == 2) {
+            error = "A conic fillet is built only on straight edges between two flat faces, as a convex corner.";
+            return false;
+        }
+        if (spec.continuity == 1) {
+            const double jump = worst_fillet_seam_jump(solid, current);
+            if (!(jump >= 0.0) || jump > 1e-3) {
+                std::ostringstream out;
+                out.setf(std::ios::fixed);
+                out.precision(6);
+                out << "A G2 fillet is exact only on straight edges between two flat faces, as a convex corner. Here the "
+                       "seams reach " << (jump >= 0.0 ? jump : 0.0) << " per mm of curvature jump, over 0.001.";
+                error = out.str();
+                return false;
+            }
         }
         built = solid;
         volume = solid_volume;
@@ -11352,10 +11449,28 @@ TopoDS_Shape build_offset_skin(const TopoDS_Shape& base, double dist, double tol
         }
     } catch (...) {
     }
-    // Simple translational shift along average normal as last-resort skin for planar/gently curved sheets.
-    const gp_Vec n = average_shape_normal(base);
+    // A shift along the normal is that offset exactly only when every face is a plane with the same outward normal.
+    // Anything curved gets no skin: shifting it would give a wall of uneven thickness.
+    gp_Dir common;
+    bool first = true;
+    for (TopExp_Explorer ex(base, TopAbs_FACE); ex.More(); ex.Next()) {
+        const TopoDS_Face face = TopoDS::Face(ex.Current());
+        const BRepAdaptor_Surface surface(face);
+        if (surface.GetType() != GeomAbs_Plane) return {};
+        const gp_Pln plane = surface.Plane();
+        gp_Dir normal = plane.Axis().Direction();
+        if (!plane.Position().Direct()) normal.Reverse();
+        if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
+        if (first) {
+            common = normal;
+            first = false;
+        } else if (normal.Dot(common) < 1.0 - 1e-9) {
+            return {};
+        }
+    }
+    if (first) return {};
     gp_Trsf tr;
-    tr.SetTranslation(n * dist);
+    tr.SetTranslation(gp_Vec(common) * dist);
     return BRepBuilderAPI_Transform(base, tr, Standard_True).Shape();
 }
 
@@ -11547,7 +11662,11 @@ TopoDS_Shape build_thicken(
         TopoDS_Shape skin_a = build_offset_skin(base, d_lo, tol);
         TopoDS_Shape skin_b = build_offset_skin(base, d_hi, tol);
         if (skin_a.IsNull() || skin_b.IsNull()) {
-            error = "Open CASCADE could not offset this surface by the requested thickness.";
+            std::ostringstream out;
+            out << "Open CASCADE could not offset this surface by " << thickness
+                << " mm: it bends tighter than that somewhere (a radius of curvature under the thickness), or folds. "
+                   "Use a thinner wall or the other direction.";
+            error = out.str();
             return {};
         }
         // Collect ordered naked edges on skin_a and skin_b and pair them by nearest midpoint.
@@ -11947,8 +12066,11 @@ Handle(Geom_BSplineCurve) edge_to_bspline(const TopoDS_Edge& edge, std::string& 
     TopoDS_Edge built = edge;
     Standard_Real first = 0.0;
     Standard_Real last = 0.0;
+    // This form of BRep_Tool::Curve already applies the edge's location: the curve is where the edge is.
     Handle(Geom_Curve) curve = BRep_Tool::Curve(built, first, last);
     if (curve.IsNull()) {
+        // BuildCurve3d writes the curve into the edge, which the held shape shares: build it on a copy.
+        built = TopoDS::Edge(BRepBuilderAPI_Copy(edge, Standard_True, Standard_False).Shape());
         BRepLib::BuildCurve3d(built);
         curve = BRep_Tool::Curve(built, first, last);
     }
@@ -11957,10 +12079,6 @@ Handle(Geom_BSplineCurve) edge_to_bspline(const TopoDS_Edge& edge, std::string& 
         return {};
     }
     Handle(Geom_Curve) trimmed = new Geom_TrimmedCurve(curve, first, last);
-    const TopLoc_Location loc = built.Location();
-    if (!loc.IsIdentity()) {
-        trimmed = Handle(Geom_Curve)::DownCast(trimmed->Transformed(loc.Transformation()));
-    }
     Handle(Geom_BSplineCurve) bs = GeomConvert::CurveToBSplineCurve(trimmed);
     if (bs.IsNull()) {
         error = "Open CASCADE could not fill this opening.";

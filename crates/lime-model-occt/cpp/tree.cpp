@@ -3261,16 +3261,20 @@ LimeShape* lime_tree_trim_split(
             set_error(error, message.empty() ? "Open CASCADE could not split with this surface." : message);
             return nullptr;
         }
+        // A split of a sheet is the face the cutter left. It has no solid volume,
+        // so adopting it would throw the piece away.
+        std::unique_ptr<LimeShape> kept_out = has_solid(kept)
+            ? adopt(kept, volume, "Open CASCADE could not split with this surface.", error, from)
+            : hold(kept, 0.0);
+        if (!kept_out) {
+            return nullptr;
+        }
+        // Only once the kept piece is held: a refusal hands back no other piece to free.
         if (other_out != nullptr && !other_shape.IsNull()) {
             double other_vol = has_solid(other_shape) ? volume_of(other_shape) : 0.0;
             *other_out = hold(other_shape, other_vol).release();
         }
-        // A split of a sheet is the face the cutter left. It has no solid volume,
-        // so adopting it would throw the piece away.
-        if (!has_solid(kept)) {
-            return hold(kept, 0.0).release();
-        }
-        return adopt(kept, volume, "Open CASCADE could not split with this surface.", error, from).release();
+        return kept_out.release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -3380,6 +3384,10 @@ LimeShape* lime_tree_split_face(
         if (out.IsNull()) {
             set_error(error, message.empty() ? "Open CASCADE could not split this face." : message);
             return nullptr;
+        }
+        // A sheet split stays a sheet: it has no solid volume to adopt.
+        if (!has_solid(from->held.shape)) {
+            return hold(out, 0.0).release();
         }
         return adopt(out, volume, "Open CASCADE could not split this face.", error, from).release();
     } catch (const Standard_Failure& failure) {
@@ -4023,6 +4031,9 @@ LimeShape* lime_tree_test_place(const LimeShape* shape, int mirror, const double
             gp_Trsf trsf;
             trsf.SetTranslation(gp_Vec(offset[0], offset[1], offset[2]));
             made = shape->held.shape.Moved(TopLoc_Location(trsf));
+        }
+        if (!has_solid(made)) {
+            return hold(made, 0.0).release();
         }
         return adopt(made, volume_of(as_solid(made)), "Open CASCADE did not place the shape", error, nullptr).release();
     } catch (const Standard_Failure& failure) {

@@ -131,3 +131,32 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
         ok(json!({ "call": "close", "key": key }));
     }
 }
+
+/// A mirrored box: every plane has an indirect placement, whose axis is the reverse of D1U x D1V. Each display normal
+/// must still point out of the solid.
+#[cfg(lime_occt_test_hooks)]
+#[test]
+fn display_normals_of_a_mirrored_box_point_out() {
+    if !ready() {
+        return;
+    }
+    ok(json!({ "call": "open", "key": "mirror-source", "box": [20.0, 20.0, 10.0], "quiet": true }));
+    let placed = ok(json!({ "call": "testPlace", "key": "mirror-source", "node": 0, "mirror": true }));
+    ok(json!({ "call": "close", "key": "mirror-source" }));
+    let shown = ok(json!({ "call": "open", "key": "mirrored", "dataB64": placed["dataB64"], "meshQuality": "display" }));
+    let positions = floats(&shown, "positions");
+    let normals = floats(&shown, "normals");
+    assert_eq!(positions.len(), normals.len());
+    // The box from (0, 0, 0) to (20, 20, 10), mirrored in x = 0.
+    let centre = [-10.0_f32, 10.0, 5.0];
+    let mut inward = 0;
+    for (p, n) in positions.chunks_exact(3).zip(normals.chunks_exact(3)) {
+        let out = (p[0] - centre[0]) * n[0] + (p[1] - centre[1]) * n[1] + (p[2] - centre[2]) * n[2];
+        if out <= 0.0 {
+            inward += 1;
+        }
+    }
+    assert!(positions.iter().step_by(3).all(|x| *x <= 1e-4), "the box was mirrored to x <= 0");
+    assert_eq!(inward, 0, "every display normal of the mirrored box points out");
+    ok(json!({ "call": "close", "key": "mirrored" }));
+}

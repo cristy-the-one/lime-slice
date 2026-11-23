@@ -371,3 +371,137 @@ fn sheet_trim_split_keeps_the_cut_piece_and_replays_it() {
     let replayed_volume = replayed["volumeMm3"].as_f64().unwrap_or(0.0);
     assert!(replayed_volume.abs() < 1e-6, "the rebuilt piece is still a sheet, volume {replayed_volume}");
 }
+
+/// SplitFace is allowed on a sheet, and a sheet's split stays a sheet: it used to be adopted as a solid and always refused.
+#[test]
+fn split_face_on_a_sheet_splits_it_and_stays_a_sheet() {
+    let key = "s4-split-sheet";
+    let sheet = call(json!({
+        "call": "open",
+        "key": key,
+        "chordMm": 0.05,
+        "feature": {
+            "kind": "sheet",
+            "mode": "planar",
+            "curves": [{
+                "kind": "polyline",
+                "points": [[-10.0, -10.0, 0.0], [10.0, -10.0, 0.0], [10.0, 10.0, 0.0], [-10.0, 10.0, 0.0]],
+                "closed": true
+            }]
+        }
+    }));
+    assert_eq!(sheet["solid"], json!(false));
+    let split = call(json!({
+        "call": "apply",
+        "key": key,
+        "parent": 0,
+        "node": 1,
+        "chordMm": 0.05,
+        "op": {
+            "kind": "splitFace",
+            "faces": [0],
+            "curve": { "kind": "polyline", "points": [[0.0, -12.0, 5.0], [0.0, 12.0, 5.0]] },
+            "direction": [0.0, 0.0, -1.0]
+        }
+    }));
+    assert_eq!(split["solid"], json!(false), "a split sheet is a sheet: {split}");
+    assert_eq!(split["fingerprint"]["faces"], json!(2), "one cut across the square leaves two faces: {split}");
+    call(json!({ "call": "close", "key": key }));
+}
+
+/// Out-of-range face and edge indices are refused with a sentence, never read past the shape.
+#[test]
+fn out_of_range_indices_are_refused() {
+    let key = "s4-out-of-range";
+    call(json!({ "call": "open", "key": key, "box": [20.0, 20.0, 10.0], "chordMm": 0.1 }));
+    let refused = |op: Value| {
+        let reply = call_raw(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": 0.1, "op": op.clone() }));
+        let error = reply["error"].as_str().unwrap_or("").to_string();
+        assert!(!error.is_empty(), "{op} must be refused: {reply}");
+        println!("{} -> {error}", op["kind"]);
+    };
+    refused(json!({ "kind": "fillet", "edges": [99], "size": 1.0, "continuity": "g2" }));
+    refused(json!({ "kind": "fillet", "edges": [99], "size": 1.0, "variable": [[0.0, 1.0], [1.0, 2.0]] }));
+    refused(json!({ "kind": "splitFace", "faces": [99], "curve": { "kind": "polyline", "points": [[0.0, -12.0, 15.0], [0.0, 12.0, 15.0]] }, "direction": [0.0, 0.0, -1.0] }));
+    refused(json!({ "kind": "replaceFace", "face": 99, "sheet": { "mode": "planar", "curves": [{ "kind": "polyline", "points": [[-30.0, -30.0, 12.0], [30.0, -30.0, 12.0], [30.0, 30.0, 12.0], [-30.0, 30.0, 12.0]], "closed": true }] } }));
+    call(json!({ "call": "close", "key": key }));
+    // Patch and blend take a sheet's edges.
+    let sheet = "s4-out-of-range-sheet";
+    call(json!({ "call": "open", "key": sheet, "chordMm": 0.1, "feature": {
+        "kind": "sheet", "mode": "extrude", "dir": [0.0, 0.0, 1.0], "distance": 10.0,
+        "curves": [{ "kind": "polyline", "points": [[-10.0, -10.0, 0.0], [10.0, -10.0, 0.0], [10.0, 10.0, 0.0], [-10.0, 10.0, 0.0]], "closed": true }]
+    } }));
+    for op in [
+        json!({ "kind": "patch", "boundaries": [{ "edges": [99] }, { "edges": [98] }, { "edges": [97] }] }),
+        json!({ "kind": "blendSurface", "a": { "edges": [99] }, "b": { "edges": [98] }, "continuity": "g1" }),
+    ] {
+        let reply = call_raw(json!({ "call": "apply", "key": sheet, "parent": 0, "node": 1, "chordMm": 0.1, "op": op.clone() }));
+        let error = reply["error"].as_str().unwrap_or("").to_string();
+        assert!(!error.is_empty(), "{op} must be refused: {reply}");
+        println!("{} -> {error}", op["kind"]);
+    }
+    call(json!({ "call": "close", "key": sheet }));
+}
+
+/// Bad NURBS input is refused with a sentence: a weight of 0 or less, knots that do not increase, knots and
+/// multiplicities of different lengths, a degree over 10, and a degree the poles cannot carry (which used to be lowered
+/// to fit without a word). A NURBS sent without a degree still takes 3, lowered to fit a short curve.
+#[test]
+fn bad_nurbs_input_is_refused() {
+    let poles = json!([[0.0, 0.0, 0.0], [10.0, 5.0, 0.0], [20.0, 0.0, 0.0]]);
+    let sheet = |curve: Value| json!({ "kind": "sheet", "mode": "extrude", "curves": [curve], "dir": [0.0, 0.0, 1.0], "distance": 5.0 });
+    let cases = [
+        ("weight 0", json!({ "kind": "nurbs", "poles": poles, "weights": [1.0, 0.0, 1.0], "degree": 2 })),
+        ("weight below 0", json!({ "kind": "nurbs", "poles": poles, "weights": [1.0, -0.5, 1.0], "degree": 2 })),
+        ("knots not increasing", json!({ "kind": "nurbs", "poles": poles, "degree": 2, "knots": [0.0, 0.0], "mults": [3, 3] })),
+        ("knots and mults lengths", json!({ "kind": "nurbs", "poles": poles, "degree": 2, "knots": [0.0, 1.0], "mults": [3] })),
+        ("degree over 10", json!({ "kind": "nurbs", "poles": poles, "degree": 11 })),
+        ("degree the poles cannot carry", json!({ "kind": "nurbs", "poles": poles, "degree": 3 })),
+    ];
+    for (name, curve) in cases {
+        let reply = call_raw(json!({ "call": "open", "key": "s4-bad-nurbs", "chordMm": 0.1, "feature": sheet(curve) }));
+        let error = reply["error"].as_str().unwrap_or("").to_string();
+        println!("{name} -> {error}");
+        assert!(!error.is_empty(), "{name} must be refused: {reply}");
+        if name == "knots and mults lengths" {
+            assert_eq!(error, "NURBS knots and multiplicities must be the same length.");
+        }
+    }
+    let defaulted = call(json!({ "call": "open", "key": "s4-nurbs-default", "chordMm": 0.1,
+        "feature": sheet(json!({ "kind": "nurbs", "poles": poles })) }));
+    assert_eq!(defaulted["solid"], json!(false), "three poles with no degree build at degree 2: {defaulted}");
+    call(json!({ "call": "close", "key": "s4-nurbs-default" }));
+}
+
+/// A tube of radius 2 mm thickened by 3 mm: the wall toward the axis cannot be offset (the radius is under the
+/// thickness). The thicken used to shift the sheet along its average normal instead and call the result watertight.
+/// Each direction now either builds the exact wall or refuses with a sentence.
+#[test]
+fn thicken_on_a_tight_tube_builds_the_exact_wall_or_refuses() {
+    let (radius, height, thickness) = (2.0_f64, 10.0_f64, 3.0_f64);
+    let mut refused = 0;
+    for direction in ["normal", "reverse"] {
+        let key = format!("s4-thicken-tight-{direction}");
+        call(json!({ "call": "open", "key": key, "chordMm": 0.1, "feature": {
+            "kind": "sheet", "mode": "extrude", "dir": [0.0, 0.0, 1.0], "distance": height,
+            "curves": [{ "kind": "segments", "start": [radius, 0.0, 0.0], "segments": [
+                { "kind": "arc", "through": [0.0, radius, 0.0], "to": [-radius, 0.0, 0.0] },
+                { "kind": "arc", "through": [0.0, -radius, 0.0], "to": [radius, 0.0, 0.0] }
+            ] }]
+        } }));
+        let reply = call_raw(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": 0.1,
+            "op": { "kind": "thicken", "thickness": thickness, "direction": direction } }));
+        if let Some(error) = reply["error"].as_str() {
+            println!("thicken {direction}: refused: {error}");
+            assert!(error.contains("bends tighter"), "{error}");
+            refused += 1;
+        } else {
+            let outward = std::f64::consts::PI * ((radius + thickness).powi(2) - radius.powi(2)) * height;
+            let volume = reply["volumeMm3"].as_f64().unwrap_or(0.0);
+            println!("thicken {direction}: {volume} mm³ (exact outward wall {outward} mm³)");
+            assert!((volume - outward).abs() <= 0.01 * outward, "thicken {direction}: {volume} mm³ is not the exact wall");
+        }
+        call(json!({ "call": "close", "key": key }));
+    }
+    assert!(refused >= 1, "the wall toward the axis cannot be built 3 mm thick on a 2 mm radius");
+}

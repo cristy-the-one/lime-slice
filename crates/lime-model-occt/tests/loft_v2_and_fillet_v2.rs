@@ -37,6 +37,11 @@ fn g2_edge_bounds(inspect: &Value) -> (f64, f64) {
     (angle, jump)
 }
 
+/// The most a "tangent" start or end condition leaves the loft off the asked direction, in degrees. Measured 0.819
+/// degrees on a radius 10 to 5 mm loft over 20 mm, where the free loft leaves at 14.04 degrees: a direction, not a
+/// tangency to 0.1 degrees.
+const TANGENT_END_DEG: f64 = 1.0;
+
 fn has_occt() -> bool {
     let caps = call(json!({ "call": "capabilities" }));
     if caps["stepMeshing"].as_bool() == Some(true) {
@@ -46,6 +51,15 @@ fn has_occt() -> bool {
         panic!("Open CASCADE is required (LIME_REQUIRE_OCCT is set) but not linked: {caps}");
     }
     false
+}
+
+fn decode_f32(b64: &str) -> Vec<f32> {
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .expect("valid base64")
+        .chunks_exact(4)
+        .map(|w| f32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .collect()
 }
 
 fn find_top_front_edge(opened: &Value) -> usize {
@@ -403,7 +417,8 @@ fn controlled_loft_v2_supports_apex_caps_tangency_closed_periodic_and_3d_nurbs_g
                 { "origin": [0.0, 0.0, 20.0], "turn": [0.0, 0.0, 0.0], "radius": 5.0 }
             ],
             "startCondition": { "kind": "normal", "tension": 1.2 },
-            "endCondition": { "kind": "curvature", "tension": 1.0 }
+            // A curvature condition is refused now (it was built as a direction only); this end takes the normal.
+            "endCondition": { "kind": "normal", "tension": 1.0 }
         },
         "chordMm": 0.05
     }));
@@ -515,4 +530,50 @@ fn loft_v2_refuses_corners_on_a_loop_section() {
     }));
     assert!(built["volumeMm3"].as_f64().unwrap_or(0.0) > 0.0, "{built}");
     ok(json!({ "call": "close", "key": "s3-loft-loop-plain" }));
+}
+
+/// What a loft's end condition delivers. The loft steers an end by one offset copy of that section, 6 % of the span
+/// along the asked direction, so "tangent" sets the end's direction to within a measured angle, and "curvature" (which
+/// it cannot deliver) is refused.
+#[test]
+fn loft_tangent_end_condition_is_measured_and_curvature_is_refused() {
+    if !has_occt() {
+        return;
+    }
+    let sections = json!([
+        { "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 10.0 },
+        { "origin": [0.0, 0.0, 20.0], "turn": [0.0, 0.0, 0.0], "radius": 5.0 }
+    ]);
+    // Without a condition the side leaves the base at the cone's 14.04 degrees.
+    let mut worst = Vec::new();
+    for condition in [Value::Null, json!({ "kind": "tangent", "dir": [0.0, 0.0, 1.0] })] {
+        let mut feature = json!({ "kind": "loft", "op": "fuse", "sections": sections });
+        if !condition.is_null() {
+            feature["startCondition"] = condition.clone();
+        }
+        let key = format!("s3-loft-end-{}", worst.len());
+        let shown = ok(json!({ "call": "open", "key": key, "feature": feature, "chordMm": 0.02, "meshQuality": "display" }));
+        let positions = decode_f32(shown["positions"].as_str().expect("positions"));
+        let normals = decode_f32(shown["normals"].as_str().expect("normals"));
+        // The side's normal at the base rim, against the plane square to the asked direction (+Z).
+        let angle = positions
+            .chunks_exact(3)
+            .zip(normals.chunks_exact(3))
+            .filter(|(p, n)| p[2].abs() < 1e-4 && n[2].abs() < 0.9)
+            .map(|(_, n)| f64::from(n[2].abs()).asin().to_degrees())
+            .fold(0.0_f64, f64::max);
+        println!("loft start {condition}: the side leaves the base {angle:.3} degrees off +Z");
+        worst.push(angle);
+        ok(json!({ "call": "close", "key": key }));
+    }
+    assert!((worst[0] - 14.036).abs() < 0.5, "the free loft is the cone: {}", worst[0]);
+    assert!(worst[1] < TANGENT_END_DEG, "tangent start: {} degrees off the asked direction", worst[1]);
+
+    let reply = call(json!({ "call": "open", "key": "s3-loft-curvature", "chordMm": 0.1,
+        "feature": { "kind": "loft", "op": "fuse", "sections": sections, "endCondition": { "kind": "curvature" } } }));
+    assert_eq!(
+        reply["error"].as_str(),
+        Some("A loft cannot match curvature at an end: it steers an end by its direction only. Use a normal or tangent condition."),
+        "{reply}"
+    );
 }
