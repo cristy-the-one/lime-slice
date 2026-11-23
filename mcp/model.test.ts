@@ -195,6 +195,40 @@ check("reopening keeps the committed mesh", reopened.ok === true && keptMesh, JS
   check("guide {kind} names the kinds for an unknown one", unknown.ok === false && String(unknown.reason).startsWith("There is no op kind twist. Kinds: hole, fillet,"), JSON.stringify(unknown));
 }
 
+// --- Organic surfaces fix round: the new refusals leave an old Fillet, Loft and Spline as they were. Each op the
+// kernel is sent is the one 90156bbe (before the refusals) sent, byte for byte.
+{
+  const base = fakeEngine();
+  const sent: string[] = [];
+  const recording = {
+    ...base,
+    async modelTree(request: string): Promise<string> {
+      const parsed = JSON.parse(request) as { call?: string; op?: unknown };
+      if (parsed.call === "apply") sent.push(JSON.stringify(parsed.op));
+      return base.modelTree(request);
+    },
+  };
+  const old = new Session(recording);
+  const part = await old.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 });
+  const cases: [string, unknown, string][] = [
+    ["an old fillet", { kind: "fillet", edges: [0], size: 1 }, '{"kind":"fillet","edges":[0],"size":1}'],
+    [
+      "an old loft",
+      { kind: "loft", op: "fuse", sections: [{ origin: [0, 0, 10], radius: 3 }, { origin: [0, 0, 18], turn: [10, 0, 0], radius: 1, radiusV: 2 }], ruled: true },
+      '{"kind":"loft","op":"fuse","sections":[{"origin":[0,0,10],"turn":[0,0,0],"radius":3},{"origin":[0,0,18],"turn":[10,0,0],"radius":1,"radiusV":2}],"ruled":true}',
+    ],
+    [
+      "an old spline segment",
+      { kind: "extrude", op: "fuse", depth: 2, origin: [0, 0, 10], loops: [{ start: [0, 0], segments: [{ kind: "line", to: [5, 0] }, { kind: "spline", through: [[6, 3], [4, 5]], to: [0, 5] }, { kind: "line", to: [0, 0] }] }] },
+      '{"kind":"extrude","op":"fuse","origin":[0,0,10],"turn":[0,0,0],"loops":[{"start":[0,0],"segments":[{"kind":"line","to":[5,0]},{"kind":"spline","through":[[6,3],[4,5]],"to":[0,5]},{"kind":"line","to":[0,0]}]}],"depth":2}',
+    ],
+  ];
+  for (const [name, op, want] of cases) {
+    const reply = await old.call("model_apply", { object: part.object, op, probe: true });
+    check(`${name} is sent to the kernel as before`, reply.ok === true && sent.at(-1) === want, JSON.stringify({ reply, sent: sent.at(-1) }));
+  }
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
