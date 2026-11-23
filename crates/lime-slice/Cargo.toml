@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.22"
+lime-haptic = { path = "../lime-haptic" }
 lime-model-load = { path = "../lime-model-load" }
 lime-slice-core = { path = "../lime-slice-core" }
 lime-sim-bridge = { path = "../lime-sim-bridge" }

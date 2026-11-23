@@ -2778,6 +2778,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lime-haptic"
+version = "7.1.2"
+dependencies = [
+ "base64 0.22.1",
+ "png 0.17.16",
+ "rayon",
+ "serde_json",
+]
+
+[[package]]
 name = "lime-mcp-engine"
 version = "7.1.2"
 dependencies = [
@@ -2884,6 +2894,7 @@ version = "7.1.2"
 dependencies = [
  "base64 0.22.1",
  "clap",
+ "lime-haptic",
  "lime-model-load",
  "lime-sim-bridge",
  "lime-slice-core",

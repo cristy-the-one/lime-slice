@@ -308,6 +308,26 @@ enum Cmd {
         #[arg(long, default_value_t = 1.75)]
         filament_diameter: f64,
     },
+    /// Compile a tactile pin-array height frame from a mesh. Experimental.
+    Haptic {
+        /// Mesh path. STL, 3MF, or STEP, read by the slicer's loader.
+        input: PathBuf,
+        /// Pin pitch in millimetres. Centres sit in the middle of each cell.
+        #[arg(long)]
+        pitch: f64,
+        /// Pin stroke in millimetres. Heights clip to this.
+        #[arg(long)]
+        travel: f64,
+        /// `auto` (the mesh XY box) or `x0,y0,x1,y1` in millimetres.
+        #[arg(long, default_value = "auto")]
+        extent: String,
+        /// `min` (mesh minimum Z) or `top` (one stroke below the mesh maximum Z).
+        #[arg(long, default_value = "min")]
+        base: String,
+        /// `.csv` table, or `.png` 16-bit grayscale plus a `.json` sidecar.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -709,7 +729,74 @@ fn run() -> Result<(), String> {
             }
             Ok(())
         }
+        Cmd::Haptic {
+            input,
+            pitch,
+            travel,
+            extent,
+            base,
+            output,
+        } => compile_haptic(&input, pitch, travel, &extent, &base, &output),
     }
+}
+
+/// Height frame for a pin array. The mesh stays in the file's coordinates:
+/// seating it on the bed is a slicing concern, and the pin heights are
+/// relative to `--base` either way.
+fn compile_haptic(
+    input: &Path,
+    pitch: f64,
+    travel: f64,
+    extent: &str,
+    base: &str,
+    output: &Path,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let bytes = fs::read(input).map_err(|e| format!("{}: {e}", input.display()))?;
+    let mesh = lime_slice_core::load_slice_mesh(input_name(input), &bytes, true)?;
+    let extent = lime_haptic::Extent::parse(extent)?;
+    let base = lime_haptic::Base::parse(base)?;
+    let frame = lime_haptic::compile(&mesh.triangles, pitch, travel, extent, base)?;
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+    }
+    let ext = output
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "csv" => {
+            let mut file =
+                fs::File::create(output).map_err(|e| format!("{}: {e}", output.display()))?;
+            lime_haptic::write_csv(&frame, &mut file)?;
+        }
+        "png" => {
+            let mut file =
+                fs::File::create(output).map_err(|e| format!("{}: {e}", output.display()))?;
+            lime_haptic::write_png(&frame, &mut file)?;
+            let sidecar = output.with_extension("json");
+            fs::write(&sidecar, lime_haptic::sidecar_json(&frame))
+                .map_err(|e| format!("{}: {e}", sidecar.display()))?;
+        }
+        _ => return Err("output must be a .csv or a .png".into()),
+    }
+    let ms = started.elapsed().as_millis();
+    println!(
+        "haptic {}x{}  pitch {:.3} mm  travel {:.3} mm  base {} (z {:.3})  no-hit {}  {ms} ms  {} -> {}",
+        frame.cols,
+        frame.rows,
+        frame.pitch_mm,
+        frame.travel_mm,
+        frame.base.as_str(),
+        frame.base_z_mm,
+        frame.no_hit_count(),
+        input.display(),
+        output.display()
+    );
+    Ok(())
 }
 
 fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
@@ -3090,5 +3177,71 @@ mod tests {
             "{preflight}"
         );
         assert!(preflight.contains("Access-Control-Allow-Headers: Content-Type, Authorization"));
+    }
+
+    #[test]
+    fn haptic_keeps_the_file_z_and_writes_csv() {
+        let dir = std::env::temp_dir().join(format!("lime-haptic-cli-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("plate.stl");
+        let csv = dir.join("plate.csv");
+        fs::write(&stl, binary_stl(&cuboid(0.0, 0.0, 5.0, 2.0, 1.0, 7.0))).unwrap();
+        compile_haptic(&stl, 1.0, 10.0, "auto", "min", &csv).unwrap();
+        let text = fs::read_to_string(&csv).unwrap();
+        assert!(
+            text.contains("# base_z_mm: 5.000\n"),
+            "the file Z is kept, so the base is 5 rather than the bed: {text}"
+        );
+        assert!(text.contains("\n2.000,2.000\n"), "{text}");
+        assert!(text.contains("# pitch_mm: 1.000\n"), "{text}");
+        let rejected = compile_haptic(&stl, 1.0, 10.0, "auto", "min", &dir.join("out.txt"));
+        assert!(rejected.unwrap_err().contains(".csv"));
+        let parsed = Cli::try_parse_from([
+            "lime-slice",
+            "haptic",
+            "a.stl",
+            "--pitch",
+            "1",
+            "--travel",
+            "4",
+            "-o",
+            "out.png",
+        ]);
+        assert!(parsed.is_ok());
+        assert!(Cli::try_parse_from(["lime-slice", "haptic", "a.stl"]).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn cuboid(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> Vec<[[f64; 3]; 3]> {
+        let v = [
+            [x0, y0, z0],
+            [x1, y0, z0],
+            [x1, y1, z0],
+            [x0, y1, z0],
+            [x0, y0, z1],
+            [x1, y0, z1],
+            [x1, y1, z1],
+            [x0, y1, z1],
+        ];
+        [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]]
+            .into_iter()
+            .map(|f| [v[f[0]], v[f[1]], v[f[2]]])
+            .collect()
+    }
+
+    fn binary_stl(tris: &[[[f64; 3]; 3]]) -> Vec<u8> {
+        let mut out = vec![0u8; 80];
+        out.extend_from_slice(&(tris.len() as u32).to_le_bytes());
+        for tri in tris {
+            out.extend_from_slice(&[0u8; 12]);
+            for vertex in tri {
+                for component in vertex {
+                    out.extend_from_slice(&(*component as f32).to_le_bytes());
+                }
+            }
+            out.extend_from_slice(&[0u8; 2]);
+        }
+        out
     }
 }
