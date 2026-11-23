@@ -11823,6 +11823,61 @@ int continuity_of(int asked, bool has_face, bool blend, std::string& error) {
     return 0;
 }
 
+bool orient_loop(std::vector<Handle(Geom_BSplineCurve)>& curves, std::string& error) {
+    if (curves.size() < 2) return true;
+    const bool closed = curves.size() >= 3;
+    // The first edge keeps the face's orientation, which may walk the opening backwards.
+    // Point it at the next curve before the rest of the chain follows its end.
+    if (closed) {
+        const gp_Pnt a0 = curves[0]->StartPoint();
+        const gp_Pnt a1 = curves[0]->EndPoint();
+        const double at_end = std::min(a1.Distance(curves[1]->StartPoint()), a1.Distance(curves[1]->EndPoint()));
+        const double at_start = std::min(a0.Distance(curves[1]->StartPoint()), a0.Distance(curves[1]->EndPoint()));
+        if (at_start + 1e-9 < at_end) curves[0]->Reverse();
+    }
+    for (size_t i = 1; i < curves.size(); ++i) {
+        const gp_Pnt prev = curves[i - 1]->EndPoint();
+        const double to_start = prev.Distance(curves[i]->StartPoint());
+        const double to_end = prev.Distance(curves[i]->EndPoint());
+        if (closed && to_end + 1e-9 < to_start) curves[i]->Reverse();
+        else if (!closed && to_end + 1e-9 < to_start && to_end <= kPatchJoinMm) curves[i]->Reverse();
+        if (closed && prev.Distance(curves[i]->StartPoint()) > kPatchJoinMm) {
+            error = "These boundary curves do not meet. Move each end so it starts where the previous curve ends.";
+            return false;
+        }
+    }
+    if (closed && curves.back()->EndPoint().Distance(curves.front()->StartPoint()) > kPatchJoinMm) {
+        error = "These boundary curves do not meet. Move each end so it starts where the previous curve ends.";
+        return false;
+    }
+    return true;
+}
+
+bool meets_both_ends(const Handle(Geom_BSplineCurve)& a, const Handle(Geom_BSplineCurve)& b) {
+    const double a0b0 = a->StartPoint().Distance(b->StartPoint());
+    const double a0b1 = a->StartPoint().Distance(b->EndPoint());
+    const double a1b0 = a->EndPoint().Distance(b->StartPoint());
+    const double a1b1 = a->EndPoint().Distance(b->EndPoint());
+    const bool start_meets = std::min(a0b0, a0b1) <= kPatchJoinMm;
+    const bool end_meets = std::min(a1b0, a1b1) <= kPatchJoinMm;
+    return start_meets && end_meets;
+}
+
+TopoDS_Face face_from_surface(const Handle(Geom_BSplineSurface)& surface, std::string& error) {
+    if (surface.IsNull()) {
+        error = "Open CASCADE could not fill this opening.";
+        return {};
+    }
+    BRepBuilderAPI_MakeFace face(surface, 1e-6);
+    if (!face.IsDone() || face.Face().IsNull()) {
+        error = "Open CASCADE could not fill this opening.";
+        return {};
+    }
+    ShapeFix_Face fix(face.Face());
+    fix.Perform();
+    return fix.Face().IsNull() ? face.Face() : fix.Face();
+}
+
 TopoDS_Face fill_geomfill(const std::vector<Handle(Geom_BSplineCurve)>& curves, std::string& error) {
     try {
         Handle(Geom_BSplineSurface) surface;
