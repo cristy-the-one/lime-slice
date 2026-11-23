@@ -291,9 +291,17 @@ Only over MCP and recipes (`lime_recipe` API 1.18; the ops and fields are in `do
 
 `model_check {surfaces: true}` (MCP) and the Look menu read the same kernel inspection: G0, G1 and G2 per shared edge (gap in mm, normal angle, curvature jump; G2 when the jump is at most 1e-3 mm⁻¹), sharp vertices, and each face's NURBS health. The edge list holds at most 256 rows, the worst first chosen; the counts cover every edge.
 
+### Meshes
+
+The kernel's display mesh, with a finer angle on curved faces and analytic normals, is made only when a request asks for it with `meshQuality: "display"`, and only the Model view asks; those replies carry `normals`. Anything committed to the plate, sliced or exported uses the same mesh as 7.1.2.
+
+### Open sheets on the plate
+
+An open sheet commits to the plate as a sheet: its committed History step carries `sheet: true` (the app's `isOpenSheet`: not a closed solid, with faces and open borders, and not the root of a STEP import). Prepare marks it, and Slice and Export stop on it until it is thickened or capped and sewn. Over MCP the same mark stops `slice_start`, `gcode_export` and `export_3mf` with code `open-sheet`.
+
 ### Opening a 7.2.0 project in 7.1.2 or older
 
-A project has no version guard. In 7.1.2, an object whose history has a new step kind (a sweep with a spine, `sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch`, `blendSurface`, a loft with an apex section, or a profile with a `nurbs` segment) cannot be read: the object opens as its saved mesh and its history is dropped. New fields on an old step (a fillet's `continuity`, `rho` and `variable`; a loft's `guides`, `startCondition`, `endCondition`, `closed`, `smoothing` and `maxDegree`) are dropped without a word, and a replay there builds the plain fillet or loft. Saving the project in 7.1.2 makes either loss permanent. This is how `src/model-tree-file.ts` reads a saved tree in 7.1.2: an op or segment kind it does not know makes the tree unreadable, and the fillet and loft readers keep only their old fields.
+A project that uses a new step kind (a sweep with a spine, `sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch`, `blendSurface`) or a new field on an old step (a fillet's `continuity`, `rho` and `variable`; a loft's apex sections, `guides`, `startCondition`, `endCondition`, `closed`, `smoothing` and `maxDegree`; a `nurbs` profile or curve segment; a sketch spline drawn by control points) is saved as project version 5. Since 3.3.0 every release reads project versions up to 4 and refuses a newer file before reading it, with "This project is version 5. This app opens up to version 4." (`applyMigrations`, `if (version > target)`, in `src/project.ts` and since 5.7.0 in `src/project-envelope.ts`; checked at v3.3.0, v5.6.1, v5.7.0, v7.0.0, v7.1.1 and v7.1.2). Releases 2.7.0 to 3.2.x refuse it the same way, saying "up to version 3", and 2.0.0 to 2.6.x "up to version 2". So no released version opens a version 5 project and misreads it; the MCP server's `project_open` uses the same decoder. A project with none of the new steps or fields is still written as version 4, byte for byte as 7.1.2 writes it, and opens there. Without the version, 7.1.2 would have opened such an object as its saved mesh with its History dropped, and dropped the new fillet and loft fields without a word.
 
 ## History tree (engine)
 
