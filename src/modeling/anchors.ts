@@ -292,6 +292,12 @@ export function opBox(op: ModelOp): Box | null {
       }
       return box;
     }
+    // --- S6. A NURBS sheet lies inside its poles' hull (weights are above 0), so their box holds it.
+    case "nurbsSurface": {
+      let box: Box | null = null;
+      for (const row of op.poles) for (const p of row) box = grow(box, p);
+      return box;
+    }
     default:
       return null;
   }

@@ -338,6 +338,8 @@ src/closed-ahead.test.ts
 mcp/speed-ux.test.ts
 mcp/surface-inspect.test.ts
 src/modeling/nurbs-eval.test.ts
+src/modeling/nurbs-surface-eval.test.ts
+src/modeling/nurbs-bake.test.ts
 src/sketch/nurbs.test.ts
 src/sketch/nurbs-closed.test.ts
 src/sketch/nurbs-edits.test.ts
@@ -352,3 +354,4 @@ mcp/nurbs-sweep.test.ts
 mcp/loft-fillet-v2.test.ts
 mcp/open-sheets.test.ts
 mcp/patch-blend.test.ts
+mcp/nurbs-surface.test.ts

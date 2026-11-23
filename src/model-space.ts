@@ -300,6 +300,8 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
         ...(op.guides ? { guides: op.guides.map((curve) => moveCurve3D(curve, point)) } : {}),
         ...(op.points ? { points: op.points.map((p) => point(p)) } : {}),
       };
+    case "nurbsSurface":
+      return { ...op, poles: op.poles.map((row) => row.map((pole) => point(pole))) };
     // --- S5: a blend's two sides may be typed curves, in model space as a patch's are.
     case "blendSurface":
       return {

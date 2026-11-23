@@ -1905,6 +1905,92 @@ pub mod ops {
         Json::obj().set("kind", "patch").set("boundaries", Json::arr(boundaries))
     }
 
+    /// S6: An M by N NURBS sheet. `poles` is one row per U index. Degree defaults to 3 when left out.
+    pub fn nurbs_surface(poles: Vec<Vec<[f64; 3]>>) -> Json {
+        let rows: Vec<Json> = poles.into_iter().map(Json::from).collect();
+        Json::obj().set("kind", "nurbsSurface").set("poles", rows)
+    }
+
+    /// S6: a `nurbsSurface` op built field by field, for what `nurbs_surface` leaves at its defaults:
+    /// `ops::NurbsSurface::new(poles).degrees(3, 2).weights(w).knots_u(vec![0.0, 0.5, 1.0], vec![4, 1, 4]).op()`.
+    /// Each setter writes the field `guide {kind:"nurbsSurface"}` names, as the server takes it. The server refuses what
+    /// does not fit (a degree the poles cannot carry, weights or knots that do not match, an insert past the degree).
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct NurbsSurface {
+        op: Json,
+        insert_u: Vec<[f64; 2]>,
+        insert_v: Vec<[f64; 2]>,
+    }
+
+    impl NurbsSurface {
+        /// The grid: one row per U index, each row along V.
+        pub fn new(poles: Vec<Vec<[f64; 3]>>) -> NurbsSurface {
+            NurbsSurface { op: nurbs_surface(poles), insert_u: Vec::new(), insert_v: Vec::new() }
+        }
+        /// One weight per pole, each above 0, in the poles' rows.
+        pub fn weights(self, weights: Vec<Vec<f64>>) -> NurbsSurface {
+            let rows: Vec<Json> = weights.into_iter().map(Json::from).collect();
+            NurbsSurface { op: self.op.set("weights", Json::arr(rows)), ..self }
+        }
+        /// The degree in U and in V, 1 to 8 (3 when left out).
+        pub fn degrees(self, u: u32, v: u32) -> NurbsSurface {
+            NurbsSurface { op: self.op.set("degreeU", u).set("degreeV", v), ..self }
+        }
+        /// Distinct U knots, rising, and one multiplicity per knot.
+        pub fn knots_u(self, knots: Vec<f64>, mults: Vec<u32>) -> NurbsSurface {
+            let mults: Vec<f64> = mults.into_iter().map(f64::from).collect();
+            NurbsSurface { op: self.op.set("knotsU", knots).set("multsU", mults), ..self }
+        }
+        /// Distinct V knots, rising, and one multiplicity per knot.
+        pub fn knots_v(self, knots: Vec<f64>, mults: Vec<u32>) -> NurbsSurface {
+            let mults: Vec<f64> = mults.into_iter().map(f64::from).collect();
+            NurbsSurface { op: self.op.set("knotsV", knots).set("multsV", mults), ..self }
+        }
+        /// Closed (periodic) in U, in V, or both. A closed direction needs at least 3 poles.
+        pub fn periodic(self, u: bool, v: bool) -> NurbsSurface {
+            let mut op = self.op;
+            if u {
+                op = op.set("periodicU", true);
+            }
+            if v {
+                op = op.set("periodicV", true);
+            }
+            NurbsSurface { op, ..self }
+        }
+        /// Insert the U knot `param` `times` times (1 to the U degree); the surface keeps its shape. Clamped grids only.
+        pub fn insert_u(mut self, param: f64, times: u32) -> NurbsSurface {
+            self.insert_u.push([param, f64::from(times)]);
+            self
+        }
+        /// Insert the V knot `param` `times` times (1 to the V degree); the surface keeps its shape. Clamped grids only.
+        pub fn insert_v(mut self, param: f64, times: u32) -> NurbsSurface {
+            self.insert_v.push([param, f64::from(times)]);
+            self
+        }
+        /// Raise the U degree to `u` and the V degree to `v` (up to 8); the surface keeps its shape. Clamped grids only.
+        pub fn elevate(self, u: Option<u32>, v: Option<u32>) -> NurbsSurface {
+            let mut op = self.op;
+            if let Some(u) = u {
+                op = op.set("elevateU", u);
+            }
+            if let Some(v) = v {
+                op = op.set("elevateV", v);
+            }
+            NurbsSurface { op, ..self }
+        }
+        /// The op to apply, or to give `solid_new` as its `feature` (a part that starts from the surface).
+        pub fn op(self) -> Json {
+            let mut op = self.op;
+            if !self.insert_u.is_empty() {
+                op = op.set("insertU", Json::arr(self.insert_u.into_iter().map(Json::from).collect()));
+            }
+            if !self.insert_v.is_empty() {
+                op = op.set("insertV", Json::arr(self.insert_v.into_iter().map(Json::from).collect()));
+            }
+            op
+        }
+    }
+
     /// S5: Bridge two open edges or chains at `"g1"` or `"g2"`, with a tension on each side.
     pub fn blend_surface(a: Json, b: Json, continuity: &str, tension_a: f64, tension_b: f64) -> Json {
         Json::obj()
@@ -8060,6 +8146,29 @@ mod animation_tests {
         assert_eq!(blend.get("kind").and_then(Json::as_str), Some("blendSurface"));
         assert_eq!(blend.get("continuity").and_then(Json::as_str), Some("g1"));
         assert_eq!(blend.get("tensionB").and_then(Json::as_f64), Some(1.4));
+        let surface = ops::nurbs_surface(vec![vec![[0.0, 0.0, 0.0], [0.0, 10.0, 0.0]], vec![[10.0, 0.0, 0.0], [10.0, 10.0, 1.0]]]);
+        assert_eq!(surface.get("kind").and_then(Json::as_str), Some("nurbsSurface"));
+        assert_eq!(surface.at("poles.1.1.2").and_then(Json::as_f64), Some(1.0));
+        let grid: Vec<Vec<[f64; 3]>> = (0..4).map(|u| (0..4).map(|v| [f64::from(u) * 10.0, f64::from(v) * 10.0, 0.0]).collect()).collect();
+        let built = ops::NurbsSurface::new(grid.clone())
+            .weights(vec![vec![1.0; 4]; 4])
+            .degrees(3, 2)
+            .knots_u(vec![0.0, 1.0], vec![4, 4])
+            .knots_v(vec![0.0, 0.5, 1.0], vec![3, 1, 3])
+            .insert_u(0.5, 1)
+            .elevate(None, Some(3))
+            .op();
+        assert_eq!(built.get("kind").and_then(Json::as_str), Some("nurbsSurface"));
+        assert_eq!(built.at("weights.3.3").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(built.get("degreeU").and_then(Json::as_f64), Some(3.0));
+        assert_eq!(built.get("degreeV").and_then(Json::as_f64), Some(2.0));
+        assert_eq!(built.at("multsV.1").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(built.at("insertU.0.1").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(built.get("elevateV").and_then(Json::as_f64), Some(3.0));
+        assert!(built.get("elevateU").is_none() && built.get("insertV").is_none());
+        let closed = ops::NurbsSurface::new(grid).periodic(true, false).op();
+        assert_eq!(closed.get("periodicU").and_then(Json::as_bool), Some(true));
+        assert!(closed.get("periodicV").is_none());
     }
 
     #[test]

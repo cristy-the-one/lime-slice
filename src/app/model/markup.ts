@@ -20,6 +20,7 @@ const RAIL = `
             <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
             <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
             <button class="model-tool" id="modelToolPatch" type="button" data-tool="patch" hidden aria-pressed="false" data-tip="Patch: fill an opening. Each edge shows G0, G1, or G2.">Patch</button>
+            <button class="model-tool" id="modelToolNurbs" type="button" data-tool="sculpt" hidden aria-pressed="false" data-tip="NURBS: drag poles on a surface. On a solid it stays in the Features menu.">NURBS</button>
             <button class="model-tool" id="modelToolBlend" type="button" data-tool="blend" hidden aria-pressed="false" data-tip="Blend: bridge two open edges. G1 or G2, with a tension on each side.">Blend</button>
           </div>
         </div>
@@ -49,7 +50,7 @@ const RAIL = `
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
               <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, patch, blend, parameters, plugins, stress, split to print, print transition"></button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, patch, blend, NURBS, parameters, plugins, stress, split to print, print transition"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -59,6 +60,7 @@ const RAIL = `
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="patch">Patch</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="blend">Blend</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="sculpt">NURBS</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
                 <!-- --- Plugins (docs/plan-recipe-plugins.md D13): the library's card, beside Parameters. No rail button. --- -->
@@ -282,6 +284,32 @@ const DOCK = `
                 <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
                 <label data-for="blend">Side A tension<input id="modelBlendTensionA" type="range" min="0.2" max="3" step="0.05" value="1" aria-label="Side A tension"></label>
                 <label data-for="blend">Side B tension<input id="modelBlendTensionB" type="range" min="0.2" max="3" step="0.05" value="1" aria-label="Side B tension"></label>
+                <div data-for="sculpt" class="model-sculpt">
+                  <p id="modelNurbsNote">Drag a pole, a row, or a column. Release commits the surface.</p>
+                  <button type="button" id="modelNurbsNew" data-tip="A flat 8 × 8 bicubic surface, as a new object beside the others.">New NURBS surface</button>
+                  <div class="sculpt-modes" role="group" aria-label="What a drag moves">
+                    <button type="button" data-sculpt-mode="pole" aria-pressed="true">Pole</button>
+                    <button type="button" data-sculpt-mode="row" aria-pressed="false">Row</button>
+                    <button type="button" data-sculpt-mode="column" aria-pressed="false">Column</button>
+                  </div>
+                  <label data-tip="Poles within this distance of the selection follow it, less the farther they are. 0 moves the selection alone.">Falloff (mm)<input id="modelNurbsFalloff" type="range" min="0" max="80" step="1" value="0"></label>
+                  <label class="sculpt-check" data-tip="Mirror each drag across the part's own X = 0 plane."><input id="modelNurbsSymmetry" type="checkbox" aria-describedby="modelNurbsSymmetryNote"> Symmetry (part X = 0)</label>
+                  <p id="modelNurbsSymmetryNote" hidden></p>
+                  <button type="button" id="modelNurbsMakeSymmetric" hidden data-tip="Each pole and its mirror pole meet halfway, so the surface is symmetric about the part's X = 0 plane.">Make symmetric</button>
+                  <details>
+                    <summary>Exact NURBS</summary>
+                    <label>Degree U<input id="modelNurbsDegreeU" data-own-enter type="number" min="1" max="8" step="1" value="3"></label>
+                    <label>Degree V<input id="modelNurbsDegreeV" data-own-enter type="number" min="1" max="8" step="1" value="3"></label>
+                    <label data-tip="The selected pole's weight. Above 1 pulls the surface toward it.">Weight<input id="modelNurbsWeight" data-own-enter type="number" min="0.05" step="0.05" value="1"></label>
+                    <label data-tip="Where Insert and Crease cut across the surface: 0 at one edge, 1 at the other.">Knot at<input id="modelNurbsParam" data-own-enter type="number" min="0" max="1" step="0.05" value="0.5"></label>
+                    <button type="button" id="modelNurbsInsertU">Insert U knot</button>
+                    <button type="button" id="modelNurbsInsertV">Insert V knot</button>
+                    <button type="button" id="modelNurbsCreaseU">Crease U</button>
+                    <button type="button" id="modelNurbsCreaseV">Crease V</button>
+                    <button type="button" id="modelNurbsElevateU">Raise U degree</button>
+                    <button type="button" id="modelNurbsElevateV">Raise V degree</button>
+                  </details>
+                </div>
                 <!-- S3 (U5): Conic fullness rho and variable-radius stations along the edge. -->
                 <label data-for="fillet" data-fillet-profile="conic" data-snap="0.05" data-tip="Conic fullness ρ: 0.05 flat, 0.5 parabolic, 0.95 very full."><span class="scrub-label" data-scrub>Conic ρ</span><input id="modelFilletRho" type="number" step="0.05" min="0.05" max="0.95" value="0.5" aria-label="Conic fullness rho"></label>
                 <label data-for="fillet" data-fillet-var="1" data-snap="0.5" data-tip="Radius at the start of the edge (u = 0)."><span class="scrub-label" data-scrub>Start r</span><input id="modelFilletStart" type="number" step="0.1" min="0.05" value="1" aria-label="Variable fillet start radius"></label>
@@ -725,6 +753,7 @@ const DOCK = `
 const BODY = `
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
           <div id="modelEdgeBadges" hidden></div>
+          <div id="modelNurbsOverlay" hidden></div>
           <div id="stressLegend" class="stress-legend" hidden>
             <div class="stress-ramp-col">
               <span class="stress-ramp-end" id="stressLegendHigh"></span>
