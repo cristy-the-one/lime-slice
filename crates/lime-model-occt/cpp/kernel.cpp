@@ -10897,6 +10897,23 @@ bool fillet_v2_build(
         // The exact G2 and conic sections are built only on a straight edge between two flat faces. Anything else came
         // here, to Open CASCADE's own fillet: it has no rho, so a conic is refused, and a G2 result is kept only when
         // its seams measure G2 as model_check does.
+        // Picked edges that meet at a corner: each exact cutter is cut back to the flat faces that end its edge, so the
+        // corner where two fillets meet is a blend of its own that the exact path does not build.
+        bool corner = false;
+        for (size_t i = 0; i < edges.size() && !corner; ++i) {
+            for (size_t j = i + 1; j < edges.size() && !corner; ++j) {
+                TopoDS_Vertex a0, a1, b0, b1;
+                TopExp::Vertices(edges[i], a0, a1);
+                TopExp::Vertices(edges[j], b0, b1);
+                corner = a0.IsSame(b0) || a0.IsSame(b1) || a1.IsSame(b0) || a1.IsSame(b1);
+            }
+        }
+        if ((spec.continuity == 1 || spec.continuity == 2) && corner) {
+            error = std::string(spec.continuity == 2 ? "A conic" : "A G2") +
+                " fillet is built only on straight edges between two flat faces that do not meet each other: picked "
+                "edges that meet at a corner need a corner blend it does not build. Pick edges that do not touch, or use G1.";
+            return false;
+        }
         if (spec.continuity == 2) {
             error = "A conic fillet is built only on straight edges between two flat faces, as a convex corner.";
             return false;

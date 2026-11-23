@@ -167,3 +167,56 @@ fn g2_and_conic_off_a_straight_flat_edge_are_measured_or_refused() {
         ok(json!({ "call": "close", "key": key }));
     }
 }
+
+/// The top edge of `top` parallel to the first one, on the other side of the box.
+fn opposite(points: &[f32], offsets: &[u32], top: &[usize]) -> usize {
+    let mid = |i: usize| {
+        let (a, b) = (offsets[i] as usize, offsets[i + 1] as usize - 1);
+        [(points[a * 3] + points[b * 3]) * 0.5, (points[a * 3 + 1] + points[b * 3 + 1]) * 0.5]
+    };
+    let first = mid(top[0]);
+    *top
+        .iter()
+        .max_by(|a, b| {
+            let d = |i: usize| (mid(i)[0] - first[0]).hypot(mid(i)[1] - first[1]);
+            d(**a).total_cmp(&d(**b))
+        })
+        .expect("an edge")
+}
+
+/// The four top edges of a box at once, G2 and conic: a loop of straight edges between flat faces, meeting at corners.
+#[test]
+fn an_exact_fillet_on_the_four_top_edges_of_a_box() {
+    for continuity in ["g2", "conic"] {
+        let key = format!("loop-{continuity}");
+        let opened = call(json!({ "call": "open", "key": key, "box": [20.0, 20.0, 10.0] }));
+        if opened.get("error").is_some() {
+            assert!(!require(), "OCCT was required: {opened}");
+            return;
+        }
+        let points = floats(&opened, "edgePoints");
+        let offsets = words(&opened, "edgeOffsets");
+        let top: Vec<usize> = (0..offsets.len() - 1)
+            .filter(|&i| (offsets[i] as usize..offsets[i + 1] as usize).all(|k| (points[k * 3 + 2] - 10.0).abs() < 1e-4))
+            .collect();
+        assert_eq!(top.len(), 4, "four top edges");
+        let mut op = json!({ "kind": "fillet", "edges": top, "size": 3.0, "continuity": continuity });
+        if continuity == "conic" {
+            op["rho"] = json!(0.6);
+        }
+        let reply = call(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "op": op }));
+        let error = reply["error"].as_str().unwrap_or("");
+        println!("{continuity} on four top edges: {error}");
+        let what = if continuity == "g2" { "A G2" } else { "A conic" };
+        assert_eq!(
+            error,
+            format!("{what} fillet is built only on straight edges between two flat faces that do not meet each other: picked edges that meet at a corner need a corner blend it does not build. Pick edges that do not touch, or use G1.")
+        );
+        // Two opposite top edges, which do not touch, build exactly.
+        let mut apart = op.clone();
+        apart["edges"] = json!([top[0], opposite(&points, &offsets, &top)]);
+        let built = ok(json!({ "call": "apply", "key": key, "parent": 0, "node": 2, "op": apart }));
+        println!("{continuity} on two opposite top edges: {} mm³", built["volumeMm3"]);
+        ok(json!({ "call": "close", "key": key }));
+    }
+}
