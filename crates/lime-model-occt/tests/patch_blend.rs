@@ -1489,7 +1489,8 @@ fn patch_refuses_g2_where_a_half_ends_at_the_split() {
     if !has_occt() {
         return;
     }
-    let (key, cap, mut asked) = smooth_cap(5);
+    // Its own key: fill_smooth("5-side") runs beside it on s5-smooth-5.
+    let (key, cap, mut asked) = smooth_opening(5, 96.0, 36.0, "s5-smooth-5-g2".to_string());
     asked.sort_by(|a, b| a.midpoint[1].atan2(a.midpoint[0]).total_cmp(&b.midpoint[1].atan2(b.midpoint[0])));
     let count = asked.len();
     for (n, side) in asked.iter_mut().enumerate() {
