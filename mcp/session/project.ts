@@ -10,7 +10,7 @@ import { fanDefaults } from "../../src/fan.ts";
 import { ID_MATRIX, settleBy, type Mat3 } from "../../src/mesh-place.ts";
 import type { Vec3 } from "../../src/pivot.ts";
 import { solidFileName, wholeTreeRequest } from "../../src/model-request.ts";
-import { markSheet, showsSheet, solidView, treeMarked } from "./sheet.ts";
+import { markSheet, showsSheet, solidView } from "./sheet.ts";
 import type { Affine } from "../../src/model-space.ts";
 import { jumped, type PluginStamp } from "../../src/model-tree.ts";
 import { DEFAULT_PRESET } from "../../src/presets.ts";
@@ -128,6 +128,7 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
         pivot: obj.pivot,
         chain: obj.chain,
         jointLimits: obj.jointLimits,
+        sheet: obj.sheet,
       }))
     : [{
         id: undefined as string | undefined,
@@ -150,6 +151,7 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
         pivot: undefined,
         chain: undefined,
         jointLimits: undefined,
+        sheet: undefined as true | undefined,
       }];
   const objects: { object: string; name: string }[] = [];
   for (const row of rows) {
@@ -182,6 +184,8 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
     if (row.frame === "part") obj.frame = "part";
     if (row.workplane) obj.workplane = { source: row.workplane.source, origin: [...row.workplane.origin] as Workplane["origin"], turn: [...row.workplane.turn] as Workplane["turn"] };
     if (row.brep) obj.brep = row.brep;
+    // --- Organic surfaces S4. The app's mark (`PlateObject.sheet`), as src/plate.ts `assemblePlate` reads it.
+    if (row.sheet === true) obj.sheet = true;
     objects.push({ object: obj.id, name: shownName(obj.name) });
   }
   // A tool a saved join took off the plate comes back off the plate, with its history, so model_undo of that join can
@@ -325,7 +329,7 @@ function placementOf(this: Session, obj: PlateObject): ProjectPlacement {
 
 function fileObject(this: Session, obj: PlateObject): NonNullable<LimeProject["objects"]>[number] {
   const tree = this.savedModelTree(obj);
-  return {
+  const row: NonNullable<LimeProject["objects"]>[number] = {
     id: obj.id,
     name: obj.name,
     mesh: meshRecord(obj.fileName, obj.bytes),
@@ -345,6 +349,9 @@ function fileObject(this: Session, obj: PlateObject): NonNullable<LimeProject["o
     ...(obj.chain ? { chain: { parent: obj.chain.parent, offset: [...obj.chain.offset] as [number, number, number], turn: [...obj.chain.turn] as ProjectPlacement["orient"] } } : {}),
     ...(obj.jointLimits ? { jointLimits: structuredClone(obj.jointLimits) } : {}),
   };
+  // --- Organic surfaces S4. As the app writes it (src/app/project-io.ts); the file is then version 5.
+  if (obj.sheet) row.sheet = true;
+  return row;
 }
 
 function savedModelTree(this: Session, obj: PlateObject): NonNullable<LimeProject["objects"]>[number]["modelTree"] | undefined {
@@ -406,9 +413,9 @@ async function adoptHistory(this: Session, obj: PlateObject, saved: NonNullable<
     else if (!seed && steps > 0 && seconds >= 5) note = `${shownName(obj.name)}: this file keeps no solid in the engine's own format (a project saved before version 3 keeps STEP), so its ${steps} steps were replayed, in ${seconds} s. project_save writes version 4, which opens at once.`;
     const solid = solidView(reply);
     if (solid) obj.solid = solid;
-    // --- Organic surfaces S4. A sheet saved on the plate stays a sheet: the saved mark, or the committed shape read now.
-    if (at === tree.committed) markSheet(obj, treeMarked(obj.tree) || showsSheet(obj));
-    else if (treeMarked(obj.tree)) obj.sheet = true;
+    // --- Organic surfaces S4. A sheet saved on the plate stays a sheet: the saved mark (the row's `sheet`, read above),
+    // or the committed shape read now.
+    if (at === tree.committed) markSheet(obj, obj.sheet === true || showsSheet(obj));
     if (stepPlate && solid && solid.positions.length >= 9) {
       const copy = Float32Array.from(solid.positions);
       obj.brep = obj.bytes;

@@ -2,7 +2,7 @@
  * Organic surfaces S4: MCP, codec, reply, and history parity for open surfaces ("Sheets")
  * and surface-to-solid ops (`sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`).
  */
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,9 @@ import { readSavedTree } from "../src/model-tree-file.ts";
 import { decodeSolid, encodeSolid } from "../src/model-reply.ts";
 import { historyLayout } from "../src/model-history.ts";
 import { newTree, withChild, type SheetOp } from "../src/model-tree.ts";
+import { assemblePlate } from "../src/plate.ts";
+import { decodeProject, encodeProject } from "../src/project-codec.ts";
+import { sheetPartNote } from "../src/model-sheet.ts";
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-mcp-s4-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
@@ -227,6 +230,52 @@ check(
   check("gcode_export refuses a slice of an object that is now an open sheet", gcode.ok === false && gcode.code === "open-sheet" && String(gcode.reason).includes("cannot be exported as G-code"), JSON.stringify(gcode));
   const threeMf = await s.call("export_3mf", { name: "sheet.3mf" });
   check("export_3mf refuses an open sheet", threeMf.ok === false && threeMf.code === "open-sheet" && String(threeMf.reason).includes("cannot be exported to 3MF"), JSON.stringify(threeMf));
+
+  // One field on both sides: the MCP save writes the app's row mark (`sheet: true`, version 5), the app's reader opens
+  // it marked, and a file shaped as the app writes it opens over MCP marked, so Slice refuses it.
+  const savedName = "open-sheet-roundtrip.lime";
+  const saved = await s.call("project_save", { name: savedName });
+  const text = readFileSync(join(workspace, savedName), "utf8");
+  const raw = JSON.parse(text) as { version?: number; objects?: { id?: string; sheet?: unknown }[] };
+  check(
+    "project_save writes the mark on the object row as the app does, in a version 5 file",
+    saved.ok === true && raw.version === 5 && raw.objects?.find((one) => one.id === part)?.sheet === true,
+    JSON.stringify({ saved: saved.ok, version: raw.version, rows: raw.objects?.map((one) => ({ id: one.id, sheet: one.sheet })) }),
+  );
+  const decoded = await decodeProject(text);
+  const appPlate = decoded.ok && decoded.project.objects
+    ? assemblePlate(decoded.project.objects.map((row) => ({ ...row, bytes: new ArrayBuffer(0), sourcePos: new Float32Array(0) })))
+    : null;
+  const appRow = appPlate?.objects.find((one) => one.id === part);
+  check(
+    "the app's reader (assemblePlate) opens the MCP-saved sheet marked, and its Slice gate stops on it",
+    appRow?.sheet === true && sheetPartNote(appPlate!.objects) === `${appRow.name} is an open sheet, not a solid. Thicken or Cap & Sew it in Model before slicing or exporting.`,
+    JSON.stringify({ ok: decoded.ok, sheet: appRow?.sheet }),
+  );
+  if (decoded.ok && decoded.project.objects) {
+    // The app writes a plate object's mark on its row (src/app/project-io.ts `if (obj.sheet) row.sheet = true`). With no
+    // history and no solid beside it, the mark is all that says it is a sheet, and alone it makes the file version 5.
+    const appDoc = structuredClone(decoded.project);
+    appDoc.objects = decoded.project.objects.map((row) => {
+      const { modelTree: _tree, brep: _brep, meshSeatMm: _seat, sheet: _sheet, ...rest } = row;
+      const appRowOut: typeof row = { ...rest };
+      if (row.sheet) appRowOut.sheet = true;
+      return appRowOut;
+    });
+    delete appDoc.mcpModel;
+    const appText = await encodeProject(appDoc);
+    check("a file whose only new thing is the sheet mark is written as version 5", (JSON.parse(appText) as { version?: number }).version === 5);
+    writeFileSync(join(workspace, "app-sheet.lime"), appText);
+    const fresh = new Session(fakeEngine());
+    const opened = await fresh.call("project_open", { path: join(workspace, "app-sheet.lime") });
+    const reopened = ((await fresh.call("plate_list", {})).objects as { object: string; sheet?: boolean }[]).find((one) => one.object === part);
+    const refused = await fresh.call("slice_start", { wait: true });
+    check(
+      "an app-shaped file opens over MCP with the object marked, and slice_start refuses it with open-sheet",
+      opened.ok === true && reopened?.sheet === true && refused.ok === false && refused.code === "open-sheet" && refused.object === part,
+      JSON.stringify({ opened: opened.ok, reopened, refused: { ok: refused.ok, code: refused.code } }),
+    );
+  }
   const copy = await s.call("object_duplicate", { object: part });
   const copyId = (copy.objects as string[] | undefined)?.[0];
   const listed = (await s.call("plate_list", {})).objects as { object: string; sheet?: boolean }[];
