@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { unpackLime } from "./lime-file";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -51,22 +52,22 @@ interface Sculpt {
   tree: TreeMock;
   /** Every `open` of a NURBS root, in order. */
   nurbsOpens(): Body[];
-  /** Set to refuse the next NURBS opens with this sentence. */
-  refuse: { with: string | null };
+  /** Set to refuse NURBS opens with this sentence: every one, or only the grids `when` picks. */
+  refuse: { with: string | null; when?: (poles: Grid) => boolean };
 }
 
 const FILE = Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n");
 const REFUSAL = "This NURBS surface could not be built.";
 
 async function start(page: Page): Promise<Sculpt> {
-  const refuse = { with: null as string | null };
+  const refuse: Sculpt["refuse"] = { with: null };
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid([20, 20, 10]).positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, {
     open(request) {
       const feature = request.feature as { kind?: string; poles?: Grid } | undefined;
-      if (feature?.kind === "nurbsSurface") return refuse.with ? { error: refuse.with } : sheetOf(feature.poles!);
+      if (feature?.kind === "nurbsSurface") return refuse.with && (!refuse.when || refuse.when(feature.poles!)) ? { error: refuse.with } : sheetOf(feature.poles!);
       return boxSolid([20, 20, 10]);
     },
     apply: (request, parent) => ((request.op as { kind?: string }).kind === "thicken" ? boxSolid([70, 70, 2]) : parent),
@@ -82,10 +83,22 @@ async function start(page: Page): Promise<Sculpt> {
 }
 
 async function openTool(page: Page) {
-  if ((await page.locator("#modelToolNurbs").isVisible())) await page.locator("#modelToolNurbs").click();
-  else {
-    await page.locator("#modelFeatureMore").click();
-    await page.locator("#modelFeatureMenu [data-tool=sculpt]").click();
+  // Model has a part on screen first: a tool opened before it lands is closed by its arrival.
+  await expect(page.locator("#model")).toHaveAttribute("data-shape-kind", /sheet|solid/);
+  await expect(page.locator("#modelReadout")).not.toContainText(/Rebuilding|Opening|Reading/);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await page.locator("#modelNurbsNote").isVisible()) return;
+    if (await page.locator("#modelToolNurbs").isVisible()) await page.locator("#modelToolNurbs").click();
+    else {
+      await page.locator("#modelFeatureMore").click();
+      await page.locator("#modelFeatureMenu [data-tool=sculpt]").click();
+    }
+    try {
+      await expect(page.locator("#modelNurbsNote")).toBeVisible({ timeout: 3000 });
+      return;
+    } catch {
+      // Closed again by a part that arrived meanwhile: open it once more.
+    }
   }
   await expect(page.locator("#modelNurbsNote")).toBeVisible();
 }
@@ -177,12 +190,16 @@ test("a refused commit snaps back with the kernel's sentence, and Escape cancels
   await newSurface(page, sculpt);
   await select(page, 4, 4);
   const before = await shownPole(page);
+  // Only the edited grid is refused: the old one opens again, as the kernel would build it.
   sculpt.refuse.with = REFUSAL;
+  sculpt.refuse.when = (poles) => poles[4]![4]![2] !== 0;
   const opens = sculpt.nurbsOpens().length;
   await dragAxis(page, "z", 0, -50);
   await expect(page.locator("#modelReadout")).toContainText(REFUSAL);
   await expect.poll(async () => (await shownPole(page))[2], "the preview is back on the last built grid").toBe(before[2]);
-  expect(sculpt.nurbsOpens().length).toBeGreaterThan(opens);
+  await expect.poll(() => sculpt.nurbsOpens().length, "the refused grid, then the old one again").toBe(opens + 2);
+  expect(lastGrid(sculpt)[4]![4]![2], "the part was rebuilt on the old grid").toBe(0);
+  await expect(page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }), "its history is whole").toHaveCount(1);
   sculpt.refuse.with = null;
   // Escape mid-drag: nothing is sent and the pole goes back.
   const sent = sculpt.tree.calls.length;
@@ -286,12 +303,19 @@ test("History Edit on a NURBS root opens the tool on its grid; the Exact NURBS d
   const sent = sculpt.nurbsOpens().at(-1)!.feature as { knotsV: number[]; multsV: number[] };
   const at = sent.knotsV.findIndex((k) => Math.abs(k - 0.3) < 1e-9);
   expect(sent.multsV[at], "a crease is a knot as many times as the degree").toBe(3);
-  // Arrow keys move the focused pole along the chosen axis; one burst is one commit.
-  await pole(page, 3, 3).focus();
+  // Arrow keys on an axis handle move the selected pole along it; one burst is one commit.
+  await axis(page, "z").focus();
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("Shift+ArrowUp");
   await expect.poll(() => sculpt.nurbsOpens().length).toBe(5);
-  await expect(pole(page, 3, 3), "focus stays on the pole").toBeFocused();
+  expect(lastGrid(sculpt)[3]![3]![2], "0.5 + 5 mm up").toBeCloseTo(5.5, 9);
+  await expect(axis(page, "z"), "focus stays on the handle").toBeFocused();
+  // Arrow keys on a pole handle walk the grid, and the tab stop and focus walk with them.
+  await select(page, 3, 3);
+  await page.keyboard.press("ArrowRight");
+  await expect(pole(page, 4, 3)).toBeFocused();
+  await expect(pole(page, 4, 3)).toHaveAttribute("tabindex", "0");
+  await expect(page.locator('#modelNurbsOverlay [data-nurbs-iu][tabindex="0"]'), "one tab stop for the poles").toHaveCount(1);
 });
 
 test("a drag released while the last commit is still building is committed after it: the kernel ends on the grid drawn", async ({ page }) => {
@@ -403,4 +427,220 @@ test("a later NURBS step: History Edit opens the tool on its own grid, a drag ed
   await page.locator("#modelUndo").click();
   await expect.poll(() => sculpt.tree.of("goto").at(-1)?.node, "Undo shows the branch from before the drag").toBe(2);
   await expect.poll(async () => (await shownPole(page))[2]).toBe(20);
+});
+
+type SavedTree = { rootFeature?: { kind?: string; poles?: Grid }; nodes: Body[]; current: number; committed: number; nextId: number };
+type SavedDoc = { objects: { name?: string; mesh?: { bytesBase64?: string }; modelTree?: SavedTree }[] };
+
+/** Save from Prepare, as the app writes the file, and the file unpacked for reading. */
+async function saveDoc(page: Page): Promise<{ raw: Buffer; doc: SavedDoc }> {
+  await page.locator("#tabPrepare").click();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const { readFile } = await import("node:fs/promises");
+  const raw = await readFile((await download.path())!);
+  return { raw, doc: JSON.parse(unpackLime(raw).toString("utf8")) as SavedDoc };
+}
+
+/** Open `file` on a fresh page, then the NURBS part (the second object) in Model. */
+async function reopen(page: Page, file: Buffer) {
+  await page.reload();
+  await page.locator("#projectFile").setInputFiles({ name: "surface.lime", mimeType: "application/json", buffer: file });
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  await page.locator("#objectList .obj").nth(1).click();
+  await page.locator("#tabModel").click();
+}
+
+/** The largest Z of a binary STL, base64. */
+function stlTopZ(b64: string): number {
+  const bytes = Buffer.from(b64, "base64");
+  const count = bytes.readUInt32LE(80);
+  let top = Number.NEGATIVE_INFINITY;
+  for (let t = 0; t < count; t += 1) for (let k = 0; k < 3; k += 1) top = Math.max(top, bytes.readFloatLE(84 + t * 50 + 12 + k * 12 + 8));
+  return top;
+}
+
+test("Undo takes a drag and a later Thicken back in the order they were made, and an edit after an Undo cannot bring the drag back", async ({ page }) => {
+  const sculpt = await start(page);
+  await newSurface(page, sculpt);
+  await select(page, 3, 3);
+  await dragAxis(page, "z", 0, -40);
+  await expect.poll(() => sculpt.nurbsOpens().length).toBe(2);
+  const dragged = lastGrid(sculpt)[3]![3]![2];
+  await page.keyboard.press("Escape");
+  await page.locator("#modelSheetThickenGo").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 9800 mm³");
+  // Scenario 1: the first Undo takes the Thicken back, not the drag.
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelSheetThickenGo"), "the sheet is back").toBeVisible();
+  expect(sculpt.nurbsOpens().length, "the grid was not rebuilt").toBe(2);
+  // The second takes the drag back.
+  await page.locator("#modelUndo").click();
+  await expect.poll(() => sculpt.nurbsOpens().length).toBe(3);
+  expect(lastGrid(sculpt)[3]![3]![2]).toBe(0);
+  // Redo in the same order: the drag, then the Thicken.
+  await page.locator("#modelRedo").click();
+  await expect.poll(() => sculpt.nurbsOpens().length).toBe(4);
+  expect(lastGrid(sculpt)[3]![3]![2]).toBeCloseTo(dragged, 9);
+  await page.locator("#modelRedo").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 9800 mm³");
+  expect(sculpt.nurbsOpens().length, "Redo of the Thicken rebuilt no grid").toBe(4);
+
+  // Scenario 2: Undo back past the drag, then another edit: Redo is that edit's, and the drag stays undone.
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelSheetThickenGo")).toBeVisible();
+  await page.locator("#modelUndo").click();
+  await expect.poll(() => sculpt.nurbsOpens().length).toBe(5);
+  expect(lastGrid(sculpt)[3]![3]![2]).toBe(0);
+  await page.locator("#modelSheetThickenMm").fill("3");
+  await page.locator("#modelSheetThickenGo").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 9800 mm³");
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelSheetThickenGo")).toBeVisible();
+  await page.locator("#modelRedo").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 9800 mm³");
+  expect(sculpt.nurbsOpens().length, "the old drag did not come back").toBe(5);
+});
+
+test("a dragged surface goes to Prepare as a sheet and comes back to Model with its grid; save and reopen keep both", async ({ page }) => {
+  const sculpt = await start(page);
+  await newSurface(page, sculpt);
+  // A corner pole: the mocked kernel's sheet spans the corners, so the plate mesh shows the drag.
+  await select(page, 0, 0);
+  await dragAxis(page, "z", 0, -60);
+  await expect.poll(() => sculpt.nurbsOpens().length).toBe(2);
+  const z = lastGrid(sculpt)[0]![0]![2];
+  expect(z).toBeGreaterThan(1);
+  await expect(canvas(page), "the part itself shows once the grid is built").not.toHaveAttribute("data-nurbs-density", /./);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj-sheet"), "Prepare marks the sheet").toHaveCount(1);
+  await page.locator("#tabModel").click();
+  await openTool(page);
+  await select(page, 0, 0);
+  await expect.poll(async () => (await shownPole(page))[2], "the dragged grid, back in Model").toBeCloseTo(z, 6);
+  await expect(page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }), "the NURBS history is whole").toHaveCount(1);
+  const { raw, doc } = await saveDoc(page);
+  const saved = doc.objects.find((obj) => obj.modelTree?.rootFeature?.kind === "nurbsSurface")!;
+  expect(saved.modelTree!.rootFeature!.poles![0]![0]![2], "the file holds the dragged grid").toBeCloseTo(z, 6);
+  expect(stlTopZ(saved.mesh!.bytesBase64!), "the plate mesh in the file is the dragged sheet").toBeCloseTo(z, 3);
+  await reopen(page, raw);
+  await openTool(page);
+  await select(page, 0, 0);
+  await expect.poll(async () => (await shownPole(page))[2], "the dragged grid, after reopening").toBeCloseTo(z, 6);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj-sheet"), "still a sheet after reopening").toHaveCount(1);
+});
+
+test("with the tool open, opening another object follows it at once", async ({ page }) => {
+  const sculpt = await start(page);
+  await newSurface(page, sculpt);
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]")).toHaveCount(64);
+  await plateClick(page, "select", 0);
+  await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]:visible"), "no handles left on the box").toHaveCount(0);
+  await expect(canvas(page)).not.toHaveAttribute("data-nurbs-density", /./);
+  await plateClick(page, "select", 1);
+  await openTool(page);
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]")).toHaveCount(64);
+  await select(page, 5, 2);
+  expect(await shownPole(page)).toEqual([15, -15, 0]);
+});
+
+/** A saved project whose NURBS part has a second NURBS step under a Thicken (root 0, NURBS step 1, Thicken 2). */
+async function stepProject(page: Page): Promise<Buffer> {
+  await page.keyboard.press("Escape");
+  await page.locator("#modelSheetThickenGo").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 9800 mm³");
+  const { doc } = await saveDoc(page);
+  const holder = doc.objects.find((obj) => obj.modelTree?.rootFeature?.kind === "nurbsSurface")!.modelTree!;
+  const [root, thicken] = holder.nodes as [Body, Body];
+  const raised = { kind: "nurbsSurface", poles: Array.from({ length: 8 }, (_, iu) => Array.from({ length: 8 }, (_, iv) => [(iu - 3.5) * 10, (iv - 3.5) * 10, 20])), degreeU: 3, degreeV: 3 };
+  holder.nodes = [root, { id: 1, parent: 0, op: raised, fingerprint: null }, { ...thicken, id: 2, parent: 1 }];
+  holder.current = 2;
+  holder.committed = 2;
+  holder.nextId = 3;
+  return Buffer.from(JSON.stringify(doc));
+}
+
+test("two drags of a later NURBS step, the second released while the first builds: the second edits the step the first made", async ({ page }) => {
+  const sculpt = await start(page);
+  await newSurface(page, sculpt);
+  const file = await stepProject(page);
+  let held = false;
+  await page.route("**/api/model/tree", async (route) => {
+    const body = route.request().postDataJSON() as Body;
+    if (body.call === "edit" && !held) {
+      held = true;
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+    await route.fallback();
+  });
+  await reopen(page, file);
+  await page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }).nth(1).locator(".mh-edit").click();
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]")).toHaveCount(64);
+  const edits = sculpt.tree.of("edit").length;
+  await select(page, 3, 3);
+  await dragAxis(page, "z", 0, -30);
+  await select(page, 4, 4);
+  await dragAxis(page, "z", 0, -50);
+  await expect.poll(() => sculpt.tree.of("edit").length).toBe(edits + 2);
+  const [first, second] = sculpt.tree.of("edit").slice(-2) as [Body, Body];
+  expect(second.parent, "both are siblings on the root").toBe(0);
+  const poles = (second.op as { poles: Grid }).poles;
+  expect(poles[3]![3]![2], "the second keeps the first drag").toBeCloseTo((first.op as { poles: Grid }).poles[3]![3]![2], 9);
+  expect(poles[4]![4]![2]).toBeGreaterThan(21);
+  expect((second.replay as { op: { kind: string } }[]).map((step) => step.op.kind), "the Thicken replays on it").toEqual(["thicken"]);
+  await expect.poll(async () => (await shownPole(page))[2], "what is drawn is what was built").toBeCloseTo(poles[4]![4]![2], 6);
+  // One Undo per drag, newest first.
+  await page.locator("#modelUndo").click();
+  await expect.poll(async () => {
+    await select(page, 4, 4);
+    return (await shownPole(page))[2];
+  }).toBe(20);
+  await select(page, 3, 3);
+  expect((await shownPole(page))[2], "the first drag stays").toBeGreaterThan(21);
+});
+
+test("a later-step drag released just before another object is opened is kept, and says nothing on the other object", async ({ page }) => {
+  const sculpt = await start(page);
+  await newSurface(page, sculpt);
+  const file = await stepProject(page);
+  await page.route("**/api/model/tree", async (route) => {
+    const body = route.request().postDataJSON() as Body;
+    if (body.call === "edit") await new Promise((resolve) => setTimeout(resolve, 900));
+    await route.fallback();
+  });
+  await reopen(page, file);
+  await page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }).nth(1).locator(".mh-edit").click();
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]")).toHaveCount(64);
+  await select(page, 3, 3);
+  await dragAxis(page, "z", 0, -40);
+  await plateClick(page, "select", 0);
+  await expect.poll(() => sculpt.tree.of("edit").length).toBe(1);
+  await page.waitForTimeout(1200);
+  await expect(page.locator("#modelReadout"), "nothing about the surface on the box").not.toContainText(/surface|changed/i);
+  await plateClick(page, "select", 1);
+  await expect(page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }), "the edit is in the part's history").toHaveCount(3);
+});
+
+test("a 64 × 64 grid: handles near the selection only, one tab stop, and Insert past 64 poles refused", async ({ page }) => {
+  const sculpt = await start(page);
+  await newSurface(page, sculpt);
+  const { doc } = await saveDoc(page);
+  const holder = doc.objects.find((obj) => obj.modelTree?.rootFeature?.kind === "nurbsSurface")!.modelTree!;
+  holder.rootFeature!.poles = Array.from({ length: 64 }, (_, iu) => Array.from({ length: 64 }, (_, iv) => [(iu - 31.5) * 2, (iv - 31.5) * 2, 0] as V));
+  await reopen(page, Buffer.from(JSON.stringify(doc)));
+  await openTool(page);
+  await expect(canvas(page)).toHaveAttribute("data-nurbs-grid", "64x64");
+  await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]"), "a 9 × 9 window of handles").toHaveCount(81);
+  await expect(page.locator("#modelNurbsNote")).toContainText("4096 poles");
+  await expect(page.locator('#modelNurbsOverlay [data-nurbs-iu][tabindex="0"]')).toHaveCount(1);
+  await select(page, 4, 4);
+  for (let i = 0; i < 10; i += 1) await page.keyboard.press("Shift+ArrowRight");
+  await expect(pole(page, 44, 4), "the window walked with the selection").toBeFocused();
+  await page.locator("details:has(#modelNurbsWeight) > summary").click();
+  const opens = sculpt.nurbsOpens().length;
+  await page.locator("#modelNurbsInsertU").click();
+  await expect(page.locator("#modelReadout")).toContainText("at most 64 poles in each direction");
+  await page.waitForTimeout(300);
+  expect(sculpt.nurbsOpens().length, "nothing sent").toBe(opens);
 });
