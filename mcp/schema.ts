@@ -89,6 +89,7 @@ const objectName = { type: "string", minLength: 1, maxLength: 120, description: 
 const simRegion = { type: "object", description: "{faces}, {sphere}, or {box}." };
 const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube", "part"], description: "Primitive." };
 const booleanKind = { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." };
+const BOOLEAN_ALIAS: Record<string, string> = { union: "fuse", subtract: "cut", difference: "cut", intersect: "common", intersection: "common" };
 
 /** The fields every primitive takes, as solid_new names them. */
 const primitiveFields = {
@@ -397,7 +398,7 @@ const op = {
 };
 
 const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs", "text", "ribNet"]);
-const REPEATABLE = new Set(["boolean", "extrude", "revolve", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
+const REPEATABLE = new Set(["boolean", "extrude", "revolve", "sweep", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
 
 /** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
 export const OP_SCHEMA = op;
@@ -629,7 +630,7 @@ const sweepModeField = {
     },
   ],
 };
-const perPoint = (what: string) => ({ description: `${what}: one number, or one per path point.` });
+const perPoint = (what: string) => ({ description: `${what}: one number, a one-element list of that number, or one per path point.` });
 
 /** Ops the kernel builds from a sketch, and the shell. Added to op's branches below. */
 const sketchOps = [
@@ -1872,16 +1873,17 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "solid_new",
-    description: "Add a primitive, a gear, a fastener, a fitting, a plate, an L-bracket, a pulley or a fit coupon, centred on X and Y on Z = 0, or a part that starts from a NURBS surface or a sheet (feature). Needs Open CASCADE.",
+    description: "Add a primitive standing on z = 0 (centre moves its box), a gear, a fastener, a fitting, a plate, a bracket, a pulley, a coupon, or an extrude, revolve, loft, sweep, surface or sheet. Needs Open CASCADE.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         ...solidFields,
+        centre: { ...vec3, description: "Centre of the primitive's bounding box. Without it the solid stands on z = 0, centred in X and Y." },
         kind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket", "gt2", "v"], description: "With primitive part. Same as partKind." },
         name: objectName,
         gear: { type: "object", description: "guide {kind:\"gear\"}." },
-        feature: { type: "object", description: "Instead of a primitive: a part that starts from a surface, a nurbsSurface or a sheet op as model_apply takes it (guide {kind:\"nurbsSurface\"}). The part is an open sheet until it is thickened or sewn." },
+        feature: { type: "object", description: "Instead of a primitive: an extrude, a revolve, a loft, a sweep, a nurbsSurface or a sheet, as model_apply takes it. A surface is an open sheet until it is thickened or sewn." },
         coupon: {
           type: "object",
           additionalProperties: false,
@@ -2399,7 +2401,8 @@ export const TOOLS: ToolSpec[] = [
       camera: { description: "Camera name or direction and optional up." },
       longEdge: { type: "integer", minimum: 32, maximum: 1024, description: "Image size." },
       background: { type: "string", description: "#rrggbb. Overrides the script." },
-      partColours: { type: "object", description: "Part handle or unique name to colour #rrggbb in every frame, over the script's colours, e.g. {\"arm\": \"#b08040\"}. Parts not named keep the script's colour, else a palette colour. Needs out." },
+      colours: { type: "object", description: "Step label to #rrggbb. A label on one part tints that part; any other is skipped, with a warning. Without out, nothing is drawn and the reply warns." },
+      partColours: { type: "object", description: "Part handle or unique name to colour #rrggbb in every frame, over the script's colours, e.g. {\"arm\": \"#b08040\"}. Parts not named keep the script's colour, else a palette colour. Without out, nothing is drawn and the reply warns." },
       fit: { description: "Frame on a fixed model-space box {min,max} of [x,y,z], or on the parts listed (names or handles) over every frame, e.g. [\"Collet\", \"Pin\"]. Default: every part. Needs out." },
       ignore: { type: "array", maxItems: 64, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "string" } }, description: "Pairs of members (names or handles) the crossing check leaves out, fits that overlap by design, e.g. [[\"Collet\", \"Pin\"]]. The reply's ignored names them." },
       out: { type: "object", additionalProperties: false, description: "Workspace GIF name and/or PNG folder.", properties: {
@@ -3335,6 +3338,10 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
   }
   if (schema.const !== undefined && value !== schema.const) return `${fieldName(path)} must be ${JSON.stringify(schema.const)}.`;
   if (Array.isArray(schema.enum) && !schema.enum.some((item) => item === value)) {
+    if (typeof value === "string" && schema.enum.length === 3 && schema.enum.includes("fuse") && schema.enum.includes("cut") && schema.enum.includes("common")) {
+      const meant = BOOLEAN_ALIAS[value];
+      if (meant) return `\`${value}\` is not a boolean op; did you mean \`${meant}\`?`;
+    }
     const values = schema.enum.map((item) => typeof item === "string" ? item : JSON.stringify(item)).join(", ");
     return `${fieldName(path)} must be one of ${values}.`;
   }
@@ -3440,9 +3447,38 @@ export function validateTool(name: string, input: unknown): string | null {
   return problem;
 }
 
+/**
+ * A file, part or plugin field spelled the common other way. Refused, naming the canonical field, and only when that
+ * field is the one such field on this tool. A tool that already has both (recipe_run, pose_animate) is left alone.
+ */
+function namingAlias(name: string, input: unknown): string | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const props = toolByName(name)?.inputSchema.properties;
+  if (!props || typeof props !== "object") return null;
+  const has = (field: string) => Object.prototype.hasOwnProperty.call(props, field);
+  const only = (candidates: readonly string[]): string | null => {
+    const found = candidates.filter((field) => has(field));
+    return found.length === 1 ? found[0]! : null;
+  };
+  for (const key of Object.keys(input as Record<string, unknown>)) {
+    if (has(key)) continue;
+    const canonical = key === "path" || key === "file" || key === "filename" || key === "filepath"
+      ? only(["name", "path", "from"])
+      : key === "name"
+        ? only(["path", "label", "id"])
+        : key === "title"
+          ? only(["name", "label", "id"])
+          : null;
+    if (canonical) return `\`${key}\` is not a field of ${name}; did you mean \`${canonical}\`?`;
+  }
+  return null;
+}
+
 function checkTool(name: string, input: unknown): string | null {
   const tool = toolByName(name);
   if (!tool) return `There is no tool named ${name}.`;
+  const alias = namingAlias(name, input);
+  if (alias) return alias;
   // The organic ops' face fields and list caps say their own sentence, before the schema's generic one.
   if (OP_TOOLS.has(name) && input && typeof input === "object") {
     const given = input as { op?: unknown; ops?: unknown };

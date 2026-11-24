@@ -194,6 +194,22 @@ export function rootSpec(spec: PrimitiveSpec): PrimitiveSpec {
   };
 }
 
+/**
+ * A new solid's root: `rootSpec`, then shifted so its bounding-box centre is `centre`.
+ * With no centre it stands as `rootSpec` puts it, on z = 0 and centred in X and Y.
+ */
+export function placedRoot(spec: PrimitiveSpec, centre?: readonly number[]): PrimitiveSpec {
+  const stood = rootSpec(spec);
+  if (!centre) return stood;
+  const box = primitiveBounds(stood);
+  const origin: Vec3 = [
+    stood.origin[0] + (centre[0]! - (box.min[0] + box.max[0]) / 2),
+    stood.origin[1] + (centre[1]! - (box.min[1] + box.max[1]) / 2),
+    stood.origin[2] + (centre[2]! - (box.min[2] + box.max[2]) / 2),
+  ];
+  return { ...stood, origin };
+}
+
 /** The untilted primitive's box, where `origin` puts it: exact, from the sizes alone. */
 export function primitiveBounds(spec: PrimitiveSpec): { min: Vec3; max: Vec3 } {
   const [x, y, z] = spec.origin;

@@ -79,14 +79,74 @@ function capSections(end: LoftSection, out: V3, cap: Cap): LoftSection[] {
   });
 }
 
-/** A value for each path point: one number for all, or a list as long as the path. */
+/** A value for each path point: one number, a one-element list of that number, or a list as long as the path. */
 function perPoint(value: number | number[] | undefined, count: number, name: string): number[] | { reason: string } | undefined {
   if (value === undefined) return undefined;
   if (typeof value === "number") return Array.from({ length: count }, () => value);
+  if (Array.isArray(value) && value.length === 1 && typeof value[0] === "number" && Number.isFinite(value[0])) return Array.from({ length: count }, () => value[0]);
   if (!Array.isArray(value) || value.length !== count || !value.every((n) => typeof n === "number" && Number.isFinite(n))) {
-    return { reason: `${name} is one number, or a list with one number for each of the ${count} path points.` };
+    return { reason: `${name} is one number, a one-element list of that number, or a list with one number for each of the ${count} path points.` };
   }
   return value;
+}
+
+/** The path is not a straight line: three or more points, and one of them leaves the line through the first two. */
+export function pathBends(path: readonly V3[]): boolean {
+  if (path.length < 3 || path.some((point) => point.length !== 3 || !point.every((n) => typeof n === "number" && Number.isFinite(n)))) return false;
+  const a = sub(path[1]!, path[0]!);
+  const span = length(a);
+  if (span < 1e-9) return false;
+  for (let i = 2; i < path.length; i += 1) {
+    const b = sub(path[i]!, path[0]!);
+    if (length(cross(a, b)) > 1e-4 * span * Math.max(length(b), 1e-9)) return true;
+  }
+  return false;
+}
+
+const SPINE_FORM = "sweep it as sections along a spine: sections: [{origin, turn, profile}], spine: {kind: \"spline\", through: [the path points]}.";
+
+/**
+ * A bending path and a profile, as the pipe-shell a sections-and-spine sweep uses: one section at the start, oriented
+ * the way the loft sections are, and a spline through the path. Round and point caps have no pipe form, so they are
+ * refused with the spine form to type instead.
+ */
+export function bendingPathSweep(spec: SweepSpec): { sections: LoftSection[]; spine: { kind: "spline"; through: V3[] }; scale?: [number, number][] } | { reason: string } {
+  const path = spec.path;
+  if (!Array.isArray(path) || path.length < 2) return { reason: "A sweep needs a path of at least 2 [x, y, z] points." };
+  const cap = (["caps", "capStart", "capEnd"] as const).map((key) => spec[key]).find((value) => value === "round" || value === "point");
+  if (cap) return { reason: `A path with a bend cannot close with ${cap} caps; ${SPINE_FORM}` };
+  const profile = spec.profile;
+  if (!Array.isArray(profile) || profile.length < 3 || profile.some((point) => !Array.isArray(point) || point.length < 2 || !point.every((n) => typeof n === "number" && Number.isFinite(n)))) {
+    return { reason: "A profile needs at least three [u, v] points." };
+  }
+  const scale = perPoint(spec.scale ?? 1, path.length, "scale");
+  if (scale && "reason" in scale) return scale;
+  if (scale!.some((value) => !(value > 0))) return { reason: "Each radius and scale is above 0." };
+  const raw = sub(path[1]!, path[0]!);
+  if (length(raw) < 1e-4) return { reason: "Path points 0 and 1 are in the same place." };
+  const tangent = unit(raw);
+  let up: V3 = spec.up ? unit(spec.up) : [0, 0, 1];
+  if (Math.abs(dot(up, tangent)) > 0.95) up = Math.abs(tangent[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const u = unit(cross(up, tangent));
+  const v = cross(tangent, u);
+  const turn = orientEuler([u[0], v[0], tangent[0], u[1], v[1], tangent[1], u[2], v[2], tangent[2]]);
+  const constant = scale!.every((value) => value === scale![0]);
+  const factor = constant ? scale![0]! : 1;
+  const section: LoftSection = {
+    origin: path[0]!.map(round) as V3,
+    turn: [round(turn.rx), round(turn.ry), round(turn.rz)],
+    profile: profile.map(([pu, pv]) => [round(pu * factor), round(pv * factor)]),
+  };
+  if (spec.smooth) section.smooth = true;
+  if (spec.smooth && spec.corners?.length) section.corners = [...spec.corners];
+  let stations: [number, number][] | undefined;
+  if (!constant) {
+    const cum = [0];
+    for (let i = 1; i < path.length; i += 1) cum.push(cum[i - 1]! + length(sub(path[i]!, path[i - 1]!)));
+    const total = cum[cum.length - 1]! || 1;
+    stations = cum.map((at, i) => [round(at / total), scale![i]!]);
+  }
+  return { sections: [section], spine: { kind: "spline", through: path.map((point) => point.map(round) as V3) }, ...(stations && stations.length >= 2 ? { scale: stations } : {}) };
 }
 
 /** Centripetal Catmull-Rom through the points, `steps` samples per span, with each value list carried along linearly. */

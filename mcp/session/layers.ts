@@ -19,7 +19,7 @@ import { assemblyOf } from "../../src/assembly.ts";
 import { resolveWrite } from "../workspace.ts";
 import { type Ghost, LAYER_ROWS, type PlateObject, STRESS_LAYER_NEEDS, type ToolHandler, joinedPositions, posedPositions } from "./shared.ts";
 import type { Session } from "../session.ts";
-import { NEXT, refuse } from "../refusals.ts";
+import { meantName, NEXT, refuse } from "../refusals.ts";
 
 /** renders/<file>, or renders/<stem>-2.png and so on when that name is taken. */
 function freshRenderPath(file: string): string {
@@ -42,7 +42,7 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
   // --- Assemblies M5. view draws several parts: the object's assembly as assembled, or the whole bed as it prints.
   if (input.view !== undefined) {
     if (input.view !== "assembly" && input.view !== "print") return refuse("bad-view", 'view is "assembly" or "print".');
-    if (input.op !== undefined || input.section !== undefined || input.highlight !== undefined || input.colours !== undefined) return refuse("bad-view", "view draws several parts; op, section, highlight and colours are for one part.");
+    if (input.op !== undefined || input.section !== undefined || input.highlight !== undefined) return refuse("bad-view", "view draws several parts; op, section and highlight are for one part.");
   }
   const turntable = typeof input.turntable === "number" ? Math.round(input.turntable) : 0;
   const many = Array.isArray(input.views) || turntable > 1;
@@ -78,27 +78,52 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
   }
   const solidMesh = !!obj.solid && obj.solid.positions.length >= 9;
   const mesh = input.view === "assembly" || input.view === "print" ? this.viewMesh(obj, input.view) : fit ? posedPositions(solidMesh ? obj.solid!.positions : obj.source, solidMesh ? obj.modelPose : thenPose(seatLift(obj.seatMm), obj.modelPose)) : solidMesh ? obj.solid!.positions : this.placed(obj).positions;
-  const looks = this.renderLooks(obj, input, solidMesh);
+  const multi = input.view === "assembly" || input.view === "print";
+  const looks = this.renderLooks(obj, multi ? { ...input, colours: undefined } : input, solidMesh);
   if ("reason" in looks) return refuse("bad-view", looks.reason);
-  if (input.partColours !== undefined) {
-    if (input.view !== "assembly" && input.view !== "print") return refuse("bad-view", "partColours needs an assembly or print view.");
-    if (!input.partColours || typeof input.partColours !== "object" || Array.isArray(input.partColours)) return refuse("bad-view", "partColours maps part names or handles to colours.");
-    const rows = viewRows(this, obj, input.view);
-    const chosen = new Map<string, [number, number, number]>();
-    for (const [name, raw] of Object.entries(input.partColours as Record<string, unknown>)) {
-      const matches = rows.filter((row) => row.id === name || row.name === name);
-      if (matches.length !== 1) return refuse("bad-view", matches.length ? `Part name "${name}" is ambiguous; use its handle.` : `No part named "${name}" is in this view.`);
-      const colour = typeof raw === "string" ? /^#?([0-9a-f]{6})$/i.exec(raw) : null;
-      if (!colour) return refuse("bad-view", `partColours.${name} is a colour like "#c86450".`);
-      const n = parseInt(colour[1]!, 16);
-      chosen.set(matches[0]!.id, [(n >> 16) & 255, (n >> 8) & 255, n & 255]);
+  const warnings = [...looks.warnings];
+  const rows = multi ? viewRows(this, obj, input.view as "assembly" | "print") : [obj];
+  const chosen = new Map<string, [number, number, number]>();
+  if (multi && input.colours !== undefined) {
+    if (!input.colours || typeof input.colours !== "object" || Array.isArray(input.colours)) return refuse("bad-view", "colours maps step labels to colours.");
+    for (const [label, raw] of Object.entries(input.colours as Record<string, unknown>)) {
+      const rgb = readHex(raw, `colours.${label}`);
+      if ("reason" in rgb) return refuse("bad-view", rgb.reason);
+      const owners = rows.filter((row) => this.labelBox(row, label, true));
+      if (owners.length !== 1) {
+        warnings.push({ reason: owners.length ? `colours.${label} is on more than one part; name the part in partColours.` : `No step is labelled "${label}", so colours.${label} was not drawn.` });
+        continue;
+      }
+      chosen.set(owners[0]!.id, rgb);
+      looks.legend.push({ label, rgb: `#${rgb.map((v) => v.toString(16).padStart(2, "0")).join("")}` });
     }
+  }
+  if (input.partColours !== undefined) {
+    if (!input.partColours || typeof input.partColours !== "object" || Array.isArray(input.partColours)) return refuse("bad-view", "partColours maps part names or handles to colours.");
+    for (const [name, raw] of Object.entries(input.partColours as Record<string, unknown>)) {
+      const rgb = readHex(raw, `partColours.${name}`);
+      if ("reason" in rgb) return refuse("bad-view", rgb.reason);
+      const matches = rows.filter((row) => row.id === name || row.name === name);
+      if (matches.length !== 1) {
+        if (matches.length > 1) return refuse("bad-view", `Part name "${name}" is ambiguous; use its handle.`);
+        const meant = meantName(name, rows.flatMap((row) => [row.name, row.id]));
+        return refuse("bad-view", meant ? `No part named "${name}" is in this view; did you mean ${meant}?` : `No part named "${name}" is in this view.`);
+      }
+      chosen.set(matches[0]!.id, rgb);
+    }
+  }
+  if (chosen.size > 0) {
     let start = 0;
     looks.options.partTints = [];
-    for (const row of rows) {
-      const solid = row.solid && row.solid.positions.length >= 9;
-      const end = start + (input.view === "print" ? this.placed(row).positions.length : solid ? row.solid!.positions.length : row.source.length) / 9;
-      const rgb = chosen.get(row.id);
+    const spans = multi
+      ? rows.map((row) => {
+        const solid = row.solid && row.solid.positions.length >= 9;
+        return { id: row.id, count: (input.view === "print" ? this.placed(row).positions.length : solid ? row.solid!.positions.length : row.source.length) / 9 };
+      })
+      : [{ id: obj.id, count: mesh.length / 9 }];
+    for (const span of spans) {
+      const end = start + span.count;
+      const rgb = chosen.get(span.id);
       if (rgb) looks.options.partTints.push({ start, end, rgb });
       start = end;
     }
@@ -129,7 +154,7 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
     ? { slivers: { count: tiny.length, frame: obj.frame ?? "model", at: tiny.slice(0, 3).map((face) => typedPoint(typedPoseOf(obj), face.centre).map((v) => Math.round(v * 100) / 100)), note: `${tiny.length} face${tiny.length === 1 ? " is" : "s are"} under 0.1 mm², drawn as specks: the solid has them, often where a step breaks through a thin wall. faces_find {nearPoint} at one names it.` } }
     : {};
   const note = { ...(ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {}), ...(looks.legend.length ? { colours: looks.legend } : {}), ...slivers };
-  const body = many ? { ok: true, views, ...note } : { ok: true, ...views[0]!, ...note };
+  const body = many ? { ok: true, views, ...note, ...(warnings.length ? { warnings } : {}) } : { ok: true, ...views[0]!, ...note, ...(warnings.length ? { warnings } : {}) };
   return input.inline === false ? body : withImages(body, pictures);
 }
 
@@ -137,28 +162,42 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
  * render_view's highlight, colours, section, and smooth, as the renderer takes them: label boxes and the section
  * plane in the solid's frame, where its mesh is.
  */
-function renderLooks(this: Session, obj: PlateObject, input: Record<string, unknown>, solidMesh: boolean): { options: RenderOptions; legend: Record<string, unknown>[] } | { reason: string } {
+function readHex(raw: unknown, field: string): [number, number, number] | { reason: string } {
+  const colour = typeof raw === "string" ? /^#?([0-9a-f]{6})$/i.exec(raw) : null;
+  if (!colour) return { reason: `${field} is a colour like "#c86450".` };
+  const n = parseInt(colour[1]!, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function renderLooks(this: Session, obj: PlateObject, input: Record<string, unknown>, solidMesh: boolean): { options: RenderOptions; legend: Record<string, unknown>[]; warnings: { reason: string }[] } | { reason: string } {
   // The solid's faces also let an edge line show only where its own faces are in front (--- 3.1 F5).
   const options: RenderOptions = { smooth: input.smooth !== false, ...(solidMesh ? { faces: obj.solid!.triangles } : {}) };
   const legend: Record<string, unknown>[] = [];
-  const wanted: { label: string; rgb: [number, number, number] }[] = [];
+  const warnings: { reason: string }[] = [];
+  const wanted: { label: string; rgb: [number, number, number]; colour: boolean }[] = [];
   const highlight = typeof input.highlight === "string" ? [input.highlight] : Array.isArray(input.highlight) ? input.highlight.map(String) : [];
-  for (const label of highlight) wanted.push({ label, rgb: [255, 135, 30] });
+  for (const label of highlight) wanted.push({ label, rgb: [255, 135, 30], colour: false });
   for (const [label, hex] of Object.entries((input.colours ?? {}) as Record<string, unknown>)) {
-    const match = /^#?([0-9a-f]{6})$/i.exec(String(hex));
-    if (!match) return { reason: `colours.${label} is a colour like "#c86450".` };
-    const n = parseInt(match[1]!, 16);
-    wanted.push({ label, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] });
+    const rgb = readHex(hex, `colours.${label}`);
+    if ("reason" in rgb) return rgb;
+    wanted.push({ label, rgb, colour: true });
   }
   if ((wanted.length || input.section !== undefined) && !solidMesh) return { reason: "highlight, colours, and section need a solid, and this part is a mesh (STL, OBJ or 3MF), which has none. Import its STEP file, or make the part with solid_new or model_build." };
   if (wanted.length) {
     options.tints = [];
-    for (const { label, rgb } of wanted) {
+    for (const { label, rgb, colour } of wanted) {
       const box = this.labelBox(obj, label, true);
-      if (!box) return { reason: `No step is labelled "${label}" with a tool to measure. model_anchors lists the labels.` };
+      if (!box) {
+        if (colour) {
+          warnings.push({ reason: `No step is labelled "${label}", so colours.${label} was not drawn. model_anchors lists the labels.` });
+          continue;
+        }
+        return { reason: `No step is labelled "${label}" with a tool to measure. model_anchors lists the labels.` };
+      }
       options.tints.push({ min: box.min, max: box.max, rgb });
       legend.push({ label, rgb: `#${rgb.map((v) => v.toString(16).padStart(2, "0")).join("")}` });
     }
+    if (options.tints.length === 0) delete options.tints;
   }
   if (input.section !== undefined) {
     const spec = input.section as { normal?: unknown; point?: unknown };
@@ -172,7 +211,7 @@ function renderLooks(this: Session, obj: PlateObject, input: Record<string, unkn
       normal: turnDir(back, normal),
     };
   }
-  return { options, legend };
+  return { options, legend, warnings };
 }
 
 /**

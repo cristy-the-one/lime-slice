@@ -159,7 +159,7 @@ check("part colour changes only its own pixels", redLeft.some((v, i) => v > blue
 const colourView = await session.call("render_view", { object: solid.object, view: "assembly", partColours: { [String(solid.object)]: "#e02020" }, camera: "top", longEdge: 64, inline: false, name: "part-colour.png" });
 check("render_view accepts part colours by handle", colourView.ok === true, JSON.stringify(colourView));
 const missingColour = await session.call("render_view", { object: solid.object, view: "assembly", partColours: { missing: "#e02020" }, inline: false });
-check("render_view refuses a colour for a missing part", missingColour.ok === false, JSON.stringify(missingColour));
+check("render_view refuses a colour for a missing part", missingColour.ok === false && String(missingColour.reason).includes('No part named "missing"') && !String(missingColour.reason).includes("did you mean"), JSON.stringify(missingColour));
 const badColour = await session.call("render_view", { object: solid.object, view: "assembly", partColours: { [String(solid.object)]: "red" }, inline: false });
 check("render_view refuses an invalid part colour", badColour.ok === false, JSON.stringify(badColour));
 const fitResult = await session.call("render_view", { object: solid.object, camera: "top", fit, longEdge: 64, inline: false, name: "fixed-fit.png" });

@@ -7,7 +7,7 @@ import { plainModelError } from "../../src/app/model-error.ts";
 import { ID_MATRIX } from "../../src/mesh-place.ts";
 import { disjointBoolean } from "../../src/model-feasibility.ts";
 import { facePlane, formatMm } from "../../src/model-plane.ts";
-import { gearOf, rootSpec, type PrimitiveSpec } from "../../src/model-primitive.ts";
+import { gearOf, placedRoot, type PrimitiveSpec } from "../../src/model-primitive.ts";
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
 import { decodeSurfaceInspect } from "../../src/model-reply.ts";
 import { listedContinuity, organicFirstProblem, organicProblem } from "../organic-checks.ts";
@@ -950,6 +950,12 @@ async function rebuildStale(this: Session, obj: PlateObject, depth: number): Pro
   return tree;
 }
 
+/** solid_new's centre, once the schema has accepted it: the bounding-box centre the root is shifted to. */
+function askedCentre(value: unknown): [number, number, number] | undefined {
+  if (!Array.isArray(value) || value.length !== 3 || value.some((n) => typeof n !== "number" || !Number.isFinite(n))) return undefined;
+  return [value[0] as number, value[1] as number, value[2] as number];
+}
+
 /** `solid_new` says `kind` for a fastener. Stored JSON and a boolean say `partKind`, because `kind` is the op tag. */
 function fastenerArgs(input: Record<string, unknown>): { ok: true; args: Record<string, unknown> } | Refusal {
   if (input.primitive !== "part") return { ok: true, args: input };
@@ -968,20 +974,23 @@ function fastenerArgs(input: Record<string, unknown>): { ok: true; args: Record<
  * of either kind needs a part that is not a closed solid, and a sheet op on a solid keeps the solid's faces, so this is
  * the way to start from a surface. The feature is baked as model_apply bakes it, in the part's own frame.
  */
+const FEATURE_ROOTS = new Set(["extrude", "revolve", "loft", "sweep", "nurbsSurface", "sheet"]);
+
 async function featureSolidNew(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (input.primitive !== undefined || input.gear !== undefined || input.coupon !== undefined || input.kind !== undefined) {
     return refuse("conflicting-arguments", "Give a feature or a primitive, gear, part or coupon, not both.");
   }
+  if (input.centre !== undefined) return refuse("bad-argument", "solid_new's centre places a primitive; a feature starts in its own frame.");
   const feature = input.feature as Record<string, unknown>;
-  if (feature.kind !== "nurbsSurface" && feature.kind !== "sheet") {
-    return refuse("bad-op", "solid_new's feature is a nurbsSurface or a sheet. Start other parts from a primitive.");
+  if (typeof feature.kind !== "string" || !FEATURE_ROOTS.has(feature.kind)) {
+    return refuse("bad-op", "solid_new's feature is an extrude, a revolve, a loft, a sweep, a nurbsSurface or a sheet.");
   }
   const problem = organicFirstProblem(feature, "feature") ?? validate(OP_SCHEMA, feature, "feature") ?? organicProblem(feature, "feature") ?? nurbsSurfaceProblem(feature, "feature");
   if (problem) return refuse("bad-op", problem);
   const ctx = { pose: IDENTITY_POSE, solid: null, plane: GLOBAL_WORKPLANE, expand: () => ({ faces: [], faceBy: () => ({ reason: "A part that starts from a surface has no faces to pick yet." }) }) as never, nodeOf: () => null, hasNode: () => false };
   const baked = bakeOp(feature, ctx);
   if ("reason" in baked) return refusePartReason(baked.reason, "bad-op");
-  if (!isFeatureOp(baked.op)) return refuse("bad-op", "solid_new's feature is a nurbsSurface or a sheet.");
+  if (!isFeatureOp(baked.op)) return refuse("bad-op", "solid_new's feature is an extrude, a revolve, a loft, a sweep, a nurbsSurface or a sheet.");
   this.seq += 1;
   const id = `obj_${this.seq}`;
   const key = `mcp-${id}`;
@@ -1036,18 +1045,21 @@ async function solidNew(this: Session, input: Record<string, unknown>): Promise<
   if (gear && input.primitive !== undefined) return refuse("bad-argument", "Give a primitive or a gear, not both.");
   const prepared = fastenerArgs(input);
   if (!prepared.ok) return prepared;
-  const typed = gear ? primitiveFrom({ ...gear, primitive: "gear", origin: [0, 0, 0], turn: [0, 0, 0] }, "gear") : primitiveFrom(prepared.args);
+  const centre = askedCentre(input.centre);
+  const args = { ...prepared.args };
+  delete args.centre;
+  const typed = gear ? primitiveFrom({ ...gear, primitive: "gear", origin: [0, 0, 0], turn: [0, 0, 0] }, "gear") : primitiveFrom(args);
   if ("reason" in typed) return refusePartReason(typed.reason, "bad-argument");
   const gearWhy = gear ? gearRefusal(gearOf(typed)!, typed.height) : null;
   if (gearWhy) return refuse("bad-argument", gearWhy);
   const kind = typed.primitive;
-  const spec = rootSpec(typed);
+  const spec = placedRoot(typed, centre);
   this.seq += 1;
   const id = `obj_${this.seq}`;
   const key = `mcp-${id}`;
   // A part's model_describe box is the mesh box. 0.01 mm keeps that box within 0.02 mm of the analytic solid.
   const chord = kind === "part" ? 0.01 : CHORD;
-  const reply = await this.treeCall(newSolidRequest(key, typed, chord));
+  const reply = await this.treeCall(newSolidRequest(key, typed, chord, centre));
   const error = typeof reply.error === "string" ? reply.error : "";
   if (error) return refuse("kernel-refused", plainModelError(error, "create"));
   const obj: PlateObject = {
@@ -1314,7 +1326,13 @@ export const modelMethods = {
 
 export const modelHandlers: Record<string, ToolHandler> = {
   assembly_merge: (s, input) => s.assemblyMerge(input),
-  solid_new: (s, input) => input.coupon !== undefined && input.feature === undefined ? s.fitCouponNew(input) : s.solidNew(input),
+  solid_new: (s, input) => {
+    if (input.coupon !== undefined && input.feature === undefined) {
+      if (input.centre !== undefined) return refuse("bad-argument", "solid_new's centre places a primitive; a coupon has its own place.");
+      return s.fitCouponNew(input);
+    }
+    return s.solidNew(input);
+  },
   model_build: (s, input) => s.build(input),
   model_params: (s, input) => input.rebuild === true ? s.paramsRebuild(input) : s.paramsTool(input),
   model_define: (s, input) => s.defineTool(input),

@@ -192,9 +192,12 @@ assert.ok(fitRed > 2 * plainRed, `fit on Finger: ${fitRed} red pixels against ${
 const boxed = await call("pose_animate", { object: finger, source, longEdge: 64, fit: { min: [-40, -40, -40], max: [40, 40, 40] }, out: { frames: "box-frames" } });
 assert.equal(boxed.ok, true, JSON.stringify(boxed));
 assert.ok(count(join(workspace, "box-frames", "frame-001.png"), reddish) < plainRed / 2);
+// A colour that cannot be drawn is a warning, and the run goes on. A colour that is not a hex is still refused.
+const undrawn = await call("pose_animate", { object: finger, source, partColours: { Finger: "#00ff00" } });
+assert.equal(undrawn.ok, true, JSON.stringify(undrawn));
+assert.ok((undrawn.warnings as { reason: string }[]).some((row) => row.reason === "colours and partColours colour the drawn frames, and this call has no out, so they were not drawn."), JSON.stringify(undrawn.warnings));
 // Refused, naming the field, before anything is built or written.
 const refusedLooks: [Record<string, unknown>, string][] = [
-  [{ partColours: { Finger: "#00ff00" } }, "partColours and fit say how frames are drawn: give out {gif} or {frames} with them."],
   [{ partColours: { Nope: "#00ff00" }, out: { frames: "never" } }, 'partColours: no part named "Nope" is in this assembly.'],
   [{ partColours: { Finger: "green" }, out: { frames: "never" } }, 'partColours.Finger is a colour like "#c86450".'],
   [{ fit: ["Finger", "Nope"], out: { frames: "never" } }, 'fit: no part named "Nope" is in this assembly.'],

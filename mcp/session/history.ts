@@ -139,11 +139,11 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
       if (givenLabel(raw)) this.rename(obj, node, givenLabel(raw));
       return { ok: true, node: nodeHandle(node), ...this.rootShown(obj, reopened), stored: op, typed: baked.typed };
     }
-    if (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft") {
-      return refuse("bad-op", "This part started from a sketch or a surface. Replace its first step with an extrude, a revolve, a loft, a nurbsSurface or a sheet.");
+    if (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft" && op.kind !== "sweep") {
+      return refuse("bad-op", "This part started from a sketch or a surface. Replace its first step with an extrude, a revolve, a loft, a sweep, a nurbsSurface or a sheet.");
     }
     if (op.op !== "fuse") {
-      const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
+      const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : op.kind === "sweep" ? "sweep" : "loft";
       return refuse("bad-op", `A new solid is the ${noun} itself. Cut and intersect need a part that is already there.`);
     }
     const root = { kind: "feature" as const, op };
