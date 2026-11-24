@@ -134,8 +134,16 @@ export interface DrawResult {
 const MIN_SIDES = 3;
 const MAX_SIDES = 360;
 
+/** The Spline tool's mode the person last chose, kept for the session: a new sketch or a History Edit starts with it. */
+let lastSplineMode: SplineMode = "cv";
+
+/** Remember the Spline tool's mode for the next sketch (`withSplineMode` calls it). */
+export function rememberSplineMode(mode: SplineMode) {
+  lastSplineMode = mode;
+}
+
 export function freshDraw(): DrawState {
-  return { sides: 6, gesture: null, note: null, tangentArm: false, hud: null, wall: { both: false, close: false, helper: false }, splineMode: "cv" };
+  return { sides: 6, gesture: null, note: null, tangentArm: false, hud: null, wall: { both: false, close: false, helper: false }, splineMode: lastSplineMode };
 }
 
 /** O1: the wall options after one is switched. Close the ends brings the helper line with it, as it starts out on. */

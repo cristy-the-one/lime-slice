@@ -345,6 +345,7 @@ src/sketch/nurbs-closed.test.ts
 src/sketch/nurbs-edits.test.ts
 src/model-sheet.test.ts
 src/model-mesh-quality.test.ts
+src/display-mesh.test.ts
 src/project-version.test.ts
 src/organic-roundtrip.test.ts
 src/model-tree-renumber.test.ts

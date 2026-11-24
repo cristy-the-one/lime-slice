@@ -1,5 +1,4 @@
 /** Export: the STEP and B-rep files of the open part and of its pieces. */
-import { plateSolidOf } from "./plate-mesh";
 import { base64ToBytes } from "../../base64";
 import { saveBytes, saveBytesToFolder } from "../save-bytes";
 import { encode3mf, encodeStl } from "../../mesh-place";
@@ -97,13 +96,7 @@ export async function exportPieceFiles(row?: RowKey) {
   const files = pieceFiles(stem, names);
   const format = await askPieceExport(files, SUPPORT_NOTE);
   if (!format) return;
-  // The first piece is the solid shown: its plate-quality mesh, never the view's display mesh.
-  const first = await plateSolidOf(S.open.key, S.open.solid.id, S.open.solid);
-  if (!first || !S.open) {
-    readout("The part's mesh could not be read for the export. Try again.");
-    return;
-  }
-  const meshes = [Float32Array.from(posePoints(first.positions, objectPose())), ...held.map((piece) => piece.positions)];
+  const meshes = [Float32Array.from(posePoints(S.open.solid.positions, objectPose())), ...held.map((piece) => piece.positions)];
   S.busy = true;
   syncUndo();
   readout("Writing the pieces…");

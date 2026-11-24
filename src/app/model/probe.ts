@@ -1,4 +1,5 @@
 /** The feasibility probe: the panel's dry-run, its answers, and the preview solids kept for it. */
+import { viewRequest } from "../../model-mesh-quality";
 import { boundsOf, type Bounds } from "../../mesh-place";
 import { boxUnder } from "../../model-space";
 import { unionBox } from "../../measure";
@@ -175,7 +176,7 @@ async function sendProbe(serial: number, key: string, tree: string, node: NodeId
       return;
     }
   }
-  const body = await treeCall(tree, node, probeRequest(tree, node, op, state.stepTolerance));
+  const body = await treeCall(tree, node, viewRequest(probeRequest(tree, node, op, state.stepTolerance)));
   const view = probeFromBody(body, op.kind === "group" ? op.steps.length : undefined);
   if (typeof body.ok === "boolean") remember(key, view);
   // The shape the check built, as Apply would commit it: the engine keeps what it meshed for it, so Apply meshes nothing again.

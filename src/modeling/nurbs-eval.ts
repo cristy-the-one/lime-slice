@@ -356,13 +356,6 @@ export function evalNurbsCurve3D(spec: NurbsCurve3D, uRaw: number): CurveEval3D 
   };
 }
 
-/** Number of knot spans of positive length: the spans `sampleNurbsCurve2D` walks. */
-function liveSpans(rk: ResolvedKnots): number {
-  let spans = 0;
-  for (let s = 0; s + 1 < rk.knots.length; s += 1) if (rk.knots[s + 1]! > rk.knots[s]! + 1e-12) spans += 1;
-  return Math.max(1, spans);
-}
-
 /**
  * A point evaluator for one curve: the knot vector is resolved once and the basis lives in scratch arrays, so
  * sampling allocates nothing but the points it returns. Same arithmetic as `evalNurbsCurve2D` (A2.2 is the first
@@ -468,16 +461,6 @@ export function sampleNurbsCurve2DChord(spec: NurbsCurve2D, chordMm = 0.005, max
   }
   if (rk.periodic && out.length >= 2) out[out.length - 1] = [out[0]![0], out[0]![1]];
   return out;
-}
-
-/**
- * Sample a 2D NURBS curve with about `total` points over the WHOLE curve (at least 2 per span, every knot hit).
- * Callers that size a budget by pole count use this; `sampleNurbsCurve2D` takes a count per span.
- */
-export function sampleNurbsCurve2DTotal(spec: NurbsCurve2D, total: number): Vec2[] {
-  if (spec.poles.length < 2) return spec.poles.map((pt) => [pt[0], pt[1]]);
-  const rk = resolveCurveKnots(spec.poles.length, spec.degree, spec.knots, spec.mults, spec.periodic === true);
-  return sampleNurbsCurve2D(spec, Math.max(2, Math.ceil(Math.max(2, total) / liveSpans(rk))));
 }
 
 /** Sample a 3D NURBS curve span-by-span so interior sharp knots are always hit exactly. */
@@ -819,8 +802,10 @@ export function surfaceRefusal(spec: NurbsSurface3D): string | null {
   if (nu < 1 || spec.poles.some((row) => row.length !== nv)) return "Every row of this surface needs the same number of poles.";
   const degreeU = spec.degreeU ?? 3;
   const degreeV = spec.degreeV ?? 3;
-  if (!Number.isInteger(degreeU) || degreeU < 1 || !Number.isInteger(degreeV) || degreeV < 1) return "This NURBS surface could not be built.";
-  if (degreeU > MAX_SURFACE_DEGREE || degreeV > MAX_SURFACE_DEGREE) return `A NURBS surface's degree is at most ${MAX_SURFACE_DEGREE}.`;
+  // An absent degree is 3; an explicit one, 0 included, must be 1 to 8. The kernel refuses in the same words.
+  for (const [axis, degree] of [["U", degreeU], ["V", degreeV]] as const) {
+    if (!Number.isInteger(degree) || degree < 1 || degree > MAX_SURFACE_DEGREE) return `A NURBS surface's degree in ${axis} is 1 to ${MAX_SURFACE_DEGREE}; it was ${degree}.`;
+  }
   if (nu > MAX_SURFACE_POLES || nv > MAX_SURFACE_POLES) return `A NURBS surface has at most ${MAX_SURFACE_POLES} poles in each direction.`;
   if (nu < degreeU + 1) return `This surface needs at least ${degreeU + 1} poles in U for degree ${degreeU}.`;
   if (nv < degreeV + 1) return `This surface needs at least ${degreeV + 1} poles in V for degree ${degreeV}.`;
@@ -1139,7 +1124,7 @@ export function triadDelta(axis: CvAxis, amount: number, normal: Vec3): Vec3 {
   return [(normal[0] / len) * amount, (normal[1] / len) * amount, (normal[2] / len) * amount];
 }
 
-/** Move one pole of a 3D NURBS curve along the triad. */
+/** Move one pole of a 3D NURBS curve along the triad. Tested, not wired into the app yet: no 3D curve tool there edits poles. */
 export function moveCurvePole(poles: readonly Vec3[], index: number, axis: CvAxis, amount: number, normal: Vec3): Vec3[] {
   const delta = triadDelta(axis, amount, normal);
   return poles.map((pole, at) => (at === index ? [pole[0] + delta[0], pole[1] + delta[1], pole[2] + delta[2]] : [pole[0], pole[1], pole[2]]));
@@ -1609,7 +1594,8 @@ export function elevateSurfaceDegree(spec: NurbsSurface3D, axis: "u" | "v", step
   if (spec.periodicU || spec.periodicV) return "Degree elevation on this surface is for a clamped grid.";
   const count = Math.max(1, Math.floor(steps));
   const both = resolvedBoth(spec);
-  if ((axis === "u" ? both.u.degree : both.v.degree) + count > MAX_SURFACE_DEGREE) return `A NURBS surface's degree is at most ${MAX_SURFACE_DEGREE}.`;
+  const asked = (axis === "u" ? both.u.degree : both.v.degree) + count;
+  if (asked > MAX_SURFACE_DEGREE) return `A NURBS surface's degree in ${axis.toUpperCase()} can be raised to at most ${MAX_SURFACE_DEGREE}; it asked for ${asked}.`;
   const nu = spec.poles.length;
   const nv = spec.poles[0]!.length;
   if (axis === "u") {
@@ -1729,8 +1715,10 @@ export function applyRefinements(
   for (const [axis, want] of [["u", refine.elevateU], ["v", refine.elevateV]] as const) {
     if (typeof out === "string") return out;
     if (want === undefined) continue;
-    if (!Number.isInteger(want) || want < 1 || want > MAX_SURFACE_DEGREE) return `A NURBS surface's degree is at most ${MAX_SURFACE_DEGREE}.`;
+    if (!Number.isInteger(want) || want < 1 || want > MAX_SURFACE_DEGREE) return `A NURBS surface's degree in ${axis.toUpperCase()} can be raised to at most ${MAX_SURFACE_DEGREE}; it asked for ${want}.`;
     const now = axis === "u" ? out.degreeU ?? 3 : out.degreeV ?? 3;
+    // Elevation keeps the surface; lowering a degree would move it, so a lower degree is refused, never ignored.
+    if (want < now) return `A NURBS surface's degree in ${axis.toUpperCase()} is ${now}; elevate${axis.toUpperCase()} raises it and cannot lower it to ${want}.`;
     if (want > now) out = elevateSurfaceDegree(out, axis, want - now);
   }
   if (typeof out === "string") return out;

@@ -505,6 +505,7 @@ function readOpBody(value: unknown): SavedOp | undefined {
       if (!Array.isArray(value.sections) || value.sections.length < 2 || (value.ruled !== undefined && typeof value.ruled !== "boolean")) return undefined;
       if (value.closed !== undefined && typeof value.closed !== "boolean") return undefined;
       if (value.smoothing !== undefined && typeof value.smoothing !== "boolean") return undefined;
+      // The kernel takes 2..10. A file written when 11 and 12 were accepted still opens, its loft capped at 10.
       if (value.maxDegree !== undefined && (!isId(value.maxDegree) || value.maxDegree < 2 || value.maxDegree > 12)) return undefined;
       const sections: LoftSection[] = [];
       for (const raw of value.sections) {
@@ -539,7 +540,7 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(endCondition ? { endCondition } : {}),
         ...(value.closed === true ? { closed: true as const } : {}),
         ...(value.smoothing === true ? { smoothing: true as const } : {}),
-        ...(value.maxDegree !== undefined ? { maxDegree: value.maxDegree as number } : {}),
+        ...(value.maxDegree !== undefined ? { maxDegree: Math.min(10, value.maxDegree as number) } : {}),
         ...(drawing ? { drawing } : {}),
       };
     }

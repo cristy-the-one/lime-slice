@@ -1,4 +1,5 @@
 /** Edit step: opening an edit of a step, a sketch step, or a tool, and cancelling it. */
+import { viewRequest } from "../../model-mesh-quality";
 import {
   editHead,
   editPanel,
@@ -53,7 +54,6 @@ import { S } from "./shared";
 import { applyOp, keepSolid } from "./apply";
 import { createFeatureSolid } from "./create";
 import { forgetSurfaces } from "./surface-cache";
-import { forgetPlateSolids } from "./plate-mesh";
 import { treeOf } from "./edges";
 import { openWhole, post, treeCall } from "./engine";
 import { paintTextAnchor } from "./features";
@@ -294,8 +294,6 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   }
   S.sketchRootEdit = false;
   rootEditFrom = null;
-  // Every node was rebuilt under its own id, the committed one too: the plate takes the new solid at the next commit.
-  S.plateStale.add(at.key);
   syncUndo();
   return null;
 }
@@ -303,7 +301,6 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
 function forgetSolids(key: string) {
   // A root edit rebuilds nodes under the same ids: their curvature and isoparm replies go with their solids.
   forgetSurfaces(key);
-  forgetPlateSolids(key);
   for (const name of [...solids.keys()]) if (name.startsWith(`${key}#`)) solids.delete(name);
 }
 
@@ -369,7 +366,7 @@ export async function probeExtrude(op: ModelOp) {
   const tree = treeOf(at);
   if (!at || !tree || S.sketchRootEdit) return;
   const node = S.editing?.sketch ? S.editing.parent : tree.current;
-  const body = await treeCall(at.key, node, probeRequest(at.key, node, op, state.stepTolerance));
+  const body = await treeCall(at.key, node, viewRequest(probeRequest(at.key, node, op, state.stepTolerance)));
   if (gen !== extrudeGen || state.stage !== "model") return;
   const shape = body.ok === true && body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;
   setModelPreview(shape && typeof shape !== "string" ? shape : null);

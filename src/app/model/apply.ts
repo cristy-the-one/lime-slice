@@ -1,4 +1,5 @@
 /** Apply: the tool's op sent to the engine, the pull apply, and the message after. */
+import { viewRequest } from "../../model-mesh-quality";
 import { boxUnder } from "../../model-space";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { locatedBoxes } from "../../model-check.ts";
@@ -28,7 +29,6 @@ import { closeSketchSession, holdSketchForApply } from "../sketch";
 import { POINT_REFUSAL, holeSizeRefusal } from "../../sketch/holes.ts";
 import { freshTreeKey, modelTrees } from "../model-trees";
 import { sheetVerdict } from "../../model-sheet";
-import { plateSolidOf } from "./plate-mesh";
 import { applySelectedToState, syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { splitPrintOp, splitPrintOpen } from "../../ui/split-print.ts";
@@ -262,7 +262,7 @@ export async function applyOp(op: ModelOp, working: string): Promise<boolean> {
   S.busy = true;
   syncUndo();
   readout(working);
-  const body = await treeCall(at.key, parent, applyRequest(at.key, parent, node, op, chord, pieceKey));
+  const body = await treeCall(at.key, parent, viewRequest(applyRequest(at.key, parent, node, op, chord, pieceKey)));
   if (mine === S.ticket) S.busy = false;
   syncUndo();
   const latest = modelTrees.get(at.key);
@@ -279,9 +279,7 @@ export async function applyOp(op: ModelOp, working: string): Promise<boolean> {
   }
   // --- F1. The engine's echo has no sketch. Put the one this call sent back on the stored op. ---
   const stored = keepSketch(isOp(body.op) ? body.op : op, op);
-  // The split's other piece goes straight on the plate: its plate-quality mesh, never the display reply.
-  const otherPlate = pieceKey && other ? await plateSolidOf(pieceKey, ROOT, other) : other;
-  if (pieceKey && other && (!otherPlate || !addPiece(at, otherPlate, pieceKey, node))) {
+  if (pieceKey && other && !addPiece(at, other, pieceKey, node)) {
     void dropInEngine(at.key, node);
     void post({ call: "close", key: pieceKey });
     readout("The other piece could not be added. The solid is unchanged.");

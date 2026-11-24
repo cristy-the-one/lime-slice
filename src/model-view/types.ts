@@ -35,6 +35,38 @@ export interface ModelSolid {
   nakedEdges?: number[];
   /** The history node that made each face. Null is a preview face with no step yet. */
   stepFaces?: (number | null)[];
+  /**
+   * --- Organic surfaces: the kernel's finer mesh for drawing, when the view asked for it (`meshQuality: "display"`).
+   * The viewport draws, picks and paints this one; everything else (the plate, slices, exports, checks) reads
+   * `positions`, the plate mesh. Its `triangles` are face indices like the top-level ones; edges serve both meshes.
+   */
+  display?: DisplayMesh;
+}
+
+/** A finer mesh of the same faces, for drawing only. */
+export interface DisplayMesh {
+  positions: Float32Array;
+  /** Outward unit normals, nine a triangle, in the same order. */
+  normals?: Float32Array;
+  /** The face of each triangle, as `ModelSolid.triangles`. */
+  triangles: Uint32Array;
+}
+
+const drawn = new WeakMap<ModelSolid, ModelSolid>();
+
+/**
+ * What the viewport draws of `solid`: its display mesh when it has one, else the solid itself (an older kernel, a
+ * stand-in, a piece: the view then welds smooth normals). The same object each time for the same solid.
+ */
+export function drawnSolid<T extends ModelSolid>(solid: T): T {
+  const display = solid.display;
+  if (!display) return solid;
+  const known = drawn.get(solid);
+  if (known) return known as T;
+  const { display: _display, normals: _normals, ...rest } = solid;
+  const made = { ...rest, positions: display.positions, triangles: display.triangles, ...(display.normals ? { normals: display.normals } : {}) } as T;
+  drawn.set(solid, made);
+  return made;
 }
 
 /** --- Organic surfaces S1: lazy per-vertex curvature buffers & UV isoparm segments for the open solid. */

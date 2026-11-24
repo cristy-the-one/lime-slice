@@ -98,8 +98,7 @@ function editTools(): Node[] {
 export function splineRowKey(): string {
   const info = selectedSplineInfo();
   if (S.editor.tool !== "spline" && info == null) return "";
-  const mode = info?.mode ?? S.editor.draw.splineMode;
-  return `spline:${mode}:${S.editor.showCurvatureComb ? "comb" : ""}:${info ? `${info.entityId}:${info.mode}:${info.closed}:${info.cvIndex}:${info.weight}:${info.canCrease}` : ""}`;
+  return `spline:${S.editor.draw.splineMode}:${S.editor.selection.entities.join(",")}:${S.editor.showCurvatureComb ? "comb" : ""}:${info ? `${info.entityId}:${info.mode}:${info.closed}:${info.cvIndex}:${info.weight}:${info.canCrease}` : ""}`;
 }
 
 function selectedSplineInfo(): { entityId: number; mode: "cv" | "through"; closed: boolean; cvIndex: number | null; weight: number; canCrease: boolean } | null {
@@ -138,7 +137,11 @@ function splineRow(): HTMLElement {
   row.setAttribute("role", "group");
   row.setAttribute("aria-label", "Spline options");
   const info = selectedSplineInfo();
-  const mode = info?.mode ?? S.editor.draw.splineMode;
+  // The buttons show what a click changes: the selected splines' own mode when whole splines are selected (a click
+  // converts them), else the mode the Spline tool draws with (a picked point's spline is not converted).
+  const sketch = activeSketch(S.editor);
+  const convertsSplines = !!sketch && S.editor.selection.entities.some((id) => sketch.entities.some((e) => e.id === id && e.kind === "spline"));
+  const mode = convertsSplines && info ? info.mode : S.editor.draw.splineMode;
   const modeBtn = (value: "cv" | "through", label: string, tip: string) => {
     const btn = textButton(label, { sketchSplineMode: value });
     btn.setAttribute("aria-pressed", mode === value ? "true" : "false");

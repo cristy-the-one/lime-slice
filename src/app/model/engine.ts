@@ -1,5 +1,4 @@
 /** Engine calls: the tree calls, the restore of a solid the engine dropped, and the held pieces. */
-import { asksDisplay, DISPLAY_REPLY, requestFor } from "../../model-mesh-quality";
 import { ROOT, pathTo, reserveId, type ModelOp, type ModelTree, type NodeId } from "../../model-tree";
 import { applyRequest, isBrep, openRequest, probeRequest, wholeTreeRequest } from "../../model-request";
 import { remapBlendFromNode } from "../../model-edge-step";
@@ -67,21 +66,6 @@ function missingOf(body: Body): NodeId[] | null {
  * find the same tree missing share one restore; a call whose node that restore did not bring back
  * runs one of its own.
  */
-/**
- * A reply to a display request, marked so the plate boundary never takes its mesh (`plateSolidOf`). The kernel's
- * display mesh always carries `normals`; a reply without them is the default mesh (a kernel that ignores the field, or
- * a stand-in), safe for the plate as it is. The split's other piece rides in the same reply at the same quality; a
- * partition's pieces and pins are the kernel's default mesh.
- */
-function markDisplay(body: Body, display: boolean): Body {
-  if (!display || !body || typeof body !== "object") return body;
-  const fine = (row: Body) => row.normals !== undefined && row.normals !== null;
-  let marked = body;
-  if (fine(body)) marked = { ...body, [DISPLAY_REPLY]: true };
-  if (body.other && typeof body.other === "object" && fine(body.other as Body)) marked = { ...marked, other: { ...(body.other as Body), [DISPLAY_REPLY]: true } };
-  return marked;
-}
-
 export async function treeCall(key: string, node: NodeId, request: Body): Promise<Body> {
   const problem = (unopened.has(key) ? await restoreShared(key, node) : null) ?? (await wholeTools(key, node, request));
   if (problem) return { error: problem };
@@ -507,22 +491,19 @@ export function warmHeldPieces() {
   }
 }
 
-export async function post(request: Body): Promise<Body> {
-  // The view asks for the fine display mesh; a path marked for the plate does not (src/model-mesh-quality.ts).
-  const payload = requestFor(request);
-  const display = asksDisplay(payload);
+export async function post(payload: Body): Promise<Body> {
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   try {
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
-      return markDisplay(JSON.parse(await invoke<string>("model_tree", { payload: JSON.stringify(payload) })) as Body, display);
+      return JSON.parse(await invoke<string>("model_tree", { payload: JSON.stringify(payload) })) as Body;
     }
     const res = await fetch(`${apiBase()}/api/model/tree`, {
       method: "POST",
       headers: authHeaders(apiToken(), { "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
     });
-    const body = markDisplay(await res.json() as Body, display);
+    const body = await res.json() as Body;
     if (!res.ok && typeof body.error !== "string") {
       return { error: modelerFailure(body.error ?? body.message, modelTool()) };
     }

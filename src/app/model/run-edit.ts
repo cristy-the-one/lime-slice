@@ -1,4 +1,5 @@
 /** Running an edit: the op replayed with its later steps, for a part and for a tool. */
+import { viewRequest } from "../../model-mesh-quality";
 import { seatLift, thenPose } from "../../model-space";
 import {
   builtBranch,
@@ -128,7 +129,7 @@ export async function runEdit(run: Editing) {
   S.busy = true;
   syncUndo();
   readout(ids.length === 1 ? "Rebuilding the step…" : `Rebuilding ${ids.length} steps…`);
-  const body = await treeCall(at.key, run.parent, editRequest(at.key, run.parent, ids[0]!, op, replay, chord));
+  const body = await treeCall(at.key, run.parent, viewRequest(editRequest(at.key, run.parent, ids[0]!, op, replay, chord)));
   if (mine === S.ticket) S.busy = false;
   syncUndo();
   const latest = modelTrees.get(at.key);
@@ -205,7 +206,7 @@ export async function editPull(parent: NodeId, node: NodeId, op: ModelOp): Promi
   S.busy = true;
   syncUndo();
   readout("Rebuilding the step…");
-  const body = await treeCall(at.key, parent, editRequest(at.key, parent, ids[0]!, op, replay, chord));
+  const body = await treeCall(at.key, parent, viewRequest(editRequest(at.key, parent, ids[0]!, op, replay, chord)));
   if (mine === S.ticket) S.busy = false;
   syncUndo();
   const latest = modelTrees.get(at.key);
@@ -351,7 +352,7 @@ async function runToolEdit(run: Editing, op: ModelOp) {
   S.busy = true;
   syncUndo();
   readout(`Rebuilding ${total} steps…`);
-  const body = await treeCall(at.key, own.parent, crossEditRequest(levels, chord));
+  const body = await treeCall(at.key, own.parent, viewRequest(crossEditRequest(levels, chord)));
   if (mine === S.ticket) S.busy = false;
   syncUndo();
   const latest = modelTrees.get(at.key);

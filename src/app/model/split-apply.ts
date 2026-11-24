@@ -1,5 +1,5 @@
 /** Split to print: Apply and Update, and the laying out of the pieces they make. */
-import { plateRequest } from "../../model-mesh-quality";
+import { viewRequest } from "../../model-mesh-quality";
 import { type Mat3 } from "../../mesh-place";
 import { forked, stepIds, type EditLevel, type ForkStep } from "../../model-edit";
 import { DAMAGED, decodeSolid, type ParsedSolid } from "../../model-reply";
@@ -89,7 +89,7 @@ export async function applySplitPrint(typed: PartitionOp) {
   setSplitPrintWaiting(true);
   syncUndo();
   readout("Cutting the part…");
-  const body = await treeCall(at.key, parent, applyRequest(at.key, parent, node, op, chord, null, keys, pinsKey));
+  const body = await treeCall(at.key, parent, viewRequest(applyRequest(at.key, parent, node, op, chord, null, keys, pinsKey)));
   if (mine === S.ticket) S.busy = false;
   setSplitPrintWaiting(false);
   syncUndo();
@@ -167,7 +167,7 @@ export function cutHeldAgain(mine: number): Promise<void> {
     S.busy = true;
     syncUndo();
     readout("Cutting the pieces again…");
-    const body = await treeCall(at.key, parent, applyRequest(at.key, parent, spare, op, state.stepTolerance, null, fresh, pinsKey));
+    const body = await treeCall(at.key, parent, viewRequest(applyRequest(at.key, parent, spare, op, state.stepTolerance, null, fresh, pinsKey)));
     void dropInEngine(at.key, spare);
     if (mine === S.ticket) S.busy = false;
     syncUndo();
@@ -378,8 +378,7 @@ async function replayPiece(key: string, parentKey: string, node: NodeId, index: 
   const renamed = stepIds(later, ids);
   const ops = later.map((id) => renumberedSteps(before.nodes.get(id)!.op!, renamed));
   const replay = ops.slice(1).map((op, at) => ({ id: ids[at + 1]!, op }));
-  // A replayed piece goes on the plate: plate quality.
-  const body = await treeCall(key, ROOT, plateRequest({ ...editRequest(key, ROOT, ids[0]!, ops[0]!, replay, state.stepTolerance), keepBroken: true }));
+  const body = await treeCall(key, ROOT, { ...editRequest(key, ROOT, ids[0]!, ops[0]!, replay, state.stepTolerance), keepBroken: true });
   const error = text(body.error);
   const parsed = error ? null : decodeSolid(body);
   const built = builtSteps(body.built);
@@ -447,7 +446,7 @@ export async function updateSplitPrint(run: Editing, typed: PartitionOp) {
   setSplitPrintWaiting(true);
   syncUndo();
   readout(ids.length === 1 ? "Cutting the part again…" : `Rebuilding ${ids.length} steps…`);
-  const body = await treeCall(at.key, run.parent, crossEditRequest([level], chord, keys, pinsKey));
+  const body = await treeCall(at.key, run.parent, viewRequest(crossEditRequest([level], chord, keys, pinsKey)));
   const pieces = readPieces(body.pieces);
   const pins = readPins(body.pins);
   const old = tree.nodes.get(run.node)?.pieces ?? [];

@@ -1,14 +1,14 @@
 /**
- * Organic fix round S6: the view asks the kernel for its display mesh (`meshQuality: "display"`); every path whose
- * reply reaches the plate, a slice, an export or a file asks without it. One list decides: `requestFor` adds the field
- * to every mesh call, and a plate path opts out by name (`plateRequest`). The scan below finds every request a Model
- * module builds, so a new path is classified the day it is written.
+ * The Model view asks for the kernel's display mesh (`meshQuality: "display"`) on the requests it draws; a request whose
+ * reply only feeds the plate or an export does not. Either way the reply's `positions` are the plate mesh, so this only
+ * decides who gets the extra `display` mesh. A scan lists every request a Model module builds, against two lists, so a
+ * new path is classified the day it is written.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { asksDisplay, DISPLAY_MESH_FIELD, MESH_CALLS, PURPOSE_KEY, plateRequest, requestFor } from "./model-mesh-quality.ts";
+import { asksDisplay, DISPLAY_MESH_FIELD, MESH_CALLS, viewRequest } from "./model-mesh-quality.ts";
 import { applyRequest, editRequest, gotoRequest, newSolidRequest, openRequest, probeRequest } from "./model-request.ts";
 
 let failed = 0;
@@ -33,40 +33,40 @@ const builders: [string, Record<string, unknown>][] = [
   ["surface inspect", { call: "surfaceInspect", key: "a#1", node: 2, chordMm: 0.05, curvature: true }],
 ];
 for (const [name, request] of builders) {
-  const view = requestFor(request);
-  const plate = requestFor(plateRequest(request));
-  check(`${name}: the view's request asks for the display mesh`, asksDisplay(view));
-  check(`${name}: a plate request does not, and its mark is not sent`, !asksDisplay(plate) && !(PURPOSE_KEY in plate) && !(DISPLAY_MESH_FIELD[0] in plate));
+  check(`${name}: a builder alone sends no display field`, !asksDisplay(request));
+  check(`${name}: built for the view, it asks for the display mesh`, asksDisplay(viewRequest(request)));
 }
-check("a call with no mesh is sent as it is", !("meshQuality" in requestFor({ call: "close", key: "a#1" })) && MESH_CALLS.has("goto") && !MESH_CALLS.has("close"));
+check("a call with no mesh is sent as it is", !(DISPLAY_MESH_FIELD[0] in viewRequest({ call: "close", key: "a#1" })) && MESH_CALLS.has("goto") && !MESH_CALLS.has("close"));
 
-// Every request a Model module builds, by file: the ones whose reply reaches the plate are marked plateRequest.
+// Every request a Model module builds, by file and builder: drawn by the view (flag) or feeding the plate or an export.
 const root = fileURLToPath(new URL("./app/model/", import.meta.url));
 const BUILDERS = /\b(openRequest|newSolidRequest|gotoRequest|editRequest|applyRequest|crossEditRequest|probeRequest)\(/;
-/** The plate paths, one per line: file and the builder its reply goes to the plate from. */
-const PLATE_PATHS: [string, string][] = [
-  ["create.ts", "newSolidRequest"], // a new primitive object
-  ["create.ts", "openRequest"], // a new sketch-feature object
-  ["assembly.ts", "gotoRequest"], // a pose export's mesh at another chord
-  ["split-apply.ts", "editRequest"], // a replayed piece of a split to print
-  ["plate-mesh.ts", "gotoRequest"], // the plate boundary: a shown node's plate-quality mesh
+const VIEW: string[] = [
+  "apply.ts:applyRequest", "edge-tool.ts:probeRequest", "edges.ts:gotoRequest", "edit.ts:probeRequest", "history.ts:gotoRequest",
+  "parameters.ts:gotoRequest", "probe.ts:probeRequest", "pull.ts:probeRequest", "run-edit.ts:editRequest", "run-edit.ts:crossEditRequest",
+  "split-apply.ts:applyRequest", "split-apply.ts:crossEditRequest", "split-print.ts:probeRequest", "transition.ts:probeRequest",
+  "tree.ts:openRequest", "tree.ts:gotoRequest", "nurbs-sculpt.ts:editRequest",
 ];
-const found: string[] = [];
+/** No flag: a new object's mesh, a restore or replay, the pose and piece exports, an interference probe, a plugin's moves. */
+const NO_FLAG: string[] = [
+  "create.ts:newSolidRequest", "create.ts:openRequest", "assembly.ts:probeRequest", "assembly.ts:gotoRequest", "engine.ts:probeRequest",
+  "engine.ts:openRequest", "engine.ts:applyRequest", "plugin-panel.ts:gotoRequest", "pose-solid.ts:gotoRequest", "pose-solid.ts:openRequest",
+  "split-apply.ts:editRequest",
+];
+const flagged = new Set<string>();
+const plain = new Set<string>();
 for (const file of readdirSync(root).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))) {
-  const lines = readFileSync(join(root, file), "utf8").split(/\r?\n/);
-  for (const line of lines) {
+  for (const line of readFileSync(join(root, file), "utf8").split(/\r?\n/)) {
     const match = BUILDERS.exec(line);
     if (!match || /^\s*(import|export function|\*|\/\/)/.test(line)) continue;
-    if (line.includes("plateRequest(")) found.push(`${file}:${match[1]}`);
+    (line.includes("viewRequest(") ? flagged : plain).add(`${file}:${match[1]}`);
   }
 }
-for (const [file, builder] of PLATE_PATHS) check(`plate path ${file} ${builder} is marked plateRequest`, found.includes(`${file}:${builder}`), found.join(", "));
-check("no other request is marked for the plate without being listed", found.every((site) => PLATE_PATHS.some(([file, builder]) => site === `${file}:${builder}`)), found.join(", "));
-// Paths that take their engine calls through an adapter (plugins) or a reply's own solid (a split's other piece, the
-// piece export) reach the plate only through plateRequest / plateSolidOf: the files say so.
-for (const [file, needle] of [["plugins.ts", "plateRequest(request)"], ["plugin-panel.ts", "plateRequest(request)"], ["apply.ts", "plateSolidOf("], ["export.ts", "plateSolidOf("], ["commit.ts", "cachedPlateSolid("]] as const) {
-  check(`${file} reaches the plate through ${needle.replace("(request)", "").replace("(", "")}`, readFileSync(join(root, file), "utf8").includes(needle));
-}
+check("every view request asks for the display mesh", VIEW.every((site) => flagged.has(site)), `missing: ${VIEW.filter((site) => !flagged.has(site)).join(", ")}`);
+check("every request without the flag is one listed as plate or export", [...plain].every((site) => NO_FLAG.includes(site)), `unlisted: ${[...plain].filter((site) => !NO_FLAG.includes(site)).join(", ")}`);
+check("no plate or export request asks for the display mesh", NO_FLAG.every((site) => !flagged.has(site)), [...flagged].filter((site) => NO_FLAG.includes(site)).join(", "));
+const view = readFileSync(join(root, "view.ts"), "utf8");
+check("surfaceInspect asks with the same field, so its curvature matches the mesh drawn", /viewRequest\(\{\s*call: "surfaceInspect"/.test(view));
 
 if (failed) {
   console.error(`${failed} checks failed`);

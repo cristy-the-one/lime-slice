@@ -45,6 +45,7 @@ import {
   idleDraw,
   isDrawTool,
   noCrossing,
+  rememberSplineMode,
   tangentGesture,
   toggleConstruction,
   toggleWall,
@@ -357,6 +358,7 @@ export function withWall(editor: SketchEditor, key: keyof WallOptions): SketchEd
 /** S2 (U3): toggle spline mode between exact control-point NURBS ("cv") and interpolating ("through"). */
 export function withSplineMode(editor: SketchEditor, mode: SplineMode): SketchEditor {
   if (editor.phase !== "editing") return editor;
+  rememberSplineMode(mode);
   const nextDraw = { ...editor.draw, splineMode: mode };
   const sketch = activeSketch(editor);
   const selectedSplines = sketch

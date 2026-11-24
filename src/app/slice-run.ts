@@ -306,8 +306,7 @@ function attachMeshes(req: Record<string, unknown>, named: MeshRefs | null): { b
 
 /** `force` plans again even when this recipe is already cached. */
 export async function runSlice(force = false) {
-  // A slice asked for inside Model slices the solid on screen, at plate quality, never the view's display mesh.
-  await fx.settleShownMesh?.();
+  // A slice asked for inside Model slices the solid on screen.
   fx.commitModel?.();
   // A part cut for a printer this app does not slice for is exported, never sliced (split to print, D12).
   const exported: string | null = fx.exportedPart?.() ?? null;
