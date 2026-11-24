@@ -729,6 +729,11 @@ struct SweepSpec {
     double twist_deg = 0.0;
     bool has_aux_spine = false;
     Curve3DSpec aux_spine;
+    /// 0 = flat, 1 = round dome, 2 = point tip. Built on the pipe's own end face.
+    int cap_start = 0;
+    int cap_end = 0;
+    /// How far the dome or tip reaches, in millimetres. 0 uses the round cap's depth.
+    double cap_length = 0.0;
 };
 
 /// Decode a `Curve3DSpec` blob written by Rust `encode_curve3d`.

@@ -89,6 +89,7 @@
 #include <GCPnts_AbscissaPoint.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRepBuilderAPI_TransitionMode.hxx>
+#include <Law_Function.hxx>
 #include <Law_Interpol.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <TColgp_Array1OfPnt2d.hxx>
@@ -10201,11 +10202,337 @@ bool sweep_damaged(const TopoDS_Shape& solid) {
     return false;
 }
 
+/// Scale 1 at the pipe's end, falling as a quarter cosine to `end_scale`, so the derivative at the seam is 0 (G1).
+class PipeCapLaw : public Law_Function {
+public:
+    PipeCapLaw(double u0, double u1, double end_scale, double b0, double b1)
+        : u0_(u0), u1_(u1), end_(end_scale), b0_(b0), b1_(b1) {}
+    PipeCapLaw(double u0, double u1, double end_scale) : PipeCapLaw(u0, u1, end_scale, u0, u1) {}
+
+    GeomAbs_Shape Continuity() const override { return GeomAbs_CN; }
+    Standard_Integer NbIntervals(const GeomAbs_Shape) const override { return 1; }
+    void Intervals(TColStd_Array1OfReal& T, const GeomAbs_Shape) const override {
+        T.SetValue(T.Lower(), b0_);
+        T.SetValue(T.Lower() + 1, b1_);
+    }
+    Standard_Real Value(const Standard_Real x) override { return scale_at(x); }
+    void D1(const Standard_Real x, Standard_Real& F, Standard_Real& D) override {
+        const double span = u1_ - u0_;
+        const double t = span_t(x);
+        const double ang = t * (kPi / 2.0);
+        F = end_ + (1.0 - end_) * std::cos(ang);
+        const double w = std::abs(span) > 1e-12 ? (kPi / 2.0) / span : 0.0;
+        D = (1.0 - end_) * (-std::sin(ang) * w);
+    }
+    void D2(const Standard_Real x, Standard_Real& F, Standard_Real& D, Standard_Real& D2v) override {
+        D1(x, F, D);
+        const double span = u1_ - u0_;
+        const double ang = span_t(x) * (kPi / 2.0);
+        const double w = std::abs(span) > 1e-12 ? (kPi / 2.0) / span : 0.0;
+        D2v = (1.0 - end_) * (-std::cos(ang) * w * w);
+    }
+    Handle(Law_Function) Trim(const Standard_Real first, const Standard_Real last, const Standard_Real) const override {
+        return new PipeCapLaw(u0_, u1_, end_, first, last);
+    }
+    void Bounds(Standard_Real& PFirst, Standard_Real& PLast) override {
+        PFirst = b0_;
+        PLast = b1_;
+    }
+
+    DEFINE_STANDARD_RTTI_INLINE(PipeCapLaw, Law_Function)
+
+private:
+    double span_t(double x) const {
+        const double span = u1_ - u0_;
+        if (!(std::abs(span) > 1e-12)) return 0.0;
+        return std::clamp((x - u0_) / span, 0.0, 1.0);
+    }
+    double scale_at(double x) const {
+        return end_ + (1.0 - end_) * std::cos(span_t(x) * (kPi / 2.0));
+    }
+    double u0_, u1_, end_, b0_, b1_;
+};
+
+TopoDS_Wire wire_of_end(const TopoDS_Shape& shape, std::string& error) {
+    if (shape.IsNull()) {
+        error = "The pipe's end is not a closed outline.";
+        return {};
+    }
+    if (shape.ShapeType() == TopAbs_WIRE) return TopoDS::Wire(shape);
+    for (TopExp_Explorer ex(shape, TopAbs_WIRE); ex.More(); ex.Next()) return TopoDS::Wire(ex.Current());
+    BRepBuilderAPI_MakeWire made;
+    int count = 0;
+    for (TopExp_Explorer ex(shape, TopAbs_EDGE); ex.More(); ex.Next()) {
+        const TopoDS_Edge edge = TopoDS::Edge(ex.Current());
+        if (BRep_Tool::Degenerated(edge)) continue;
+        made.Add(edge);
+        ++count;
+    }
+    if (count > 0 && made.IsDone()) return made.Wire();
+    error = "The pipe's end is not a closed outline.";
+    return {};
+}
+
+double wire_reach(const TopoDS_Wire& wire, const gp_Pnt& at) {
+    double reach = 0.0;
+    for (TopExp_Explorer ex(wire, TopAbs_EDGE); ex.More(); ex.Next()) {
+        BRepAdaptor_Curve curve(TopoDS::Edge(ex.Current()));
+        const double first = curve.FirstParameter();
+        const double last = curve.LastParameter();
+        for (int i = 0; i <= 8; ++i) {
+            const double u = first + (last - first) * (static_cast<double>(i) / 8.0);
+            reach = std::max(reach, curve.Value(u).Distance(at));
+        }
+    }
+    return reach;
+}
+
+bool outward_at(const TopoDS_Wire& spine, bool at_end, gp_Pnt& at, gp_Dir& outward, std::string& error) {
+    BRepAdaptor_CompCurve curve(spine);
+    gp_Vec tangent;
+    curve.D1(at_end ? curve.LastParameter() : curve.FirstParameter(), at, tangent);
+    if (tangent.Magnitude() <= 1e-12) {
+        error = "The sweep's path has no direction at its end.";
+        return false;
+    }
+    if (!at_end) tangent.Reverse();
+    outward = gp_Dir(tangent);
+    return true;
+}
+
+gp_Pnt wire_centre(const TopoDS_Wire& wire) {
+    gp_XYZ sum(0, 0, 0);
+    int count = 0;
+    for (TopExp_Explorer ex(wire, TopAbs_EDGE); ex.More(); ex.Next()) {
+        BRepAdaptor_Curve curve(TopoDS::Edge(ex.Current()));
+        sum += curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter())).XYZ();
+        ++count;
+    }
+    if (count == 0) return {};
+    return gp_Pnt(sum / static_cast<double>(count));
+}
+
+bool naked_edge(const TopoDS_Shape& shape) {
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+    for (int i = 1; i <= edge_faces.Extent(); ++i) {
+        const TopoDS_Edge edge = TopoDS::Edge(edge_faces.FindKey(i));
+        if (BRep_Tool::Degenerated(edge)) continue;
+        if (edge_faces(i).Extent() < 2) return true;
+    }
+    return false;
+}
+
+TopoDS_Shape sew_capped_solid(const std::vector<TopoDS_Shape>& pieces, std::string& error) {
+    const auto attempt = [&](double tol) -> TopoDS_Shape {
+        BRepBuilderAPI_Sewing sew(tol);
+        for (const TopoDS_Shape& piece : pieces) {
+            if (!piece.IsNull()) sew.Add(piece);
+        }
+        sew.Perform();
+        const TopoDS_Shape sewn = sew.SewedShape();
+        if (sewn.IsNull() || naked_edge(sewn)) return {};
+        TopoDS_Shell shell;
+        int shells = 0;
+        for (TopExp_Explorer ex(sewn, TopAbs_SHELL); ex.More(); ex.Next()) {
+            shell = TopoDS::Shell(ex.Current());
+            ++shells;
+        }
+        if (shells != 1 || shell.IsNull()) return {};
+        BRepBuilderAPI_MakeSolid made(shell);
+        if (!made.IsDone() || made.Solid().IsNull()) return {};
+        return made.Solid();
+    };
+    TopoDS_Shape solid = attempt(1e-5);
+    if (solid.IsNull()) solid = attempt(1e-4);
+    if (solid.IsNull()) error = "The cap did not meet the pipe's end.";
+    return solid;
+}
+
+TopoDS_Shape planar_end(const TopoDS_Wire& wire, std::string& error) {
+    BRepBuilderAPI_MakeFace face(wire, Standard_True);
+    if (!face.IsDone() || face.Face().IsNull()) {
+        error = "The pipe's end is not a flat outline that can close.";
+        return {};
+    }
+    return face.Face();
+}
+
+TopoDS_Shape point_cap(const TopoDS_Wire& wire, const gp_Pnt& at, const gp_Dir& outward, double length, std::string& error) {
+    const gp_Pnt tip = at.Translated(gp_Vec(outward) * length);
+    try {
+        BRepOffsetAPI_ThruSections loft(Standard_False, Standard_True);
+        loft.AddWire(wire);
+        loft.AddVertex(BRepBuilderAPI_MakeVertex(tip));
+        loft.Build();
+        if (!loft.IsDone() || loft.Shape().IsNull()) {
+            error = "Open CASCADE could not build the point cap on this end.";
+            return {};
+        }
+        return loft.Shape();
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not build the point cap on this end.";
+        return {};
+    }
+}
+
+TopoDS_Shape round_cap(const TopoDS_Wire& wire, const gp_Pnt& at, const gp_Dir& outward, double length, std::string& error) {
+    const gp_Pnt far = at.Translated(gp_Vec(outward) * length);
+    BRepBuilderAPI_MakeEdge edge(at, far);
+    if (!edge.IsDone()) {
+        error = "The round cap has no length.";
+        return {};
+    }
+    BRepBuilderAPI_MakeWire spine(edge.Edge());
+    if (!spine.IsDone()) {
+        error = "The round cap has no length.";
+        return {};
+    }
+    try {
+        BRepOffsetAPI_MakePipeShell cap(spine.Wire());
+        cap.SetMode(Standard_False);
+        // Tighter than the pipe's own default (0.01 rad is 0.57 degrees, past the 0.1 degree G1 bound).
+        cap.SetTolerance(1e-6, 1e-6, 1e-4);
+        cap.SetForceApproxC1(Standard_True);
+        BRepAdaptor_CompCurve curve(spine.Wire());
+        Handle(Law_Function) law = new PipeCapLaw(curve.FirstParameter(), curve.LastParameter(), 0.15);
+        // The section sits on the spine's start vertex, so the dome leaves from the pipe's end face.
+        cap.SetLaw(wire, law, TopExp::FirstVertex(edge.Edge()), Standard_False, Standard_False);
+        Handle(Message_ProgressIndicator) watch;
+        cap.Build(deadline_range(watch));
+        if (!cap.IsDone() || cap.Shape().IsNull()) {
+            error = past_deadline() ? deadline_message() : "Open CASCADE could not build the round cap on this end.";
+            return {};
+        }
+        std::string end_error;
+        const TopoDS_Wire small = wire_of_end(cap.LastShape(), end_error);
+        if (small.IsNull()) {
+            error = "The round cap's tip did not close.";
+            return {};
+        }
+        const TopoDS_Shape lid = planar_end(small, error);
+        if (lid.IsNull()) {
+            error = "The round cap's tip did not close.";
+            return {};
+        }
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        builder.Add(compound, cap.Shape());
+        builder.Add(compound, lid);
+        return compound;
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not build the round cap on this end.";
+        return {};
+    }
+}
+
+struct SeamMeasure {
+    int edges = 0;
+    double angle_deg = 0.0;
+    double gap_mm = 0.0;
+};
+
+SeamMeasure measure_seam(const TopoDS_Shape& solid, const TopoDS_Wire& end) {
+    SeamMeasure out;
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    TopExp::MapShapesAndAncestors(solid, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+    for (int i = 1; i <= edge_faces.Extent(); ++i) {
+        const TopoDS_Edge edge = TopoDS::Edge(edge_faces.FindKey(i));
+        if (BRep_Tool::Degenerated(edge)) continue;
+        BRepAdaptor_Curve on_edge(edge);
+        const gp_Pnt mid = on_edge.Value(0.5 * (on_edge.FirstParameter() + on_edge.LastParameter()));
+        BRepExtrema_DistShapeShape dist(BRepBuilderAPI_MakeVertex(mid).Vertex(), end);
+        if (!dist.IsDone() || dist.NbSolution() < 1 || dist.Value() > 0.05) continue;
+        TopoDS_Face fa, fb;
+        bool got_a = false;
+        bool got_b = false;
+        for (TopTools_ListIteratorOfListOfShape it(edge_faces(i)); it.More(); it.Next()) {
+            const TopoDS_Face face = TopoDS::Face(it.Value());
+            if (!got_a) {
+                fa = face;
+                got_a = true;
+            } else if (!face.IsSame(fa)) {
+                fb = face;
+                got_b = true;
+                break;
+            }
+        }
+        if (!got_a || !got_b) continue;
+        double edge_gap = 0.0;
+        double edge_ang = 0.0;
+        bool sampled = false;
+        try {
+            Standard_Real p1a = 0.0, p2a = 0.0, p1b = 0.0, p2b = 0.0;
+            const Handle(Geom2d_Curve) ca = BRep_Tool::CurveOnSurface(edge, fa, p1a, p2a);
+            const Handle(Geom2d_Curve) cb = BRep_Tool::CurveOnSurface(edge, fb, p1b, p2b);
+            if (ca.IsNull() || cb.IsNull() || !(p2a > p1a + 1e-9) || !(p2b > p1b + 1e-9)) {
+                edge_ang = 180.0;
+            } else {
+                BRepAdaptor_Surface sa(fa);
+                BRepAdaptor_Surface sb(fb);
+                BRepLProp_SLProps pa(sa, 2, 1e-9);
+                BRepLProp_SLProps pb(sb, 2, 1e-9);
+                const double out_a = fa.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+                const double out_b = fb.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+                constexpr int kStations = 5;
+                for (int s = 0; s < kStations; ++s) {
+                    const double frac = 0.1 + 0.8 * (static_cast<double>(s) / (kStations - 1));
+                    const gp_Pnt2d uva = ca->Value(p1a + (p2a - p1a) * frac);
+                    const gp_Pnt2d uvb = cb->Value(p1b + (p2b - p1b) * frac);
+                    pa.SetParameters(uva.X(), uva.Y());
+                    pb.SetParameters(uvb.X(), uvb.Y());
+                    if (!pa.IsNormalDefined() || !pb.IsNormalDefined()) continue;
+                    sampled = true;
+                    edge_gap = std::max(edge_gap, pa.Value().Distance(pb.Value()));
+                    gp_Dir na = pa.Normal();
+                    gp_Dir nb = pb.Normal();
+                    if (out_a < 0.0) na.Reverse();
+                    if (out_b < 0.0) nb.Reverse();
+                    edge_ang = std::max(edge_ang, std::acos(std::clamp(na.Dot(nb), -1.0, 1.0)) * (180.0 / kPi));
+                }
+                if (!sampled) edge_ang = 180.0;
+            }
+        } catch (const Standard_Failure&) {
+            edge_ang = 180.0;
+        }
+        out.edges += 1;
+        out.angle_deg = std::max(out.angle_deg, edge_ang);
+        out.gap_mm = std::max(out.gap_mm, edge_gap);
+    }
+    return out;
+}
+
+bool round_seam_ok(const TopoDS_Shape& solid, const TopoDS_Wire& end, std::string& error) {
+    const SeamMeasure seam = measure_seam(solid, end);
+    if (seam.edges < 1) {
+        error = "The round cap did not meet the pipe's end.";
+        return false;
+    }
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text.setf(std::ios::fixed);
+    if (seam.gap_mm >= kContinuityGapMm) {
+        text.precision(4);
+        text << "The round cap meets the pipe " << seam.gap_mm << " mm off the end.";
+        error = text.str();
+        return false;
+    }
+    if (seam.angle_deg >= kContinuityAngleDeg) {
+        text.precision(2);
+        text << "The round cap meets the pipe at " << seam.angle_deg << " degrees, not tangent.";
+        error = text.str();
+        return false;
+    }
+    return true;
+}
+
 TopoDS_Shape pipe_solid_from_wires(
     const TopoDS_Wire& spine,
     const std::vector<TopoDS_Wire>& section_wires,
     const SweepSpec& spec,
     const TopoDS_Wire& aux_wire,
+    bool apply_caps,
     std::string& error) {
     BRepOffsetAPI_MakePipeShell pipe(spine);
     if (!aux_wire.IsNull()) {
@@ -10264,15 +10591,61 @@ TopoDS_Shape pipe_solid_from_wires(
     }
 
     TopoDS_Shape tool;
+    TopoDS_Wire cap_first;
+    TopoDS_Wire cap_last;
     try {
         Handle(Message_ProgressIndicator) watch;
         pipe.Build(deadline_range(watch));
-        if (!pipe.IsDone() || !pipe.MakeSolid() || pipe.Shape().IsNull()) {
+        if (!pipe.IsDone() || pipe.Shape().IsNull()) {
             error = past_deadline() ? deadline_message()
                                     : "Open CASCADE could not sweep this profile along the path. Make tight bends gentler or reduce the profile size.";
             return {};
         }
-        tool = pipe.Shape();
+        if (!apply_caps) {
+            if (!pipe.MakeSolid()) {
+                error = past_deadline() ? deadline_message()
+                                        : "Open CASCADE could not sweep this profile along the path. Make tight bends gentler or reduce the profile size.";
+                return {};
+            }
+            tool = pipe.Shape();
+        } else {
+            // The shell stops on the pipe's own end wires. A flat end is one face; a round or point cap replaces it,
+            // so the end face is not left under the cap.
+            if (has_solid(pipe.Shape())) {
+                error = "Open CASCADE closed the pipe before its ends could be capped.";
+                return {};
+            }
+            cap_first = wire_of_end(pipe.FirstShape(), error);
+            cap_last = wire_of_end(pipe.LastShape(), error);
+            if (cap_first.IsNull() || cap_last.IsNull()) return {};
+            gp_Pnt start_at, end_at;
+            gp_Dir start_out, end_out;
+            if (!outward_at(spine, false, start_at, start_out, error) || !outward_at(spine, true, end_at, end_out, error)) return {};
+            // FirstShape is the start unless this mode swapped the ends. The wire's centre says which.
+            if (wire_centre(cap_first).Distance(end_at) + 1e-6 < wire_centre(cap_first).Distance(start_at)) {
+                std::swap(cap_first, cap_last);
+            }
+            const auto one_end = [&](int kind, const TopoDS_Wire& wire, const gp_Pnt& at, const gp_Dir& outward) -> TopoDS_Shape {
+                if (kind == 0) return planar_end(wire, error);
+                const double reach = wire_reach(wire, at);
+                if (!(reach > 1e-4)) {
+                    error = "The pipe's end has no size to cap.";
+                    return {};
+                }
+                const double length = spec.cap_length > 0.0 ? spec.cap_length : 0.97 * reach;
+                if (!(length > 1e-4)) {
+                    error = "capLength is how far a round or point cap reaches, in millimetres, above 0 and at most 1000.";
+                    return {};
+                }
+                return kind == 2 ? point_cap(wire, at, outward, length, error) : round_cap(wire, at, outward, length, error);
+            };
+            const TopoDS_Shape start_cap = one_end(spec.cap_start, cap_first, start_at, start_out);
+            if (start_cap.IsNull()) return {};
+            const TopoDS_Shape end_cap = one_end(spec.cap_end, cap_last, end_at, end_out);
+            if (end_cap.IsNull()) return {};
+            tool = sew_capped_solid({pipe.Shape(), start_cap, end_cap}, error);
+            if (tool.IsNull()) return {};
+        }
     } catch (const Standard_Failure&) {
         error = "Open CASCADE could not sweep this profile along the path. Make tight bends gentler or reduce the profile size.";
         return {};
@@ -10308,6 +10681,8 @@ TopoDS_Shape pipe_solid_from_wires(
         error = "A transformed corner left a damaged solid at a bend of this spine. Use a right or round corner there.";
         return {};
     }
+    if (apply_caps && spec.cap_start == 1 && !round_seam_ok(tool, cap_first, error)) return {};
+    if (apply_caps && spec.cap_end == 1 && !round_seam_ok(tool, cap_last, error)) return {};
     return tool;
 }
 
@@ -10363,12 +10738,29 @@ TopoDS_Shape build_sweep(
         }
     }
 
-    TopoDS_Shape tool = pipe_solid_from_wires(spine, outer_wires, spec, aux_wire, error);
+    if (spec.cap_start < 0 || spec.cap_start > 2 || spec.cap_end < 0 || spec.cap_end > 2) {
+        error = "caps is flat, round, or point.";
+        return {};
+    }
+    if (!std::isfinite(spec.cap_length) || spec.cap_length < 0.0 || spec.cap_length > 1000.0) {
+        error = "capLength is how far a round or point cap reaches, in millimetres, above 0 and at most 1000.";
+        return {};
+    }
+    const bool want_caps = spec.cap_start != 0 || spec.cap_end != 0;
+    if (want_caps && spec.spine.closed) {
+        error = "A closed spine has no end to cap.";
+        return {};
+    }
+    if (want_caps && !hole_chains.empty()) {
+        error = "A round or point cap closes one outline. A section with a hole has no single end face to cap.";
+        return {};
+    }
+    TopoDS_Shape tool = pipe_solid_from_wires(spine, outer_wires, spec, aux_wire, want_caps, error);
     if (tool.IsNull()) {
         return {};
     }
     for (const std::vector<TopoDS_Wire>& hole_wires : hole_chains) {
-        TopoDS_Shape hole_solid = pipe_solid_from_wires(spine, hole_wires, spec, aux_wire, error);
+        TopoDS_Shape hole_solid = pipe_solid_from_wires(spine, hole_wires, spec, aux_wire, false, error);
         if (hole_solid.IsNull()) {
             return {};
         }

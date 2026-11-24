@@ -37,6 +37,7 @@ use super::ops::{
     SheetSpec,
     SurfaceBoundary,
     SurfaceContinuity,
+    SweepCap,
     SweepMode,
     SweepTransition,
     ThickenDirection,
@@ -255,6 +256,9 @@ pub(super) fn build_sweep_shape(
     scale: &[[f64; 2]],
     twist_deg: Option<f64>,
     aux_spine: Option<&Curve3D>,
+    cap_start: Option<SweepCap>,
+    cap_end: Option<SweepCap>,
+    cap_length: Option<f64>,
     resolved_edges: &[c_int],
 ) -> Result<Shape, String> {
     if sections.is_empty() {
@@ -325,6 +329,15 @@ pub(super) fn build_sweep_shape(
         SweepTransition::Transformed => 2,
     };
     let scale_flat: Vec<f64> = scale.iter().flatten().copied().collect();
+    let cap_code = |cap: Option<SweepCap>| match cap {
+        None | Some(SweepCap::Flat) => 0,
+        Some(SweepCap::Round) => 1,
+        Some(SweepCap::Point) => 2,
+    };
+    let length = cap_length.unwrap_or(0.0);
+    if !length.is_finite() || length < 0.0 || length > 1000.0 {
+        return Err("capLength is how far a round or point cap reaches, in millimetres, above 0 and at most 1000.".into());
+    }
     let raw_from = from.map_or(std::ptr::null(), Shape::raw);
     Shape::made(|error| unsafe {
         lime_tree_sweep(
@@ -346,6 +359,9 @@ pub(super) fn build_sweep_shape(
             if scale_flat.is_empty() { std::ptr::null() } else { scale_flat.as_ptr() },
             scale_flat.len() as c_int,
             twist_deg.unwrap_or(0.0),
+            cap_code(cap_start),
+            cap_code(cap_end),
+            length,
             error,
         )
     })

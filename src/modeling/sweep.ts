@@ -38,6 +38,8 @@ export interface SweepSpec {
   caps?: Cap;
   capStart?: Cap;
   capEnd?: Cap;
+  /** How far a round dome or a point tip reaches, in millimetres. Absent: the round cap's own rule. */
+  capLength?: number;
 }
 
 export type Cap = "flat" | "round" | "point";
@@ -67,16 +69,37 @@ function sectionSize(section: LoftSection): number {
  * The sections that close one end: a round cap as four sections shrinking along a quarter ellipse as deep as the end
  * is wide, a point as one tiny section a little past the end. `out` is the direction away from the sweep.
  */
-function capSections(end: LoftSection, out: V3, cap: Cap): LoftSection[] {
+function capSections(end: LoftSection, out: V3, cap: Cap, length?: number): LoftSection[] {
   if (cap === "flat") return [];
   const size = sectionSize(end);
   const at = (d: number): V3 => end.origin.map((c, i) => round(c + out[i]! * d)) as V3;
-  if (cap === "point") return [{ ...shrunk(end, 0.05), origin: at(size * 0.9) }];
+  if (cap === "point") return [{ ...shrunk(end, 0.05), origin: at(length ?? size * 0.9) }];
   return [1, 2, 3, 4].map((j) => {
     const angle = (j / 4) * (Math.PI / 2);
     // The last section stays a sixth of the end's size: smaller pinches the loft's tip into a dimple.
-    return { ...shrunk(end, Math.max(Math.cos(angle), 0.15)), origin: at(size * Math.sin(angle) * (j === 4 ? 0.97 : 1)) };
+    // Left out, the tip sits at 0.97 of the end's size. capLength moves that same quarter ellipse.
+    const dist = size * Math.sin(angle) * (j === 4 ? 0.97 : 1);
+    const reach = length === undefined || !(size * 0.97 > 1e-9) ? dist : dist * (length / (size * 0.97));
+    return { ...shrunk(end, Math.max(Math.cos(angle), 0.15)), origin: at(reach) };
   });
+}
+
+/** Caps stored on a pipe-shell sweep. Flat ends are omitted, so an uncapped sweep is unchanged. */
+export function pipeCapOptions(spec: { caps?: Cap; capStart?: Cap; capEnd?: Cap; capLength?: number }): { capStart?: Cap; capEnd?: Cap; capLength?: number } | { reason: string } {
+  for (const key of ["caps", "capStart", "capEnd"] as const) {
+    const value = spec[key];
+    if (value !== undefined && !CAPS.includes(value)) return { reason: `${key} is flat, round, or point.` };
+  }
+  if (spec.capLength !== undefined && (typeof spec.capLength !== "number" || !Number.isFinite(spec.capLength) || !(spec.capLength > 0) || spec.capLength > 1000)) {
+    return { reason: "capLength is how far a round or point cap reaches, in millimetres, above 0 and at most 1000." };
+  }
+  const capStart = spec.capStart ?? spec.caps ?? "flat";
+  const capEnd = spec.capEnd ?? spec.caps ?? "flat";
+  return {
+    ...(capStart !== "flat" ? { capStart } : {}),
+    ...(capEnd !== "flat" ? { capEnd } : {}),
+    ...(spec.capLength !== undefined ? { capLength: spec.capLength } : {}),
+  };
 }
 
 /** A value for each path point: one number, a one-element list of that number, or a list as long as the path. */
@@ -103,18 +126,13 @@ export function pathBends(path: readonly V3[]): boolean {
   return false;
 }
 
-const SPINE_FORM = "sweep it as sections along a spine: sections: [{origin, turn, profile}], spine: {kind: \"spline\", through: [the path points]}.";
-
 /**
  * A bending path and a profile, as the pipe-shell a sections-and-spine sweep uses: one section at the start, oriented
- * the way the loft sections are, and a spline through the path. Round and point caps have no pipe form, so they are
- * refused with the spine form to type instead.
+ * the way the loft sections are, and a spline through the path. Caps are stored on that sweep and built on its ends.
  */
 export function bendingPathSweep(spec: SweepSpec): { sections: LoftSection[]; spine: { kind: "spline"; through: V3[] }; scale?: [number, number][] } | { reason: string } {
   const path = spec.path;
   if (!Array.isArray(path) || path.length < 2) return { reason: "A sweep needs a path of at least 2 [x, y, z] points." };
-  const cap = (["caps", "capStart", "capEnd"] as const).map((key) => spec[key]).find((value) => value === "round" || value === "point");
-  if (cap) return { reason: `A path with a bend cannot close with ${cap} caps; ${SPINE_FORM}` };
   const profile = spec.profile;
   if (!Array.isArray(profile) || profile.length < 3 || profile.some((point) => !Array.isArray(point) || point.length < 2 || !point.every((n) => typeof n === "number" && Number.isFinite(n)))) {
     return { reason: "A profile needs at least three [u, v] points." };
@@ -206,11 +224,10 @@ export function sweepSections(spec: SweepSpec): LoftSection[] | { reason: string
   for (const list of [radius, radiusV, scale]) if (list && "reason" in list) return list;
   const lists = [radius, radiusV, scale] as (number[] | undefined)[];
   if (lists.some((list) => list && list.some((v) => !(v > 0)))) return { reason: "Each radius and scale is above 0." };
-  for (const key of ["caps", "capStart", "capEnd"] as const) {
-    if (spec[key] !== undefined && !CAPS.includes(spec[key]!)) return { reason: `${key} is flat, round, or point.` };
-  }
-  const capStart = spec.capStart ?? spec.caps ?? "flat";
-  const capEnd = spec.capEnd ?? spec.caps ?? "flat";
+  const caps = pipeCapOptions(spec);
+  if ("reason" in caps) return caps;
+  const capStart = caps.capStart ?? "flat";
+  const capEnd = caps.capEnd ?? "flat";
   const steps = spec.steps === undefined ? 3 : Math.round(spec.steps);
   if (!(steps >= 1 && steps <= 12)) return { reason: "steps is 1 to 12 sections a span." };
   const carried = lists.map((list) => list ?? Array.from({ length: n }, () => 0));
@@ -249,8 +266,8 @@ export function sweepSections(spec: SweepSpec): LoftSection[] | { reason: string
     sections.push(section);
   }
   // Ends closed past the path's ends, along its direction there, so the path's own length is kept.
-  const startCap = capSections(sections[0]!, mul(tangent(0), -1), capStart).reverse();
-  const endCap = capSections(sections[sections.length - 1]!, tangent(pts.length - 1), capEnd);
+  const startCap = capSections(sections[0]!, mul(tangent(0), -1), capStart, caps.capLength).reverse();
+  const endCap = capSections(sections[sections.length - 1]!, tangent(pts.length - 1), capEnd, caps.capLength);
   if (sections.length + startCap.length + endCap.length > MAX_SECTIONS) {
     return { reason: `This sweep and its caps make more than ${MAX_SECTIONS} sections. Use fewer path points or a lower steps.` };
   }
