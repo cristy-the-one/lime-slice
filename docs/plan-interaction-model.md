@@ -1,6 +1,6 @@
 # Plan: one interaction model for Lime Slice
 
-Status: proposed. The owner on 2026-11-24: "i need a coherent way of interacting with the lime-slice. it seems so blind evolution. I don't like it."
+Status: approved on 2026-11-24 with every proposal in section 6 ("Yes, all proposals"). The owner on 2026-11-24: "i need a coherent way of interacting with the lime-slice. it seems so blind evolution. I don't like it."
 
 Lime Slice grew one feature at a time, and each one landed where its author was working. This plan writes down what each part of the window is for, audits every action against it, and sets the rules a new feature follows. `docs/plan-export-and-linking.md` (X1, X2) is the first piece of it.
 
@@ -155,7 +155,7 @@ A test guards the rules once I2 lands: `src/ui/commands.test.ts` checks that eve
 
 ## 5. The checklist for a new feature
 
-This goes into `CLAUDE.md` once the owner approves it, and every feature plan and PR answers it:
+This is in `CLAUDE.md` ("Where a feature goes"), and every feature plan and PR answers it:
 
 1. **Which stage's job is it?** Name the stage from section 1, or "app level". If it changes design space, it is Pose. If it changes the print layout, it is Prepare.
 2. **Where is its one home?** A rail tool or a menu entry. Any other button opens that home.
@@ -164,10 +164,12 @@ This goes into `CLAUDE.md` once the owner approves it, and every feature plan an
 5. **Its word:** the same in the label, the command, the MCP tool and the guide.
 6. **Undo:** Ctrl+Z in its stage takes it back.
 
-## 6. For the owner
+## 6. Decisions
 
-1. **D1. Stage order.** Tabs read Model 1, Pose 2, Prepare 3, Preview 4, G-code 5 (design, then print), with a thin divider between Pose and Prepare. The number keys move with them. Or keep today's order, with the divider only?
-2. **D2. Scale's key.** Scale is S in Prepare and X in Model, where S is Sketch. Proposal: Model's Scale solid takes Shift+S. Inside a sketch Shift+S is Slot, but sketch keys only work while a sketch is open, so the two never clash. Or leave Model's Scale on X?
-3. **D3. Calibrate and printers.** Calibrate moves into Prepare (a rail button that adds test parts), and Printers and filaments gets its own top-bar menu beside File. Agree?
-4. **D4. Place.** Model's "Place in model space" becomes Pose's Move (M), so design space has one owner. Model keeps Workplane for where to draw. Agree?
-5. **D5. The assembly view.** Prepare's "Print layout | Assembly" chip goes; Pose already draws design space. Agree, or keep the chip in Prepare as a read-only look?
+The owner took every proposal on 2026-11-24: "Yes, all proposals".
+
+1. **D1. Stage order:** Model 1, Pose 2, then a thin divider, then Prepare 3, Preview 4, G-code 5. The number keys move with the tabs (I1).
+2. **D2. Scale's key:** Model's Scale solid moves from X to Shift+S. Inside a sketch Shift+S stays Slot, because sketch keys only work while a sketch is open (I3).
+3. **D3. Calibrate and printers:** Calibrate becomes a Prepare rail button that adds test parts. Printers and filaments gets its own top-bar menu beside File (I6).
+4. **D4. Place:** Model's "Place in model space" becomes Pose's Move (M), so design space has one owner. Model keeps Workplane (I5).
+5. **D5. The assembly view:** Prepare's "Print layout | Assembly" chip goes, because Pose draws design space (I5).

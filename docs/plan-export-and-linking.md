@@ -1,6 +1,6 @@
 # Plan: one Export, and assemblies made where they are posed
 
-Status: proposed. The owner asked on 2026-11-24, after looking for an STL export: "so, i link in prepare — prepare that is meant only for positioning on the belt/bed, for printing — then i do something in pose and it gets possible to be exported… at least silly". And: "i need a coherent way of interacting with the lime-slice. it seems so blind evolution."
+Status: approved on 2026-11-24 with both proposals in section 6. The owner asked on 2026-11-24, after looking for an STL export: "so, i link in prepare — prepare that is meant only for positioning on the belt/bed, for printing — then i do something in pose and it gets possible to be exported… at least silly". And: "i need a coherent way of interacting with the lime-slice. it seems so blind evolution."
 
 This plan fixes the two places that request found. It is the first plan written to one rule, which a wider interaction-model plan will apply to every stage: **a stage owns one job, and work that is no stage's job (files, export, settings) belongs to the app, reachable from anywhere.**
 
@@ -97,7 +97,9 @@ Each milestone updates the docs it touches (`docs/plan-assemblies.md` M5 gets a 
 
 X1 first: it is the owner's request and stands alone. X2 next, as its own PR. Both go to main through PRs reviewed on the Claude side.
 
-## 6. For the owner
+## 6. Decisions
 
-1. **Ctrl+Shift+E** for Export (D3), or another key?
-2. **Prepare's "Edit in Pose" link** (D6): keep it for one release, or leave Prepare's header with Lay out only from the start?
+The owner took both proposals on 2026-11-24: "Yes, all proposals".
+
+1. **Ctrl+Shift+E** opens Export (D3).
+2. **Prepare's "Edit in Pose" link** (D6) stays for one release, where Attach was, then goes.
