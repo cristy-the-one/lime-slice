@@ -891,6 +891,8 @@ struct SidePrep {
     bool has_normal = false;
     gp_Vec Ds;
     gp_Vec Dss;
+    /// When set, the boundary cross derivative is this long, in the pipe face's own outward direction.
+    double absolute_ribbon = 0.0;
     std::vector<double> extra_start;
     std::vector<double> extra_end;
     std::vector<int> edges;
@@ -1186,6 +1188,16 @@ BuiltPiece build_one_piece(
         if (!got.ok) {
             error = got.error;
             return false;
+        }
+        if (side.absolute_ribbon > 0.0) {
+            gp_Vec direction = got.Ds;
+            if (!(direction.Magnitude() > 1e-12)) {
+                error = "The round cap meets the pipe, but the end face has no direction to leave from.";
+                return false;
+            }
+            direction.Normalize();
+            outv = direction.Multiplied(side.absolute_ribbon);
+            return true;
         }
         const double g = std::max(point.Distance(centre), 1e-6);
         outv = got.Ds.Multiplied(side.tension * g);
@@ -1627,6 +1639,8 @@ TopoDS_Shape fill_hermite_patch(
     const std::vector<int>& orders,
     const std::vector<std::vector<int>>& edge_ids,
     const std::vector<std::array<double, 3>>& points,
+    const gp_Pnt* apex,
+    double ribbon,
     std::string& error) {
     const int count = static_cast<int>(curves.size());
     if (count < 3 || count > 20 || static_cast<int>(faces.size()) != count || static_cast<int>(orders.size()) != count) {
@@ -1711,6 +1725,18 @@ TopoDS_Shape fill_hermite_patch(
         }
         centre = guide;
         on_centre[k] = 1;
+    }
+    // A round cap closes on an apex along the end axis. The ribbon at every boundary sample is the pipe face's own
+    // outward derivative, of length `ribbon` (capLength), so the seam is tangent by construction.
+    if (apex != nullptr) {
+        const gp_Vec rise(centre, *apex);
+        if (rise.Magnitude() > 1e-6) centre_normal = gp_Dir(rise);
+        centre = *apex;
+        max_radius = 1e-6;
+        for (const gp_Pnt& p : cloud) max_radius = std::max(max_radius, centre.Distance(p));
+        if (ribbon > 0.0) {
+            for (SidePrep& side : sides) side.absolute_ribbon = ribbon;
+        }
     }
 
     std::vector<SplitPrep> splits(static_cast<size_t>(count));

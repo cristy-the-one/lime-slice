@@ -131,6 +131,24 @@ function seamEdges(edges: ContinuityEdge[], frame: { at: V3; out: V3 }): Continu
   });
 }
 
+/** Printed before the assertion, so a failing case still names its worst seam angle. */
+function reportSeams(label: string, edges: ContinuityEdge[], frames: { at: V3; out: V3 }[] | undefined) {
+  if (!frames || frames.length === 0) {
+    console.log(`pipe-caps-occt ${label} worst seam: (no frame)`);
+    return;
+  }
+  const parts = frames.map((frame, index) => {
+    const rows = seamEdges(edges, frame);
+    let worst: number | undefined;
+    for (const row of rows) {
+      if (typeof row.angleDeg !== "number") continue;
+      worst = worst === undefined ? row.angleDeg : Math.max(worst, row.angleDeg);
+    }
+    return `end ${index} ${worst === undefined ? "(none)" : `${worst} deg`} (${rows.length} edges)`;
+  });
+  console.log(`pipe-caps-occt ${label} worst seam: ${parts.join("; ")}`);
+}
+
 const profile = [[-2, -2], [2, -2], [2, 2], [-2, 2]];
 const path: V3[] = [[0, 0, 0], [15, 1, 0], [30, 4, 1], [45, 6, 1], [60, 4, 0]];
 
@@ -148,6 +166,8 @@ try {
   const edges = (checked.continuity?.edges ?? []) as ContinuityEdge[];
   const seams = frames ? frames.map((frame) => seamEdges(edges, frame)) : [];
   const g1 = seams.length === 2 && seams.every((rows) => rows.length >= 3 && rows.every((row) => row.kind === "G1" || row.kind === "G2"));
+  if (!roundSolid) console.log(`pipe-caps-occt round worst seam: (no solid) ${why(round)}`);
+  else reportSeams("round", edges, frames);
   check(
     "a curved profile with round caps is one closed solid, larger than the flat pipe, G1 at both seams",
     flat.ok === true && round.ok === true && flatSolid !== undefined && roundSolid !== undefined
@@ -174,6 +194,9 @@ try {
   const bothReach = frames && roundSolid ? frames.map((frame) => reach(roundSolid, frame)) : [];
   const startReach = frames && startSolid ? frames.map((frame) => reach(startSolid, frame)) : [];
   const flatReach = frames && flatSolid ? frames.map((frame) => reach(flatSolid, frame)) : [];
+  const startChecked = startOnly.ok === true ? await call("model_check", { object: startOnly.object, surfaces: true }) : { ok: false };
+  if (!startSolid) console.log(`pipe-caps-occt capStart worst seam: (no solid) ${why(startOnly)}`);
+  else reportSeams("capStart", (startChecked.continuity?.edges ?? []) as ContinuityEdge[], frames);
   check(
     "capStart round changes only the start end",
     startOnly.ok === true && startSolid !== undefined && flatSolid !== undefined && roundSolid !== undefined
@@ -190,6 +213,12 @@ try {
   const elbowRound = await call("solid_new", { feature: { kind: "sweep", sections: elbowSection, spine: elbowSpine, transition: "round", caps: "round" } });
   const elbowFlatSolid = elbowFlat.ok === true ? solidOf(String(elbowFlat.object)) : undefined;
   const elbowRoundSolid = elbowRound.ok === true ? solidOf(String(elbowRound.object)) : undefined;
+  const elbowChecked = elbowRound.ok === true ? await call("model_check", { object: elbowRound.object, surfaces: true }) : { ok: false };
+  const elbowFrames = elbowFlatSolid
+    ? endFrames(elbowFlatSolid, [0, 0, 0], [40, 40, 40])
+    : [{ at: [0, 0, 0] as V3, out: [-1, 0, 0] as V3 }, { at: [40, 40, 40] as V3, out: [0, 0, 1] as V3 }];
+  if (!elbowRoundSolid) console.log(`pipe-caps-occt elbow worst seam: (no solid) ${why(elbowRound)}`);
+  else reportSeams("elbow", (elbowChecked.continuity?.edges ?? []) as ContinuityEdge[], elbowFrames);
   check(
     "a sections and spine sweep with 90 degree elbows takes round caps",
     elbowFlat.ok === true && elbowRound.ok === true && elbowFlatSolid !== undefined && elbowRoundSolid !== undefined
