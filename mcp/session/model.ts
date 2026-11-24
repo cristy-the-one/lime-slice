@@ -1175,7 +1175,7 @@ async function sectionTool(this: Session, obj: PlateObject, input: Record<string
     throw err;
   }
   if ("reason" in cut) return refuse("bad-argument", cut.reason);
-  return answer(cut.sections, cut.extra);
+  return answer(cut.sections, { frame: obj.frame === "part" ? "part" : "model", ...cut.extra });
 }
 
 /** --- API 1.2. What a recipe's pick reads: any part's faces, sections and sketches (the person named them), and recipe data. */

@@ -15,7 +15,7 @@ import { AnchorError, hasAnchor, resolveAnchors, type Box } from "../../src/mode
 import { exprLeaves, linkedExprs, withLeaf } from "../../src/modeling/links.ts";
 import { applyPose, toSolidOp, typedPoseOf } from "../../src/model-space.ts";
 import { dropped, jumped, opLabel, pathTo, rechained, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type ProfileLoop } from "../../src/model-tree.ts";
-import { groupSkipsMesh, guardReadsBefore, liteSolid, queuedGuard, queueableOp } from "../../src/recipe/queue.ts";import { runEndingAt } from "../../src/plugin-step.ts";
+import { groupSkipsMesh, guardReadsBefore, liteSolid, queuedGuardAt, queueableOp } from "../../src/recipe/queue.ts";import { runEndingAt } from "../../src/plugin-step.ts";
 import { workplaneOwn, planePrimitive, type Workplane } from "../../src/workplane.ts";
 import { ProtocolError } from "../engine.ts";
 import { expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, type ExpandContext, type Piece } from "../../src/modeling/compose.ts";
@@ -747,10 +747,10 @@ async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; 
       }
       before = meshed;
     }
-    const guard = queuedGuard(steps, before, obj.solid);
+    const guard = queuedGuardAt(steps, before, obj.solid);
     if (guard) {
       await back();
-      return { ok: false, code: "step-guard", reason: guard };
+      return { ok: false, code: "step-guard", reason: guard.reason, ...(guard.index !== undefined ? { index: guard.index } : {}) };
     }
     bare = lite ? node : null;
   }

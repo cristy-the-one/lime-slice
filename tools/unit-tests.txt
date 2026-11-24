@@ -299,6 +299,7 @@ src/model-settle.test.ts
 src/trackpad-orbit.test.ts
 mcp/settle.test.ts
 mcp/place-frame.test.ts
+mcp/nothing-silent.test.ts
 src/viewport-grab.test.ts
 src/model-grab.test.ts
 src/measure-points.test.ts

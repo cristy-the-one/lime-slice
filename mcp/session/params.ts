@@ -76,6 +76,7 @@ function adoptMcpModel(this: Session, value: Record<string, unknown> | undefined
   this.rustRecipes.clear();
   this.animations.clear();
   this.recipePreviewHashes.clear();
+  this.recipePreviewSources.clear();
   this.recipeCheckpoints.clear();
   if (!value) return;
   const animations = value.animations;

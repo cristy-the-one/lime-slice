@@ -43,7 +43,7 @@ import { GLOBAL_WORKPLANE, planePrimitive, type Workplane } from "../workplane.t
 import type { RecipeCall, RecipeCallSite, RecipeReply } from "./host.ts";
 import { answerPick, sketchOutline, type PickReads } from "./picks.ts";
 import { answerTextOutline } from "./text-outline.ts";
-import { groupSkipsMesh, guardReadsBefore, liteSolid, queuedGuard, queueableOp, RecipeQueue } from "./queue.ts";
+import { groupSkipsMesh, guardReadsBefore, liteSolid, queuedGuardAt, queueableOp, RecipeQueue } from "./queue.ts";
 
 type Body = Record<string, unknown>;
 
@@ -329,10 +329,10 @@ export class AppRecipeCalls {
         }
         before = meshed;
       }
-      const guard = queuedGuard(steps, before, p.solid);
+      const guard = queuedGuardAt(steps, before, p.solid);
       if (guard) {
         await back();
-        return { ok: false, reason: guard };
+        return { ok: false, reason: guard.reason, ...(guard.index !== undefined ? { index: guard.index } : {}) };
       }
       bare = unmeshed !== undefined && node !== null && p.solid?.positions.length === 0 ? node : null;
     }
@@ -617,7 +617,7 @@ export class AppRecipeCalls {
   }
 
   private measure(p: RunPart, input: Body): Promise<Body> {
-    return measureReply(p.solid, this.typedPlane(p), input, (faceA, faceB) => this.engine.tree(p.tree.key, p.tree.current, { call: "distance", key: p.tree.key, node: p.tree.current, aKind: "face", aIndex: faceA, bKind: "face", bIndex: faceB }));
+    return measureReply(p.solid, this.typedPlane(p), input, (faceA, faceB) => this.engine.tree(p.tree.key, p.tree.current, { call: "distance", key: p.tree.key, node: p.tree.current, aKind: "face", aIndex: faceA, bKind: "face", bIndex: faceB }), p.frame === "part" ? "part" : "model");
   }
 
   private async section(p: RunPart, args: Body): Promise<Body> {
@@ -631,7 +631,7 @@ export class AppRecipeCalls {
     if ("reason" in cut) return { ok: false, reason: cut.reason };
     const points = cut.sections.reduce((sum, section) => sum + pointsIn(section), 0);
     if (points > MAX_SECTION_POINTS) return { ok: false, reason: `This answer would hold ${points} points, over ${MAX_SECTION_POINTS}. Cut fewer planes, pass resample, or a larger chordMm.` };
-    return { ok: true, object: p.id, ...cut.extra, sections: cut.sections };
+    return { ok: true, object: p.id, frame: p.frame === "part" ? "part" : "model", ...cut.extra, sections: cut.sections };
   }
 
   // --- Frames and baking. ---
