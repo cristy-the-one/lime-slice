@@ -505,3 +505,31 @@ fn thicken_on_a_tight_tube_builds_the_exact_wall_or_refuses() {
     }
     assert!(refused >= 1, "the wall toward the axis cannot be built 3 mm thick on a 2 mm radius");
 }
+
+/// A STEP import that is not a closed solid takes no edit, as on main (the app slices it with a warning): not Unify, not
+/// the sheet ops. Those are for sheets the ops build, which keep them; Unify is not a sheet op.
+#[test]
+fn a_surfaces_only_step_import_takes_no_edit() {
+    let built = "s4-step-sheet-source";
+    call(json!({ "call": "open", "key": built, "chordMm": 0.1, "feature": {
+        "kind": "sheet", "mode": "extrude", "dir": [0.0, 0.0, 1.0], "distance": 10.0,
+        "curves": [{ "kind": "polyline", "points": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]] }]
+    } }));
+    let unify_built = call_raw(json!({ "call": "apply", "key": built, "parent": 0, "node": 1, "chordMm": 0.1, "op": { "kind": "unify" } }));
+    assert!(unify_built.get("error").is_some(), "Unify is not a sheet op: {unify_built}");
+    let sewn_built = call_raw(json!({ "call": "apply", "key": built, "parent": 0, "node": 2, "chordMm": 0.1, "op": { "kind": "sew" } }));
+    assert!(sewn_built.get("error").is_none(), "a built sheet takes the sheet ops: {sewn_built}");
+    let step = call(json!({ "call": "export", "key": built, "node": 0, "format": "step" }));
+    call(json!({ "call": "close", "key": built }));
+
+    let key = "s4-step-sheet";
+    let opened = call(json!({ "call": "open", "key": key, "chordMm": 0.1, "dataB64": step["bytesBase64"] }));
+    assert_eq!(opened["solid"], json!(false), "the import is surfaces only: {opened}");
+    for op in [json!({ "kind": "unify" }), json!({ "kind": "sew" }), json!({ "kind": "thicken", "thickness": 1.0 })] {
+        let reply = call_raw(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": 0.1, "op": op.clone() }));
+        let error = reply["error"].as_str().unwrap_or("");
+        println!("{} on a surfaces-only STEP: {error}", op["kind"]);
+        assert!(!error.is_empty(), "{op} on a surfaces-only STEP import is refused, as on main: {reply}");
+    }
+    call(json!({ "call": "close", "key": key }));
+}

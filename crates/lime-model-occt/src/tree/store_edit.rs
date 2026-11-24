@@ -248,8 +248,9 @@ impl Store {
         let (op, reused) = {
             let doc = doc_in(&mut self.docs, key)?;
             let probed = doc.probe.take();
+            let step_root = doc.step_root;
             let from = doc.shape(parent);
-            if !op.allows_sheet() {
+            if !op.allows_sheet() || step_root {
                 from.editable().map_err(Failure::Message)?;
             }
             let op = resolve(from, op, &steps).map_err(Failure::Message)?;

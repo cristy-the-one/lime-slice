@@ -94,8 +94,10 @@ impl Store {
         let (op, reused) = {
             let doc = doc_in(&mut self.docs, &key)?;
             let probed = doc.probe.take();
+            let step_root = doc.step_root;
             let from = doc.shape(parent);
-            if !op.allows_sheet() {
+            // A STEP import that is not a closed solid takes no edit, as on main; the sheet ops are for built sheets.
+            if !op.allows_sheet() || step_root {
                 from.editable().map_err(Failure::Message)?;
             }
             let op = resolve(from, &op, &steps).map_err(Failure::Message)?;
@@ -509,6 +511,7 @@ impl Store {
         };
         let display = self.display;
         let doc = doc_in(&mut self.docs, key)?;
+        let step_root = doc.step_root;
         // --- A10. Clone before the shape is borrowed: a preview face keeps its parent's node, and a new face is null.
         let parent_owners = doc
             .nodes
@@ -520,7 +523,7 @@ impl Store {
         let result = tool
             .and_then(|tool| steps.map(|found| (tool, found)))
             .and_then(|(tool, found)| {
-                if op.allows_sheet() {
+                if op.allows_sheet() && !step_root {
                     Ok((tool, found))
                 } else {
                     from.editable().map(|()| (tool, found))

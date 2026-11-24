@@ -6,9 +6,9 @@
 // n(s). It is not the step 6 transverse ribbon; that ribbon is the split's
 // departure tangent, already stored on the shared cubic.
 
-constexpr double kHermiteGapMm = 1e-4;
-constexpr double kHermiteAngleDeg = 0.1;
-constexpr double kHermiteJump = 1e-3;
+constexpr double kHermiteGapMm = kContinuityGapMm;
+constexpr double kHermiteAngleDeg = kContinuityAngleDeg;
+constexpr double kHermiteJump = kContinuityJump;
 constexpr int kHermiteStations = 5;
 constexpr int kHermiteRefineCap = 24;
 
@@ -720,11 +720,15 @@ gp_Vec project_off(const gp_Vec& v, const gp_Vec& unit_n) {
 /// The last Hermite fill's own measure, as JSON, for the tests (lime_tree_test_last_fill): each asked edge's largest gap,
 /// angle and curvature jump at the op's stations, how many refinement rounds it took, and whether it was refused. Per
 /// thread: an op runs on the thread that called, so a test reads its own op's measure.
+#ifdef LIME_OCCT_TEST_HOOKS
 thread_local std::string g_last_fill;
+#endif
 /// The farthest a guide point is from the patch the op kept, by the op's own projection; -1 with no guide.
 thread_local double g_guide_off = -1.0;
 
+/// Debug builds only: a release build keeps no test state and builds no string.
 void note_last_fill(const std::vector<EdgeReport>& reports, int refinements, bool refused) {
+#ifdef LIME_OCCT_TEST_HOOKS
     std::ostringstream out;
     out.precision(9);
     out << "{\"refinements\":" << refinements << ",\"refused\":" << (refused ? "true" : "false") << ",\"edges\":[";
@@ -736,13 +740,20 @@ void note_last_fill(const std::vector<EdgeReport>& reports, int refinements, boo
     }
     out << "],\"guideMm\":" << g_guide_off << "}";
     g_last_fill = out.str();
+#else
+    (void)reports;
+    (void)refinements;
+    (void)refused;
+#endif
 }
 
 }  // namespace
 
+#ifdef LIME_OCCT_TEST_HOOKS
 std::string last_fill_report() {
     return g_last_fill;
 }
+#endif
 
 namespace {
 
@@ -2003,6 +2014,20 @@ TopoDS_Shape fill_hermite_blend(
             gp_Pnt point;
             gp_Vec tangent;
             curve->D1(t, point, tangent);
+            // A G0 side has no face ribbon: as a patch's G0 half (plan R2.3 step 6), its first derivative runs from the
+            // rim straight to the other rim, scaled by the tension, and its second derivative is 0.
+            if ((far_side ? order_b : order_a) == 0) {
+                gp_Pnt other;
+                (far_side ? ua : ub)->D0(t, other);
+                const gp_Vec chord(point, other);
+                if (chord.Magnitude() < kHermiteGapMm) {
+                    error = "These edges already meet, so there is no gap to bridge.";
+                    return false;
+                }
+                T = (far_side ? chord.Reversed() : chord).Multiplied(tension);
+                A = gp_Vec(0, 0, 0);
+                return true;
+            }
             const TopoDS_Face support_here = face_along(far_side ? faces_b : faces_a, support, point, tangent);
             const Transverse got = transverse_at(support_here, point, tangent, far_side ? 1 : 0);
             if (!got.ok) {

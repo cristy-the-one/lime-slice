@@ -22,6 +22,13 @@
 
 namespace lime_occt {
 
+/// The continuity bounds, in one place: what a patch, a blend and a G2 fillet are built to, and what model_check
+/// {surfaces:true} classes an edge by. G0: the gap is under kContinuityGapMm. G1: G0 and the oriented normals meet within
+/// kContinuityAngleDeg. G2: G1 and the normal curvature across the edge jumps by at most kContinuityJump per mm.
+constexpr double kContinuityGapMm = 1e-4;
+constexpr double kContinuityAngleDeg = 0.1;
+constexpr double kContinuityJump = 1e-3;
+
 /// The refusal for a step Open CASCADE crashed inside: an access violation, an illegal instruction, or an integer
 /// divide by zero that no check of ours can see coming, such as the null edge BRepOffset_Inter2d hands
 /// BRepAdaptor_Curve when a wall beside raised lettering is pushed.
