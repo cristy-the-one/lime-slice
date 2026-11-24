@@ -605,6 +605,64 @@ Transverse transverse_at(const TopoDS_Face& face, const gp_Pnt& point, const gp_
     }
 }
 
+// Unit tangent of the face, pointing out of it across the boundary edge nearest `point`.
+// This is the direction a round cap has to leave in so the seam matches the wall's own pcurve.
+bool leaving_direction(const TopoDS_Face& face, const gp_Pnt& point, gp_Vec& out) {
+    if (face.IsNull()) return false;
+    try {
+        TopoDS_Edge nearest;
+        double nearest_dist = 0.05;
+        double nearest_param = 0.0;
+        for (TopExp_Explorer explorer(face, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+            const TopoDS_Edge edge = TopoDS::Edge(explorer.Current());
+            if (BRep_Tool::Degenerated(edge)) continue;
+            Standard_Real first = 0.0;
+            Standard_Real last = 0.0;
+            const Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
+            if (curve.IsNull() || !(last > first)) continue;
+            GeomAPI_ProjectPointOnCurve proj(point, curve, first, last);
+            if (proj.NbPoints() < 1 || !(proj.LowerDistance() < nearest_dist)) continue;
+            nearest_dist = proj.LowerDistance();
+            nearest = edge;
+            nearest_param = proj.LowerDistanceParameter();
+        }
+        if (nearest.IsNull()) return false;
+        Standard_Real pfirst = 0.0;
+        Standard_Real plast = 0.0;
+        const Handle(Geom2d_Curve) pcurve = BRep_Tool::CurveOnSurface(nearest, face, pfirst, plast);
+        Standard_Real cfirst = 0.0;
+        Standard_Real clast = 0.0;
+        BRep_Tool::Curve(nearest, cfirst, clast);
+        if (pcurve.IsNull() || !(plast > pfirst) || !(clast > cfirst)) return false;
+        const double frac = std::clamp((nearest_param - cfirst) / (clast - cfirst), 0.0, 1.0);
+        gp_Pnt2d uv;
+        gp_Vec2d duv;
+        pcurve->D1(pfirst + frac * (plast - pfirst), uv, duv);
+        if (!(duv.Magnitude() > 1e-14)) return false;
+        gp_Vec2d perp(-duv.Y(), duv.X());
+        perp.Normalize();
+        BRepAdaptor_Surface adapt(face);
+        gp_Pnt at;
+        gp_Vec d1u;
+        gp_Vec d1v;
+        adapt.D1(uv.X(), uv.Y(), at, d1u, d1v);
+        for (double sign : {1.0, -1.0}) {
+            const gp_Vec into = d1u.Multiplied(perp.X() * sign).Added(d1v.Multiplied(perp.Y() * sign));
+            if (!(into.Magnitude() > 1e-12)) continue;
+            const double uv_step = 0.05 / into.Magnitude();
+            for (double scale : {1.0, 0.2, 0.02}) {
+                const gp_Pnt2d stepped(uv.X() + perp.X() * sign * uv_step * scale, uv.Y() + perp.Y() * sign * uv_step * scale);
+                const BRepClass_FaceClassifier cls(face, stepped, 1e-7);
+                if (cls.State() != TopAbs_IN) continue;
+                out = into.Multiplied(-1.0 / into.Magnitude());
+                return true;
+            }
+        }
+    } catch (const Standard_Failure&) {
+    }
+    return false;
+}
+
 double curvature_perp(BRepLProp_SLProps& props, double outward, const gp_Vec& edge_tan) {
     if (!props.IsCurvatureDefined() || !props.IsNormalDefined()) return 0.0;
     gp_Dir n = props.Normal();
@@ -1259,7 +1317,8 @@ BuiltPiece build_one_piece(
             return false;
         }
         if (side.absolute_ribbon > 0.0) {
-            gp_Vec direction = got.Ds;
+            gp_Vec direction;
+            if (!leaving_direction(side.face, point, direction)) direction = got.Ds;
             if (!(direction.Magnitude() > 1e-12)) {
                 error = "The round cap meets the pipe, but the end face has no direction to leave from.";
                 return false;
@@ -1807,7 +1866,16 @@ TopoDS_Shape fill_hermite_patch(
         max_radius = 1e-6;
         for (const gp_Pnt& p : cloud) max_radius = std::max(max_radius, centre.Distance(p));
         if (ribbon > 0.0) {
-            for (SidePrep& side : sides) side.absolute_ribbon = ribbon;
+            for (SidePrep& side : sides) {
+                side.absolute_ribbon = ribbon;
+                gp_Vec leave;
+                if (leaving_direction(side.face, side.mid, leave)) side.Ds = leave;
+                // A quarter of a circle is a short curve. Extra knots keep the ribbon from wandering between samples.
+                for (double t : {0.25, 0.5, 0.75}) {
+                    side.extra_start.push_back(t);
+                    side.extra_end.push_back(t);
+                }
+            }
         }
     }
 
@@ -1919,13 +1987,18 @@ TopoDS_Shape fill_hermite_patch(
             // V_i is not measured: at a sharp vertex the plan leaves it out, and at a smooth one the two halves that meet
             // there run along one rim, so the piece's two boundary tangents are collinear and its normal is not defined.
             // Every other end is: M_i, where the half meets the split, and both ends of each split.
-            const bool sharp = true;
+            const auto seam_fracs = [](double ribbon_len) {
+                if (!(ribbon_len > 0.0)) return station_fracs(false, true, false);
+                std::vector<double> dense;
+                for (int s = 1; s <= 19; ++s) dense.push_back(0.05 * static_cast<double>(s));
+                return dense;
+            };
             EdgeReport outer;
             outer.which = "outer";
             outer.side = i;
             outer.asked = sides[static_cast<size_t>(i)].order;
             if (!sides[static_cast<size_t>(i)].face.IsNull()) {
-                for (const double frac : station_fracs(!sharp, true, false)) {
+                for (const double frac : seam_fracs(sides[static_cast<size_t>(i)].absolute_ribbon)) {
                     gp_Pnt point;
                     gp_Vec du;
                     gp_Vec dv;
@@ -1945,7 +2018,7 @@ TopoDS_Shape fill_hermite_patch(
             outer_prev.side = prev;
             outer_prev.asked = sides[static_cast<size_t>(prev)].order;
             if (!sides[static_cast<size_t>(prev)].face.IsNull()) {
-                for (const double frac : station_fracs(!sharp, true, false)) {
+                for (const double frac : seam_fracs(sides[static_cast<size_t>(prev)].absolute_ribbon)) {
                     gp_Pnt point;
                     gp_Vec du;
                     gp_Vec dv;

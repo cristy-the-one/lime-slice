@@ -10577,6 +10577,10 @@ TopoDS_Shape pipe_solid_from_wires(
     if (props.Mass() < 0.0) {
         tool.Reverse();
     }
+    const bool round_caps = apply_caps && (spec.cap_start == 1 || spec.cap_end == 1);
+    const SeamMeasure seam_before_start = round_caps && spec.cap_start == 1 ? measure_seam(tool, cap_first) : SeamMeasure{};
+    const SeamMeasure seam_before_end = round_caps && spec.cap_end == 1 ? measure_seam(tool, cap_last) : SeamMeasure{};
+    const TopoDS_Shape before_fix = tool;
     if (!BRepCheck_Analyzer(tool).IsValid()) {
         ShapeFix_Solid fix;
         fix.Init(TopoDS::Solid(tool));
@@ -10585,6 +10589,14 @@ TopoDS_Shape pipe_solid_from_wires(
         if (!BRepCheck_Analyzer(tool).IsValid()) {
             error = "The swept solid intersects itself. Make bends gentler or use a smaller profile.";
             return {};
+        }
+        // ShapeFix can open a seam that was already inside the 0.1 degree bound. Keep that solid.
+        const auto opened = [](const SeamMeasure& before, const SeamMeasure& after) {
+            return before.edges >= 1 && before.angle_deg < kContinuityAngleDeg && !(after.angle_deg < kContinuityAngleDeg);
+        };
+        if (round_caps && (opened(seam_before_start, spec.cap_start == 1 ? measure_seam(tool, cap_first) : SeamMeasure{})
+                           || opened(seam_before_end, spec.cap_end == 1 ? measure_seam(tool, cap_last) : SeamMeasure{}))) {
+            tool = before_fix;
         }
     }
     // Open CASCADE's transformed corner can leave a solid that is valid face by face but touches itself at a sharp bend
