@@ -37,8 +37,13 @@ function triangles(buf: Buffer): number {
 
 async function exportTriangles(page: Page): Promise<number> {
   await page.locator("#fileMenu > summary").click();
+  await page.locator("#exportModel").click();
+  const dlg = page.locator("[data-export-dialog]");
+  await expect(dlg).toBeVisible();
+  await dlg.locator("[data-export='scope']").selectOption("plate-print");
+  await dlg.locator("[data-pose-export='format']").selectOption("3mf");
   const download = page.waitForEvent("download");
-  await page.locator("#export3mf").click();
+  await dlg.locator("[data-pose-export-action='submit']").click();
   return triangles(fs.readFileSync((await (await download).path())!));
 }
 

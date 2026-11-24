@@ -174,6 +174,55 @@ check("the pinned clock is in the generated-by line", plaFile.includes("2020-01-
   check("an object that is not on the plate is refused, and nothing is written", refused.ok === false && refused.code === "no-object" && !existsSync(join(workspace, "none.3mf")), JSON.stringify(refused));
 }
 
+// export {scope, format, name}: every scope and format writes a file, and the three old tools
+// write the same bytes as export for the same request.
+{
+  const workspace = mkdtempSync(join(tmpdir(), "lime-one-export-"));
+  process.env.LIME_MCP_WORKSPACE = workspace;
+  const cube = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
+  const session = new Session(fakeEngine());
+  const first = await session.call("mesh_import", { path: cube });
+  const second = await session.call("mesh_import", { path: cube });
+  check("two meshes are on the plate", first.ok === true && second.ok === true, JSON.stringify(first));
+  const meshFormats = ["stl", "3mf", "obj", "glb"] as const;
+  for (const format of meshFormats) {
+    const wrote = await session.call("export", { scope: "part", format, object: String(first.object), name: `part-${format}` });
+    check(`part ${format} writes a file`, wrote.ok === true && existsSync(String(wrote.path)) && readFileSync(String(wrote.path)).byteLength > 0, JSON.stringify(wrote));
+  }
+  const linked = await session.call("model_place", { object: second.object, to: first.object });
+  check("the two meshes become an assembly", linked.ok === true, JSON.stringify(linked));
+  for (const format of [...meshFormats, "pose"] as const) {
+    const wrote = await session.call("export", { scope: "assembly", format, assembly: String(first.object), name: `asm-${format}` });
+    check(`assembly ${format} writes a file`, wrote.ok === true && existsSync(String(wrote.path)), JSON.stringify(wrote));
+    const plate = await session.call("export", { scope: "plate-assembled", format, name: `plate-${format}` });
+    check(`plate-assembled ${format} writes a file`, plate.ok === true && existsSync(String(plate.path)), JSON.stringify(plate));
+  }
+  for (const format of ["3mf", "stl"] as const) {
+    const wrote = await session.call("export", { scope: "plate-print", format, name: `bed-${format}`, ...(format === "stl" ? { stl: "each" } : {}) });
+    check(`plate-print ${format} writes a file`, wrote.ok === true && existsSync(String(wrote.path)) && readFileSync(String(wrote.path)).byteLength > 0, JSON.stringify(wrote));
+  }
+  const old3mf = await session.call("export_3mf", { name: "old-plate.3mf" });
+  const new3mf = await session.call("export", { scope: "plate-print", format: "3mf", name: "new-plate.3mf" });
+  check("export_3mf and export plate-print 3mf write the same bytes", old3mf.ok === true && new3mf.ok === true && readFileSync(String(old3mf.path)).equals(readFileSync(String(new3mf.path))), JSON.stringify({ old3mf, new3mf }));
+  const oldPose = await session.call("pose_export", { assembly: String(first.object), format: "stl", path: "old-pose.stl" });
+  const newPose = await session.call("export", { scope: "assembly", format: "stl", assembly: String(first.object), name: "new-pose.stl" });
+  check("pose_export and export assembly stl write the same bytes", oldPose.ok === true && newPose.ok === true && readFileSync(String(oldPose.path)).equals(readFileSync(String(newPose.path))), JSON.stringify({ oldPose, newPose }));
+
+  const solids = new Session(fakeEngine());
+  const box = await solids.call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10, name: "body" });
+  const lid = await solids.call("solid_new", { primitive: "box", dx: 8, dy: 8, dz: 4, name: "lid" });
+  check("two solids are on the plate", box.ok === true && lid.ok === true, JSON.stringify(box));
+  await solids.call("model_place", { object: lid.object, to: box.object });
+  const oldStep = await solids.call("model_export_step", { object: box.object, name: "old-body.step" });
+  const newStep = await solids.call("export", { scope: "part", format: "step", object: String(box.object), name: "new-body.step" });
+  check("model_export_step and export part step write the same bytes", oldStep.ok === true && newStep.ok === true && readFileSync(String(oldStep.path)).equals(readFileSync(String(newStep.path))), JSON.stringify({ oldStep, newStep }));
+  const oldAsm = await solids.call("pose_export", { assembly: String(box.object), format: "step", path: "old-asm.step" });
+  const newAsm = await solids.call("export", { scope: "assembly", format: "step", assembly: String(box.object), name: "new-asm.step" });
+  check("pose_export and export assembly step write the same bytes", oldAsm.ok === true && newAsm.ok === true && readFileSync(String(oldAsm.path)).equals(readFileSync(String(newAsm.path))), JSON.stringify({ oldAsm, newAsm }));
+  const plateStep = await solids.call("export", { scope: "plate-assembled", format: "step", name: "plate.step" });
+  check("plate-assembled step writes a file", plateStep.ok === true && existsSync(String(plateStep.path)) && readFileSync(String(plateStep.path)).byteLength > 0, JSON.stringify(plateStep));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

@@ -2054,6 +2054,7 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
 .pose-animation-save::backdrop { background: #0009; }
 .pose-animation-save h2 { margin: 0 0 16px; font-size: 18px; }
 .pose-animation-save label { display: grid; grid-template-columns: 1fr minmax(90px, 150px); gap: 12px; align-items: center; margin: 8px 0; }
+.pose-export-dialog label { grid-template-columns: 140px minmax(180px, 1fr); }
 .pose-animation-save input, .pose-animation-save select { max-width: 100%; }
 .pose-animation-save .pose-buttons { display: flex; gap: 8px; margin-top: 16px; }
 .pose-animation-keep label { grid-template-columns: 1fr; gap: 4px; }

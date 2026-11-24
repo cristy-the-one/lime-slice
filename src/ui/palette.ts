@@ -21,6 +21,7 @@ import { pickAddedMesh } from "../app/files";
 import { newProject } from "../app/new-project";
 import { saveCurrentProject } from "../app/project-io";
 import { clearSettingsSearch, commitTypedFields, focusSettingsSearch, revealPrinterDetails } from "../app/settings";
+import { modelExportReason } from "../app/export-availability.ts";
 import { state } from "../app/state";
 import { measureOn, setMeasureOn } from "../measure-pref";
 import { scrub, setStage, setView } from "../app/viewer";
@@ -123,7 +124,10 @@ export function mountPalette() {
     list.innerHTML = shown.map((command, index) => {
       const key = shortcutOf(command);
       const hint = key ? `<kbd>${escapeHtml(key)}</kbd>` : "";
-      return `<li id="paletteOpt${index}" role="option" aria-selected="${index === 0 ? "true" : "false"}" data-id="${command.id}"><span>${escapeHtml(command.label)}<small>${index < recentShown ? "Recent, " : ""}${escapeHtml(command.group)}</small></span>${hint}</li>`;
+      const reason = modelExportReason(command.id);
+      const note = reason ?? `${index < recentShown ? "Recent, " : ""}${command.group}`;
+      const blocked = reason ? ` aria-disabled="true" title="${escapeHtml(reason)}"` : "";
+      return `<li id="paletteOpt${index}" role="option" aria-selected="${index === 0 ? "true" : "false"}" data-id="${command.id}"${blocked}><span>${escapeHtml(command.label)}<small>${escapeHtml(note)}</small></span>${hint}</li>`;
     }).join("");
     input.setAttribute("aria-activedescendant", "paletteOpt0");
   }
@@ -140,7 +144,7 @@ export function mountPalette() {
 
   function runActive() {
     const command = shown[active];
-    if (!command) return;
+    if (!command || modelExportReason(command.id)) return;
     close();
     pushRecent(command.id);
     runCommand(command.id);
@@ -358,6 +362,18 @@ export function runCommand(id: string) {
     case "save-project":
       void saveCurrentProject();
       return;
+    case "export-model":
+    case "export-part":
+    case "export-assembly":
+    case "export-plate": {
+      const reason = modelExportReason(id);
+      if (reason) {
+        pushToast(reason, "error");
+        return;
+      }
+      void import("../app/export-dialog.ts").then(({ openExportCommand }) => openExportCommand(id));
+      return;
+    }
     case "samples": {
       const file = document.querySelector<HTMLDetailsElement>("#fileMenu");
       const menu = document.querySelector<HTMLDetailsElement>("#samples");

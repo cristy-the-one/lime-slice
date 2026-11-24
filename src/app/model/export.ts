@@ -7,7 +7,7 @@ import { ROOT, nodeWithMesh, pathTo, withNode, type NodeId } from "../../model-t
 import { exportRequest, isBrep, type StepAssemblyExport } from "../../model-request";
 import { heldPiece } from "../model-explode";
 import { type RowKey } from "../../model-history";
-import { meshTokenOf, withBrepFor } from "../../plate";
+import { meshTokenOf, withBrepFor, type PlateObject } from "../../plate";
 import { patchEditBrep } from "../history";
 import { modelTrees } from "../model-trees";
 import { state } from "../state";
@@ -233,4 +233,15 @@ export function stepFileName(name: string) {
 
 export async function saveStepFile(bytes: ArrayBuffer, name: string) {
   await saveBytes(bytes, name, "step", "application/step");
+}
+
+/** One part's exact solid, in its own frame, with no assembly product tree. */
+export async function exportOneSolid(obj: PlateObject, fileName: string): Promise<{ ok: boolean; message: string }> {
+  const { toolTreeOf } = await import("./join.ts");
+  const at = await toolTreeOf(obj);
+  if (typeof at === "string") return { ok: false, message: `${obj.name} has no closed solid, and a STEP file holds solids only.` };
+  const bytes = await exportSolid(at.key, at.node, "step");
+  if (typeof bytes === "string") return { ok: false, message: bytes };
+  await saveStepFile(bytes, fileName);
+  return { ok: true, message: `Saved ${fileName}.` };
 }

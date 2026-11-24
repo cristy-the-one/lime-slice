@@ -589,30 +589,71 @@ export async function exportGcode() {
   await saveText(text, name, "gcode");
 }
 
-export async function export3mf() {
+export function printFileStem(): string {
+  return (state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "") || "part";
+}
+
+/** Today's print-layout meshes: one buffer, or one per object when several share the bed. Null when export must stop. */
+export function printLayoutPositions(): Float32Array | readonly Float32Array[] | null {
   fx.commitModel?.();
   const exported: string | null = fx.exportedPart?.() ?? null;
   if (exported) {
     state.error = exported;
     renderChrome();
-    return;
+    return null;
   }
   // --- Organic surfaces S4: an open sheet is on the plate but is no solid: Slice and Export stop with the prompt.
   const sheet = sheetPartNote(state.plate.objects);
   if (sheet) {
     state.error = sheet;
     renderChrome();
-    return;
+    return null;
   }
-  if (!state.placed) return;
+  if (!state.placed) return null;
   syncPlateFromState();
   const objects = livePlate();
-  const positions = objects.length > 1
+  return objects.length > 1
     ? plateObjectPositions(objects, state.profile.bedX, state.profile.bedY)
     : state.placed.positions;
+}
+
+export async function export3mf(fileName?: string): Promise<boolean> {
+  const positions = printLayoutPositions();
+  if (!positions) return false;
   const bytes = encode3mf(positions);
-  const name = `${(state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "")}.3mf`;
+  const name = fileName ?? `${printFileStem()}.3mf`;
   await saveBytes(bytes, name, "3mf", "model/3mf");
+  return true;
+}
+
+/** Print-layout STL through the same encoder as a single mesh, one file or a ZIP of one STL per object. */
+export async function exportPrintLayoutStl(fileName: string, mode: "one" | "each"): Promise<boolean> {
+  const positions = printLayoutPositions();
+  if (!positions) return false;
+  const parts = Array.isArray(positions) ? [...positions] : [positions];
+  const objects = livePlate();
+  if (mode === "each" && parts.length > 1) {
+    const files: Record<string, Uint8Array> = {};
+    parts.forEach((part, index) => {
+      const stem = (objects[index]?.name ?? `part-${index + 1}`).replace(/\.(stl|3mf|step|stp)$/i, "") || `part-${index + 1}`;
+      let name = `${stem}.stl`;
+      let n = 2;
+      while (files[name]) name = `${stem}-${n++}.stl`;
+      files[name] = new Uint8Array(encodeStl(part, stem));
+    });
+    const { zipSync } = await import("fflate");
+    await saveBytes(zipSync(files, { level: 6 }), fileName, "zip", "application/zip");
+    return true;
+  }
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const combined = new Float32Array(total);
+  let at = 0;
+  for (const part of parts) {
+    combined.set(part, at);
+    at += part.length;
+  }
+  await saveBytes(encodeStl(combined, printFileStem()), fileName, "stl", "model/stl");
+  return true;
 }
 
 export function download(data: string | Blob, name: string) {

@@ -1428,6 +1428,7 @@ const DESTRUCTIVE = new Set([
   "export_3mf",
   "model_export_step",
   "pose_export",
+  "export",
   "object_remove",
   "model_drop",
   // Its steps may be any of the above.
@@ -1862,8 +1863,38 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: "export",
+    description: "Write a part, an assembly, or the plate to a file in the workspace. scope is part (the object's own frame), assembly (the current pose, or frame), plate-assembled (every object at its model pose; free parts are top-level members) or plate-print (as the parts lie on the bed). format is step, stl, 3mf, obj, glb or pose, and the scope decides which of those it accepts. Overwrites the same name.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["scope", "format", "name"],
+      properties: {
+        scope: { enum: ["part", "assembly", "plate-assembled", "plate-print"], description: "What to write: part, assembly, plate-assembled, or plate-print." },
+        format: { enum: ["step", "stl", "3mf", "obj", "glb", "pose"], description: "How to write it. part: step, stl, 3mf, obj, glb. assembly and plate-assembled: those plus pose. plate-print: 3mf or stl." },
+        object: { type: "string", minLength: 1, description: "For scope part: the object handle or name. Defaults to the selected object." },
+        assembly: { type: "string", minLength: 1, maxLength: 120, description: "For scope assembly: assembly name, id, or a member handle. Defaults to the selected object's assembly." },
+        frame: {
+          type: "object",
+          additionalProperties: false,
+          required: ["animation", "t"],
+          description: "For scope assembly: sample this kept animation at time t, in seconds, without moving the plate.",
+          properties: {
+            animation: { type: "string", minLength: 1, maxLength: 80, description: "Kept animation name or animation plugin id." },
+            t: { type: "number", minimum: 0, description: "Time in seconds along the animation." },
+          },
+        },
+        name: { type: "string", minLength: 1, description: "File name or path in the workspace. The format's extension is added when it is missing." },
+        step: { enum: ["tree", "flat"], description: "For format step on an assembly or the assembled plate: tree (default, AP242) or flat (one named solid per part)." },
+        stl: { enum: ["one", "each"], description: "For format stl: one file, or a ZIP with one STL per part." },
+        chordMm: { type: "number", minimum: 0.01, maximum: 1, description: "Mesh chord in mm for glb, 3mf, stl and obj of a solid. Default 0.05. An STL keeps its own triangles." },
+        animation: { type: "string", minLength: 1, maxLength: 80, description: "For format glb of an assembly: embed this kept animation or animation plugin." },
+      },
+    },
+  },
+  {
     name: "export_3mf",
-    description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name. name is a file name or a path inside the workspace (\"plate\" or \"out/plate.3mf\"; .3mf is added when missing, and folders are made).",
+    description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name. name is a file name or a path inside the workspace (\"plate\" or \"out/plate.3mf\"; .3mf is added when missing, and folders are made). The same as export {scope:\"plate-print\", format:\"3mf\"}.",
     inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: { ...handle, description: "Write only this object, as posed on the plate. With pieces: the object to split." }, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
   },
   {
@@ -2327,7 +2358,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_export_step",
-    description: "Write a solid, or a posed assembly (AP242 assembly tree by default; flat:true for one named solid per member), as a .step file in the workspace. Overwrites the same name.",
+    description: "Write a solid, or a posed assembly (AP242 assembly tree by default; flat:true for one named solid per member), as a .step file in the workspace. Overwrites the same name. The same as export {scope:\"part\", format:\"step\"} for one solid, or export {scope:\"assembly\", format:\"step\"} for an assembly.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -2412,7 +2443,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "pose_export",
-    description: "Export a posed assembly (or a sampled animation frame) for external programs without changing the assembly or print layout. Formats: step (AP242 assembly tree by default, or flat), glb (glTF 2.0 binary in metres Y-up, with joint tree, shared part meshes, colours, and optional kept animation), 3mf (assembly at the pose, shared parts and colours), stl (one file or ZIP of one STL per member), obj (OBJ + MTL with one group per member), pose (JSON pose sheet with joint values and 4x4 placements in mm). Overwrites the target path in the workspace.",
+    description: "Export a posed assembly (or a sampled animation frame) for external programs without changing the assembly or print layout. Formats: step (AP242 assembly tree by default, or flat), glb (glTF 2.0 binary in metres Y-up, with joint tree, shared part meshes, colours, and optional kept animation), 3mf (assembly at the pose, shared parts and colours), stl (one file or ZIP of one STL per member), obj (OBJ + MTL with one group per member), pose (JSON pose sheet with joint values and 4x4 placements in mm). Overwrites the target path in the workspace. The same as export {scope:\"assembly\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
