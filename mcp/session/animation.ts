@@ -80,15 +80,21 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   // Read before the script builds, so a wrong name costs nothing: the sampler reads the same pairs the same way.
   const ignore = readIgnore(rig, input.ignore);
   if ("reason" in ignore) return refuse("bad-argument", ignore.reason);
-  const looks = readFrameLooks(parts, rig, input, input.out !== undefined);
+  const planned = poseColourPlan.call(this, parts, input);
+  if ("reason" in planned) return refuse("bad-view", planned.reason);
+  const colourInput = { ...input };
+  delete colourInput.colours;
+  delete colourInput.partColours;
+  const looks = readFrameLooks(parts, rig, colourInput, input.out !== undefined);
   if ("reason" in looks) return refuse("bad-view", looks.reason);
+  if (planned.partColours.size > 0) looks.partColours = planned.partColours;
   const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, ...(header?.["member-optional"] ? { optional: header["member-optional"] } : {}), ...(ignore.pairs.length ? { ignore: ignore.pairs } : {}), signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
-  if (!result.ok) return { ok: false, code: "animation-refused", reason: explainNoMember(result.reason, params, rig), ...(result.issues ? { issues: result.issues.map((issue) => ({ ...issue, reason: explainNoMember(issue.reason, params, rig) })) } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
+  if (!result.ok) return { ok: false, code: "animation-refused", reason: explainNoMember(result.reason, params, rig), ...(planned.warnings.length ? { warnings: planned.warnings } : {}), ...(result.issues ? { issues: result.issues.map((issue) => ({ ...issue, reason: explainNoMember(issue.reason, params, rig) })) } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
   const sampled = result.result;
   // Crossings come one warning a pair already (the sampler's crossing check, src/pose-anim.ts), with the frames they
   // hold and the check that made them. A warning a key repeats (a colour set twice) is said once.
   const seen = new Set<string>();
-  const warnings = [...result.skipped.map((reason) => ({ reason })), ...sampled.warnings].filter((warning) => !seen.has(warning.reason) && !!seen.add(warning.reason));
+  const warnings = [...planned.warnings, ...result.skipped.map((reason) => ({ reason })), ...sampled.warnings].filter((warning) => !seen.has(warning.reason) && !!seen.add(warning.reason));
   const timing = frameTiming(sampled);
   const out = input.out as { gif?: string; frames?: string } | undefined;
   // Checked already: the tool's by readBackground above, the script's by sampleAnimation.
@@ -199,6 +205,60 @@ export interface FrameLooks { partColours?: Map<string, [number, number, number]
  * colour #rrggbb, a box {min, max}), plus fit as a list of parts; or why they are refused, the field named. They say how
  * frames are drawn, so without out they are refused rather than left unused.
  */
+/**
+ * pose_animate's colours (a step label, tinting the part that owns it) and partColours. A colour that is not a hex is
+ * refused. One that cannot be drawn — no out, or no such label or part — is a warning, and the call goes on.
+ */
+function poseColourPlan(this: Session, parts: readonly AnimationPart[], input: Record<string, unknown>): { partColours: Map<string, [number, number, number]>; warnings: { reason: string }[] } | { reason: string } {
+  const warnings: { reason: string }[] = [];
+  const partColours = new Map<string, [number, number, number]>();
+  const hasColours = input.colours !== undefined;
+  const hasParts = input.partColours !== undefined;
+  if (!hasColours && !hasParts) return { partColours, warnings };
+  const read = (raw: unknown, field: string): [number, number, number] | { reason: string } => {
+    const colour = typeof raw === "string" ? /^#?([0-9a-f]{6})$/i.exec(raw) : null;
+    if (!colour) return { reason: `${field} is a colour like "#c86450".` };
+    const n = parseInt(colour[1]!, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  if (hasColours && (!input.colours || typeof input.colours !== "object" || Array.isArray(input.colours))) return { reason: "colours maps step labels to colours." };
+  if (hasParts && (!input.partColours || typeof input.partColours !== "object" || Array.isArray(input.partColours))) return { reason: "partColours maps part names or handles to colours." };
+  if (input.out === undefined) {
+    warnings.push({ reason: "colours and partColours colour the drawn frames, and this call has no out, so they were not drawn." });
+    return { partColours, warnings };
+  }
+  if (hasColours) {
+    for (const [label, raw] of Object.entries(input.colours as Record<string, unknown>)) {
+      const rgb = read(raw, `colours.${label}`);
+      if ("reason" in rgb) return rgb;
+      const owners = parts.filter((part) => {
+        const row = this.find(part.object);
+        return !!row && !!this.labelBox(row, label, true);
+      });
+      if (owners.length !== 1) {
+        warnings.push({ reason: owners.length ? `colours.${label} is on more than one part; name the part in partColours.` : `No step is labelled "${label}", so colours.${label} was not drawn.` });
+        continue;
+      }
+      partColours.set(owners[0]!.object, rgb);
+    }
+  }
+  if (hasParts) {
+    for (const [name, raw] of Object.entries(input.partColours as Record<string, unknown>)) {
+      const rgb = read(raw, `partColours.${name}`);
+      if ("reason" in rgb) return rgb;
+      const byHandle = parts.find((row) => row.object === name);
+      const byName = parts.filter((row) => row.name === name);
+      const id = byHandle?.object ?? (byName.length === 1 ? byName[0]!.object : undefined);
+      if (!id) {
+        warnings.push({ reason: byName.length > 1 ? `Part name "${name}" is ambiguous; use its handle. partColours.${name} was not drawn.` : `No part named "${name}" is in this assembly, so partColours.${name} was not drawn.` });
+        continue;
+      }
+      partColours.set(id, rgb);
+    }
+  }
+  return { partColours, warnings };
+}
+
 export function readFrameLooks(parts: readonly AnimationPart[], rig: readonly RigMember[], input: Record<string, unknown>, drawing: boolean): FrameLooks | { reason: string } {
   const looks: FrameLooks = {};
   if (input.partColours === undefined && input.fit === undefined) return looks;

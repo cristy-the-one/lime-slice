@@ -11,7 +11,7 @@ import { anchorOf, cleanOp, faceFrame, isComposite, primitiveFrom, readVec3, typ
 import { edgesMatching } from "./selectors.ts";
 import { typedView } from "./typed-view.ts";
 import type { EdgeRow, FaceRow } from "./solid-geometry.ts";
-import { sweepSections, type SweepSpec } from "./sweep.ts";
+import { bendingPathSweep, pathBends, sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
@@ -766,6 +766,12 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
       return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
     }
     let sections: LoftSection[];
+    if (kind === "sweep" && spec.spine === undefined && spec.profile !== undefined && spec.radius === undefined && Array.isArray(spec.path) && pathBends(spec.path as Vec3[])) {
+      const piped = bendingPathSweep(spec as unknown as SweepSpec);
+      if ("reason" in piped) return piped;
+      const pipe = sweepOp(booleanOp, piped.sections, piped.spine, { mode: { kind: "correctedFrenet" }, ...(piped.scale ? { scale: piped.scale } : {}) });
+      return { op: toSolidOp(pipe, ctx.pose), typed: { ...cleanOp(spec), op: booleanOp, sections: piped.sections.length } };
+    }
     if (kind === "sweep") {
       const made = sweepSections(spec as unknown as SweepSpec);
       if ("reason" in made) return made;

@@ -50,6 +50,7 @@ export function readLoftDrawing(value: unknown): LoftDrawing | undefined {
 
 function readScale(value: unknown, count: number): number | number[] | null {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (Array.isArray(value) && value.length === 1 && typeof value[0] === "number" && Number.isFinite(value[0]) && value[0] > 0) return value[0];
   if (!Array.isArray(value) || value.length !== count) return null;
   if (!value.every((item) => typeof item === "number" && Number.isFinite(item) && item > 0)) return null;
   return [...value];

@@ -119,8 +119,8 @@ check(
   check("an insert past full multiplicity is refused", full === "feature.insertU[1] would raise the U knot at 0.4 to multiplicity 5; a degree 3 surface takes at most 3 there (a full crease), so insert it at most 0 more times.", full);
   const both = await s.call("solid_new", { primitive: "box", dx: 1, dy: 1, dz: 1, feature: { kind: "nurbsSurface", poles: grid } });
   check("a feature and a primitive together are refused", both.ok === false && both.code === "conflicting-arguments", JSON.stringify(both));
-  const extrude = await s.call("solid_new", { feature: { kind: "extrude", op: "fuse", profile: [[0, 0], [1, 0], [0, 1]], depth: 1 } });
-  check("a feature that is not a surface is refused", extrude.ok === false && extrude.reason === "solid_new's feature is a nurbsSurface or a sheet. Start other parts from a primitive.", JSON.stringify(extrude));
+  const hole = await s.call("solid_new", { feature: { kind: "hole", origin: [0, 0, 0], axis: [0, 0, -1], diameterMm: 4, depth: 2 } });
+  check("a feature that cannot start a part is refused", hole.ok === false && hole.reason === "solid_new's feature is an extrude, a revolve, a loft, a sweep, a nurbsSurface or a sheet.", JSON.stringify(hole));
   const sheet = await s.call("solid_new", { feature: { kind: "sheet", mode: "planar", curves: [{ kind: "polyline", points: [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], closed: true }] } });
   check("solid_new {feature: sheet} starts a part from a sheet", sheet.ok === true && sheet.root === "sheet" && (opens.at(-1)?.feature as { kind?: string })?.kind === "sheet", JSON.stringify(sheet));
   // model_edit on the root: a new grid, a thicken above it replayed.

@@ -300,6 +300,7 @@ src/trackpad-orbit.test.ts
 mcp/settle.test.ts
 mcp/place-frame.test.ts
 mcp/nothing-silent.test.ts
+mcp/one-vocabulary.test.ts
 src/viewport-grab.test.ts
 src/model-grab.test.ts
 src/measure-points.test.ts

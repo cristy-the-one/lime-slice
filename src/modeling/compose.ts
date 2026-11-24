@@ -1325,7 +1325,61 @@ function flipLoops(loops: unknown): unknown {
  * takes the motion's turn. A reflection would leave the plane left-handed, so U is turned round and every profile
  * point's u with it: the same outline, mirrored. The op comes back with its plane as an explicit origin and turn.
  */
+/** A point through a mirror or a pattern, and a direction (no translation). */
+function reflectPoint(value: unknown, motion: Motion): unknown {
+  const point = readVec3(value, [Number.NaN, Number.NaN, Number.NaN]);
+  if (!Number.isFinite(point[0])) return value;
+  const moved = mulVec(motion.m, point);
+  return [round6(moved[0] + motion.t[0]), round6(moved[1] + motion.t[1]), round6(moved[2] + motion.t[2])];
+}
+
+function reflectDir(value: unknown, motion: Motion): unknown {
+  const point = readVec3(value, [Number.NaN, Number.NaN, Number.NaN]);
+  if (!Number.isFinite(point[0])) return value;
+  const moved = mulVec(motion.m, point);
+  return [round6(moved[0]), round6(moved[1]), round6(moved[2])];
+}
+
+function reflectCurve(value: unknown, motion: Motion): unknown {
+  if (!value || typeof value !== "object") return value;
+  const row = { ...(value as Record<string, unknown>) };
+  for (const key of ["points", "through", "poles"] as const) {
+    if (!Array.isArray(row[key])) continue;
+    row[key] = (row[key] as unknown[]).map((point) => Array.isArray(point) && Array.isArray(point[0]) ? (point as unknown[]).map((inner) => reflectPoint(inner, motion)) : reflectPoint(point, motion));
+  }
+  if (row.start !== undefined) row.start = reflectPoint(row.start, motion);
+  if (row.to !== undefined) row.to = reflectPoint(row.to, motion);
+  if (Array.isArray(row.segments)) row.segments = row.segments.map((segment) => reflectCurve(segment, motion));
+  if (row.spine !== undefined && typeof row.spine === "object") row.spine = reflectCurve(row.spine, motion);
+  return row;
+}
+
+/** A sweep moved by `motion`: path points and a spine go through it, `up` turns with it, and a reflection flips the profile. */
+function mirroredSweep(raw: Record<string, unknown>, motion: Motion): Record<string, unknown> {
+  const moved: Record<string, unknown> = { ...raw };
+  if (Array.isArray(moved.path)) moved.path = moved.path.map((point) => reflectPoint(point, motion));
+  if (moved.up !== undefined) moved.up = reflectDir(moved.up, motion);
+  if (moved.spine !== undefined) moved.spine = reflectCurve(moved.spine, motion);
+  if (motion.reflect) {
+    if (Array.isArray(moved.profile)) moved.profile = moved.profile.map(flipU);
+    if (moved.loops !== undefined) moved.loops = flipLoops(moved.loops);
+  }
+  if (Array.isArray(moved.sections)) {
+    moved.sections = moved.sections.map((section) => {
+      if (!section || typeof section !== "object") return section;
+      const row = section as Record<string, unknown>;
+      const at = { origin: readVec3(row.origin, [0, 0, 0]), turn: readVec3(row.turn, [0, 0, 0]) };
+      const done = movedFeature({ ...row, kind: "extrude" }, at, motion);
+      if ("reason" in done) return section;
+      const { kind: _kind, ...rest } = done.op;
+      return rest;
+    });
+  }
+  return moved;
+}
+
 export function movedFeature(raw: Record<string, unknown>, plane: { origin: Vec3; turn: Vec3 }, motion: Motion): { op: Record<string, unknown> } | { reason: string } {
+  if (raw.kind === "sweep") return { op: mirroredSweep(raw, motion) };
   if (raw.upTo !== undefined) return { reason: "A repeated extrude cannot stop at a face. Give it a depth." };
   const at = mulVec(motion.m, plane.origin);
   let r = matMul(motion.m, eulerOrient(plane.turn[0], plane.turn[1], plane.turn[2]));
@@ -1354,6 +1408,10 @@ export function movedFeature(raw: Record<string, unknown>, plane: { origin: Vec3
  * step on its own plane; null when the op it repeats is not one of those. `planeOf` reads a profile's plane as typed.
  */
 export function featureCopies(raw: Record<string, unknown>, plane: Workplane, planeOf: (spec: Record<string, unknown>) => { origin: Vec3; turn: Vec3 } | { reason: string }, depth = 0): Record<string, unknown>[] | { reason: string } | null {
+  if (raw.kind === "sweep") {
+    const { face: _face, faceIndex: _faceIndex, from: _from, label: _label, ...rest } = raw;
+    return [rest];
+  }
   if ((REPEATED_FEATURES as readonly unknown[]).includes(raw.kind)) {
     const at = planeOf(raw);
     if ("reason" in at) return at;
