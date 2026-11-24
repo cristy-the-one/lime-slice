@@ -92,7 +92,7 @@ export function checkReply(positions: Float32Array, orient: readonly number[], s
  * measure's reply: two faces of the solid (the kernel's distance, `distance`), or two points in model space or in the
  * part's workplane (`plane`, the workplane in model space).
  */
-export async function measureReply(solid: { faces: readonly unknown[] } | null, plane: Workplane, input: Record<string, unknown>, distance: (faceA: number, faceB: number) => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+export async function measureReply(solid: { faces: readonly unknown[] } | null, plane: Workplane, input: Record<string, unknown>, distance: (faceA: number, faceB: number) => Promise<Record<string, unknown>>, frameName: "model" | "part" = "model"): Promise<Record<string, unknown>> {
   if (typeof input.faceA === "number" || typeof input.faceB === "number") {
     if (typeof input.faceA !== "number" || typeof input.faceB !== "number") return { ok: false, reason: "Name both faces." };
     if (!solid) return { ok: false, reason: "This solid could not be read." };
@@ -100,14 +100,14 @@ export async function measureReply(solid: { faces: readonly unknown[] } | null, 
     const reply = await distance(input.faceA, input.faceB);
     if (reply.ok === false) return reply;
     if (typeof reply.distanceMm !== "number") return { ok: false, reason: "Could not measure that distance." };
-    return { ok: true, distanceMm: reply.distanceMm, frame: "model" };
+    return { ok: true, distanceMm: reply.distanceMm, frame: frameName };
   }
   const a = input.a;
   const b = input.b;
   if (!Array.isArray(a) || !Array.isArray(b) || a.length < 3 || b.length < 3) {
     return { ok: false, reason: "Name two points, or two faces from the solid." };
   }
-  const frame = input.frame === "workplane" ? "workplane" : "model";
+  const frame = input.frame === "workplane" ? "workplane" : frameName;
   const left = frame === "workplane" ? localPoint(plane, a as [number, number, number]) : (a as [number, number, number]);
   const right = frame === "workplane" ? localPoint(plane, b as [number, number, number]) : (b as [number, number, number]);
   const dx = right[0] - left[0];

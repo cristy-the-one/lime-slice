@@ -10,7 +10,8 @@ import { relativePose } from "../../src/model-space.ts";
 import { formatMm } from "../../src/model-plane.ts";
 import { editRequest } from "../../src/model-request.ts";
 import { solidView } from "./sheet.ts";
-import { dropped, pathTo, withNode, type ModelOp, type ModelTree, type NodeId, type PluginStamp } from "../../src/model-tree.ts";
+import { childrenOf, dropped, pathTo, withNode, type ModelOp, type ModelTree, type NodeId, type PluginStamp } from "../../src/model-tree.ts";
+import { nodeHandle } from "../../src/modeling/model-calls.ts";
 import { replayedTree, replayOps } from "../../src/recipe/rebuild.ts";
 import { markedRun, runEndingAt, runsOnPath, sameFingerprint, sameValues, stampValue, type StampedRun } from "../../src/plugin-step.ts";
 import { partNames, runSiblings } from "../../src/plugin-parts.ts";
@@ -89,6 +90,53 @@ interface NestedFrame {
   code: PluginCode;
 }
 
+interface HandEdit {
+  object: string;
+  name: string;
+  kind: "step" | "branch";
+  node: string;
+  label: string;
+}
+
+/** Steps after a multi-part run, and branches off its shown path: a rerun that replaces the parts would drop them. */
+function handEditsOn(obj: { id: string; name: string; tree?: ModelTree | null }, runId: string): HandEdit[] {
+  const tree = obj.tree;
+  if (!tree) return [];
+  const run = runsOnPath(tree).find((row) => row.id === runId);
+  if (!run) return [];
+  const runIds = new Set(run.ids);
+  const path = pathTo(tree, tree.current);
+  const onPath = new Set(path);
+  const out: HandEdit[] = [];
+  const at = path.indexOf(run.last);
+  if (at >= 0) {
+    for (const id of path.slice(at + 1)) {
+      if (runIds.has(id)) continue;
+      const node = tree.nodes.get(id);
+      if (!node) continue;
+      out.push({ object: obj.id, name: obj.name, kind: "step", node: nodeHandle(id), label: node.label });
+    }
+  }
+  for (const id of onPath) {
+    for (const kid of childrenOf(tree, id)) {
+      if (onPath.has(kid) || runIds.has(kid)) continue;
+      const node = tree.nodes.get(kid);
+      if (!node) continue;
+      out.push({ object: obj.id, name: obj.name, kind: "branch", node: nodeHandle(kid), label: node.label });
+    }
+  }
+  return out;
+}
+
+/** The line a queued refusal belongs on: the one refused tool when the replay names it, else the queue's guess. */
+function refusedAt(guess: number, reason: string, refused: { line: number; reason: string }[]): number {
+  const same = refused.filter((row) => row.reason === reason);
+  if (same.length === 1) return same[0]!.line;
+  if (same.some((row) => row.line === guess)) return guess;
+  if (refused.length === 1) return refused[0]!.line;
+  return guess;
+}
+
 async function recipeRun(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
   const nested = input[NESTED] as NestedFrame | undefined;
   const requested = typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : typeof input.plugin === "string" ? input.plugin : "";
@@ -107,6 +155,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const ready = host.available();
   if (!ready.ok) return refuse("recipe-unavailable", ready.reason);
   const mode = asking ? "check" : input.mode === "check" || input.mode === "dry" ? input.mode : "apply";
+  let handEdits: HandEdit[] = [];
+  let reusedWarning: string | undefined;
   // --- I23. A partial run stops after this many applied ops; it is always taken back.
   const maxSteps = typeof input.maxSteps === "number" ? input.maxSteps : undefined;
   if (maxSteps !== undefined && mode !== "dry") return refuse("conflicting-arguments", "maxSteps is for mode:\"dry\": a run stopped part way is always taken back.");
@@ -160,7 +210,13 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
         const together = pick.before === null && !!entry && siblings.every((id) => entry.objects.includes(id));
         const names = partNames(siblings.map((id) => this.find(id)?.name ?? id));
         if (!together) return refuse("rebuild-refused", `${stamp.plugin} made this part in one run with ${names}, and only a set this session made can change its values together, so nothing changed. Run the plugin again (recipe_run {plugin, params}) to make a new set, then remove the old parts with object_remove.`);
-        if (rebuild.later.length > 0) return refuse("rebuild-refused", `${stamp.plugin} made this part in one run with ${names}, and making them all again would drop the ${rebuild.later.length === 1 ? "step" : `${rebuild.later.length} steps`} after the run on this part, so nothing changed. Undo ${rebuild.later.length === 1 ? "that step" : "those steps"} first, or run the plugin again (recipe_run {plugin, params}) for a new set.`);
+        const dropping = [stepTarget, ...siblings.map((id) => this.find(id))].flatMap((obj) => (obj?.tree ? handEditsOn(obj, pick.id) : []));
+        if (dropping.length > 0 && mode !== "dry" && input.replaceHandEdits !== true) {
+          const shown = dropping.slice(0, 6).map((row) => `${row.name} ${row.kind} ${row.label} (${row.node})`).join("; ");
+          const more = dropping.length > 6 ? `; and ${dropping.length - 6} more` : "";
+          return refuse("rebuild-refused", `This rerun would drop hand-made steps or branches (${shown}${more}). Pass replaceHandEdits: true to replace them.`);
+        }
+        handEdits = dropping;
       }
       if (pick.before !== null && rebuild.later.some((id) => tree.nodes.get(id)?.op?.kind === "partition")) {
         return refuse("rebuild-refused", "A split to print follows this plugin step, and a rebuild cannot cut its pieces again. Undo to before the split, rebuild, then split again.");
@@ -226,7 +282,14 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   /** The entry the run is kept under: the one it replaces, else its name. */
   const key = replacing?.name ?? name;
   const source = rerun ? rerun.stored.source : lfOnly(typed!);
+  // Warn first (docs/plan-agent-ergonomics.md decision 1). `//! strict: true` is the opt-in that fails a run for a dropped step.
+  const strict = /^\s*\/\/!\s*strict:\s*true\s*$/m.test(source);
   const params = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}), ...presetParams, ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
+  if (typeof input.object === "string" && input.params === undefined) {
+    const fromRun = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}) };
+    const names = Object.keys(fromRun);
+    if (names.length) reusedWarning = `Reused ${names.join(", ")} from run ${replacing?.name ?? rebuild?.stamp.plugin ?? "the last run"}.`;
+  }
   if (mode === "apply" && input.discardCheckpoint === true && this.recipeCheckpoints.has(name)) {
     const discarded = this.recipeCheckpoints.get(name)!;
     this.recipeCheckpoints.delete(name);
@@ -297,6 +360,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   /** Parts that were on the plate before the run, with the step each stood at. */
   const touched = new Map<string, number | null>();
   const notes: string[] = [...(checkpoint?.notes ?? [])];
+  const warnings: (string | { line: number; tool: string; reason: string })[] = [];
+  if (reusedWarning) warnings.push(reusedWarning);
   /** --- R-A. Recipe data the run read, by name: kept with the recipe so a rerun builds the same elsewhere. */
   const dataUsed = new Map<string, RecipeData>(Object.entries(checkpoint?.data ?? {}) as [string, RecipeData][]);
   /**
@@ -664,7 +729,14 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     await rollback();
     return this.recipeRun({ ...input, [QUEUE_REPLAY]: queue.replay }, meta);
   }
-  if (replaying) notes.push(`Built one by one: the tool at line ${locate(map, replaying.line).line} was refused inside a queued boolean (${replaying.reason}).`);
+  const replayedAt = replaying ? locate(map, refusedAt(replaying.line, replaying.reason, out.refused)).line : undefined;
+  if (replaying) notes.push(`Built one by one: the tool at line ${replayedAt} was refused inside a queued boolean (${replaying.reason}).`);
+  const dropped = queue.unreported().map((row) => ({ line: locate(map, row.line).line, tool: row.tool, reason: row.reason }));
+  for (const row of dropped) warnings.push(row);
+  if (dropped.length && strict) {
+    out.ok = false;
+    out.reason = `A queued step was refused and the recipe never read it: line ${dropped[0]!.line} ${dropped[0]!.tool} (${dropped[0]!.reason}).`;
+  }
   // --- API 1.16. A nested run keeps nothing itself: a failure takes its own parts back at once, so the recipe that ran
   // it can carry on; a run that reached done hands its parts, its notes and the plugins it ran in turn to that recipe.
   if (nested) {
@@ -674,14 +746,13 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       await rollback();
       const at = out.line !== undefined ? locate(map, out.line).line : undefined;
       const where = at !== undefined && !/line \d+/.test(out.reason ?? "") ? ` (its line ${at})` : "";
-      return { ok: false, code: "recipe-failed", reason: `${out.reason ?? "The plugin failed."}${where}`, notes };
+      return { ok: false, code: "recipe-failed", reason: `${out.reason ?? "The plugin failed."}${where}`, ...(warnings.length ? { warnings } : {}), notes };
     }
     const made = created.filter((id) => this.find(id));
-    return { ok: true, ...nestedResult(selfId, plugin?.version ?? 0, out, made), notes, [NESTED]: [...usedPlugins] };
+    return { ok: true, ...nestedResult(selfId, plugin?.version ?? 0, out, made), ...(warnings.length ? { warnings } : {}), notes, [NESTED]: [...usedPlugins] };
   }
   // A lust older than 0.3.0 does not say which applies are unread (`--mark-unread`), so none queued silently.
   if (!built.unread && applied >= 4 && queue.report.queued === 0 && !replaying && process.env.LIME_RECIPE_QUEUE !== "0") notes.push("This lust does not mark unread applies (it is older than 0.3.0), so each apply was built in its place; s.apply_later still queues.");
-  for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${locate(map, row.line).line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
   if (checkpoint && replay < checkpoint.events.length && out.ok) {
     out.ok = false;
     out.reason = "The recipe ended before reaching its saved checkpoint. The saved parts were kept; use the original run or discardCheckpoint:true.";
@@ -711,7 +782,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     }),
   } : undefined;
   const savedCheckpoint = this.recipeCheckpoints.get(name);
-  const report = { calls: out.calls, ...queueSummary(queue.report, (line) => locate(map, line).line), ...(replaying ? { replayed: { line: locate(map, replaying.line).line } } : {}), ...(checkpoint ? { resumed: true, replayedCalls: replay } : {}), ...(!out.ok && savedCheckpoint ? { checkpoint: { name, objects: savedCheckpoint.objects.map((row) => row.id), resume: { name } } } : {}), ...(profile ? { profile } : {}), ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
+  if (mode === "dry" && handEdits.length) warnings.push(`Would drop ${handEdits.length} hand-made ${handEdits.length === 1 ? "step or branch" : "steps or branches"}.`);
+  const report = { calls: out.calls, ...queueSummary(queue.report, (line) => locate(map, line).line), ...(replayedAt !== undefined ? { replayed: { line: replayedAt } } : {}), ...(checkpoint ? { resumed: true, replayedCalls: replay } : {}), ...(!out.ok && savedCheckpoint ? { checkpoint: { name, objects: savedCheckpoint.objects.map((row) => row.id), resume: { name } } } : {}), ...(profile ? { profile } : {}), ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(warnings.length ? { warnings } : {}), ...(mode === "dry" && handEdits.length ? { handEdits } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
   // --- I23. What the parts measured when a partial run stopped, before it is taken back.
   if (out.halted) {
     const sofar = Object.fromEntries([...created, ...touched.keys()].flatMap((id) => {
@@ -726,7 +798,10 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   if (!out.ok || mode === "dry") {
     const undone = await rollback();
     if (!out.ok) return { ok: false, code: "recipe-failed", reason: out.reason ?? "The recipe failed.", ...(out.line !== undefined ? { line: out.line } : {}), ...report, rolledBack: undone };
-    if (name !== "plugin_check") this.recipePreviewHashes.set(name, bodyHash(built.source));
+    if (name !== "plugin_check") {
+      this.recipePreviewHashes.set(name, bodyHash(built.source));
+      this.recipePreviewSources.set(name, built.source);
+    }
     return { ok: true, dry: true, object: out.done!.object, metrics: out.done!.metrics, ...report, rolledBack: undone };
   }
   // --- Plugin steps (D8). A run that made or changed one part is stamped on it: its first node names what ran and with
@@ -878,6 +953,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const changed = [...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id);
   const entry: RustRecipe = { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}), sha256, at: (this.recipeSeq += 1), ...(changed.length ? { changed } : {}), ...(plugin ? { plugin: { id: plugin.id, version: plugin.version, sha256: plugin.sha256 } } : {}), ...(usedIngredients.length ? { ingredients: resolved.used } : {}), ...(usedPins ? { uses: usedPins } : {}) };
   this.recipePreviewHashes.delete(name);
+  this.recipePreviewSources.delete(name);
   let entryKey: string | null = null;
   if (created.length) entryKey = key;
   else if (changed.length) {

@@ -117,6 +117,12 @@ async function step(this: Session, obj: PlateObject, direction: "undo" | "redo")
   return this.gotoNode(obj, target);
 }
 
+function givenLabel(raw: unknown): string {
+  if (!raw || typeof raw !== "object") return "";
+  const label = (raw as { label?: unknown }).label;
+  return typeof label === "string" ? label.trim() : "";
+}
+
 async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: number, raw: unknown, exprs?: Record<string, string>, probe = false): Promise<Record<string, unknown>> {
   const refusal = editRefusal(tree, node);
   if (refusal) return refuse("step-kept", refusal);
@@ -130,6 +136,7 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
       const root = { kind: "feature" as const, op };
       const reopened = await this.reopenRoot(obj, tree, node, root);
       if ("refusal" in reopened) return reopened.refusal;
+      if (givenLabel(raw)) this.rename(obj, node, givenLabel(raw));
       return { ok: true, node: nodeHandle(node), ...this.rootShown(obj, reopened), stored: op, typed: baked.typed };
     }
     if (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft") {
@@ -142,6 +149,7 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
     const root = { kind: "feature" as const, op };
     const reopened = await this.reopenRoot(obj, tree, node, root);
     if ("refusal" in reopened) return reopened.refusal;
+    if (givenLabel(raw)) this.rename(obj, node, givenLabel(raw));
     return { ok: true, node: nodeHandle(node), ...this.rootShown(obj, reopened), stored: op, typed: baked.typed };
   }
   if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return refuse("bad-op", "The new solid's first step takes a root edit.");
@@ -152,6 +160,7 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
   const root = { kind: "primitive" as const, solid, ...(exprs ? { exprs } : {}) };
   const reopened = await this.reopenRoot(obj, tree, node, root);
   if ("refusal" in reopened) return reopened.refusal;
+  if (givenLabel(raw)) this.rename(obj, node, givenLabel(raw));
   return { ok: true, node: nodeHandle(node), ...this.rootShown(obj, reopened), stored: baked.op, typed: baked.typed };
 }
 
@@ -314,6 +323,7 @@ async function edit(this: Session, obj: PlateObject, node: number | null, raw: u
   const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? ids[0]!;
   const host = obj.tree ?? tree;
   obj.tree = forked(host, own.parent, steps, tip);
+  if (givenLabel(raw)) this.rename(obj, steps[0]!.id, givenLabel(raw));
   this.forkTools(levels.slice(0, -1), reply.tools);
   const solid = solidView(reply);
   if (solid) obj.solid = solid;
@@ -717,7 +727,7 @@ async function measure(this: Session, obj: PlateObject, input: Record<string, un
       if (lost) return lost;
       throw err;
     }
-  });
+  }, obj.frame === "part" ? "part" : "model");
 }
 
 /** The methods this module adds to Session. */

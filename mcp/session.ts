@@ -230,8 +230,9 @@ export class Session {
   lustId: string | undefined;
   /** I21: each recipe name's call count on its last run, for "call N of about M". */
   readonly recipeCallCounts = new Map<string, number>();
-  /** Last successful dry run's source, to avoid silently saving an older applied draft. */
+  /** Last successful dry run's source hash, and the source itself, so a save keeps that run's code. */
   readonly recipePreviewHashes = new Map<string, string>();
+  readonly recipePreviewSources = new Map<string, string>();
   /** Resumable runs belong to this session's autosave, never to an imported project. */
   readonly recipeCheckpoints = new Map<string, RecipeCheckpoint>();
   /** The recipe of the model_build being called, kept from before its ops were expanded. */

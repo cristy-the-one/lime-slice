@@ -165,6 +165,13 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   const asked = typeof opts.idAsked === "string" && isSlug(opts.idAsked) ? opts.idAsked : "";
   let id = asked || slugOf(title) || slugOf(opts.name ?? "") || "plugin";
   if (asked && opts.name === undefined) opts = { ...opts, name: asked };
+  // A name that differs from a kept id only by punctuation is that id, not a new plugin.
+  const punct = id.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const held = readPlugin(id, dir);
+  if (punct && (!held || "reason" in held)) {
+    const near = listLibrary(dir).find((file) => file.header.plugin !== id && file.header.plugin.toLowerCase().replace(/[^a-z0-9]/g, "") === punct);
+    if (near) return { reason: `did you mean ${near.header.plugin}?` };
+  }
   let version = 1;
   let note: string | undefined;
   const same = (found: ReturnType<typeof readPlugin>) => !!found && !("reason" in found) && found.sha256 === sha256;
@@ -425,14 +432,32 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     let data: Record<string, RecipeData> | undefined;
     if (typeof input.from === "string") {
       const draft = this.latestDraft(input.from);
-      // An animation this project keeps (pose_animate's name) when no recipe ran under that name.
-      if (!draft && (this.animations.has(input.from) || this.animations.has(slugOf(input.from)))) return this.animationSaveFrom(input.from, input);
-      if (!draft) return refuse("no-draft", `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.${this.animations.size ? ` Animations kept with this project: ${[...this.animations.keys()].slice(0, 20).join(", ")}.` : ""}`);
-      source = draft.row.source;
-      name = input.from;
-      objectHint = this.draftPart(draft.row);
-      ingredients = draft.row.ingredients;
-      data = draft.row.data;
+      const preview = this.recipePreviewHashes.get(input.from);
+      const newer = this.recipePreviewSources.get(input.from);
+      const dryCode = newer !== undefined && preview !== undefined && bodyHash(newer) === preview ? newer : undefined;
+      const draftCode = draft?.row.source;
+      const dryIsNewer = dryCode !== undefined && (draftCode === undefined || bodyHash(draftCode) !== preview);
+      if (dryIsNewer && dryCode !== undefined) {
+        source = dryCode;
+        name = input.from;
+        if (draft) {
+          objectHint = this.draftPart(draft.row);
+          ingredients = draft.row.ingredients;
+          data = draft.row.data;
+        }
+      } else if (preview !== undefined && (draftCode === undefined || bodyHash(draftCode) !== preview)) {
+        return refuse("stale-draft", `The last dry run of ${input.from} is newer than the applied code, and that dry run's code is not here. Apply the new recipe first, or give source explicitly.`);
+      } else if (!draft && (this.animations.has(input.from) || this.animations.has(slugOf(input.from)))) {
+        return this.animationSaveFrom(input.from, input);
+      } else if (!draft) {
+        return refuse("no-draft", `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.${this.animations.size ? ` Animations kept with this project: ${[...this.animations.keys()].slice(0, 20).join(", ")}.` : ""}`);
+      } else {
+        source = draft.row.source;
+        name = input.from;
+        objectHint = this.draftPart(draft.row);
+        ingredients = draft.row.ingredients;
+        data = draft.row.data;
+      }
     } else if (typeof input.source === "string") {
       source = input.source;
       name = typeof input.id === "string" ? input.id : undefined;

@@ -97,25 +97,32 @@ interface Guarded {
  * a fuse that lost volume, cuts that removed more than their boxes hold, and a box primitive that leaves pieces meeting
  * only along an edge. Null when none fires; a sentence otherwise, and the queue gives up on building them together.
  */
-export function queuedGuard(ops: readonly ModelOp[], before: Guarded | null, after: Guarded | null): string | null {
+export function queuedGuardAt(ops: readonly ModelOp[], before: Guarded | null, after: Guarded | null): { reason: string; index?: number } | null {
   if (!before || !after) return null;
   const kinds = ops.map((op) => (op as { op?: string }).op);
-  if (kinds.includes("fuse")) {
+  const fuses = kinds.flatMap((kind, index) => (kind === "fuse" ? [index] : []));
+  if (fuses.length) {
     const lost = lostVolume({ kind: "boolean", op: "fuse" }, before.volumeMm3, after.volumeMm3, null);
-    if (lost) return lost;
+    if (lost) return { reason: lost, ...(fuses.length === 1 ? { index: fuses[0] } : {}) };
   }
   const boxes = ops.map((op) => (op.kind === "boolean" ? primitiveBox(op as unknown as PrimitiveSpec) : null));
   if (ops.every((_, i) => kinds[i] === "cut" && boxes[i])) {
     const most = boxes.reduce((sum, box) => sum + [0, 1, 2].reduce((acc, i) => acc * Math.max(0, Number(box!.max[i]) - Number(box!.min[i])), 1), 0);
     const slack = Math.max(before.volumeMm3 * 1e-4, 0.01);
-    if (before.volumeMm3 - after.volumeMm3 > most * 1.02 + slack) return "The queued cuts removed more than their tools hold.";
+    if (before.volumeMm3 - after.volumeMm3 > most * 1.02 + slack) return { reason: "The queued cuts removed more than their tools hold." };
   }
-  for (const box of boxes) {
+  for (let index = 0; index < boxes.length; index += 1) {
+    const box = boxes[index];
     if (!box) continue;
     const now = newTouchingEdges(before.positions, after.positions, box);
-    if (now.count > 0) return touchingReason(now.at);
+    if (now.count > 0) return { reason: touchingReason(now.at), index };
   }
   return null;
+}
+
+/** The step guards' sentence, or null. `queuedGuardAt` also names the op when one op is the cause. */
+export function queuedGuard(ops: readonly ModelOp[], before: Guarded | null, after: Guarded | null): string | null {
+  return queuedGuardAt(ops, before, after)?.reason ?? null;
 }
 
 /**
@@ -234,7 +241,7 @@ export class RecipeQueue {
   readonly report: QueueReport = { queued: 0, booleans: 0, flushedBy: new Map(), readLines: new Map() };
   private readonly queues = new Map<string, QueuedOp[]>();
   /** Explicit ops' refusals not yet given to the recipe by its `flush`, by part. */
-  private readonly pending = new Map<string, { index: number; reason: string; line: number }[]>();
+  private readonly pending = new Map<string, { index: number; reason: string; line: number; tool: string }[]>();
   private readonly counts = new Map<string, number>();
   private readonly started = Date.now();
 
@@ -289,7 +296,7 @@ export class RecipeQueue {
       const object = typeof site.args.object === "string" ? site.args.object : this.selected() ?? "";
       const built = await this.flush(object, site);
       if (built) return built;
-      const failures = this.pending.get(object) ?? [];
+      const failures = (this.pending.get(object) ?? []).map(({ index, reason, line }) => ({ index, reason, line }));
       this.pending.delete(object);
       const applied = this.counts.get(object) ?? 0;
       this.counts.delete(object);
@@ -322,8 +329,8 @@ export class RecipeQueue {
     return null;
   }
 
-  /** The explicit queue's refusals the recipe never asked `flush` for, for the run's notes. */
-  unreported(): { index: number; reason: string; line: number }[] {
+  /** The explicit queue's refusals the recipe never asked `flush` for. */
+  unreported(): { index: number; reason: string; line: number; tool: string }[] {
     return [...this.pending.values()].flat();
   }
 
@@ -466,7 +473,7 @@ export class RecipeQueue {
 
   private refused(object: string, q: QueuedOp, reason: string) {
     const list = this.pending.get(object) ?? [];
-    list.push({ index: q.index, reason, line: q.site.line });
+    list.push({ index: q.index, reason, line: q.site.line, tool: q.site.tool });
     this.pending.set(object, list);
   }
 

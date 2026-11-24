@@ -2200,6 +2200,7 @@ export const TOOLS: ToolSpec[] = [
         plugin: { type: "string", minLength: 1, maxLength: 60, description: "A library plugin id to run instead of source." },
         preset: { type: "string", maxLength: 100, description: "With plugin: kept values." },
         keep: { type: "object", description: "{title, description}: on success, save the recipe as a plugin." },
+        replaceHandEdits: { type: "boolean", description: "Replace hand-made steps and branches a multi-part rerun would drop." },
       },
     },
   },
