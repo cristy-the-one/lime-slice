@@ -154,7 +154,7 @@ async function pickEdge(page: Page) {
   throw new Error("no edge under the scan");
 }
 
-test("a Patch edge badge is one button that a real click cycles G1, G2, G0", async ({ page }) => {
+test("a Patch edge badge is one button that a real click cycles G1 and G0, with no G2", async ({ page }) => {
   await openSheet(page);
   await pickEdge(page);
   await page.locator("#modelToolPatch").click();
@@ -174,9 +174,11 @@ test("a Patch edge badge is one button that a real click cycles G1, G2, G0", asy
   await page.mouse.down();
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   await page.mouse.up();
-  await expect(badge).toHaveText("G2");
-  await badge.click();
+  // A G2 patch side is not built in this version (the kernel refuses it), so the badge never offers it.
   await expect(badge).toHaveText("G0");
   await badge.click();
   await expect(badge).toHaveText("G1");
+  await badge.click();
+  await expect(badge).toHaveText("G0");
+  await expect(badge).toHaveAttribute("title", /G0 and G1/);
 });

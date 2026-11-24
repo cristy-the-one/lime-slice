@@ -349,6 +349,7 @@ src/project-version.test.ts
 src/organic-roundtrip.test.ts
 src/model-tree-renumber.test.ts
 src/app/model/names-topology.test.ts
+src/app/model/plugin-sheet.test.ts
 src/app/model/surface-cache.test.ts
 mcp/nurbs-sweep.test.ts
 mcp/loft-fillet-v2.test.ts

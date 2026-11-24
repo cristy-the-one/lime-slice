@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
-import { mockModelTree } from "./model-tree-mock";
+import { mockModelTree, type Built } from "./model-tree-mock";
 
 type V = [number, number, number];
 
@@ -47,11 +47,11 @@ async function pickEdge(page: Page) {
   throw new Error("no edge under the scan");
 }
 
-async function openFillet(page: Page) {
+async function openFillet(page: Page, apply?: () => Built) {
   const solid = boxSolid();
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
-  await mockModelTree(page, { open: () => solid });
+  await mockModelTree(page, { open: () => solid, ...(apply ? { apply } : {}) });
   await page.goto("/");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
@@ -71,18 +71,35 @@ test("fillet defaults to circular G1 and offers smooth G2, conic, and a variable
   await expect(page.locator("#modelFilletProfile [data-fillet-profile=g1]")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#modelFilletRho")).toBeHidden();
   await expect(page.locator("#modelFilletStart")).toBeHidden();
+  // The profile promises no more than the kernel builds: the hint shows with G2 and Conic only.
+  const note = page.locator("#modelFilletProfileNote");
+  await expect(note).toBeHidden();
 
   await page.locator("#modelFilletProfile [data-fillet-profile=g2]").click();
   await expect(page.locator("#modelFilletProfile [data-fillet-profile=g2]")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#modelFilletProfile [data-fillet-profile=g1]")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#modelFilletRho")).toBeHidden();
+  await expect(note).toBeVisible();
+  await expect(note).toHaveText("Only on straight edges between flat faces.");
 
   await page.locator("#modelFilletProfile [data-fillet-profile=conic]").click();
   await expect(page.locator("#modelFilletProfile [data-fillet-profile=conic]")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#modelFilletRho")).toBeVisible();
+  await expect(note).toBeVisible();
 
   await page.locator("#modelFilletVariable").check();
   await expect(page.locator("#modelFilletStart")).toBeVisible();
   await expect(page.locator("#modelFilletMid")).toBeVisible();
   await expect(page.locator("#modelFilletEnd")).toBeVisible();
+});
+
+/** The kernel's sentence for G2 fillet edges that meet at a corner (crates/lime-model-occt/cpp/kernel.cpp). */
+const CORNER = "A G2 fillet is built only on straight edges between two flat faces that do not meet each other: picked edges that meet at a corner need a corner blend it does not build. Pick edges that do not touch, or use G1.";
+
+test("a refused G2 fillet shows the kernel's sentence as it comes", async ({ page }) => {
+  await openFillet(page, () => ({ error: CORNER }));
+  await page.locator("#modelFilletProfile [data-fillet-profile=g2]").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelReadout")).toContainText(CORNER);
 });
