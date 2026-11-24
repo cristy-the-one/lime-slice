@@ -2,11 +2,12 @@
 
 ## 2026-11-24
 
-* **Update**: [Sketching and features](modeler/sketching.md) describes S6's `nurbsSurface` op, the NURBS panel and `solid_new {feature}`. The sources point at the `organic-surfaces/s6-nurbs-surface` branch; pin them to the merge commit once it reaches main.
+* **Update**: [Sketching and features](modeler/sketching.md) and [Tool catalog](mcp/tools.md) point their organic-surfaces sources at `main`. Sketching says S6 is in 7.2.0, that a project with the new steps or an open sheet is version 5 (refused by 7.1.2), and that Patch is G0 or G1.
+* **Update**: [Sketching and features](modeler/sketching.md) describes S6's `nurbsSurface` op, the NURBS panel and `solid_new {feature}`. Its sources point at `main`, where the 7.2.0 merge puts them.
 
 ## 2026-11-23
 
-* **Update**: [Sketching and features](modeler/sketching.md) describes the organic-surfaces steps of 7.2.0 (S1 to S5): which the app has, which are MCP and recipe only, and what 7.1.2 does with a project that uses them. [Tool catalog](mcp/tools.md) describes `model_check {surfaces: true}` and the organic ops' refusals. The new sources point at the `feature/organic-surfaces` branch; pin them to the merge commit once it reaches main.
+* **Update**: [Sketching and features](modeler/sketching.md) describes the organic-surfaces steps of 7.2.0 (S1 to S5): which the app has, which are MCP and recipe only, and what 7.1.2 does with a project that uses them. [Tool catalog](mcp/tools.md) describes `model_check {surfaces: true}` and the organic ops' refusals. The new sources point at `main`, where the 7.2.0 merge puts them.
 
 ## 2026-11-21
 

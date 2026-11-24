@@ -444,6 +444,7 @@ export function plateFileIsVersion2(objects: {
   frame?: ObjectFrame;
   workplane?: Workplane;
   sim?: unknown;
+  sheet?: true;
 }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
@@ -458,7 +459,9 @@ export function plateFileIsVersion2(objects: {
     !isIdentity(one?.modelPose) ||
     one?.frame != null ||
     one?.workplane != null ||
-    one?.sim != null
+    one?.sim != null ||
+    // --- Organic surfaces S4: a lone object marked an open sheet keeps the mark (a version 1 file has no object row).
+    one?.sheet === true
   );
 }
 

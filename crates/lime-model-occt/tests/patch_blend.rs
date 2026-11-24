@@ -1254,14 +1254,22 @@ fn patch_refuses_g2_on_a_radius_24_cap() {
     }));
     let error = reply["error"].as_str().unwrap_or("").to_string();
     eprintln!("S5 r24 refusal: {error}");
-    assert_eq!(
-        error,
-        format!(
-            "Edge {}: G2 can't be reached at this curvature. The largest gap is 0.000000 mm, the largest angle is 0.094226 degrees, and the largest curvature jump is 0.150928 per mm.",
-            g2[0]
-        ),
-        "radius-24 G2 must refuse by naming that edge and the measured gap, angle, and jump: {reply}"
-    );
+    // The sentence's fixed parts exactly, and its three numbers within a tolerance: the last digits of a measured angle
+    // or jump differ between operating systems' builds of Open CASCADE.
+    let prefix = format!("Edge {}: G2 can't be reached at this curvature. The largest gap is ", g2[0]);
+    let numbers = error
+        .strip_prefix(&prefix)
+        .and_then(|rest| {
+            let (gap, rest) = rest.split_once(" mm, the largest angle is ")?;
+            let (angle, rest) = rest.split_once(" degrees, and the largest curvature jump is ")?;
+            let jump = rest.strip_suffix(" per mm.")?;
+            Some((gap.parse::<f64>().ok()?, angle.parse::<f64>().ok()?, jump.parse::<f64>().ok()?))
+        })
+        .unwrap_or_else(|| panic!("radius-24 G2 must refuse by naming that edge and the measured gap, angle, and jump: {reply}"));
+    let (gap, angle, jump) = numbers;
+    assert!(gap < 1e-5, "gap {gap}");
+    assert!((angle - 0.094226).abs() < 0.005, "angle {angle}, measured 0.094226 on Windows");
+    assert!((jump - 0.150928).abs() < 0.005, "jump {jump}, measured 0.150928 on Windows");
     assert!(reply.get("solid").is_none(), "a refusal builds no face: {reply}");
     let missing = call(json!({ "call": "goto", "key": key, "node": 3 }));
     assert!(missing.get("error").is_some(), "the refused patch is not a step: {missing}");
@@ -1512,5 +1520,51 @@ fn patch_refuses_g2_where_a_half_ends_at_the_split() {
     let error = reply["error"].as_str().unwrap_or("").to_string();
     println!("S5 5-side G2 refusal: {error}");
     assert!(error.starts_with(&format!("Edge {}: G2 can't be reached at this curvature.", g2[0])), "{reply}");
+    ok(json!({ "call": "close", "key": key }));
+}
+
+/// A blend side given as a bare curve has no face, so G1 there is refused with a sentence that offers G0; and G0 on that
+/// side then builds: the rim is met in position, and the other side keeps the continuity asked.
+#[test]
+fn a_blend_side_on_a_bare_curve_builds_at_g0() {
+    if !has_occt() {
+        return;
+    }
+    let key = "s5-blend-bare-curve";
+    let opened = ok(json!({ "call": "open", "key": key, "chordMm": CHORD_MM, "feature": {
+        "kind": "sheet", "mode": "planar",
+        "curves": [{ "kind": "polyline", "points": [[0.0, -20.0, 0.0], [10.0, -20.0, 0.0], [10.0, -10.0, 0.0], [0.0, -10.0, 0.0]], "closed": true }]
+    } }));
+    let rim = sampled_edges(&opened)
+        .into_iter()
+        .find(|edge| edge.points.iter().all(|p| (p[1] + 10.0).abs() < 1e-6))
+        .expect("the sheet's edge on y = -10")
+        .index;
+    let curve = json!({ "kind": "polyline", "points": [[0.0, 0.0, 5.0], [10.0, 0.0, 5.0]] });
+    let blend = |a_continuity: Option<&str>| {
+        let mut a = json!({ "curve": curve });
+        if let Some(c) = a_continuity {
+            a["continuity"] = json!(c);
+        }
+        call(json!({ "call": "apply", "key": key, "parent": 0, "node": 1, "chordMm": CHORD_MM,
+            "op": { "kind": "blendSurface", "a": a, "b": { "edges": [rim] }, "continuity": "g1" } }))
+    };
+    let refused = blend(None);
+    assert_eq!(
+        refused["error"].as_str(),
+        Some("G1 and G2 need the face beside the edge. Pick an edge of the sheet, or set that side to G0."),
+        "{refused}"
+    );
+    let built = blend(Some("g0"));
+    assert!(built.get("error").is_none(), "G0 on the bare curve's side builds: {built}");
+    assert_op_time("blend-bare-curve", "g0");
+    // The sheet's own side kept its G1 at op time.
+    #[cfg(lime_occt_test_hooks)]
+    {
+        let report = call(json!({ "call": "testLastFill" }));
+        let sheet_side = report["edges"].as_array().expect("edges").iter().find(|e| e["side"] == json!(1)).cloned().expect("side B");
+        assert_eq!(sheet_side["asked"], json!(1), "{report}");
+        assert!(sheet_side["angleDeg"].as_f64().unwrap_or(99.0) < G1_ANGLE_DEG, "{report}");
+    }
     ok(json!({ "call": "close", "key": key }));
 }

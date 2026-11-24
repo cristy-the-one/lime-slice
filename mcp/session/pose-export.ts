@@ -32,6 +32,7 @@ import { runAnimation } from "../animation-run.ts";
 import { slugOf, type PluginHeader } from "../plugins.ts";
 import { RecipeHost, recipeCrateDir } from "../recipe.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { openSheetRefusal } from "./sheet.ts";
 import { SESSION_URL } from "../session-url.ts";
 import { resolveWrite } from "../workspace.ts";
 import { CHORD, posedPositions, shownName, type CallMeta, type PlateObject, type ToolHandler } from "./shared.ts";
@@ -231,6 +232,13 @@ async function poseExport(this: Session, input: Record<string, unknown>, meta?: 
     colors.set(member.object, colorMap?.get(member.object) ?? defaultMemberColor(i));
   }
 
+  // --- Organic surfaces S4. A mesh export of an assembly with an open sheet stops on it, as the app's pose export does
+  // (its MESH_FORMATS); STEP and the pose file carry the sheet as it is.
+  if (format === "glb" || format === "3mf" || format === "stl" || format === "obj") {
+    const members = new Set(exportAssembly.members.map((member) => member.object));
+    const sheet = openSheetRefusal(this.objects.filter((obj) => members.has(obj.id)), `exported as ${format.toUpperCase()}`);
+    if (sheet) return sheet;
+  }
   const label = configLabel(config);
   const frameReply = config.kind === "frame" ? { frame: config.frameIndex + 1, timeS: config.timeS } : {};
   const defaultName = poseExportFileName(assembly.name, format, config, stlMode);

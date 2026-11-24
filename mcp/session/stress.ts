@@ -21,6 +21,7 @@ import { applyObjectSetting } from "../settings-rows.ts";
 import { BAND_KINDS, BEADS_REFUSAL, PLACE_ON_SMEAR, type PlateObject, REGION_SHAPE, STALE_FACES, STIFFNESS_KINDS, TARGET_KINDS, type ToolHandler, UNKNOWN_OBJECT, slicedRunReply, stlFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { openSheetRefusal } from "./sheet.ts";
 
 /** The file Export writes, so the review sees the printer's start and end text. */
 function printerBuildAxis(this: Session): SimVec {
@@ -188,6 +189,9 @@ function simSetup(this: Session, input: Record<string, unknown>): Record<string,
     });
   }
   if (!obj) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
+  // --- Organic surfaces S4. An open sheet has no inside to load, as in the app's Stress panel.
+  const sheet = openSheetRefusal([obj], "set up for a stress study");
+  if (sheet) return sheet;
   if (input.card && typeof input.card === "object") this.library = saveMaterialCard(this.library, card);
   const study: ObjectStudy = {
     holds: fixtures,
@@ -262,6 +266,8 @@ function solveCopy(this: Session, obj: PlateObject, patch: SweepPatch | undefine
 async function simRun(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const obj = this.simTarget(input);
   if ("reason" in obj) return refuse("no-object", obj.reason, undefined, NEXT.plate);
+  const sheet = openSheetRefusal([obj], "solved for stress");
+  if (sheet) return sheet;
   const saved = obj.sim;
   if (!saved) return refuse("no-study", "Set up a study first.", undefined, NEXT.study);
   const reply = this.representationFor(obj, saved) === "sliced"
@@ -682,6 +688,8 @@ async function simSweep(this: Session, input: Record<string, unknown>): Promise<
   if (typeof limits === "string") return refuse("bad-sweep", limits);
   const obj = this.simTarget(input);
   if ("reason" in obj) return refuse("no-object", obj.reason, undefined, NEXT.plate);
+  const sheet = openSheetRefusal([obj], "solved for stress");
+  if (sheet) return sheet;
   const sliced = obj.sim !== undefined && this.representationFor(obj, obj.sim) === "sliced";
   if (sliced && input.reslice !== true) return refuse("bad-representation", SLICED_SWEEP);
   if (!sliced && input.reslice === true) return refuse("bad-representation", RESLICE_BEAM);

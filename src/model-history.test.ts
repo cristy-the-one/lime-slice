@@ -2,7 +2,7 @@ import { draftSources, dropRefusal, foldEndingAt, foldedRedoTarget, foldedUndoTa
 import { dropped, jumped, newTree, opLabel, reserveId, withChild, withNode, type ModelOp, type ModelTree, type PluginStamp } from "./model-tree.ts";
 import { markedRun, RECIPE_API } from "./plugin-step.ts";
 import type { CheckedCopy } from "./plugin-file.ts";
-import { loadedTree, savedTree, withSavedNames } from "./model-tree-file.ts";
+import { loadedTree, readSavedTree, savedTree, withSavedNames } from "./model-tree-file.ts";
 import type { Affine } from "./model-space.ts";
 
 let failed = 0;
@@ -446,6 +446,31 @@ eq("D9: only the library has the code: everything works", [fromLib.note, fromLib
 eq("D9: a newer version in the library is offered, never forced", [pluginStepView(stamp, env({ library: lib(5) })).newer, pluginStepView(stamp, env({ library: lib(5) })).note, pluginStepView(stamp, env({ library: lib(5) })).rebuild], [{ version: 5 }, null, "yes"]);
 eq("D9: neither the project nor the library has it", pluginStepView(stamp, env({ copies: new Map(), library: { bySha: new Map(), current: new Map() } })).note, "The plugin source is not in this project or your library. The part is kept as built; its values cannot change.");
 eq("a draft is marked for Save as plugin…, and has no newer version", [draftView.draft, view.draft, pluginStepView(draftStamp, env({ library: lib(9) })).newer ?? null], [true, false, null]);
+
+// --- Organic surfaces: the Sheet badge after a project reload. `ModelNode.sheet` (the kernel's verdict) is not saved, so
+// a reloaded row reads its fingerprint until the node is rebuilt: no volume and some faces is an open sheet.
+{
+  const reload = (tree: ModelTree): ModelTree => {
+    const root = tree.root.kind === "feature" ? { rootFeature: tree.root.op } : tree.root.kind === "primitive" ? { rootPrimitive: tree.root.solid } : {};
+    const file = JSON.parse(JSON.stringify({ ...savedTree(tree, tree.committed, () => undefined), ...root })) as unknown;
+    const read = readSavedTree(file);
+    if (!read) throw new Error("the saved tree did not read back");
+    return loadedTree(read as Parameters<typeof loadedTree>[0], tree.key, tree.root, "part", null, () => undefined);
+  };
+  const nurbsOp = { kind: "nurbsSurface", poles: [[[0, 0, 0], [0, 10, 0]], [[10, 0, 0], [10, 10, 2]]], degreeU: 1, degreeV: 1 } as unknown as ModelOp;
+  let nurbs = newTree("n#1", { kind: "feature", op: nurbsOp } as never, "NURBS surface", { volumeMm3: 0, faces: 1, edges: 4 });
+  nurbs = withNode(nurbs, 0, { sheet: true });
+  const nurbsBack = reload(nurbs);
+  check("a reloaded NURBS sheet keeps no verdict (it is not saved)", nurbsBack.nodes.get(0)?.sheet === undefined);
+  check("a reloaded NURBS sheet still shows the Sheet badge, from its fingerprint", historyLayout(nurbsBack).rows[0]?.sheet === true, JSON.stringify(historyLayout(nurbsBack).rows));
+  const sheetOp = { kind: "sheet", mode: "extrude", curves: [{ kind: "polyline", points: [[0, 0, 0], [10, 0, 0]] }], dir: [0, 1, 0], distance: 10 } as unknown as ModelOp;
+  let built = newTree("s#1", { kind: "primitive", solid: { primitive: "box", origin: [0, 0, 0], size: [20, 20, 20] } } as never, "Box", { volumeMm3: 8000, faces: 6, edges: 12 });
+  built = withChild(built, 0, { id: 1, op: sheetOp, label: "Sheet", fingerprint: { volumeMm3: 0, faces: 1, edges: 4 }, sheet: true });
+  built = withChild(built, 1, { id: 2, op: { kind: "thicken", thickness: 2 } as unknown as ModelOp, label: "Thicken 2 mm", fingerprint: { volumeMm3: 400, faces: 6, edges: 12 } });
+  const builtBack = reload({ ...built, committed: 1 });
+  const rows = historyLayout(builtBack).rows;
+  eq("a reloaded op-built sheet: the box has no badge, the sheet step has it, the thickened step has none", rows.map((row) => row.sheet === true), [false, true, false]);
+}
 
 if (failed) {
   console.error(`${failed} failed`);

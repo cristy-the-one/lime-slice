@@ -1902,12 +1902,14 @@ pub mod ops {
             .set("makeSolid", make_solid)
     }
 
-    /// S5: One side of a patch or blend. `continuity` is `"g0"`, `"g1"`, or `"g2"`.
+    /// S5: One side of a patch or blend. `continuity` is `"g0"`, `"g1"`, or `"g2"`. A blend builds G1 and G2; a patch
+    /// side asked `"g2"` is not built in this version (the kernel refuses it), so a patch side is `"g0"` or `"g1"`.
     pub fn surface_boundary(edges: Json, continuity: &str) -> Json {
         Json::obj().set("edges", edges).set("continuity", continuity)
     }
 
-    /// S5: Fill an opening. A clean 2–4 curve G0 boundary uses GeomFill; G1, G2, or an N-sided opening is N Hermite–Coons pieces.
+    /// S5: Fill an opening. A clean 2–4 curve G0 boundary uses GeomFill; G1 or an N-sided opening is N Hermite–Coons
+    /// pieces. A G2 side is refused by the kernel in this version.
     pub fn patch(boundaries: Vec<Json>) -> Json {
         Json::obj().set("kind", "patch").set("boundaries", Json::arr(boundaries))
     }

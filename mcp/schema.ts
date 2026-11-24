@@ -938,7 +938,7 @@ const sheetOps = [
         type: "array",
         minItems: 2,
         maxItems: 20,
-        description: "Boundary sides, in order. Each is edges and/or a curve, with continuity g0, g1, or g2.",
+        description: "Boundary sides, in order. Each is edges and/or a curve, with continuity g0 or g1. A side asked g2 is not built in this version: the kernel refuses it with the curvature jump it reached.",
         items: {
           type: "object",
           additionalProperties: false,
@@ -946,7 +946,7 @@ const sheetOps = [
             edges: cappedEdges(64, "Edges of this side, in order, at most 64."),
             curve: curve3dField,
             face: facePick("Support face: an index, or {normal, nearPoint}."),
-            continuity: { enum: ["g0", "g1", "g2"], description: "g0, g1, or g2. Absent: g1 on an edge that touches a face, otherwise g0." },
+            continuity: { enum: ["g0", "g1", "g2"], description: "g0 or g1 (g2 is not built in this version and is refused). Absent: g1 on an edge that touches a face, otherwise g0." },
           },
         },
       },
@@ -3218,6 +3218,48 @@ const LEAN_OP = {
 };
 
 /** One op kind's full schema, as a client may send it (numbers may be text, points anchors). */
+/**
+ * --- Organic surfaces: shapes the guide writes once. The 3D curve (`curve3dField`) is the same schema in about a dozen
+ * fields (spines, guides, sheet curves, patch and blend sides), and a sketch outline (`loopsField`'s item) in five. A
+ * guide reply that shows a schema writes each such field as `{shape: name}` and carries the shape once in `shapes`,
+ * when it is used more than once there. Only the guide's text changes: validation and tools/list read the schema as is.
+ */
+const SHARED_SHAPES: Readonly<Record<string, unknown>> = { curve3d: curve3dField, loop: loopsField.items };
+let sharedShapeKeys: Map<string, string> | null = null;
+
+/** `schema` with each shared shape it holds more than once written as `{shape: name}`, and those shapes. */
+export function guideShapes(schema: unknown): { schema: unknown; shapes?: Record<string, unknown> } {
+  sharedShapeKeys ??= new Map(Object.entries(SHARED_SHAPES).flatMap(([name, shape]) => [[JSON.stringify(shape), name], [JSON.stringify(textNumbers(shape)), name]] as [string, string][]));
+  const keys = sharedShapeKeys;
+  const nameOf = (row: Record<string, unknown>): string | undefined => (row.oneOf !== undefined || row.required !== undefined ? keys.get(JSON.stringify(row)) : undefined);
+  const counts = new Map<string, number>();
+  const count = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    const name = Array.isArray(value) ? undefined : nameOf(value as Record<string, unknown>);
+    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+    else for (const inner of Object.values(value)) count(inner);
+  };
+  count(schema);
+  const shared = new Set([...counts].filter(([, n]) => n > 1).map(([name]) => name));
+  if (shared.size === 0) return { schema };
+  const used = new Map<string, unknown>();
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk);
+    if (!value || typeof value !== "object") return value;
+    const row = value as Record<string, unknown>;
+    const name = nameOf(row);
+    if (name && shared.has(name)) {
+      if (!used.has(name)) used.set(name, row);
+      return { shape: name };
+    }
+    return Object.fromEntries(Object.entries(row).map(([key, inner]) => [key, walk(inner)]));
+  };
+  return { schema: walk(schema), shapes: Object.fromEntries(used) };
+}
+
+/** The line a guide reply with `shapes` carries. */
+export const SHAPES_NOTE = "A field written {shape: name} takes the schema in shapes[name], given once.";
+
 export function opSchemaFor(kind: string): Record<string, unknown> | null {
   const branch = opBranch(kind);
   return branch ? textNumbers(branch) as Record<string, unknown> : null;

@@ -192,6 +192,7 @@ impl Store {
                 seed,
                 quiet,
             } => {
+                let step_root = step_path.is_some() || data_b64.as_deref().is_some_and(super::is_step_data);
                 let root = root_shape(data_b64, step_path, box_mm, primitive, feature.map(|op| *op))?;
                 if let Some(saved) = fingerprint {
                     let got = root.fingerprint();
@@ -205,6 +206,7 @@ impl Store {
                 self.open(
                     key,
                     root,
+                    step_root,
                     nodes,
                     current,
                     seed,
@@ -427,6 +429,8 @@ impl Store {
                 iso_count,
             } => {
                 self.ensure(&key, node)?;
+                // With meshQuality "display" the per-vertex buffers describe the display mesh: they match the reply's
+                // `display.positions` corner for corner (tests/surface_inspect.rs). Without it, the plate mesh.
                 let display = self.display;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
                 let text = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count, display)?;

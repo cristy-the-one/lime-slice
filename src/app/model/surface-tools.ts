@@ -1,5 +1,6 @@
 /**
- * Patch edge badges. A picked edge touches a face, so it starts at G1. Clicking the badge cycles G0, G1, G2.
+ * Patch edge badges. A picked edge touches a face, so it starts at G1. Clicking the badge cycles G0 and G1: a G2 patch
+ * side is not built in this version (src/model-surface.ts). Blend keeps G1 and G2 (its own selector).
  */
 import { fx } from "../fx";
 import { defaultBoundaryContinuity, nextContinuity, type SeamContinuity } from "../../model-surface.ts";
@@ -94,7 +95,7 @@ function paint(edges: readonly number[]) {
     const continuity = continuityOf(index);
     const label = continuity.toUpperCase();
     if (button.textContent !== label) button.textContent = label;
-    const title = tool === "patch" ? "Click to change this edge between G0, G1, and G2." : label;
+    const title = tool === "patch" ? "Click to change this edge between G0 and G1. A G2 patch side is not built in this version." : label;
     if (button.title !== title) button.title = title;
   }
 }

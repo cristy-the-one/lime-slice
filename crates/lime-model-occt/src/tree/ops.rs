@@ -1081,7 +1081,6 @@ impl Op {
                 | Op::Patch { .. }
                 | Op::BlendSurface { .. }
                 | Op::NurbsSurface { .. }
-                | Op::Unify
         )
     }
 }

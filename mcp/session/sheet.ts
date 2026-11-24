@@ -1,37 +1,23 @@
 /**
  * Organic surfaces S4: open sheets as plate objects, the app's one rule over MCP.
  *
- * The rule is the app's `isOpenSheet` (src/model-sheet.ts in #824): the kernel says the shape is not editable (no closed
- * solid), it has faces, and it has open borders (`nakedEdges`), unless it is the root of a STEP import, which opens,
- * commits and slices as it did on 7.1.2. `src/modeling/model-calls.ts` `solidView` drops `nakedEdges`, so the session
- * reads replies through the `solidView` here, which keeps them.
+ * The rule is the app's (src/model-sheet.ts): `isOpenSheet` on the kernel's reply, with the object's mark passed as
+ * `marked`, so a surfaces-only STEP root is a sheet only once its plate object is marked, as in the app.
+ * `src/modeling/model-calls.ts` `solidView` drops `nakedEdges`, so the session reads replies through the `solidView`
+ * here, which keeps them.
  *
- * The mark is set or cleared when an object's committed shape changes (a commit, which apply, build and edit go
- * through; a project open; a duplicate or a shell split carries it). It lives on the plate object (`sheet`) and on the
- * committed history node (`sheet: true`, the field the app's saved tree carries from #824). Slice, the G-code export
- * and the 3MF export stop on a marked object with one sentence.
- *
- * Until #824 is merged, src/model-sheet.ts is not on this branch: `isOpenSheet` below is that function, word for word.
- * Import it from there once both are in.
+ * The mark is the app's field: `PlateObject.sheet` (`sheet: true` on the object), written to the project row as the
+ * app writes it (`if (obj.sheet) row.sheet = true`, which makes the file version 5) and read back on project_open. It
+ * is set or cleared when an object's committed shape changes (a commit, which apply, build and edit go through; a
+ * project open; a duplicate or a shell split carries it). The committed history node keeps the kernel's verdict in
+ * `ModelNode.sheet`, as the app keeps it for the History badge; it is not saved. Slice, the G-code export and the 3MF
+ * export stop on a marked object with one sentence.
  */
+import { isOpenSheet, sheetVerdict, type SheetShape } from "../../src/model-sheet.ts";
 import { solidView as kernelSolidView } from "../../src/modeling/model-calls.ts";
-import { ROOT, type ModelTree, type NodeId } from "../../src/model-tree.ts";
+import type { ModelTree } from "../../src/model-tree.ts";
 import { refuse, type Refusal } from "../refusals.ts";
 import { shownName } from "./shared.ts";
-
-export interface SheetShape {
-  editable: boolean;
-  faces: { length: number };
-  nakedEdges?: readonly number[];
-}
-
-/** True when `shape`, shown at `node` of a tree with `root`, is an open sheet a step or a feature built. */
-export function isOpenSheet(shape: SheetShape | null | undefined, root: { kind: string } | null | undefined, node: NodeId): boolean {
-  if (!shape || shape.editable || shape.faces.length === 0 || (shape.nakedEdges?.length ?? 0) === 0) return false;
-  // A STEP that opened as surfaces with no closed solid: an import, as on v7.1.2, not a built sheet.
-  if (node === ROOT && root?.kind === "step") return false;
-  return true;
-}
 
 /** The kernel's solid view, keeping the open borders the plain view drops. */
 export function solidView(body: Record<string, unknown>) {
@@ -48,36 +34,37 @@ interface Marked {
   tree: ModelTree | null;
 }
 
-/** Whether the shape the object shows now (its tree's current step) is an open sheet. */
+/**
+ * Whether the shape the object shows now (its tree's current step) is an open sheet, by the app's rule. A split's
+ * other half (a `piece` root) takes the kernel's verdict as it is, as the app marks a piece (src/app/model/split-apply.ts).
+ */
 export function showsSheet(obj: Marked): boolean {
   const tree = obj.tree;
-  if (!tree || tree.root.kind === "piece") return false;
-  return isOpenSheet(obj.solid as SheetShape | null, tree.root, tree.current);
+  if (!tree) return false;
+  return isOpenSheet(obj.solid as SheetShape | null, tree.root, tree.current, obj.sheet === true);
 }
 
-/** Sets or clears the mark on the object and on its committed history node. */
+/** The kernel's raw verdict on a reply's shape (`sheetVerdict`), for a piece that has no tree of its own yet. */
+export function pieceIsSheet(shape: SheetShape | null | undefined): boolean {
+  return sheetVerdict(shape);
+}
+
+/** Sets or clears the object's mark (`PlateObject.sheet`), and keeps the verdict on its committed node (`ModelNode.sheet`). */
 export function markSheet(obj: Marked, sheet: boolean): void {
   if (sheet) obj.sheet = true;
   else delete obj.sheet;
   const tree = obj.tree;
-  const node = tree?.nodes.get(tree.committed) as ({ sheet?: true } & object) | undefined;
-  if (!tree || !node) return;
-  const marked = node.sheet === true;
-  if (marked === sheet) return;
-  const next = { ...node } as { sheet?: true };
-  if (sheet) next.sheet = true;
-  else delete next.sheet;
+  const node = tree?.nodes.get(tree.committed);
+  if (!tree || !node || node.sheet === sheet) return;
   const nodes = new Map(tree.nodes);
-  nodes.set(tree.committed, next as never);
+  nodes.set(tree.committed, { ...node, sheet });
   obj.tree = { ...tree, nodes };
 }
 
-/** The committed node's mark, as a saved tree carries it. */
-export function treeMarked(tree: ModelTree | null | undefined): boolean {
-  return (tree?.nodes.get(tree.committed) as { sheet?: true } | undefined)?.sheet === true;
-}
-
-/** The sentence Slice and the exports stop with: the first marked object, or null when none is. */
+/**
+ * The sentence Slice and the exports stop with: the first marked object, or null when none is. The app's is
+ * `sheetPartNote`; this one also names the object's id, the call that stopped, and the MCP ops that make it a solid.
+ */
 export function openSheetRefusal(objects: readonly { id: string; name: string; sheet?: true }[], what: string): Refusal | null {
   const sheet = objects.find((obj) => obj.sheet === true);
   if (!sheet) return null;

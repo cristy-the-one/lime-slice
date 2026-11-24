@@ -285,10 +285,12 @@ impl Store {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn open(
         &mut self,
         key: String,
         root: Shape,
+        step_root: bool,
         saved: Vec<SavedNode>,
         current: NodeId,
         seed: Option<SeedSolid>,
@@ -296,6 +298,7 @@ impl Store {
     ) -> Result<Answer, Failure> {
         self.clock += 1;
         let mut doc = Doc::new(root, self.clock);
+        doc.step_root = step_root;
         for node in saved {
             if node.id == ROOT || doc.nodes.contains_key(&node.id) {
                 return Err(Failure::Message(format!(

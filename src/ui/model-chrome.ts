@@ -1447,7 +1447,7 @@ function syncFields() {
     // --- end A3 ---
     const chamferOk = !node.dataset.chamfer || node.dataset.chamfer.split(" ").includes(chamferChoice().form);
     const filletNow = filletChoice();
-    const filletProfileOk = !node.dataset.filletProfile || node.dataset.filletProfile === filletNow.continuity;
+    const filletProfileOk = !node.dataset.filletProfile || node.dataset.filletProfile.split(" ").includes(filletNow.continuity);
     const filletVarOk = node.dataset.filletVar === undefined || filletNow.variable;
     // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
     const whenOk = !node.dataset.when || (node.dataset.when === edgeSource && (tool === "fillet" || tool === "chamfer"));

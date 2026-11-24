@@ -44,6 +44,7 @@ impl Doc {
             nodes,
             current: ROOT,
             probe: None,
+            step_root: false,
         };
         // --- A10. A root made every face it has.
         stamp_faces(&mut doc, ROOT);

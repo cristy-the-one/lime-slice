@@ -25,10 +25,10 @@ sources:
     resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/modeling/auto-ribs.ts
     title: src/modeling/auto-ribs.ts (03b1c1d6)
   - id: organic-schema
-    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/organic-surfaces/mcp/schema.ts
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/mcp/schema.ts
     title: mcp/schema.ts (feature/organic-surfaces)
   - id: organic-checks
-    resource: https://github.com/cristy-the-one/lime-slice/blob/feature/organic-surfaces/mcp/organic-checks.ts
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/mcp/organic-checks.ts
     title: mcp/organic-checks.ts (feature/organic-surfaces)
 ---
 

@@ -553,8 +553,8 @@ fn loft_tangent_end_condition_is_measured_and_curvature_is_refused() {
         }
         let key = format!("s3-loft-end-{}", worst.len());
         let shown = ok(json!({ "call": "open", "key": key, "feature": feature, "chordMm": 0.02, "meshQuality": "display" }));
-        let positions = decode_f32(shown["positions"].as_str().expect("positions"));
-        let normals = decode_f32(shown["normals"].as_str().expect("normals"));
+        let positions = decode_f32(shown["display"]["positions"].as_str().expect("positions"));
+        let normals = decode_f32(shown["display"]["normals"].as_str().expect("normals"));
         // The side's normal at the base rim, against the plane square to the asked direction (+Z).
         let angle = positions
             .chunks_exact(3)
@@ -576,4 +576,22 @@ fn loft_tangent_end_condition_is_measured_and_curvature_is_refused() {
         Some("A loft cannot match curvature at an end: it steers an end by its direction only. Use a normal or tangent condition."),
         "{reply}"
     );
+}
+
+/// A loft's maxDegree outside 2 to 10 was ignored; it is refused, as the MCP schema refuses it.
+#[test]
+fn a_loft_max_degree_outside_two_to_ten_is_refused() {
+    if !has_occt() {
+        return;
+    }
+    for bad in [1, 11] {
+        let reply = call(json!({ "call": "open", "key": format!("s3-loft-degree-{bad}"), "chordMm": 0.1, "feature": {
+            "kind": "loft", "op": "fuse", "maxDegree": bad,
+            "sections": [
+                { "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 5.0 },
+                { "origin": [0.0, 0.0, 20.0], "turn": [0.0, 0.0, 0.0], "radius": 3.0 }
+            ]
+        } }));
+        assert_eq!(reply["error"].as_str(), Some("A loft's maxDegree is 2 to 10."), "{bad}: {reply}");
+    }
 }
