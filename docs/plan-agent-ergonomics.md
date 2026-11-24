@@ -1,6 +1,6 @@
 # Plan: Lime Slice for an agent that models
 
-Status: proposed. Written 2026-11-24 against `main` at `e28fcdbb` (v7.2.0).
+Status: proposed; the three decisions in section 6 are made. Written 2026-11-24 against `main` at `e28fcdbb` (v7.2.0).
 
 The owner's request on 2026-11-24: evaluate how to upgrade Lime Slice from what Opus ran into while it modelled three objects through the MCP server and the `/lime-slice` skill. The sources are the three `notes/LESSONS.md` files in the owner's workspace: Tin Lizzie T-26 (a touring car, 29 lessons), Lunafen (an organic figure, 9) and Lime Bloom (a NURBS vessel, 23).
 
@@ -97,7 +97,7 @@ Done when: tests per item, the T26 body's run time before and after, and skill l
 
 ### E4: choosing an orientation
 
-1. A new tool, `orient_compare {object, rotations?}`, slices the object (or reads overhang without slicing; decision 3) at a set of rotations: by default every 90° of yaw on a belt printer, and the six faces down on a flat bed. For each rotation it returns unheld length and area, overhang area, the estimated time and the grams, and it marks the best. It changes nothing on the plate until `object_place` is called.
+1. A new tool, `orient_compare {object, rotations?, slice?}`, scores the object at a set of rotations (decision 3: estimate every rotation, slice the best two): by default every 90° of yaw on a belt printer, and the six faces down on a flat bed. For each rotation it returns unheld length and area, overhang area, the estimated time and the grams, and it marks the best. It changes nothing on the plate until `object_place` is called.
 2. `slice_start` without `scope` says in its reply which objects it sliced, and that `scope:"plate"` slices them all.
 
 Done when: a test on the T26 body's numbers (rotZ −90 gave the least unheld path) or an equivalent fixture, and skill section 8 gains the tool.
@@ -126,8 +126,10 @@ E6 runs alongside the others.
 
 E1 first: it is small, and silent loss costs the most trust. Then E2 and E3, which remove the most detours per session. E4 is a new tool and can go in parallel with E3. E5 is a study, and nothing is built from it before its numbers are in. E6 follows each milestone.
 
-## 6. Decisions for the owner
+## 6. Decisions
 
-1. **Strict runs.** Should a dropped queued step fail the run by default (`//! strict` on), or warn by default with strict as an opt-in? This plan proposes warn by default for one release, then strict.
-2. **Aliases.** Accept common aliases silently, or only answer them with "did you mean"? This plan proposes "did you mean": one spelling stays canonical, and the refusal teaches it.
-3. **`orient_compare` cost.** A full slice per rotation is exact but slow on a big part (T26 is about 4 hours of print). Should it slice each rotation, or estimate from overhang first and slice only the best two?
+The owner decided all three on 2026-11-24: "go with your proposals on all three decisions".
+
+1. **Strict runs: warn first, then strict.** For one release, a dropped queued step warns (`warnings` in the reply) and `//! strict: true` opts in to failing the run. In the release after, strict becomes the default and `//! strict: false` opts out. E1 ships the first half; the switch is one line in the next release's notes.
+2. **Aliases: "did you mean", not silent.** One spelling stays canonical. A common alias is refused with a sentence that names the canonical field or op ("`path` is not a field of project_save; did you mean `name`?"). The E2 audit lists every alias it answers.
+3. **`orient_compare`: estimate, then slice the best two.** Every rotation is first scored without slicing: overhang area and unheld area from the part's own faces against the printer's rule (45° belt layers, or a flat bed). Only the two best rotations are sliced for time, grams and unheld length. `slice: "all"` slices every rotation when the caller wants exact numbers for each. The reply marks which rows are estimates and which are sliced.
