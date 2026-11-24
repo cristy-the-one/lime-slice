@@ -467,6 +467,8 @@ jobs:
           node --experimental-strip-types mcp/nurbs-surface-occt.test.ts
           # E2: a part that opens from an extrude, a revolve, a loft or a sweep, and a bending path built as the pipe-shell.
           node --experimental-strip-types mcp/one-vocabulary-occt.test.ts
+          # E3: an exact ray on a solid, a loft that follows uneven stations, and model_check's summary size.
+          node --experimental-strip-types mcp/e3-speed-occt.test.ts
 
   # Auto ribs plans that solve many times (load cases, and later the frequency goal and resin vents), on their own
   # so neither the shared Open CASCADE job nor the folded-shell job runs near its 25 minutes. Same setup as those jobs.

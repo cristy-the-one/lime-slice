@@ -436,6 +436,12 @@ impl Store {
                 let text = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count, display)?;
                 Ok(Answer::Plain(text))
             }
+            Request::SurfaceAt { key, node, rays } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let text = shape.surface_at(&rays).map_err(Failure::Message)?;
+                Ok(Answer::Plain(text))
+            }
             // --- I5, I6: read from the solid the node already holds.
             Request::FaceOutline { key, node, face, inset_mm, chord_mm, frame } => {
                 self.ensure(&key, node)?;

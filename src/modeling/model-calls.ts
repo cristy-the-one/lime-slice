@@ -107,6 +107,45 @@ export function turnEcho(typed: Record<string, unknown>): Record<string, unknown
   };
 }
 
+const roundAxis = (v: readonly number[]) => v.map((value) => Math.round(value * 1e6) / 1e6 + 0) as [number, number, number];
+
+/** U and V of a plane turn, in the frame the turn was typed in (model space for a reply). */
+export function planeAxes(origin: readonly number[] | undefined, turn: unknown): { u: [number, number, number]; v: [number, number, number] } | null {
+  if (!Array.isArray(turn) || turn.length < 3 || !turn.slice(0, 3).every((value) => typeof value === "number" && Number.isFinite(value))) return null;
+  const at: [number, number, number] = Array.isArray(origin) && origin.length >= 3 && origin.slice(0, 3).every((value) => typeof value === "number" && Number.isFinite(value))
+    ? [Number(origin[0]), Number(origin[1]), Number(origin[2])]
+    : [0, 0, 0];
+  const plane: Workplane = { source: "face", origin: at, turn: [Number(turn[0]), Number(turn[1]), Number(turn[2])] };
+  const [u, v] = axesOf(plane);
+  return { u: roundAxis(u), v: roundAxis(v) };
+}
+
+/**
+ * The U and V axes of every plane turn an op carries, in model space. One plane is `u` and `v`. Several sections are
+ * `planes`, in section order, and only the sections that named a turn.
+ */
+export function planeAxesEcho(typed: Record<string, unknown>): Record<string, unknown> {
+  const planes: { u: [number, number, number]; v: [number, number, number] }[] = [];
+  if (typed.kind === "extrude" || typed.kind === "revolve") {
+    const row = planeAxes(typed.origin as number[] | undefined, typed.turn);
+    if (row) planes.push(row);
+  }
+  if (Array.isArray(typed.sections)) {
+    for (const section of typed.sections) {
+      if (!section || typeof section !== "object" || Array.isArray(section)) continue;
+      const row = planeAxes((section as Record<string, unknown>).origin as number[] | undefined, (section as Record<string, unknown>).turn);
+      if (row) planes.push(row);
+    }
+  }
+  if (planes.length === 0 && typed.kind === "sweep") {
+    const row = planeAxes(typed.origin as number[] | undefined, typed.turn);
+    if (row) planes.push(row);
+  }
+  if (planes.length === 0) return {};
+  if (planes.length === 1) return { u: planes[0]!.u, v: planes[0]!.v };
+  return { planes };
+}
+
 /** Past this many loops or steps, an applied op's echo counts them instead of listing them. */
 const ECHO_ITEMS = 32;
 
@@ -217,7 +256,7 @@ export function parseNode(handle: unknown): number | null {
 /** A probe's reply: the body, then the edges a blend picked, and the op as stored and as typed. */
 export function probeEcho(baked: { op: ModelOp; typed: Record<string, unknown> }, body: Record<string, unknown>): Record<string, unknown> {
   const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" || baked.op.kind === "transition" ? { edges: baked.typed.edges } : {};
-  return { ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed) };
+  return { ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed), ...planeAxesEcho(baked.typed) };
 }
 
 /** A Boolean whose tool misses the part, found from the boxes before the kernel is asked, with the gap in mm. */
@@ -296,7 +335,7 @@ export function stepGuard(op: ModelOp, prior: SolidView | null, after: SolidView
 export function appliedReply(node: number, baked: { op: ModelOp; typed: Record<string, unknown> }, reply: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> {
   // --- I19–I20: what a combined group or an extrude of cells did, as the kernel counted it.
   const counted = { ...(reply.cells ? { cells: reply.cells } : {}), ...(reply.combined ? { combined: reply.combined } : {}) };
-  return { ok: true, node: nodeHandle(node), ...extra, stored: compactEcho(cleanOp(baked.op as unknown as Record<string, unknown>)), typed: compactEcho(cleanOp(baked.typed)), ...turnEcho(baked.typed), ...counted };
+  return { ok: true, node: nodeHandle(node), ...extra, stored: compactEcho(cleanOp(baked.op as unknown as Record<string, unknown>)), typed: compactEcho(cleanOp(baked.typed)), ...turnEcho(baked.typed), ...planeAxesEcho(baked.typed), ...counted };
 }
 
 /**

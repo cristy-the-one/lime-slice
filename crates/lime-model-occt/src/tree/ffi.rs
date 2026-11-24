@@ -511,6 +511,12 @@ extern "C" {
         chord: f64,
         error: *mut *mut c_char,
     ) -> *mut c_char;
+    pub(super) fn lime_tree_surface_at(
+        shape: *const RawShape,
+        rays: *const f64,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
     pub(super) fn lime_tree_extrude_cells(
         from: *const RawShape,
         op: *const c_char,

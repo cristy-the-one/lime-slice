@@ -131,7 +131,7 @@ check(
   const part = (await many.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 })).object as string;
 
   answer = { id: 0, continuity: { ...counts, edges: Array.from({ length: 256 }, (_, i) => row(i)), sharpVertices: Array.from({ length: 70 }, (_, i) => vertex(i)) }, surfaceHealth: health };
-  const cut = await many.call("model_check", { object: part, surfaces: true });
+  const cut = await many.call("model_check", { object: part, surfaces: true, detail: true });
   const continuity = cut.continuity as { edges?: unknown[]; edgesTotal?: number; sharpVertices?: unknown[]; sharpVerticesTotal?: number; note?: string };
   check(
     "a continuity list cut at 256 rows says it lists 256 of 300",
@@ -145,7 +145,7 @@ check(
   );
 
   answer = { id: 0, continuity: { ...counts, sharedEdges: 3, g0: 3, edges: [row(0), row(1), row(2)] }, surfaceHealth: health };
-  const whole = await many.call("model_check", { object: part, surfaces: true });
+  const whole = await many.call("model_check", { object: part, surfaces: true, detail: true });
   const full = whole.continuity as { edgesTotal?: number; note?: string };
   check("a whole list has no total and no note", full.edgesTotal === undefined && full.note === undefined, JSON.stringify(full));
 

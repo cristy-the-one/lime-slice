@@ -3818,6 +3818,26 @@ char* lime_tree_face_region(const LimeShape* shape, int face, const double* fram
     }
 }
 
+/// Exact ray hits on the solid already held. `rays` is origin and direction, six doubles a ray.
+char* lime_tree_surface_at(const LimeShape* shape, const double* rays, int count, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        const std::string text = surface_at_json(shape->held, rays, count, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return alloc(text);
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// I6: the solid cut by `plane` (origin, normal), in the frame `frame` (origin, U, V) on that plane.
 char* lime_tree_section(const LimeShape* shape, const double* plane, const double* frame, double chord, char** error) {
     try {

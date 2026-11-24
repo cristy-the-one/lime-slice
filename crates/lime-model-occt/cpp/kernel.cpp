@@ -63,6 +63,9 @@
 #include <BRepClass3d.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepIntCurveSurface_Inter.hxx>
+#include <gp_Lin.hxx>
+#include <Precision.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -5427,6 +5430,76 @@ TopoDS_Wire section_wire(const LoftSection& section, std::string& error) {
     return checked_wire(frame, section.profile, 0.0, points, error);
 }
 
+std::string surface_at_json(const Held& held, const double* rays, int count, std::string& error) {
+    if (!rays || count < 1) {
+        error = "Give a point and a direction, or x and y.";
+        return {};
+    }
+    if (count > 500) {
+        error = "surface_at takes at most 500 rays.";
+        return {};
+    }
+    std::ostringstream out;
+    out << "{\"hits\":[";
+    for (int i = 0; i < count; ++i) {
+        if (i) out << ',';
+        const double* ray = rays + static_cast<std::ptrdiff_t>(i) * 6;
+        gp_Vec direction(ray[3], ray[4], ray[5]);
+        if (!(direction.Magnitude() > 0.0)) {
+            out << "{\"hit\":false,\"reason\":\"The direction needs three numbers that are not all zero.\"}";
+            continue;
+        }
+        direction.Normalize();
+        BRepIntCurveSurface_Inter inter;
+        inter.Init(held.shape, gp_Lin(gp_Pnt(ray[0], ray[1], ray[2]), gp_Dir(direction)), 1e-7);
+        bool found = false;
+        double best_w = 0;
+        gp_Pnt best_point;
+        TopoDS_Face best_face;
+        double best_u = 0, best_v = 0;
+        for (; inter.More(); inter.Next()) {
+            const double w = inter.W();
+            if (w < -1e-6) continue;
+            if (!found || w < best_w) {
+                found = true;
+                best_w = w;
+                best_point = inter.Pnt();
+                best_face = inter.Face();
+                best_u = inter.U();
+                best_v = inter.V();
+            }
+        }
+        if (!found) {
+            out << "{\"hit\":false,\"reason\":\"The ray misses the solid.\"}";
+            continue;
+        }
+        gp_Dir normal(0, 0, 1);
+        bool has_normal = false;
+        try {
+            // BRepAdaptor_Surface already follows the face orientation, so the normal points out of the solid.
+            BRepAdaptor_Surface surf(best_face);
+            BRepLProp_SLProps props(surf, best_u, best_v, 1, 1e-7);
+            if (props.IsNormalDefined()) {
+                normal = props.Normal();
+                has_normal = true;
+            }
+        } catch (const Standard_Failure&) {
+        }
+        const int face = held.faces.FindIndex(best_face) - 1;
+        const bool inside = has_normal && gp_Vec(normal).Dot(direction) > 0.0;
+        char buf[320];
+        std::snprintf(buf, sizeof(buf),
+            "{\"hit\":true,\"point\":[%.9g,%.9g,%.9g],\"normal\":[%.9g,%.9g,%.9g],\"distanceMm\":%.9g",
+            best_point.X(), best_point.Y(), best_point.Z(), normal.X(), normal.Y(), normal.Z(), best_w);
+        out << buf;
+        if (face >= 0) out << ",\"faceIndex\":" << face;
+        if (inside) out << ",\"fromInside\":true";
+        out << ",\"exact\":true}";
+    }
+    out << "]}";
+    return out.str();
+}
+
 TopoDS_Shape build_loft(
     const TopoDS_Shape& current,
     double before,
@@ -5443,6 +5516,7 @@ TopoDS_Shape build_loft(
         error = "A loft takes at most 200 sections.";
         return {};
     }
+    TopoDS_Shape tool;
     BRepOffsetAPI_ThruSections loft(Standard_True, ruled ? Standard_True : Standard_False, 1e-6);
     loft.CheckCompatibility(Standard_True);
     for (size_t i = 0; i < sections.size(); ++i) {
@@ -5453,7 +5527,6 @@ TopoDS_Shape build_loft(
         }
         loft.AddWire(wire);
     }
-    TopoDS_Shape tool;
     try {
         loft.Build();
         if (!loft.IsDone() || loft.Shape().IsNull()) {

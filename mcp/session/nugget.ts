@@ -77,8 +77,9 @@ async function nuggetTool(this: Session, input: Record<string, unknown>): Promis
     if (action === "save") {
       const about = id;
       if (!isAbout(about)) return refuse("bad-name", "A lesson needs id: the op kind or helper it is about, like fillet or geom2d::offset.");
-      const text = oneLine(input.text, LESSON_MAX);
+      const text = oneLine(input.text, 100_000);
       if (!text) return refuse("missing-argument", `A lesson needs text: one plain sentence, at most ${LESSON_MAX} characters.`);
+      if (text.length > LESSON_MAX) return refuse("bad-argument", `A lesson is at most ${LESSON_MAX} characters, got ${text.length}.`);
       const lesson = addLesson(about, text, new Date().toISOString().slice(0, 10));
       return { ok: true, kind, id: `${lesson.about}/${lesson.n}`, ...(OP_KINDS.includes(lesson.about) ? { shown: `guide {kind:"${lesson.about}"} shows it under seenInPractice.` } : {}) };
     }

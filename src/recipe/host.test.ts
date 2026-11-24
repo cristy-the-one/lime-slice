@@ -161,7 +161,7 @@ const ok = async (site: RecipeCallSite): Promise<RecipeReply> => (site.tool === 
 {
   const p = scripted(() => {});
   const out = await runRecipe(p.spawn, {}, ok, { timeoutS: 0.05, maxCalls: 10, maxLineBytes: 1000 });
-  check("the time limit stops and kills the recipe", out.reason === "The recipe ran past its 0.05 s limit and was stopped." && p.killed() === 1, out.reason);
+  check("the time limit stops and kills the recipe", out.reason === "The recipe ran past its 0.05 s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe." && p.killed() === 1, out.reason);
 
   // callsFree: the host's time answering a call is not the script's. One call the host takes 300 ms over, then done.
   const oneSlowCall = () => scripted((line, io) => {
@@ -171,14 +171,14 @@ const ok = async (site: RecipeCallSite): Promise<RecipeReply> => (site.tool === 
   });
   const slow = async (site: RecipeCallSite): Promise<RecipeReply> => { await new Promise((resolve) => setTimeout(resolve, 300)); return ok(site); };
   const counted = await runRecipe(oneSlowCall().spawn, {}, slow, { timeoutS: 0.1, maxCalls: 10, maxLineBytes: 1000 });
-  check("a slow host answer counts against the limit as before", counted.reason === "The recipe ran past its 0.1 s limit and was stopped.", counted.reason);
+  check("a slow host answer counts against the limit as before", counted.reason === "The recipe ran past its 0.1 s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe.", counted.reason);
   const free = await runRecipe(oneSlowCall().spawn, {}, slow, { timeoutS: 0.1, maxCalls: 10, maxLineBytes: 1000, callsFree: true });
   check("with callsFree the same run finishes: the 300 ms were the host's", free.ok === true && free.reason === undefined, free);
   const idle = scripted((line, io) => {
     if ((JSON.parse(line) as { v?: number }).v === 1) io.say(JSON.stringify({ id: 1, call: "model_describe", args: {}, at: { line: 1 } }));
   });
   const stuck = await runRecipe(idle.spawn, {}, slow, { timeoutS: 0.1, maxCalls: 10, maxLineBytes: 1000, callsFree: true });
-  check("with callsFree a script that never ends is still stopped by its own time", stuck.reason === "The recipe ran past its 0.1 s limit and was stopped." && idle.killed() === 1, stuck.reason);
+  check("with callsFree a script that never ends is still stopped by its own time", stuck.reason === "The recipe ran past its 0.1 s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe." && idle.killed() === 1, stuck.reason);
   check("an animation has the recipe's 30 s of its own, the host's sampling free, and half an hour in all", ANIMATION_LIMITS.timeoutS === 30 && ANIMATION_LIMITS.callsFree === true && ANIMATION_LIMITS.wallS === 1800, ANIMATION_LIMITS);
 
   const many = scripted((line, io) => {

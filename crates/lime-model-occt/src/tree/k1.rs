@@ -397,6 +397,13 @@ pub(super) fn build_loft_v2_shape(
     if max_degree.is_some_and(|d| !(2..=10).contains(&d)) {
         return Err("A loft's maxDegree is 2 to 10.".into());
     }
+    if smoothing {
+        if let Some(degree) = max_degree.filter(|degree| *degree < 5) {
+            return Err(format!(
+                "maxDegree {degree} cannot be used with smoothing: smoothing builds a C2 surface, which needs maxDegree 5 or higher. Raise maxDegree, or leave smoothing off."
+            ));
+        }
+    }
     let mut head = Vec::with_capacity(sections.len() * 11);
     let mut data = Vec::new();
     let mut blob = Vec::new();

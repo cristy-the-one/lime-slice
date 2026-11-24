@@ -11,12 +11,12 @@ import { gearOf, placedRoot, type PrimitiveSpec } from "../../src/model-primitiv
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
 import { decodeSurfaceInspect } from "../../src/model-reply.ts";
 import { listedContinuity, organicFirstProblem, organicProblem } from "../organic-checks.ts";
-import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, stepGuard } from "../../src/modeling/model-calls.ts";
+import { boundsOf, planeAxes, planeAxesEcho, solidSections, describeReply, edgesReply, facesReply, nodeHandle, stepGuard } from "../../src/modeling/model-calls.ts";
 import { solidView } from "./sheet.ts";
 import { bakeOp, onFaceIndex } from "../../src/modeling/bake.ts";
 import { checkReply } from "../../src/modeling/part-reads.ts";
 import { exprLeaves } from "../../src/modeling/links.ts";
-import { type Affine, IDENTITY_POSE, isIdentity, posedBounds, seatLift, thenPose, typedPoseOf } from "../../src/model-space.ts";
+import { type Affine, applyPose, IDENTITY_POSE, inversePose, isIdentity, posedBounds, seatLift, thenPose, turnDir, typedPoseOf } from "../../src/model-space.ts";
 import { featureObjectName, isFeatureOp, newTree, pathTo, type ModelOp, type ModelTree, type NodeId } from "../../src/model-tree.ts";
 import { OP_SCHEMA, validate } from "../schema.ts";
 import { nurbsSurfaceProblem } from "../nurbs-surface-checks.ts";
@@ -30,14 +30,14 @@ import { recipeDataFile, recipeDataMissing, writeRecipeData } from "../recipe.ts
 import { probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "../inspect.ts";
 import { primitiveFrom } from "../../src/modeling/compose.ts";
 import { gearRefusal } from "../../src/model-gear.ts";
-import { typedView } from "../../src/modeling/typed-view.ts";
+import { typedDir, typedPoint, typedView } from "../../src/modeling/typed-view.ts";
 import { gearPairRows, gearsInTree } from "../../src/gear-pair.ts";
 import { CONTACT_MM, exactVerdict, interference, MESH_TOLERANCE_MM, SLIVER_MM3 } from "../../src/interference.ts";
 import { assemblyOf, drives, solveAssembly, type Assembly } from "../../src/assembly.ts";
 import { firstContactSteps, KERNEL_CALLS, kernelContact, pairClearance, type ContactPart, type KernelVerdict } from "../../src/contact.ts";
 import { trainTurn } from "../../src/gear-train.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
-import { noteTreeCall } from "./mesh-end.ts";
+import { ensureMeshes, noteTreeCall } from "./mesh-end.ts";
 import { eventLoopTurn } from "../animation-run.ts";
 import { modelMass } from "./mass.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, PLACE_KEYS, type PlateObject, posedPositions, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
@@ -623,6 +623,99 @@ function manyRays(solid: Parameters<typeof surfaceAtSolid>[0], input: Record<str
   return { ok: true, frame, hits };
 }
 
+type RayIn = { origin: [number, number, number]; aim: [number, number, number] } | { reason: string };
+
+function finiteVec(value: unknown): [number, number, number] | null {
+  return Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === "number" && Number.isFinite(n)) ? [value[0] as number, value[1] as number, value[2] as number] : null;
+}
+
+/** One ray in the typed frame, or why it is not a ray. The same sentences as the mesh raycast. */
+function rayIn(input: Record<string, unknown>, bounds: { min: number[]; max: number[] }): RayIn {
+  const point = input.point === undefined ? null : finiteVec(input.point);
+  const direction = input.direction === undefined ? null : finiteVec(input.direction);
+  if (input.direction !== undefined && (!direction || !(Math.hypot(direction[0], direction[1], direction[2]) > 0))) return { reason: "The direction needs three numbers that are not all zero." };
+  if (point) {
+    if (!direction) return { reason: "A point needs a direction." };
+    return { origin: point, aim: direction };
+  }
+  if (typeof input.x === "number" && typeof input.y === "number") return { origin: [input.x, input.y, bounds.max[2]! + 1], aim: direction ?? [0, 0, -1] };
+  return { reason: "Give a point and a direction, or x and y." };
+}
+
+const round6 = (value: number) => Math.round(value * 1e6) / 1e6;
+
+/** A kernel hit, in the solid's frame, written back into the typed frame. Distance is along the typed ray. */
+function exactHit(pose: Affine, modelOrigin: [number, number, number], modelAim: [number, number, number], hit: Record<string, unknown>): Record<string, unknown> {
+  if (hit.hit !== true || !Array.isArray(hit.point) || !Array.isArray(hit.normal)) return hit;
+  const point = typedPoint(pose, hit.point as number[]).map(round6);
+  const normal = typedDir(pose, hit.normal as number[]).map(round6);
+  const len = Math.hypot(modelAim[0], modelAim[1], modelAim[2]);
+  const unit = [modelAim[0] / len, modelAim[1] / len, modelAim[2] / len];
+  const distanceMm = round6((point[0]! - modelOrigin[0]) * unit[0]! + (point[1]! - modelOrigin[1]) * unit[1]! + (point[2]! - modelOrigin[2]) * unit[2]!);
+  return { ...hit, point, normal, distanceMm, exact: true };
+}
+
+function typedBounds(solid: { positions: ArrayLike<number>; bounds: { min: number[]; max: number[] } }, pose: Affine): { min: number[]; max: number[] } {
+  if (solid.positions.length >= 9) return typedView(solid as Parameters<typeof typedView>[0], pose).bounds;
+  if (isIdentity(pose)) return solid.bounds;
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  const [x0, y0, z0] = solid.bounds.min;
+  const [x1, y1, z1] = solid.bounds.max;
+  for (const corner of [[x0, y0, z0], [x1, y0, z0], [x0, y1, z0], [x1, y1, z0], [x0, y0, z1], [x1, y0, z1], [x0, y1, z1], [x1, y1, z1]]) {
+    const at = applyPose(pose, corner as [number, number, number]);
+    for (let axis = 0; axis < 3; axis += 1) {
+      if (at[axis]! < min[axis]!) min[axis] = at[axis]!;
+      if (at[axis]! > max[axis]!) max[axis] = at[axis]!;
+    }
+  }
+  return { min, max };
+}
+
+/**
+ * Rays on the solid the tree already holds, through the kernel's curve-face intersector. Null when this engine has
+ * no such answer (the stand-in), so the caller falls back to the mesh. A miss is an answer, not null.
+ */
+async function exactSurface(this: Session, obj: PlateObject, input: Record<string, unknown>, frame: string): Promise<Record<string, unknown> | null> {
+  if (!obj.tree || !obj.solid) return null;
+  const many = Array.isArray(input.rays);
+  if (many && (input.point !== undefined || input.direction !== undefined || input.x !== undefined || input.y !== undefined)) {
+    return refuse("conflicting-arguments", "surface_at takes rays, or one ray as point and direction or x and y, not both.");
+  }
+  const pose = typedPoseOf(obj);
+  const bounds = typedBounds(obj.solid, pose);
+  const source: unknown[] = many ? (input.rays as unknown[]) : [input];
+  const rows: RayIn[] = source.map((ray) => rayIn(ray && typeof ray === "object" && !Array.isArray(ray) ? ray as Record<string, unknown> : {}, bounds));
+  if (!many && "reason" in rows[0]!) return refuse("bad-argument", rows[0].reason);
+  const inv = inversePose(pose);
+  const payload: number[][] = [];
+  const at: number[] = [];
+  rows.forEach((row, index) => {
+    if ("reason" in row) return;
+    const origin = applyPose(inv, row.origin);
+    const aim = turnDir(inv, row.aim);
+    payload.push([origin[0], origin[1], origin[2], aim[0], aim[1], aim[2]]);
+    at.push(index);
+  });
+  if (payload.length === 0) return { ok: true, frame, hits: rows.map((row) => ({ hit: false, reason: (row as { reason: string }).reason })) };
+  let raw: Record<string, unknown>;
+  try {
+    raw = await this.treeCall({ call: "surfaceAt", key: obj.tree.key, node: obj.tree.current, rays: payload }, "read");
+  } catch {
+    return null;
+  }
+  const hits = raw.hits;
+  if (!Array.isArray(hits) || hits.length !== payload.length) return null;
+  const out: Record<string, unknown>[] = rows.map((row) => ("reason" in row ? { hit: false, reason: row.reason } : { hit: false, reason: "The ray misses the solid." }));
+  hits.forEach((hit, index) => {
+    const row = rows[at[index]!]!;
+    if ("reason" in row || !hit || typeof hit !== "object") return;
+    out[at[index]!] = exactHit(pose, row.origin, row.aim, hit as Record<string, unknown>);
+  });
+  if (many) return { ok: true, frame, exact: true, hits: out };
+  return { ok: true, frame, exact: true, ...out[0]! };
+}
+
 async function surfaceAt(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   // --- R-B. A mesh has no solid: the ray meets its triangles where the plate holds them.
   if (this.meshBlock(obj)) {
@@ -636,9 +729,17 @@ async function surfaceAt(this: Session, obj: PlateObject, input: Record<string, 
   const tree = await this.opened(obj);
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
-  // The ray and the hit in the frame ops are typed in, so a cut at the hit point lands on it.
+  const frame = obj.frame ?? "model";
+  // A solid's ray is the exact B-rep. The stand-in engine has no intersector, and then the mesh answers as before.
+  const exact = await exactSurface.call(this, obj, input, frame);
+  if (exact) return exact;
+  if (this.meshPending.has(obj.id)) {
+    const why = await ensureMeshes(this);
+    if (why) return refuse("model-unavailable", why);
+  }
+  if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
   const view = typedView(obj.solid, typedPoseOf(obj));
-  return manyRays(view, input, obj.frame ?? "model") ?? { ...surfaceAtSolid(view, input), frame: obj.frame ?? "model" };
+  return manyRays(view, input, frame) ?? { ...surfaceAtSolid(view, input), frame };
 }
 
 /** Gear pairs that include `obj`, from each solid's own gear and its fused gear steps. The volume check is unchanged. */
@@ -692,7 +793,7 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
   }
   return {
     ...base,
-    continuity: listedContinuity(decoded.continuity),
+    continuity: listedContinuity(decoded.continuity, input.detail === true),
     surfaceHealth: decoded.surfaceHealth,
     ...(warnings.length > 0 ? { warnings } : {}),
   };
@@ -1035,6 +1136,7 @@ async function featureSolidNew(this: Session, input: Record<string, unknown>): P
     frame: "part",
     root: baked.op.kind,
     ...(open > 0 ? { openEdges: open, note: "An open sheet: thicken it or sew it shut before it can be printed." } : {}),
+    ...planeAxesEcho(baked.typed as unknown as Record<string, unknown>),
   };
 }
 
@@ -1241,7 +1343,8 @@ async function workplaneSet(this: Session, obj: PlateObject, input: Record<strin
   const turn = Array.isArray(input.turn) && input.turn.length >= 3 ? input.turn.slice(0, 3) as [number, number, number] : null;
   const answer = () => {
     const plane = this.typedPlane(obj);
-    return { ok: true, source: plane.source, origin: plane.origin, turn: plane.turn };
+    const axes = planeAxes(plane.origin, plane.turn);
+    return { ok: true, source: plane.source, origin: plane.origin, turn: plane.turn, ...(axes ?? {}) };
   };
   const typed = this.pendingTexts[0] as { origin?: unknown; turn?: unknown } | undefined;
   this.pendingTexts = [];
