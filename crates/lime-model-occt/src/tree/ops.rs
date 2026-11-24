@@ -462,6 +462,144 @@ pub enum ProfileSegment {
     Line { to: [f64; 2] },
     Arc { through: [f64; 2], to: [f64; 2] },
     Spline { through: Vec<[f64; 2]>, to: [f64; 2] },
+    /// --- Organic surfaces S2: exact rational B-spline segment (interior `poles` between previous end and `to`).
+    Nurbs {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        poles: Vec<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree: Option<u8>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults: Vec<u32>,
+        to: [f64; 2],
+    },
+}
+
+/// --- Organic surfaces S2: one segment of a 3D mixed curve (`Curve3D::Segments`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Curve3DSegment {
+    Line { to: [f64; 3] },
+    Arc { through: [f64; 3], to: [f64; 3] },
+    Spline { through: Vec<[f64; 3]>, to: [f64; 3] },
+    Nurbs {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        poles: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree: Option<u8>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults: Vec<u32>,
+        to: [f64; 3],
+    },
+}
+
+/// --- Organic surfaces S2: exact 3D curve (used for `Sweep` spines & auxiliary spines, and later rails/patches).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Curve3D {
+    Polyline {
+        points: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
+    },
+    /// Written `through`, as the app, the MCP schema and saved projects write it, so the op the kernel echoes back is the
+    /// one the app reads. `points` is the older Rust spelling and still reads.
+    Spline {
+        #[serde(rename = "through", alias = "points")]
+        points: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
+    },
+    Nurbs {
+        poles: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree: Option<u8>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults: Vec<u32>,
+        /// Written `closed`, as every caller writes it; `periodic` is the older Rust spelling and still reads.
+        #[serde(default, rename = "closed", alias = "periodic", skip_serializing_if = "std::ops::Not::not")]
+        periodic: bool,
+    },
+    Segments {
+        start: [f64; 3],
+        segments: Vec<Curve3DSegment>,
+    },
+    Edges {
+        edges: Vec<EdgePick>,
+    },
+}
+
+/// Corner handling when a sweep spine has a C0 sharp bend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SweepTransition {
+    #[default]
+    Round,
+    Right,
+    Transformed,
+}
+
+/// Cross-section orientation along a sweep spine.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SweepMode {
+    #[default]
+    CorrectedFrenet,
+    Frenet,
+    FixedBinormal { dir: [f64; 3] },
+    /// The app, the MCP schema and saved projects send an auxiliary spine this way. The sweep's own `auxSpine` field is
+    /// the older Rust spelling of the same thing; a sweep takes one or the other.
+    AuxSpine {
+        spine: Box<Curve3D>,
+        /// Match the two spines by arc length (default), not by parameter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        curvilinear: Option<bool>,
+        /// Keep the section touching the auxiliary spine (default false). Kept as sent, so the echo is what came in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep_contact: Option<bool>,
+    },
+}
+
+/// --- Organic surfaces S3 (U5): Fillet cross-section profile continuity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilletContinuity {
+    G1,
+    G2,
+    Conic,
+}
+
+/// --- Organic surfaces S3: Start/end boundary condition for controlled Lofts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LoftBoundary {
+    Free,
+    Normal {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension: Option<f64>,
+    },
+    Tangent {
+        dir: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension: Option<f64>,
+    },
+    Curvature {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension: Option<f64>,
+    },
 }
 
 /// A closed loop on a profile's plane. A loop inside no other is an outline, and one inside an outline is its hole.
@@ -516,6 +654,15 @@ pub enum Op {
     Fillet {
         edges: Vec<EdgePick>,
         size: f64,
+        /// S3 (U5): "g1" (Circular, default), "g2" (Smooth curvature-continuous), or "conic".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuity: Option<FilletContinuity>,
+        /// S3 (U5): Conic rho in (0.05, 0.95); default 0.5.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rho: Option<f64>,
+        /// S3 (U5): Optional variable-radius `[u, radiusMm]` stations along edge parameter `u` in `[0, 1]`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variable: Vec<[f64; 2]>,
     },
     /// Equal distances by default. With `size2`, `size` runs along each edge's upper face (the one whose outward
     /// normal points more up; on a level tie, more along +X, then +Y) and `size2` along the other. With `angleDeg`,
@@ -622,6 +769,43 @@ pub enum Op {
         sections: Vec<LoftSection>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         ruled: bool,
+        /// S3: Optional 3D guide rails shaping the loft between sections.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guides: Vec<Curve3D>,
+        /// S3: Start boundary continuity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_condition: Option<LoftBoundary>,
+        /// S3: End boundary continuity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_condition: Option<LoftBoundary>,
+        /// S3: Close the loft periodically back to the first section (>= 3 sections).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
+        /// S3: Enable OCCT smoothing + C2 optimization.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        smoothing: bool,
+        /// S3: Optional max U degree cap (2..10) for knot hygiene.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_degree: Option<u8>,
+    },
+    /// --- Organic surfaces S2: real kernel sweep (`BRepOffsetAPI_MakePipeShell`) of `sections` along exact 3D `spine`.
+    Sweep {
+        op: BooleanOp,
+        sections: Vec<LoftSection>,
+        spine: Curve3D,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<SweepMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transition: Option<SweepTransition>,
+        /// Optional `[t, scale]` stations along the spine (0..1), interpolated smoothly via `Law_Interpol`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scale: Vec<[f64; 2]>,
+        /// Optional smooth twist along the spine, in degrees.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        twist_deg: Option<f64>,
+        /// Optional auxiliary guide spine overriding section orientation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aux_spine: Option<Box<Curve3D>>,
     },
     /// The solid hollowed inward to walls `thickness` thick, with `openFaces` removed. None open leaves a closed void.
     Shell {
@@ -770,6 +954,207 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wrap: Option<String>,
     },
+    // --- Organic surfaces S4: Open Sheets & Surface-to-Solid Workflow ---
+    /// Build an open B-rep surface ("Sheet") from 3D curves (extrude, revolve, loft, or planar cap).
+    /// Can be a feature root or compounded onto an existing sheet for subsequent `Sew`.
+    Sheet {
+        #[serde(flatten)]
+        spec: SheetSpec,
+    },
+    /// Sew touching open faces/shells within `tolerance`. When `capPlanar` is true, planar naked boundary loops are capped.
+    /// When `makeSolid` is true (default) and zero naked edges remain, auto-promotes to a watertight solid.
+    Sew {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        make_solid: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cap_planar: bool,
+    },
+    /// Thicken an open sheet/shell into a watertight solid along its surface normal.
+    Thicken {
+        thickness: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<ThickenDirection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
+    /// Split a solid or sheet cleanly using an open sculpted NURBS surface.
+    TrimSplit {
+        sheet: SheetSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep: Option<TrimKeep>,
+    },
+    /// Replace a face of a solid with a sculpted surface, extending or trimming adjacent walls cleanly.
+    ReplaceFace {
+        face: FacePick,
+        sheet: SheetSpec,
+    },
+    /// Project and imprint a 3D curve onto selected face(s), splitting them into distinct sub-faces.
+    SplitFace {
+        faces: Vec<FacePick>,
+        curve: Curve3D,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<[f64; 3]>,
+    },
+    /// Fill an opening. A clean boundary of 2 to 4 curves at G0 uses GeomFill. An N-sided opening,
+    /// a guide point, or any side that asks for G1 or G2, is N Hermite–Coons pieces. No GeomPlate.
+    Patch {
+        boundaries: Vec<SurfaceBoundary>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guides: Vec<Curve3D>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        points: Vec<[f64; 3]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
+    /// Bridge two open edges or chains at G1 or G2, with a tension on each side.
+    BlendSurface {
+        a: SurfaceBoundary,
+        b: SurfaceBoundary,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuity: Option<SurfaceContinuity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension_a: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tension_b: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+    },
+    /// An M by N pole grid. A sheet, so Sew, Thicken and TrimSplit run on it.
+    /// Degree 0 (or absent) means 3. Knot insertion and degree elevation, when set, run in Open CASCADE
+    /// after the stored poles are built. The sculptor bakes those into the poles so the preview matches.
+    NurbsSurface {
+        poles: Vec<Vec<[f64; 3]>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<Vec<f64>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree_u: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        degree_v: Option<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots_u: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults_u: Vec<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knots_v: Vec<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mults_v: Vec<u32>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        periodic_u: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        periodic_v: bool,
+        /// Each pair is `[parameter, times]`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        insert_u: Vec<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        insert_v: Vec<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elevate_u: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elevate_v: Option<u32>,
+    },
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+impl Op {
+    /// S4: Whether this operation can run directly on an open surface ("Sheet") with no closed solid.
+    pub(super) fn allows_sheet(&self) -> bool {
+        matches!(
+            self,
+            Op::Sheet { .. }
+                | Op::Sew { .. }
+                | Op::Thicken { .. }
+                | Op::TrimSplit { .. }
+                | Op::SplitFace { .. }
+                | Op::Patch { .. }
+                | Op::BlendSurface { .. }
+                | Op::NurbsSurface { .. }
+        )
+    }
+}
+
+/// How a patch or blend side meets the face beside it. Absent on an edge that touches a face means G1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SurfaceContinuity {
+    G0,
+    G1,
+    G2,
+}
+
+/// One side of a patch, or one side of a blend. A side is a curve, a chain of edges, or both.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfaceBoundary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<Curve3D>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<EdgePick>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<FacePick>,
+    /// Absent: G1 when the side touches a face, otherwise G0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity: Option<SurfaceContinuity>,
+}
+
+/// S4: How an open sheet is built from 3D curves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SheetMode {
+    Extrude,
+    Revolve,
+    Loft,
+    Planar,
+}
+
+/// S4: Specification of an open B-rep surface ("Sheet").
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetSpec {
+    pub mode: SheetMode,
+    pub curves: Vec<Curve3D>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis_origin: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ruled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub symmetric: bool,
+}
+
+/// S4: Which side of the open sheet `Op::Thicken` adds wall thickness on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThickenDirection {
+    Normal,
+    Reverse,
+    Both,
+}
+
+/// S4: Which half `Op::TrimSplit` keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TrimKeep {
+    Above,
+    Below,
+    Both,
 }
 
 /// One text a project sets in a font, for the pack of the letters it needs.
@@ -803,4 +1188,182 @@ pub struct LoftSection {
     /// K1: closed loops in place of `profile` or `radius`. Empty, and omitted, otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<ProfileLoop>,
+    /// S3: punctual point-apex section (first or last section only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apex: Option<[f64; 3]>,
+}
+
+#[cfg(test)]
+mod tests {
+    //! The curve spellings the TypeScript side writes (src/model-tree.ts `Curve3D`, src/modeling/bake.ts
+    //! `readCurve3DField`, mcp/schema.ts `curve3dField`): a spline's points are `through`, a closed NURBS is `closed`.
+    use super::{Curve3D, Op, SurfaceBoundary};
+    use serde_json::{json, Value};
+
+    fn spline() -> Value {
+        json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]], "closed": true })
+    }
+
+    fn nurbs() -> Value {
+        json!({
+            "kind": "nurbs",
+            "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+            "weights": [1.0, 0.7, 0.7, 1.0],
+            "degree": 3,
+            "closed": true
+        })
+    }
+
+    fn section() -> Value {
+        json!({ "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 2.0 })
+    }
+
+    fn check(curve: &Curve3D) {
+        match curve {
+            Curve3D::Spline { points, closed } => {
+                assert_eq!(points.len(), 3);
+                assert!(*closed);
+            }
+            Curve3D::Nurbs { poles, periodic, .. } => {
+                assert_eq!(poles.len(), 4);
+                assert!(*periodic, "a NURBS sent closed is built periodic");
+            }
+            other => panic!("unexpected curve {other:?}"),
+        }
+    }
+
+    fn op(value: Value) -> Op {
+        serde_json::from_value(value.clone()).unwrap_or_else(|err| panic!("{value}: {err}"))
+    }
+
+    #[test]
+    fn every_curve3d_field_reads_the_spellings_the_app_writes() {
+        for curve in [spline(), nurbs()] {
+            // Sweep spine and auxiliary spine.
+            match op(json!({ "kind": "sweep", "op": "fuse", "sections": [section()], "spine": curve, "auxSpine": curve })) {
+                Op::Sweep { spine, aux_spine, .. } => {
+                    check(&spine);
+                    check(aux_spine.as_deref().expect("auxSpine"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Loft guides.
+            match op(json!({ "kind": "loft", "op": "fuse", "sections": [section(), section()], "guides": [curve] })) {
+                Op::Loft { guides, .. } => check(&guides[0]),
+                other => panic!("{other:?}"),
+            }
+            // Split face curve.
+            match op(json!({ "kind": "splitFace", "faces": [0], "curve": curve, "direction": [0.0, 0.0, 1.0] })) {
+                Op::SplitFace { curve, .. } => check(&curve),
+                other => panic!("{other:?}"),
+            }
+            // Patch guides and a boundary's curve.
+            match op(json!({ "kind": "patch", "boundaries": [{ "curve": curve, "continuity": "g0" }], "guides": [curve] })) {
+                Op::Patch { boundaries, guides, .. } => {
+                    check(&guides[0]);
+                    check(boundaries[0].curve.as_ref().expect("curve"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Blend sides.
+            match op(json!({ "kind": "blendSurface", "a": { "curve": curve }, "b": { "curve": curve }, "continuity": "g1" })) {
+                Op::BlendSurface { a, b, .. } => {
+                    check(a.curve.as_ref().expect("a"));
+                    check(b.curve.as_ref().expect("b"));
+                }
+                other => panic!("{other:?}"),
+            }
+            // Sheet curves (flattened spec) and replaceFace's sheet.
+            match op(json!({ "kind": "sheet", "mode": "extrude", "curves": [curve], "dir": [0.0, 0.0, 1.0], "distance": 5.0 })) {
+                Op::Sheet { spec } => check(&spec.curves[0]),
+                other => panic!("{other:?}"),
+            }
+            match op(json!({ "kind": "replaceFace", "face": 0, "sheet": { "mode": "loft", "curves": [curve, curve] } })) {
+                Op::ReplaceFace { sheet, .. } => check(&sheet.curves[1]),
+                other => panic!("{other:?}"),
+            }
+            let side: SurfaceBoundary = serde_json::from_value(json!({ "curve": curve })).expect("boundary");
+            check(side.curve.as_ref().expect("curve"));
+            // The sweep mode the app and the MCP send for an auxiliary spine.
+            match op(json!({ "kind": "sweep", "op": "fuse", "sections": [section()], "spine": spline(),
+                "mode": { "kind": "auxSpine", "spine": curve, "curvilinear": false, "keepContact": true } })) {
+                Op::Sweep { mode: Some(super::SweepMode::AuxSpine { spine, curvilinear, keep_contact }), .. } => {
+                    check(&spine);
+                    assert_eq!(curvilinear, Some(false));
+                    assert_eq!(keep_contact, Some(true));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_old_rust_spellings_still_read_and_are_written_as_the_app_writes() {
+        let old: Curve3D = serde_json::from_value(json!({ "kind": "spline", "points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }))
+            .expect("points");
+        assert_eq!(serde_json::to_value(&old).expect("json"), json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]] }));
+        let old: Curve3D = serde_json::from_value(json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "periodic": true }))
+            .expect("periodic");
+        assert_eq!(
+            serde_json::to_value(&old).expect("json"),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], "closed": true })
+        );
+    }
+
+    /// The kernel echoes the stored op in every apply reply, and the app keeps that echo in its tree
+    /// (src/app/model/apply.ts): it must be the JSON the app sent, byte for byte. Each op and each Curve3D kind as
+    /// src/model-tree.ts types it and src/modeling/bake.ts writes it.
+    #[test]
+    fn every_new_op_echoes_the_json_the_app_sent() {
+        let curves = [
+            json!({ "kind": "polyline", "points": [[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 5.0, 0.0]], "closed": true }),
+            json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]] }),
+            json!({ "kind": "spline", "through": [[0.0, 0.0, 0.0], [10.0, 5.0, 2.0], [20.0, 0.0, 4.0]], "closed": true }),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]] }),
+            json!({ "kind": "nurbs", "poles": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+                "weights": [1.0, 0.7, 0.7, 1.0], "degree": 3, "knots": [0.0, 1.0], "mults": [4, 4], "closed": true }),
+            json!({ "kind": "segments", "start": [0.0, 0.0, 0.0], "segments": [
+                { "kind": "line", "to": [10.0, 0.0, 0.0] },
+                { "kind": "arc", "through": [12.0, 2.0, 0.0], "to": [10.0, 4.0, 0.0] },
+                { "kind": "spline", "through": [[8.0, 5.0, 0.0]], "to": [6.0, 4.0, 0.0] },
+                { "kind": "nurbs", "poles": [[4.0, 6.0, 0.0]], "weights": [1.0, 0.7, 1.0], "degree": 2, "to": [2.0, 4.0, 0.0] }
+            ] }),
+            json!({ "kind": "edges", "edges": [3, { "index": 4, "mid": [1.0, 2.0, 3.0], "lengthMm": 10.0 }] }),
+        ];
+        let section = json!({ "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0], "radius": 2.0 });
+        let echoes = |value: Value| {
+            let op: Op = serde_json::from_value(value.clone()).unwrap_or_else(|err| panic!("{value}: {err}"));
+            let back = serde_json::to_value(&op).expect("serializes");
+            assert_eq!(back, value, "the echo differs from what the app sent");
+        };
+        for curve in &curves {
+            echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curve }));
+            echoes(json!({ "kind": "sweep", "op": "cut", "sections": [section], "spine": curve, "transition": "right",
+                "mode": { "kind": "auxSpine", "spine": curve, "curvilinear": true, "keepContact": false },
+                "scale": [[0.0, 1.0], [1.0, 2.0]], "twistDeg": 45.0 }));
+            echoes(json!({ "kind": "loft", "op": "fuse", "sections": [section, section], "guides": [curve],
+                "startCondition": { "kind": "tangent", "dir": [0.0, 0.0, 1.0], "tension": 1.5 },
+                "endCondition": { "kind": "normal" }, "closed": true, "smoothing": true, "maxDegree": 6 }));
+            echoes(json!({ "kind": "sheet", "mode": "extrude", "curves": [curve], "dir": [0.0, 0.0, 1.0], "distance": 5.0, "symmetric": true }));
+            echoes(json!({ "kind": "splitFace", "faces": [0, { "index": 1, "mid": [0.0, 0.0, 1.0], "areaMm2": 4.0 }], "curve": curve, "direction": [0.0, 0.0, -1.0] }));
+            echoes(json!({ "kind": "patch", "boundaries": [{ "curve": curve, "continuity": "g1" }, { "edges": [1, 2], "face": 3 }],
+                "guides": [curve], "points": [[0.0, 0.0, 1.0]], "tolerance": 0.01 }));
+            echoes(json!({ "kind": "blendSurface", "a": { "curve": curve }, "b": { "edges": [5], "continuity": "g2" },
+                "continuity": "g2", "tensionA": 1.0, "tensionB": 2.0, "tolerance": 0.001 }));
+            echoes(json!({ "kind": "replaceFace", "face": 2, "sheet": { "mode": "loft", "curves": [curve, curve], "ruled": true } }));
+            echoes(json!({ "kind": "trimSplit", "sheet": { "mode": "revolve", "curves": [curve], "axisOrigin": [0.0, 0.0, 0.0], "dir": [0.0, 0.0, 1.0], "angleDeg": 180.0 }, "keep": "both" }));
+        }
+        echoes(json!({ "kind": "sheet", "mode": "planar", "curves": [curves[0]] }));
+        echoes(json!({ "kind": "sew", "tolerance": 0.05, "makeSolid": false, "capPlanar": true }));
+        echoes(json!({ "kind": "sew" }));
+        echoes(json!({ "kind": "thicken", "thickness": 2.0, "direction": "both", "tolerance": 0.001 }));
+        echoes(json!({ "kind": "trimSplit", "sheet": { "mode": "planar", "curves": [curves[0]] } }));
+        echoes(json!({ "kind": "fillet", "edges": [0, 1], "size": 2.0, "continuity": "conic", "rho": 0.6 }));
+        echoes(json!({ "kind": "fillet", "edges": [0], "size": 2.0, "continuity": "g2", "variable": [[0.0, 1.0], [1.0, 3.0]] }));
+        echoes(json!({ "kind": "loft", "op": "common", "sections": [section, { "origin": [0.0, 0.0, 10.0], "turn": [0.0, 0.0, 0.0], "apex": [0.0, 0.0, 10.0] }],
+            "endCondition": { "kind": "curvature", "dir": [0.0, 0.0, 1.0], "tension": 1.0 } }));
+        echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curves[0],
+            "mode": { "kind": "fixedBinormal", "dir": [1.0, 0.0, 0.0] }, "transition": "transformed" }));
+        echoes(json!({ "kind": "sweep", "op": "fuse", "sections": [section], "spine": curves[0], "mode": { "kind": "frenet" } }));
+    }
 }

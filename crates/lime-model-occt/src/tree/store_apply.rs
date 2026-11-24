@@ -61,8 +61,8 @@ impl Store {
         {
             return Err(Failure::Message("Each piece needs a key of its own".into()));
         }
-        if other_key.is_some() && !matches!(op, Op::Split { .. }) {
-            return Err(Failure::Message("otherKey is only for a split".into()));
+        if other_key.is_some() && !matches!(op, Op::Split { .. } | Op::TrimSplit { .. }) {
+            return Err(Failure::Message("otherKey is only for a split or trimSplit".into()));
         }
         if other_key.as_deref() == Some(key.as_str()) {
             return Err(Failure::Message(
@@ -94,8 +94,12 @@ impl Store {
         let (op, reused) = {
             let doc = doc_in(&mut self.docs, &key)?;
             let probed = doc.probe.take();
+            let step_root = doc.step_root;
             let from = doc.shape(parent);
-            from.editable().map_err(Failure::Message)?;
+            // A STEP import that is not a closed solid takes no edit, as on main; the sheet ops are for built sheets.
+            if !op.allows_sheet() || step_root {
+                from.editable().map_err(Failure::Message)?;
+            }
             let op = resolve(from, &op, &steps).map_err(Failure::Message)?;
             match probed {
                 Some(probed) if probed.parent == parent && same_build(&probed.op, &op.op) => {
@@ -149,7 +153,7 @@ impl Store {
         } else {
             self.reply(&key, id, chord).and_then(|text| {
             let other = match (built.other.as_mut(), &other_key) {
-                (Some(other), Some(_)) => Some(other.reply(ROOT, chord)?),
+                (Some(other), Some(_)) => Some(other.reply(ROOT, chord, false)?),
                 _ => None,
             };
             // --- Split to print: each piece with a key, as the split's other piece.
@@ -184,7 +188,7 @@ impl Store {
                 &other,
                 &[("stepFaces", Part::Json(json!(owners).to_string()))],
             ));
-            self.remember(&other_key, ROOT, chord, Arc::clone(&other));
+            self.remember(&other_key, ROOT, chord, false, Arc::clone(&other));
             let key_field = ("key", Part::Json(json!(other_key).to_string()));
             fields.push(("other", Part::Object(other, vec![key_field])));
         }
@@ -210,7 +214,8 @@ impl Store {
     /// --- Split to print. The pins start their own tree under `pins_key`, as a piece does; the answer is their reply
     /// with that `key`, cached under it.
     pub(super) fn start_pins(&mut self, mut pins: Shape, pins_key: &str, chord: f64) -> Result<String, Failure> {
-        let reply = pins.reply(ROOT, chord)?;
+        // Pins go to the plate: always the standard mesh.
+        let reply = pins.reply(ROOT, chord, false)?;
         self.clock += 1;
         self.replies.retain(|cached| cached.key != pins_key);
         let owners = vec![ROOT; pins.fingerprint().faces.max(0) as usize];
@@ -220,7 +225,7 @@ impl Store {
             &reply,
             &[("stepFaces", Part::Json(json!(owners).to_string()))],
         ));
-        self.remember(pins_key, ROOT, chord, Arc::clone(&text));
+        self.remember(pins_key, ROOT, chord, false, Arc::clone(&text));
         let mut out = String::new();
         write_object(
             &mut out,
@@ -264,7 +269,7 @@ impl Store {
                 &reply,
                 &[("stepFaces", Part::Json(json!(owners).to_string()))],
             ));
-            self.remember(piece_key, ROOT, chord, Arc::clone(&text));
+            self.remember(piece_key, ROOT, chord, false, Arc::clone(&text));
             write_object(
                 &mut list,
                 &text,
@@ -504,7 +509,9 @@ impl Store {
             Err(Failure::Message(message)) => Err(message),
             Err(failure) => return Err(failure),
         };
+        let display = self.display;
         let doc = doc_in(&mut self.docs, key)?;
+        let step_root = doc.step_root;
         // --- A10. Clone before the shape is borrowed: a preview face keeps its parent's node, and a new face is null.
         let parent_owners = doc
             .nodes
@@ -515,7 +522,13 @@ impl Store {
         let mut asked = op.clone();
         let result = tool
             .and_then(|tool| steps.map(|found| (tool, found)))
-            .and_then(|(tool, found)| from.editable().map(|()| (tool, found)))
+            .and_then(|(tool, found)| {
+                if op.allows_sheet() && !step_root {
+                    Ok((tool, found))
+                } else {
+                    from.editable().map(|()| (tool, found))
+                }
+            })
             .map_err(BuildFail::plain)
             .and_then(|(tool, found)| {
                 resolve(from, &op, &found)
@@ -533,7 +546,7 @@ impl Store {
                 // The shape keeps what its reply measured and meshed, so an Apply that takes it meshes nothing again.
                 let shown = preview.and_then(|chord| {
                     let faces = preview_step_faces(&parent_owners, &built.kept.face_from());
-                    let mut text = built.kept.reply(id, chord).ok()?;
+                    let mut text = built.kept.reply(id, chord, display).ok()?;
                     // --- A10.
                     if let Some(faces) = faces {
                         text = with_fields(&text, &[("stepFaces", Part::Json(faces))]);

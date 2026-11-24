@@ -12,7 +12,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type FilletContinuity, type Fingerprint, type JoinTool, type LoftBoundary, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type SheetMode, type SheetSpec, type SurfaceBoundary, type SurfaceContinuity, type SweepMode, type SweepTransition, type ThickenDirection, type TrimKeep, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project file reads and writes a tree's body without loading the readers here (./saved-tree-body.ts).
 import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
@@ -48,7 +48,7 @@ interface SavedNode {
 /**
  * The root is exactly one of a STEP, `rootStep` (bytes in the app, a base64 record in the file), a primitive,
  * `rootPrimitive` (a new solid's few numbers, built again on open), or a feature, `rootFeature` (an extrude, a
- * revolve, or a loft built against nothing). Old files have no `rootFeature`.
+ * revolve, a loft, a sheet, or a NURBS surface built against nothing). Old files have no `rootFeature`.
  */
 export type SavedTree<Step> = SavedTreeBody & (
   | { rootStep: Step; rootPrimitive?: undefined; rootFeature?: undefined }
@@ -189,7 +189,7 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   for (const node of nodes) {
     // Parents come first, so a parent always has the smaller id; only the root has none.
     if (ids.has(node.id) || (node.parent === null) !== (node.id === 0) || (node.parent !== null && !ids.has(node.parent))) return null;
-    if ((node.op === null) !== (node.parent === null) || (node.piece !== undefined && node.op?.kind !== "split")) return null;
+    if ((node.op === null) !== (node.parent === null) || (node.piece !== undefined && node.op?.kind !== "split" && node.op?.kind !== "trimSplit")) return null;
     // --- Split to print. `pieces` belongs to a split to print as `piece` does to a split, and to nothing else.
     if ((node.pieces !== undefined || node.pins !== undefined) && node.op?.kind !== "partition") return null;
     // An edited primitive root is built again right under the root, and only there.
@@ -204,7 +204,7 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   if (value.rootFeature != null) {
     if (value.rootPrimitive != null || value.rootStep !== undefined) return null;
     const op = readOp(value.rootFeature);
-    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft")) return null;
+    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft" && op.kind !== "sweep" && op.kind !== "sheet" && op.kind !== "nurbsSurface")) return null;
     return { ...body, rootFeature: op };
   }
   if (value.rootPrimitive != null) {
@@ -394,7 +394,26 @@ function readOpBody(value: unknown): SavedOp | undefined {
         if (sig === null) return undefined;
         edges.push({ index: raw.index, mid, lengthMm: raw.lengthMm, ...(sig ? { sig } : {}) });
       }
-      if (value.kind === "fillet") return { kind: "fillet", edges, size: value.size };
+      if (value.kind === "fillet") {
+        const continuity = value.continuity === undefined ? undefined : value.continuity === "g1" || value.continuity === "g2" || value.continuity === "conic" ? (value.continuity as FilletContinuity) : null;
+        if (continuity === null) return undefined;
+        if (value.rho !== undefined && (!finite(value.rho) || value.rho < 0.05 || value.rho > 0.95)) return undefined;
+        let variable: [number, number][] | undefined;
+        if (value.variable !== undefined) {
+          if (!Array.isArray(value.variable) || value.variable.length < 2) return undefined;
+          const parsed = value.variable.map(pair);
+          if (parsed.some((p) => !p || p[0] < 0 || p[0] > 1 || !(p[1] > 0))) return undefined;
+          variable = parsed as [number, number][];
+        }
+        return {
+          kind: "fillet",
+          edges,
+          size: value.size,
+          ...(continuity && continuity !== "g1" ? { continuity } : {}),
+          ...(finite(value.rho) ? { rho: value.rho } : {}),
+          ...(variable ? { variable } : {}),
+        };
+      }
       // A chamfer by two sizes: the second distance or the angle, and which face takes the first. Absent when equal.
       const { size2, angleDeg, flip } = value;
       if ((size2 !== undefined && !finite(size2)) || (angleDeg !== undefined && !finite(angleDeg)) || (flip !== undefined && typeof flip !== "boolean")) return undefined;
@@ -484,51 +503,136 @@ function readOpBody(value: unknown): SavedOp | undefined {
     case "loft": {
       if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
       if (!Array.isArray(value.sections) || value.sections.length < 2 || (value.ruled !== undefined && typeof value.ruled !== "boolean")) return undefined;
+      if (value.closed !== undefined && typeof value.closed !== "boolean") return undefined;
+      if (value.smoothing !== undefined && typeof value.smoothing !== "boolean") return undefined;
+      // The kernel takes 2..10. A file written when 11 and 12 were accepted still opens, its loft capped at 10.
+      if (value.maxDegree !== undefined && (!isId(value.maxDegree) || value.maxDegree < 2 || value.maxDegree > 12)) return undefined;
       const sections: LoftSection[] = [];
       for (const raw of value.sections) {
-        if (!isRecord(raw)) return undefined;
-        const at = vec(raw.origin);
-        const turn = raw.turn === undefined ? ([0, 0, 0] as Vec3) : vec(raw.turn);
-        if (!at || !turn) return undefined;
-        const loops = readLoops(raw.loops);
-        if (loops === null) return undefined;
-        if (!loops && finite(raw.radius)) {
-          if (raw.radiusV !== undefined && !finite(raw.radiusV)) return undefined;
-          sections.push({ origin: at, turn, radius: raw.radius, ...(finite(raw.radiusV) ? { radiusV: raw.radiusV } : {}) });
-          continue;
-        }
-        if (!loops) {
-          const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
-          if (!profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
-          const shape = readProfileShape(raw, profile.length);
-          if (!shape) return undefined;
-          sections.push({ origin: at, turn, profile: profile as Vec2[], ...shape });
-          continue;
-        }
-        const section: LoftSection = { origin: at, turn };
-        if (finite(raw.radius)) {
-          if (raw.radiusV !== undefined && !finite(raw.radiusV)) return undefined;
-          section.radius = raw.radius;
-          if (finite(raw.radiusV)) section.radiusV = raw.radiusV;
-        }
-        if (raw.profile !== undefined) {
-          const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
-          if (!profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
-          const shape = readProfileShape(raw, profile.length);
-          if (!shape) return undefined;
-          section.profile = profile as Vec2[];
-          Object.assign(section, shape);
-        } else if (raw.smooth !== undefined || raw.corners !== undefined) {
-          const shape = readProfileShape(raw, 200);
-          if (!shape) return undefined;
-          Object.assign(section, shape);
-        }
-        section.loops = loops;
+        const section = readSectionItem(raw);
+        if (!section) return undefined;
         sections.push(section);
       }
+      let guides: Curve3D[] | undefined;
+      if (value.guides !== undefined) {
+        if (!Array.isArray(value.guides)) return undefined;
+        guides = [];
+        for (const g of value.guides) {
+          const curve = readCurve3D(g);
+          if (!curve) return undefined;
+          guides.push(curve);
+        }
+        if (guides.length === 0) guides = undefined;
+      }
+      const startCondition = value.startCondition === undefined ? undefined : readLoftBoundary(value.startCondition);
+      if (value.startCondition !== undefined && !startCondition) return undefined;
+      const endCondition = value.endCondition === undefined ? undefined : readLoftBoundary(value.endCondition);
+      if (value.endCondition !== undefined && !endCondition) return undefined;
       // --- F3. `drawing` is optional. A bad drawing is dropped and the loft still opens. ---
       const drawing = value.drawing === undefined ? undefined : readLoftDrawing(value.drawing);
-      return { kind: "loft", op: value.op, sections, ...(value.ruled === true ? { ruled: true as const } : {}), ...(drawing ? { drawing } : {}) };
+      return {
+        kind: "loft",
+        op: value.op,
+        sections,
+        ...(value.ruled === true ? { ruled: true as const } : {}),
+        ...(guides ? { guides } : {}),
+        ...(startCondition ? { startCondition } : {}),
+        ...(endCondition ? { endCondition } : {}),
+        ...(value.closed === true ? { closed: true as const } : {}),
+        ...(value.smoothing === true ? { smoothing: true as const } : {}),
+        ...(value.maxDegree !== undefined ? { maxDegree: Math.min(10, value.maxDegree as number) } : {}),
+        ...(drawing ? { drawing } : {}),
+      };
+    }
+    case "sweep": {
+      if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
+      if (!Array.isArray(value.sections) || value.sections.length < 1) return undefined;
+      const sections: LoftSection[] = [];
+      for (const raw of value.sections) {
+        const section = readSectionItem(raw);
+        if (!section) return undefined;
+        sections.push(section);
+      }
+      const spine = readCurve3D(value.spine);
+      if (!spine) return undefined;
+      const mode = value.mode === undefined ? undefined : readSweepMode(value.mode);
+      if (value.mode !== undefined && !mode) return undefined;
+      const transition = value.transition === undefined ? undefined : value.transition === "round" || value.transition === "right" || value.transition === "transformed" ? (value.transition as SweepTransition) : null;
+      if (transition === null) return undefined;
+      let scale: [number, number][] | undefined;
+      if (value.scale !== undefined) {
+        if (!Array.isArray(value.scale) || value.scale.length < 2) return undefined;
+        const parsed = value.scale.map(pair);
+        if (parsed.some((p) => !p || !(p[1] > 0))) return undefined;
+        scale = parsed as [number, number][];
+      }
+      if (value.twistDeg !== undefined && !finite(value.twistDeg)) return undefined;
+      const drawing = value.drawing === undefined ? undefined : readLoftDrawing(value.drawing);
+      return {
+        kind: "sweep",
+        op: value.op,
+        sections,
+        spine,
+        ...(mode ? { mode } : {}),
+        ...(transition ? { transition } : {}),
+        ...(scale ? { scale } : {}),
+        ...(finite(value.twistDeg) ? { twistDeg: value.twistDeg } : {}),
+        ...(drawing ? { drawing } : {}),
+      };
+    }
+    case "sheet": {
+      const spec = readSheetSpec(value);
+      return spec ? { kind: "sheet", ...spec } : undefined;
+    }
+    case "sew": {
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      if (value.makeSolid !== undefined && typeof value.makeSolid !== "boolean") return undefined;
+      if (value.capPlanar !== undefined && typeof value.capPlanar !== "boolean") return undefined;
+      return {
+        kind: "sew",
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+        ...(value.makeSolid === false ? { makeSolid: false } : {}),
+        ...(value.capPlanar === true ? { capPlanar: true as const } : {}),
+      };
+    }
+    case "thicken": {
+      if (!finite(value.thickness) || !(value.thickness > 0)) return undefined;
+      const direction = value.direction === undefined ? undefined : value.direction === "normal" || value.direction === "reverse" || value.direction === "both" ? (value.direction as ThickenDirection) : null;
+      if (direction === null) return undefined;
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      return {
+        kind: "thicken",
+        thickness: value.thickness,
+        ...(direction ? { direction } : {}),
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+      };
+    }
+    case "trimSplit": {
+      const sheet = readSheetSpec(value.sheet);
+      if (!sheet) return undefined;
+      const keep = value.keep === undefined ? undefined : value.keep === "above" || value.keep === "below" || value.keep === "both" ? (value.keep as TrimKeep) : null;
+      if (keep === null) return undefined;
+      return { kind: "trimSplit", sheet, ...(keep ? { keep } : {}) };
+    }
+    case "replaceFace": {
+      const face = readFacePick(value.face);
+      const sheet = readSheetSpec(value.sheet);
+      if (face === undefined || !sheet) return undefined;
+      return { kind: "replaceFace", face, sheet };
+    }
+    case "splitFace": {
+      if (!Array.isArray(value.faces) || value.faces.length === 0) return undefined;
+      const faces: (number | FaceRef)[] = [];
+      for (const raw of value.faces) {
+        const f = readFacePick(raw);
+        if (f === undefined) return undefined;
+        faces.push(f);
+      }
+      const curve = readCurve3D(value.curve);
+      if (!curve) return undefined;
+      const direction = value.direction === undefined ? undefined : vec(value.direction);
+      if (value.direction !== undefined && !direction) return undefined;
+      return { kind: "splitFace", faces, curve, ...(direction ? { direction } : {}) };
     }
     case "shell": {
       if (!finite(value.thickness)) return undefined;
@@ -663,9 +767,137 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(up ? { up } : {}),
       };
     }
+    case "patch": {
+      const boundaries = readBoundaries(value.boundaries);
+      if (!boundaries) return undefined;
+      const guides = value.guides === undefined ? undefined : readCurves(value.guides);
+      if (value.guides !== undefined && !guides) return undefined;
+      const points = value.points === undefined ? undefined : readPoints(value.points);
+      if (value.points !== undefined && !points) return undefined;
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      return {
+        kind: "patch",
+        boundaries,
+        ...(guides ? { guides } : {}),
+        ...(points ? { points } : {}),
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+      };
+    }
+    case "blendSurface": {
+      const a = readBoundary(value.a);
+      const b = readBoundary(value.b);
+      if (!a || !b) return undefined;
+      const continuity = readContinuity(value.continuity);
+      if (continuity === null || continuity === "g0") return undefined;
+      if (value.tensionA !== undefined && !finite(value.tensionA)) return undefined;
+      if (value.tensionB !== undefined && !finite(value.tensionB)) return undefined;
+      if (value.tolerance !== undefined && (!finite(value.tolerance) || !(value.tolerance > 0))) return undefined;
+      return {
+        kind: "blendSurface",
+        a,
+        b,
+        ...(continuity ? { continuity } : {}),
+        ...(finite(value.tensionA) ? { tensionA: value.tensionA } : {}),
+        ...(finite(value.tensionB) ? { tensionB: value.tensionB } : {}),
+        ...(finite(value.tolerance) ? { tolerance: value.tolerance } : {}),
+      };
+    }
+    case "nurbsSurface": {
+      // --- S6. Up to 64 poles each way, the schema's cap (a curve's point list stops at 50).
+      if (!Array.isArray(value.poles) || value.poles.length < 1 || value.poles.length > 64) return undefined;
+      const poles: Vec3[][] = [];
+      for (const raw of value.poles) {
+        const row = readPoints(raw, 64);
+        if (!row || row.length < 1) return undefined;
+        poles.push(row);
+      }
+      const nv = poles[0]!.length;
+      if (poles.some((row) => row.length !== nv)) return undefined;
+      const weights = value.weights === undefined ? undefined : readWeightGrid(value.weights, poles.length, nv);
+      if (value.weights !== undefined && !weights) return undefined;
+      const degreeU = optionalInt(value.degreeU);
+      const degreeV = optionalInt(value.degreeV);
+      if (value.degreeU !== undefined && degreeU === undefined) return undefined;
+      if (value.degreeV !== undefined && degreeV === undefined) return undefined;
+      const knotsU = optionalNumbers(value.knotsU);
+      const knotsV = optionalNumbers(value.knotsV);
+      const multsU = optionalInts(value.multsU);
+      const multsV = optionalInts(value.multsV);
+      if (value.knotsU !== undefined && !knotsU) return undefined;
+      if (value.knotsV !== undefined && !knotsV) return undefined;
+      if (value.multsU !== undefined && !multsU) return undefined;
+      if (value.multsV !== undefined && !multsV) return undefined;
+      // --- S6. Knot insertion and degree elevation the kernel applies on open, as the schema takes them. The app bakes
+      // them into the grid before it stores an op, so only an older or hand-written file carries them; they are kept.
+      const insertU = value.insertU === undefined ? undefined : readInsertPairs(value.insertU);
+      const insertV = value.insertV === undefined ? undefined : readInsertPairs(value.insertV);
+      if (value.insertU !== undefined && !insertU) return undefined;
+      if (value.insertV !== undefined && !insertV) return undefined;
+      const elevateU = optionalInt(value.elevateU);
+      const elevateV = optionalInt(value.elevateV);
+      if (value.elevateU !== undefined && elevateU === undefined) return undefined;
+      if (value.elevateV !== undefined && elevateV === undefined) return undefined;
+      return {
+        kind: "nurbsSurface",
+        poles,
+        ...(weights ? { weights } : {}),
+        ...(degreeU !== undefined ? { degreeU } : {}),
+        ...(degreeV !== undefined ? { degreeV } : {}),
+        ...(knotsU ? { knotsU } : {}),
+        ...(multsU ? { multsU } : {}),
+        ...(knotsV ? { knotsV } : {}),
+        ...(multsV ? { multsV } : {}),
+        ...(value.periodicU === true ? { periodicU: true } : {}),
+        ...(value.periodicV === true ? { periodicV: true } : {}),
+        ...(insertU && insertU.length > 0 ? { insertU } : {}),
+        ...(insertV && insertV.length > 0 ? { insertV } : {}),
+        ...(elevateU !== undefined ? { elevateU } : {}),
+        ...(elevateV !== undefined ? { elevateV } : {}),
+      };
+    }
     default:
       return undefined;
   }
+}
+
+function optionalInt(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : undefined;
+}
+
+function optionalNumbers(value: unknown): number[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "number" || !Number.isFinite(item))) return undefined;
+  return [...value];
+}
+
+function optionalInts(value: unknown): number[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "number" || !Number.isInteger(item) || item < 1)) return undefined;
+  return [...value];
+}
+
+/** `[parameter, times]` pairs, each a finite number and a count of at least 1. */
+function readInsertPairs(value: unknown): [number, number][] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: [number, number][] = [];
+  for (const pair of value) {
+    if (!Array.isArray(pair) || pair.length !== 2) return undefined;
+    const [param, times] = pair as unknown[];
+    if (typeof param !== "number" || !Number.isFinite(param) || typeof times !== "number" || !Number.isInteger(times) || times < 1) return undefined;
+    out.push([param, times]);
+  }
+  return out;
+}
+
+function readWeightGrid(value: unknown, nu: number, nv: number): number[][] | undefined {
+  if (!Array.isArray(value) || value.length !== nu) return undefined;
+  const weights: number[][] = [];
+  for (const raw of value) {
+    if (!Array.isArray(raw) || raw.length !== nv || raw.some((item) => typeof item !== "number" || !(item > 0))) return undefined;
+    weights.push([...raw]);
+  }
+  return weights;
 }
 
 /** A primitive as the engine stores it. Fields it defaults may be absent; the newer ones are kept only when there. */
@@ -817,6 +1049,10 @@ function readLoops(value: unknown): ProfileLoop[] | null | undefined {
           through.push(at);
         }
         segments.push({ kind: "spline", through, to });
+      } else if (seg.kind === "nurbs") {
+        const nurbs = readNurbs2DFields(seg);
+        if (!nurbs) return null;
+        segments.push({ kind: "nurbs", ...nurbs, to });
       } else {
         return null;
       }
@@ -824,6 +1060,242 @@ function readLoops(value: unknown): ProfileLoop[] | null | undefined {
     loops.push({ start, segments });
   }
   return loops;
+}
+
+function readSheetSpec(value: unknown): SheetSpec | null {
+  if (!isRecord(value)) return null;
+  if (value.mode !== "extrude" && value.mode !== "revolve" && value.mode !== "loft" && value.mode !== "planar") return null;
+  if (!Array.isArray(value.curves) || value.curves.length < 1) return null;
+  const curves: Curve3D[] = [];
+  for (const raw of value.curves) {
+    const curve = readCurve3D(raw);
+    if (!curve) return null;
+    curves.push(curve);
+  }
+  const dir = value.dir === undefined ? undefined : vec(value.dir);
+  if (value.dir !== undefined && !dir) return null;
+  if (value.distance !== undefined && !finite(value.distance)) return null;
+  const axisOrigin = value.axisOrigin === undefined ? undefined : vec(value.axisOrigin);
+  if (value.axisOrigin !== undefined && !axisOrigin) return null;
+  if (value.angleDeg !== undefined && !finite(value.angleDeg)) return null;
+  if (value.ruled !== undefined && typeof value.ruled !== "boolean") return null;
+  if (value.symmetric !== undefined && typeof value.symmetric !== "boolean") return null;
+  return {
+    mode: value.mode as SheetMode,
+    curves,
+    ...(dir ? { dir } : {}),
+    ...(finite(value.distance) ? { distance: value.distance } : {}),
+    ...(axisOrigin ? { axisOrigin } : {}),
+    ...(finite(value.angleDeg) ? { angleDeg: value.angleDeg } : {}),
+    ...(value.ruled === true ? { ruled: true as const } : {}),
+    ...(value.symmetric === true ? { symmetric: true as const } : {}),
+  };
+}
+
+function readLoftBoundary(value: unknown): LoftBoundary | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "free") return { kind: "free" };
+  const tension = value.tension === undefined ? undefined : finite(value.tension) && value.tension > 0 ? value.tension : null;
+  if (tension === null) return null;
+  if (value.kind === "normal") return { kind: "normal", ...(tension !== undefined ? { tension } : {}) };
+  if (value.kind === "tangent") {
+    const dir = vec(value.dir);
+    if (!dir) return null;
+    return { kind: "tangent", dir, ...(tension !== undefined ? { tension } : {}) };
+  }
+  if (value.kind === "curvature") {
+    const dir = value.dir === undefined ? undefined : vec(value.dir);
+    if (value.dir !== undefined && !dir) return null;
+    return { kind: "curvature", ...(dir ? { dir } : {}), ...(tension !== undefined ? { tension } : {}) };
+  }
+  return null;
+}
+
+function readSectionItem(raw: unknown): LoftSection | null {
+  if (!isRecord(raw)) return null;
+  if (raw.apex !== undefined) {
+    const apex = vec(raw.apex);
+    if (!apex) return null;
+    return { origin: [...apex] as Vec3, turn: [0, 0, 0], apex };
+  }
+  const at = vec(raw.origin);
+  const turn = raw.turn === undefined ? ([0, 0, 0] as Vec3) : vec(raw.turn);
+  if (!at || !turn) return null;
+  const loops = readLoops(raw.loops);
+  if (loops === null) return null;
+  if (!loops && finite(raw.radius)) {
+    if (raw.radiusV !== undefined && !finite(raw.radiusV)) return null;
+    return { origin: at, turn, radius: raw.radius, ...(finite(raw.radiusV) ? { radiusV: raw.radiusV } : {}) };
+  }
+  if (!loops) {
+    const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
+    if (!profile || profile.length < 3 || profile.some((point) => !point)) return null;
+    const shape = readProfileShape(raw, profile.length);
+    if (!shape) return null;
+    return { origin: at, turn, profile: profile as Vec2[], ...shape };
+  }
+  const section: LoftSection = { origin: at, turn };
+  if (finite(raw.radius)) {
+    if (raw.radiusV !== undefined && !finite(raw.radiusV)) return null;
+    section.radius = raw.radius;
+    if (finite(raw.radiusV)) section.radiusV = raw.radiusV;
+  }
+  if (raw.profile !== undefined) {
+    const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
+    if (!profile || profile.length < 3 || profile.some((point) => !point)) return null;
+    const shape = readProfileShape(raw, profile.length);
+    if (!shape) return null;
+    section.profile = profile as Vec2[];
+    Object.assign(section, shape);
+  } else if (raw.smooth !== undefined || raw.corners !== undefined) {
+    const shape = readProfileShape(raw, 200);
+    if (!shape) return null;
+    Object.assign(section, shape);
+  }
+  section.loops = loops;
+  return section;
+}
+
+function readNurbsMeta(raw: Record<string, unknown>): { weights?: number[]; degree?: number; knots?: number[]; mults?: number[] } | null {
+  let weights: number[] | undefined;
+  if (raw.weights !== undefined) {
+    if (!Array.isArray(raw.weights) || raw.weights.some((w) => !finite(w) || !(w > 0))) return null;
+    weights = [...raw.weights];
+  }
+  let degree: number | undefined;
+  if (raw.degree !== undefined) {
+    if (!Number.isInteger(raw.degree) || (raw.degree as number) < 1 || (raw.degree as number) > 10) return null;
+    degree = raw.degree as number;
+  }
+  let knots: number[] | undefined;
+  if (raw.knots !== undefined) {
+    if (!Array.isArray(raw.knots) || raw.knots.some((k) => !finite(k))) return null;
+    knots = [...raw.knots];
+  }
+  let mults: number[] | undefined;
+  if (raw.mults !== undefined) {
+    if (!Array.isArray(raw.mults) || raw.mults.some((m) => !Number.isInteger(m) || (m as number) < 1)) return null;
+    mults = [...raw.mults] as number[];
+  }
+  return { ...(weights ? { weights } : {}), ...(degree !== undefined ? { degree } : {}), ...(knots ? { knots } : {}), ...(mults ? { mults } : {}) };
+}
+
+function readNurbs2DFields(raw: Record<string, unknown>): { poles?: Vec2[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[] } | null {
+  const meta = readNurbsMeta(raw);
+  if (!meta) return null;
+  let poles: Vec2[] | undefined;
+  if (raw.poles !== undefined) {
+    if (!Array.isArray(raw.poles) || raw.poles.length > SPLINE_THROUGH_MAX) return null;
+    const parsed = raw.poles.map(pair);
+    if (parsed.some((p) => !p)) return null;
+    poles = parsed as Vec2[];
+  }
+  return { ...(poles ? { poles } : {}), ...meta };
+}
+
+function readEdgePickList(value: unknown): EdgePick[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const edges: EdgePick[] = [];
+  for (const raw of value) {
+    if (isId(raw)) {
+      edges.push(raw);
+      continue;
+    }
+    if (isRecord(raw) && raw.fromNode !== undefined) {
+      if (!isId(raw.fromNode) || (raw.filter !== undefined && raw.filter !== "all" && raw.filter !== "convex" && raw.filter !== "concave")) return null;
+      edges.push({ fromNode: raw.fromNode, ...(raw.filter !== undefined ? { filter: raw.filter } : {}) });
+      continue;
+    }
+    const mid = isRecord(raw) ? vec(raw.mid) : null;
+    if (!isRecord(raw) || !isId(raw.index) || !mid || !finite(raw.lengthMm)) return null;
+    const sig = readEdgeSig(raw.sig);
+    if (sig === null) return null;
+    edges.push({ index: raw.index, mid, lengthMm: raw.lengthMm, ...(sig ? { sig } : {}) });
+  }
+  return edges;
+}
+
+function readCurve3D(value: unknown): Curve3D | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "polyline") {
+    if (!Array.isArray(value.points) || value.points.length < 2) return null;
+    const points = value.points.map(vec);
+    if (points.some((p) => !p)) return null;
+    return { kind: "polyline", points: points as Vec3[], ...(value.closed === true ? { closed: true as const } : {}) };
+  }
+  if (value.kind === "spline") {
+    if (!Array.isArray(value.through) || value.through.length < 2) return null;
+    const through = value.through.map(vec);
+    if (through.some((p) => !p)) return null;
+    return { kind: "spline", through: through as Vec3[], ...(value.closed === true ? { closed: true as const } : {}) };
+  }
+  if (value.kind === "nurbs") {
+    if (!Array.isArray(value.poles) || value.poles.length < 2) return null;
+    const poles = value.poles.map(vec);
+    if (poles.some((p) => !p)) return null;
+    const meta = readNurbsMeta(value);
+    if (!meta) return null;
+    return { kind: "nurbs", poles: poles as Vec3[], ...meta, ...(value.closed === true ? { closed: true as const } : {}) };
+  }
+  if (value.kind === "segments") {
+    const start = vec(value.start);
+    if (!start || !Array.isArray(value.segments) || value.segments.length < 1) return null;
+    const segments: Curve3DSegment[] = [];
+    for (const raw of value.segments) {
+      if (!isRecord(raw)) return null;
+      const to = vec(raw.to);
+      if (!to) return null;
+      if (raw.kind === "line") segments.push({ kind: "line", to });
+      else if (raw.kind === "arc") {
+        const through = vec(raw.through);
+        if (!through) return null;
+        segments.push({ kind: "arc", through, to });
+      } else if (raw.kind === "spline") {
+        if (!Array.isArray(raw.through) || raw.through.length < 1) return null;
+        const through = raw.through.map(vec);
+        if (through.some((p) => !p)) return null;
+        segments.push({ kind: "spline", through: through as Vec3[], to });
+      } else if (raw.kind === "nurbs") {
+        const meta = readNurbsMeta(raw);
+        if (!meta) return null;
+        let poles: Vec3[] | undefined;
+        if (raw.poles !== undefined) {
+          if (!Array.isArray(raw.poles)) return null;
+          const parsed = raw.poles.map(vec);
+          if (parsed.some((p) => !p)) return null;
+          poles = parsed as Vec3[];
+        }
+        segments.push({ kind: "nurbs", ...(poles ? { poles } : {}), ...meta, to });
+      } else return null;
+    }
+    return { kind: "segments", start, segments };
+  }
+  if (value.kind === "edges") {
+    const edges = readEdgePickList(value.edges);
+    return edges ? { kind: "edges", edges } : null;
+  }
+  return null;
+}
+
+function readSweepMode(value: unknown): SweepMode | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "correctedFrenet") return { kind: "correctedFrenet" };
+  if (value.kind === "frenet") return { kind: "frenet" };
+  if (value.kind === "fixedBinormal") {
+    const dir = vec(value.dir);
+    return dir ? { kind: "fixedBinormal", dir } : null;
+  }
+  if (value.kind === "auxSpine") {
+    const spine = readCurve3D(value.spine);
+    if (!spine) return null;
+    return {
+      kind: "auxSpine",
+      spine,
+      ...(typeof value.curvilinear === "boolean" ? { curvilinear: value.curvilinear } : {}),
+      ...(typeof value.keepContact === "boolean" ? { keepContact: value.keepContact } : {}),
+    };
+  }
+  return null;
 }
 
 function pair(value: unknown): Vec2 | null {
@@ -842,6 +1314,72 @@ function readNeutral(value: unknown): DraftNeutral | undefined {
     return { origin, normal };
   }
   return readFacePick(value);
+}
+
+function readContinuity(value: unknown): SurfaceContinuity | undefined | null {
+  if (value === undefined) return undefined;
+  if (value === "g0" || value === "g1" || value === "g2") return value;
+  return null;
+}
+
+function readBoundary(value: unknown): SurfaceBoundary | undefined {
+  if (!isRecord(value)) return undefined;
+  const continuity = readContinuity(value.continuity);
+  if (continuity === null) return undefined;
+  let edges: EdgePick[] | undefined;
+  if (value.edges !== undefined) {
+    const read = readEdgePickList(value.edges);
+    if (!read) return undefined;
+    edges = read;
+  }
+  let curve: Curve3D | undefined;
+  if (value.curve !== undefined) {
+    const read = readCurve3D(value.curve);
+    if (!read) return undefined;
+    curve = read;
+  }
+  if (!edges && !curve) return undefined;
+  const face = value.face === undefined ? undefined : readFacePick(value.face);
+  if (value.face !== undefined && face === undefined) return undefined;
+  return {
+    ...(curve ? { curve } : {}),
+    ...(edges ? { edges } : {}),
+    ...(face !== undefined ? { face } : {}),
+    ...(continuity ? { continuity } : {}),
+  };
+}
+
+function readBoundaries(value: unknown): SurfaceBoundary[] | undefined {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 20) return undefined;
+  const boundaries: SurfaceBoundary[] = [];
+  for (const raw of value) {
+    const bound = readBoundary(raw);
+    if (!bound) return undefined;
+    boundaries.push(bound);
+  }
+  return boundaries;
+}
+
+function readCurves(value: unknown): Curve3D[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 20) return undefined;
+  const curves: Curve3D[] = [];
+  for (const raw of value) {
+    const curve = readCurve3D(raw);
+    if (!curve) return undefined;
+    curves.push(curve);
+  }
+  return curves;
+}
+
+function readPoints(value: unknown, most = 50): Vec3[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > most) return undefined;
+  const points: Vec3[] = [];
+  for (const raw of value) {
+    const point = vec(raw);
+    if (!point) return undefined;
+    points.push(point);
+  }
+  return points;
 }
 
 /** K4. A face index, or the reference a stored step keeps. Undefined when the value is damaged. */

@@ -1,4 +1,5 @@
 import { fx } from "./fx";
+import { sheetPartNote } from "../model-sheet";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
 import { autoSliceAllowed, autoSliceDeferred, meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, slicedKey, withMeshData } from "./files";
@@ -311,6 +312,13 @@ export async function runSlice(force = false) {
   const exported: string | null = fx.exportedPart?.() ?? null;
   if (exported) {
     state.error = exported;
+    renderChrome();
+    return;
+  }
+  // --- Organic surfaces S4: an open sheet is on the plate but is no solid: Slice and Export stop with the prompt.
+  const sheet = sheetPartNote(state.plate.objects);
+  if (sheet) {
+    state.error = sheet;
     renderChrome();
     return;
   }

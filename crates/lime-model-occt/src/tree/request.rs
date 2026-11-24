@@ -192,6 +192,20 @@ pub(super) enum Request {
         node: NodeId,
         face: FacePick,
     },
+    /// --- Organic surfaces S1: lazy surface inspection (per-vertex curvature buffers, trimmed UV isoparms,
+    /// shared-edge G0/G1/G2 continuity, and NURBS surface health).
+    SurfaceInspect {
+        key: String,
+        node: NodeId,
+        #[serde(default = "default_chord")]
+        chord_mm: f64,
+        #[serde(default)]
+        curvature: bool,
+        #[serde(default)]
+        isoparms: bool,
+        #[serde(default = "default_iso_count")]
+        iso_count: i32,
+    },
     // --- Recipe reads (docs/plan-recipe-ingredients.md I5–I7). Keep these together. ---
     /// I5: a flat face's outline inset `insetMm`, in `frame` (origin, U, V: nine numbers) or the face's own: the frame,
     /// the extrude `origin` and `turn` that draw in it, `loops`, `regions` sampled to `chordMm`, and `areaMm2`.
@@ -349,6 +363,20 @@ pub(super) enum Request {
     /// for a test that opens a flat face stored as a B-spline.
     #[cfg(lime_occt_test_hooks)]
     TestNurbs { key: String, node: NodeId },
+    /// Debug builds only: step `node`'s shape mirrored in x = 0 (`mirror`), or moved by `offset` as a location, as
+    /// BinTools bytes in base64, for a test that opens it.
+    #[cfg(lime_occt_test_hooks)]
+    TestPlace {
+        key: String,
+        node: NodeId,
+        #[serde(default)]
+        mirror: bool,
+        #[serde(default)]
+        offset: [f64; 3],
+    },
+    /// Debug builds only: the last Hermite patch or blend's own measure at its stations.
+    #[cfg(lime_occt_test_hooks)]
+    TestLastFill,
     /// Debug builds only: the cheap checks of a text build next to the exact calls they stand in for, on the face of step `node`'s solid
     /// nearest `point`: the classifier, the edge gap, the validity checks, and the whole solid's volume.
     #[cfg(lime_occt_test_hooks)]
@@ -363,6 +391,15 @@ pub(super) enum Request {
         key: String,
         node: NodeId,
         point: [f64; 3],
+    },
+    /// Debug builds only. Evaluate a `Geom_BSplineCurve` or `Geom_BSplineSurface` at the given parameters.
+    /// The curve is the one a profile NURBS edge is built from. Not an MCP tool.
+    #[cfg(lime_occt_test_hooks)]
+    EvalNurbs {
+        #[serde(default)]
+        curve: Option<EvalNurbsCurve>,
+        #[serde(default)]
+        surface: Option<EvalNurbsSurface>,
     },
     /// `format` is `step` (the default, for a file to hand on) or `brep` (the binary a project keeps).
     Export {
@@ -478,6 +515,66 @@ pub(super) struct SavedNode {
 
 fn default_chord() -> f64 {
     0.1
+}
+
+fn default_iso_count() -> i32 {
+    6
+}
+
+/// Debug builds only. One `Geom_BSplineCurve` and the parameters to evaluate. Empty knots use the standard vector.
+#[cfg(lime_occt_test_hooks)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EvalNurbsCurve {
+    pub(super) poles: Vec<[f64; 3]>,
+    #[serde(default)]
+    pub(super) weights: Vec<f64>,
+    #[serde(default)]
+    pub(super) degree: i32,
+    #[serde(default)]
+    pub(super) knots: Vec<f64>,
+    #[serde(default)]
+    pub(super) mults: Vec<i32>,
+    #[serde(default)]
+    pub(super) periodic: bool,
+    pub(super) params: Vec<f64>,
+}
+
+/// Debug builds only. One `Geom_BSplineSurface` (`poles[u][v]`) and the `(u, v)` parameters to evaluate.
+#[cfg(lime_occt_test_hooks)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EvalNurbsSurface {
+    pub(super) poles: Vec<Vec<[f64; 3]>>,
+    #[serde(default)]
+    pub(super) weights: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub(super) degree_u: i32,
+    #[serde(default)]
+    pub(super) degree_v: i32,
+    #[serde(default)]
+    pub(super) knots_u: Vec<f64>,
+    #[serde(default)]
+    pub(super) mults_u: Vec<i32>,
+    #[serde(default)]
+    pub(super) knots_v: Vec<f64>,
+    #[serde(default)]
+    pub(super) mults_v: Vec<i32>,
+    /// With any of the fields below, the surface evaluated is the one `nurbsSurface` commits: built as the op builds
+    /// it, with Open CASCADE's own knot insertion and degree elevation, and periodic knots.
+    #[serde(default)]
+    pub(super) periodic_u: bool,
+    #[serde(default)]
+    pub(super) periodic_v: bool,
+    #[serde(default)]
+    pub(super) insert_u: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub(super) insert_v: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub(super) elevate_u: Option<u32>,
+    #[serde(default)]
+    pub(super) elevate_v: Option<u32>,
+    pub(super) params: Vec<[f64; 2]>,
 }
 
 /// I5–I6: how closely an outline's curves are sampled into points, unless the request says.

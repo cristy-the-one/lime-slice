@@ -602,7 +602,7 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   // --- Plugin steps (D9). A plugin step's row says, in one sentence, why it cannot be rebuilt.
   const view = pluginView(row);
   el.toggleAttribute("data-plugin", !!view);
-  const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", staleRow(row) ? "made for another pose" : "", row.plate ? "on the plate" : "", view ? `${view.kind}` : ""].filter(Boolean);
+  const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", staleRow(row) ? "made for another pose" : "", row.sheet ? "open sheet" : "", row.plate ? "on the plate" : "", view ? `${view.kind}` : ""].filter(Boolean);
   const called = row.tool != null ? `${row.tool}: ${row.label}` : row.label;
   el.setAttribute("aria-label", [called, ...notes].join(", "));
   // A label can be longer than the row, which ellipsizes it: the tip has it whole. The description adds
@@ -661,7 +661,7 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     edit.setAttribute("aria-label", `Plugin values: ${row.label}`);
     edit.dataset.tip = "Plugin values";
   }
-  el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool, :scope > .mh-swatch, :scope > .mh-plugin-mark").forEach((node) => node.remove());
+  el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-sheet, :scope > .mh-tool, :scope > .mh-swatch, :scope > .mh-plugin-mark").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
   // --- A10. The swatch sits after the rail and before the label, and only while colour by step is on.
   const colour = ownColour(row);
@@ -693,6 +693,13 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     warn.append(icon(TriangleAlert, 12));
     if (view?.note && !row.broken) warn.dataset.tip = view.note;
     edit.before(warn);
+  }
+  if (row.sheet) {
+    const chip = document.createElement("span");
+    chip.className = "mh-sheet";
+    chip.textContent = "Sheet";
+    chip.dataset.tip = "Open surface (sheet) — thicken or cap & sew before printing.";
+    edit.before(chip);
   }
   if (row.plate) {
     const chip = document.createElement("span");

@@ -10,6 +10,8 @@ import { syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
 import { S } from "./shared";
+import { isOpenSheet, sheetVerdict } from "../../model-sheet";
+import { markSheet } from "./sheet-gate";
 import { recentSolid } from "./apply";
 import { placePiece } from "./create";
 import { treeOf } from "./edges";
@@ -30,6 +32,7 @@ export function commitModel() {
   // mesh when the plate held it, else from the recent solids.
   const held = at && tree && S.editing?.target === at.key ? S.editing.from : null;
   const solid = held == null || held === at?.solid.id ? at?.solid : recentSolid(at!.key, held, state.stepTolerance);
+  // A root replaced in place (`tree.rebuilt`, set by `withoutBuilds`) commits again though it is the node shown: `visitStep`.
   const plan = tree ? visitStep(held == null ? tree : { ...tree, current: held }) : null;
   if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || S.parked === at.key) return;
   // --- D12. A part cut for an export target stays as the plate had it: `exportedPart` says why, where it matters.
@@ -53,6 +56,11 @@ export function commitModel() {
   // A Prepare undo can have taken off the piece of a split this commit crosses on its way down: the
   // plate gets it back. A piece removed by hand stays removed while the plate stays below its split.
   syncPlateFromState();
+  // --- Organic surfaces S4: an open sheet goes to the plate like any part, so its plate mesh follows Model; the object
+  // takes the kernel's verdict on what was shown (`isOpenSheet`: never a surfaces-only STEP root unless already marked),
+  // else the verdict the stored mesh carries. Slice and Export read the object's mark (src/model-sheet.ts).
+  const marked = state.plate.objects.find((obj) => obj.id === at.objectId)?.sheet === true;
+  markSheet(at.objectId, solid?.id === plan.to ? isOpenSheet(solid, tree.root, plan.to, marked) : mesh.sheet);
   const above = new Set(pathTo(tree, plan.from));
   const down = pathTo(tree, plan.to).filter((id) => !above.has(id));
   // A piece a join on the way down took off the plate stays off: fused back into its part, it is no part of its own.
@@ -151,7 +159,8 @@ export function meshOf(solid: ParsedSolid, named?: string): PlateMesh {
   const name = named ?? stlName(state.mesh?.name ?? "solid");
   const bytes = encodeStl(positions, name);
   setMeshSeat(bytes, seat);
-  return { name, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+  // The kernel's sheet verdict travels with the mesh, to whichever plate object takes it (`markSheet`).
+  return { name, bytes, sourcePos: positions, token: meshTokenOf(bytes), sheet: sheetVerdict(solid) };
 }
 
 /**

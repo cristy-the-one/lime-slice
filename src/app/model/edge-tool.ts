@@ -1,4 +1,5 @@
 /** The edge tool: the fillet/chamfer probe, apply, and its edit. */
+import { viewRequest } from "../../model-mesh-quality";
 import { matchEdges, replayChain } from "../../model-edit";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { probeFromBody } from "../../model-feasibility";
@@ -40,7 +41,7 @@ export async function probeEdge(op: ModelOp): Promise<{ ok: boolean; error: stri
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return { ok: false, error: "Nothing is open.", maxMm: null, shape: null };
   const node = S.editing?.edgeOp ? S.editing.parent : tree.current;
-  const body = await treeCall(at.key, node, probeRequest(at.key, node, op, state.stepTolerance));
+  const body = await treeCall(at.key, node, viewRequest(probeRequest(at.key, node, op, state.stepTolerance)));
   const view = probeFromBody(body);
   if (view?.phase === "done" && view.ok) {
     const decoded = body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;

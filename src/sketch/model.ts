@@ -9,6 +9,8 @@
  * dimensions and constraints live in the optional `dims` field. An older sketch has no `dims`,
  * and a sketch that still has none is not solved (`src/sketch/solve.ts`).
  */
+import { insertNurbsKnot2D, makeCreaseAtParam2D, resolveCurveKnots } from "../modeling/nurbs-eval.ts";
+
 export type Pt = [number, number];
 export type Vec3 = [number, number, number];
 
@@ -38,11 +40,24 @@ export interface SketchPoint {
   fixed?: true;
 }
 
+export type SplineMode = "cv" | "through";
+
 export type SketchEntity =
   | { id: number; kind: "line"; a: number; b: number; construction?: true }
   | { id: number; kind: "arc"; a: number; b: number; through: Pt; construction?: true }
   | { id: number; kind: "circle"; centre: number; radius: number; construction?: true }
-  | { id: number; kind: "spline"; through: number[]; construction?: true };
+  | {
+      id: number;
+      kind: "spline";
+      through: number[];
+      /** "cv" = exact control-point NURBS; absent or "through" = interpolating spline. */
+      mode?: SplineMode;
+      weights?: number[];
+      degree?: number;
+      knots?: number[];
+      mults?: number[];
+      construction?: true;
+    };
 
 /**
  * A driving dimension or constraint stored on the sketch. Known kinds are read by the in-house
@@ -161,6 +176,200 @@ export function addSpline(sketch: SketchData, through: readonly (Pt | number)[],
   return { sketch: { ...next, entities: [...next.entities, entity] }, id };
 }
 
+export interface NurbsOptions {
+  weights?: readonly number[];
+  degree?: number;
+  knots?: readonly number[];
+  mults?: readonly number[];
+  construction?: boolean;
+}
+
+/** An exact control-point NURBS curve in the sketch (poles, rational weights, degree, knots/mults). */
+export function addNurbs(sketch: SketchData, poles: readonly (Pt | number)[], options: NurbsOptions = {}): Added {
+  let next = sketch;
+  const ids: number[] = [];
+  for (const at of poles) {
+    const point = corner(next, at);
+    next = point.sketch;
+    ids.push(point.id);
+  }
+  const id = nextEntityId(next);
+  // The kernel refuses a degree above the poles allow and knots without multiplicities: a new curve has neither. The
+  // degree fits the points (as the preview reads it), and knots carry the multiplicities the evaluator would imply.
+  const degree = options.degree !== undefined ? Math.max(1, Math.min(Math.floor(options.degree), ids.length - 1)) : undefined;
+  const knots = options.knots && options.knots.length > 0 ? [...options.knots] : undefined;
+  const mults = knots && options.mults && options.mults.length === knots.length
+    ? [...options.mults]
+    : knots ? impliedMults(knots, degree ?? Math.min(3, ids.length - 1)) : undefined;
+  const entity: Extract<SketchEntity, { kind: "spline" }> = {
+    id,
+    kind: "spline",
+    through: ids,
+    mode: "cv",
+    ...(options.weights && options.weights.length === ids.length ? { weights: [...options.weights] } : {}),
+    ...(degree !== undefined ? { degree } : {}),
+    ...(knots ? { knots } : {}),
+    ...(mults ? { mults } : {}),
+    ...(options.construction ? { construction: true as const } : {}),
+  };
+  return { sketch: { ...next, entities: [...next.entities, entity] }, id };
+}
+
+type SplineEntity = Extract<SketchEntity, { kind: "spline" }>;
+
+/** The multiplicities the evaluator reads knots without any as: clamped ends (degree + 1), 1 inside. */
+export function impliedMults(knots: readonly number[], degree: number): number[] {
+  return knots.map((_, i) => (i === 0 || i === knots.length - 1 ? degree + 1 : 1));
+}
+
+/** True when a spline ends where it starts (the same point, or two points at one place): a periodic curve. */
+export function splineEndsClosed(sketch: SketchData, entity: SplineEntity): boolean {
+  const ids = entity.through;
+  if (ids.length < 3) return false;
+  if (ids[0] === ids[ids.length - 1]) return true;
+  const a = sketchPoint(sketch, ids[0]!)?.at;
+  const b = sketchPoint(sketch, ids[ids.length - 1]!)?.at;
+  return !!a && !!b && Math.hypot(a[0] - b[0], a[1] - b[1]) <= 1e-6;
+}
+
+/**
+ * A spline's optional NURBS arrays kept consistent with its points: weights one per point, knots and multiplicities
+ * of equal length that fit the pole count (open: sum of mults = poles + degree + 1). Anything that does not fit is
+ * dropped, never the spline, so an edit or an old file cannot leave a sketch that fails to load.
+ */
+export function fitSplineArrays<E extends SplineEntity>(entity: E, closed: boolean): E {
+  const { weights, knots, mults, ...rest } = entity;
+  const n = entity.through.length;
+  const goodWeights = weights && weights.length === n && weights.every((w) => typeof w === "number" && Number.isFinite(w) && w > 0) ? weights : undefined;
+  let goodKnots = false;
+  if (knots && knots.length >= 2 && (mults === undefined || mults.length === knots.length)
+    && knots.every((k, i) => typeof k === "number" && Number.isFinite(k) && (i === 0 || k > knots[i - 1]!))
+    && (mults ?? []).every((m) => typeof m === "number" && Number.isInteger(m) && m >= 1)) {
+    const p = Math.max(1, Math.min(Math.floor(entity.degree ?? 3), n - 1));
+    // Without mults the evaluator reads the knots as clamped (p + 1 at the ends) or periodic (1 each).
+    const m = mults ?? knots.map((_, i) => (closed ? 1 : i === 0 || i === knots.length - 1 ? p + 1 : 1));
+    const sum = m.reduce((s, v) => s + v, 0);
+    // A closed spline repeats its first point: n - 1 periodic poles = sum of mults without the last.
+    goodKnots = closed ? sum - m[m.length - 1]! === n - 1 : sum === n + p + 1;
+  }
+  return {
+    ...rest,
+    ...(goodWeights ? { weights: [...goodWeights] } : {}),
+    ...(goodKnots ? { knots: [...knots!], ...(mults ? { mults: [...mults] } : {}) } : {}),
+  } as E;
+}
+
+/**
+ * Sets the rational weight of control point `controlIndex` on a control-point (CV) spline. A through-point spline is
+ * left alone: a weight belongs to a pole, and turning its points into poles would move the curve off them.
+ */
+export function setSplineWeight(sketch: SketchData, entityId: number, controlIndex: number, weight: number): SketchData {
+  if (!(weight > 0) || !Number.isFinite(weight)) return sketch;
+  const entities = sketch.entities.map((entity) => {
+    if (entity.id !== entityId || entity.kind !== "spline" || entity.mode !== "cv") return entity;
+    if (controlIndex < 0 || controlIndex >= entity.through.length) return entity;
+    const weights = entity.weights && entity.weights.length === entity.through.length ? [...entity.weights] : entity.through.map(() => 1);
+    weights[controlIndex] = weight;
+    // A closed spline names its first point twice: both slots carry the one pole's weight.
+    const last = entity.through.length - 1;
+    const closed = splineEndsClosed(sketch, entity);
+    if (last >= 2 && closed) {
+      if (controlIndex === 0) weights[last] = weight;
+      if (controlIndex === last) weights[0] = weight;
+    }
+    return fitSplineArrays({ ...entity, weights }, closed);
+  });
+  return { ...sketch, entities };
+}
+
+/** Toggles a spline entity between exact control-point NURBS ("cv") and interpolating ("through"). */
+export function setSplineMode(sketch: SketchData, entityId: number, mode: SplineMode): SketchData {
+  const entities = sketch.entities.map((entity) => {
+    if (entity.id !== entityId || entity.kind !== "spline") return entity;
+    if (mode === "cv") return { ...entity, mode: "cv" as const };
+    const { mode: _m, weights: _w, degree: _d, knots: _k, mults: _mu, ...rest } = entity;
+    return rest;
+  });
+  return { ...sketch, entities };
+}
+
+/** The poles of a CV spline that can take a knot edit: an open control-point spline with every point found. */
+function editablePoles(sketch: SketchData, entity: SketchEntity | null | undefined): { entity: SplineEntity; poles: Pt[] } | null {
+  // A through-point spline's points are not poles (an edit would move the curve off them), and a closed spline is a
+  // periodic curve the clamped knot edits below would open. Both are left alone; the sketch card disables the buttons.
+  if (!entity || entity.kind !== "spline" || entity.mode !== "cv" || splineEndsClosed(sketch, entity)) return null;
+  const poles: Pt[] = [];
+  for (const id of entity.through) {
+    const pt = sketchPoint(sketch, id);
+    if (!pt) return null;
+    poles.push(pt.at);
+  }
+  return poles.length >= 2 ? { entity: fitSplineArrays(entity, false), poles } : null;
+}
+
+/** `entity` rebuilt on the poles of `curve`: its end points kept, new interior points, every NURBS array replaced. */
+function withCurve(sketch: SketchData, entity: SplineEntity, curve: { poles: readonly Pt[]; weights?: readonly number[]; degree?: number; knots?: readonly number[]; mults?: readonly number[] }): SketchData {
+  let next = sketch;
+  const newIds: number[] = [];
+  const firstId = entity.through[0]!;
+  const lastId = entity.through[entity.through.length - 1]!;
+  for (let i = 0; i < curve.poles.length; i += 1) {
+    if (i === 0) newIds.push(firstId);
+    else if (i === curve.poles.length - 1) newIds.push(lastId);
+    else {
+      const added = addPoint(next, curve.poles[i]!);
+      next = added.sketch;
+      newIds.push(added.id);
+    }
+  }
+  const entities = next.entities.map((item) => {
+    if (item.id !== entity.id || item.kind !== "spline") return item;
+    // Old weights, knots and mults are dropped first: an all-one result carries no weights, and must not keep the old ones.
+    const { weights: _w, knots: _k, mults: _m, degree: _d, ...rest } = item;
+    return fitSplineArrays({
+      ...rest,
+      through: newIds,
+      mode: "cv" as const,
+      ...(curve.degree !== undefined ? { degree: curve.degree } : {}),
+      ...(curve.knots ? { knots: [...curve.knots] } : {}),
+      ...(curve.mults ? { mults: [...curve.mults] } : {}),
+      ...(curve.weights ? { weights: [...curve.weights] } : {}),
+    }, false);
+  });
+  return prunePoints({ ...next, entities });
+}
+
+/** Inserts an exact knot at parameter `u` into an open CV NURBS entity using Boehm's algorithm (curve shape unchanged). */
+export function insertSplineKnot(sketch: SketchData, entityId: number, u: number): SketchData {
+  const found = editablePoles(sketch, sketchEntity(sketch, entityId));
+  if (!found) return sketch;
+  const { entity, poles } = found;
+  const inserted = insertNurbsKnot2D(
+    { poles, weights: entity.weights, degree: entity.degree, knots: entity.knots, mults: entity.mults },
+    u,
+    1,
+  );
+  return withCurve(sketch, entity, inserted);
+}
+
+/** Turns an interior knot / Greville parameter into a sharp C0 crease (multiplicity = degree) on an open CV NURBS entity. */
+export function creaseSplineAt(sketch: SketchData, entityId: number, controlIndex: number): SketchData {
+  const found = editablePoles(sketch, sketchEntity(sketch, entityId));
+  if (!found) return sketch;
+  const { entity, poles } = found;
+  if (poles.length < 3 || controlIndex <= 0 || controlIndex >= poles.length - 1) return sketch;
+  const norm = resolveCurveKnots(poles.length, entity.degree ?? 3, entity.knots, entity.mults, false);
+  // Greville abscissa for controlIndex: average of p knots flat[i+1..i+p].
+  let u = 0;
+  for (let j = 1; j <= norm.degree; j += 1) u += norm.flat[controlIndex + j]!;
+  u /= norm.degree;
+  const creased = makeCreaseAtParam2D(
+    { poles, weights: entity.weights, degree: norm.degree, knots: norm.knots, mults: norm.mults },
+    u,
+  );
+  return withCurve(sketch, entity, creased);
+}
+
 /** Drops points no entity names. Fixed points stay, so a datum the user pinned is not lost. */
 export function prunePoints(sketch: SketchData): SketchData {
   const used = new Set<number>();
@@ -223,6 +432,7 @@ export function readSketch(value: unknown): SketchData | null {
   }
 
   const sketch: SketchData = { v: 1, plane, points, entities };
+  sketch.entities = entities.map((entity) => (entity.kind === "spline" ? fitSplineArrays(entity, splineEndsClosed(sketch, entity)) : entity));
   if (on) sketch.on = on;
   if (dims) sketch.dims = dims;
   if (typeof value.name === "string" && value.name.trim()) sketch.name = value.name.trim();
@@ -304,7 +514,26 @@ function readEntity(value: unknown, points: Set<number>): SketchEntity | null {
       if (!isId(id) || !points.has(id)) return null;
       through.push(id);
     }
-    return mark({ id: value.id, kind: "spline", through });
+    const mode = value.mode === undefined ? undefined : value.mode === "cv" || value.mode === "through" ? value.mode : null;
+    if (mode === null) return null;
+    // The NURBS arrays are optional. One that does not fit the points (a stale weight list, knots for another pole
+    // count) is dropped and the spline kept: a bad array must never lose the whole drawing.
+    const numbers = (raw: unknown): number[] | undefined => (Array.isArray(raw) && raw.every((v) => typeof v === "number") ? [...raw] : undefined);
+    const degree = typeof value.degree === "number" && Number.isInteger(value.degree) && value.degree >= 1 && value.degree <= 10 ? value.degree : undefined;
+    const weights = numbers(value.weights);
+    const knots = numbers(value.knots);
+    const mults = numbers(value.mults);
+    // Arrays that do not fit the points are dropped in readSketch, which knows where the points are.
+    return mark({
+      id: value.id,
+      kind: "spline",
+      through,
+      ...(mode ? { mode } : {}),
+      ...(weights ? { weights } : {}),
+      ...(degree !== undefined ? { degree } : {}),
+      ...(knots ? { knots } : {}),
+      ...(mults ? { mults } : {}),
+    });
   }
   return null;
 }

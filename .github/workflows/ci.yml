@@ -1,10 +1,11 @@
 name: CI
 
 on:
+  # feature/organic-surfaces is here so PRs into the integration branch get CI; remove it from both lists once that branch is merged.
   push:
-    branches: [main]
+    branches: [main, feature/organic-surfaces]
   pull_request:
-    branches: [main]
+    branches: [main, feature/organic-surfaces]
 
 env:
   CARGO_TERM_COLOR: always
@@ -336,6 +337,8 @@ jobs:
           node --experimental-strip-types mcp/large-profile.test.ts
           # A window cut as one closed spline and as a polyline: no thin wall in either (docs/plan-mcp-reliability.md, item 3).
           node --experimental-strip-types mcp/thin-spline-occt.test.ts
+          # S1–S2: nurbs-eval.ts against Geom_BSplineCurve / Geom_BSplineSurface, within 1e-6 mm. Not an MCP tool.
+          node --experimental-strip-types mcp/nurbs-parity-occt.test.ts
           node --experimental-strip-types mcp/interference-exact.test.ts
           # A kernel gear step: solid_new {gear}, the gear op, two gears that mesh within their backlash (docs/plan-native-recipes.md milestone 8).
           node --experimental-strip-types mcp/gear.test.ts
@@ -454,6 +457,14 @@ jobs:
           node --experimental-strip-types mcp/draft-occt.test.ts
           # Moulding report on a small synthetic shelled box. Kept here so the shared Open CASCADE job stays within its 25 minutes.
           node --experimental-strip-types mcp/moulding-occt.test.ts
+          # Organic surfaces S1–S5: every new op kind and field sent as a client sends it (schema and bake), against
+          # the kernel, each with a geometric fact. On this job, which has the most headroom of the Open CASCADE jobs.
+          node --experimental-strip-types mcp/organic-contract-occt.test.ts
+          # A closed sketch NURBS through the app's own request, against the kernel.
+          node --experimental-strip-types mcp/sketch-nurbs-closed-occt.test.ts
+          # S6: a part that starts from a NURBS surface over MCP (solid_new {feature}), thickened, sewn, saved and reopened,
+          # and its root edited under a thicken.
+          node --experimental-strip-types mcp/nurbs-surface-occt.test.ts
 
   # Auto ribs plans that solve many times (load cases, and later the frequency goal and resin vents), on their own
   # so neither the shared Open CASCADE job nor the folded-shell job runs near its 25 minutes. Same setup as those jobs.

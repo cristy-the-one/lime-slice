@@ -1,4 +1,5 @@
 import { ArrowDownToLine, Copy, Crosshair, LayoutGrid, Plus, RotateCw, createElement, type IconNode } from "lucide";
+import { SHEET_OBJECT_NOTE } from "../model-sheet";
 import { fx } from "./fx";
 import { assemblyClashes, assemblyView, liveAssemblies } from "./assemblies.ts";
 import { assemblyOf } from "../assembly.ts";
@@ -850,6 +851,7 @@ function objectListHtml(): Html | "" {
     const notes = limit(part.bounds);
     const marks = objectMarks(obj);
     const splitNote: string | null = fx.exportSplitNote?.(obj.id) ?? null;
+    const sheetNote = obj.sheet ? SHEET_OBJECT_NOTE : null;
     // --- Print transitions (decision 5): steps made for another pose, with Re-aim and Keep.
     const stale: { text: string } | null = fx.transitionStaleNote?.(obj.id) ?? null;
     const selected = obj.id === state.plate.selectedId;
@@ -895,6 +897,7 @@ function objectListHtml(): Html | "" {
           ${many ? html`<button class="btn obj-remove" type="button" data-plate-remove="${obj.id}" aria-label="Remove ${obj.name}">Remove</button>` : ""}
         </div>
         ${splitNote ? html`<p class="obj-split">${splitNote}</p>` : ""}
+        ${sheetNote ? html`<p class="obj-split obj-sheet" data-sheet="true">${sheetNote}</p>` : ""}
         ${stale ? html`<div class="obj-stale" role="status" data-transition-stale="${obj.id}"><p>${stale.text}</p><div class="obj-stale-actions"><button class="btn" type="button" data-transition-reaim="${obj.id}" data-tip="Open Model and rebuild these steps with the build direction of this pose">Re-aim</button><button class="btn" type="button" data-transition-keep="${obj.id}" data-tip="Keep them as they are, made for the other pose">Keep</button></div></div>` : ""}
       </div>`;
   };

@@ -26,7 +26,7 @@ impl Store {
                     ));
                 }
                 let mut shape = root_shape(Some(data_b64), None, None, None, None)?;
-                Ok(Answer::Plain(shape.reply(ROOT, chord_mm)?))
+                Ok(Answer::Plain(shape.reply(ROOT, chord_mm, false)?))
             }
             Request::TextFonts => Ok(Answer::Plain(lettering::fonts_reply())),
             Request::TextFontAdd { data_b64, face } => Ok(Answer::Plain(
@@ -192,6 +192,7 @@ impl Store {
                 seed,
                 quiet,
             } => {
+                let step_root = step_path.is_some() || data_b64.as_deref().is_some_and(super::is_step_data);
                 let root = root_shape(data_b64, step_path, box_mm, primitive, feature.map(|op| *op))?;
                 if let Some(saved) = fingerprint {
                     let got = root.fingerprint();
@@ -205,6 +206,7 @@ impl Store {
                 self.open(
                     key,
                     root,
+                    step_root,
                     nodes,
                     current,
                     seed,
@@ -360,6 +362,19 @@ impl Store {
                 ))
             }
             #[cfg(lime_occt_test_hooks)]
+            Request::TestPlace { key, node, mirror, offset } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let bytes = shape.test_place(mirror, offset).map_err(Failure::Message)?;
+                Ok(Answer::Plain(
+                    json!({ "dataB64": base64::engine::general_purpose::STANDARD.encode(bytes) }).to_string(),
+                ))
+            }
+            #[cfg(lime_occt_test_hooks)]
+            Request::TestLastFill => Ok(Answer::Plain(
+                super::shape::take_text(unsafe { super::ffi::lime_tree_test_last_fill() }).unwrap_or_default(),
+            )),
+            #[cfg(lime_occt_test_hooks)]
             Request::TestMesh { key, node, chord_mm } => {
                 self.ensure(&key, node)?;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
@@ -372,6 +387,23 @@ impl Store {
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
                 let text = shape.test_text(point).map_err(Failure::Message)?;
                 Ok(Answer::Plain(text))
+            }
+            #[cfg(lime_occt_test_hooks)]
+            Request::EvalNurbs { curve, surface } => {
+                let points = match (curve, surface) {
+                    (Some(curve), None) => {
+                        super::shape::eval_nurbs_curve_points(&curve).map_err(Failure::Message)?
+                    }
+                    (None, Some(surface)) => {
+                        super::shape::eval_nurbs_surface_points(&surface).map_err(Failure::Message)?
+                    }
+                    _ => {
+                        return Err(Failure::Message(
+                            "evalNurbs takes either a curve or a surface.".into(),
+                        ))
+                    }
+                };
+                Ok(Answer::Plain(json!({ "points": points }).to_string()))
             }
             // --- A5. Edges step `node` made, found on the solid the tree is showing. ---
             Request::StepEdges { key, node, filter } => self.step_edge_indexes(key, node, filter),
@@ -386,6 +418,23 @@ impl Store {
                     fields.insert("face".into(), json!(found.index));
                 }
                 Ok(Answer::Plain(body.to_string()))
+            }
+            // --- Organic surfaces S1: lazy surface inspection (curvatures, isoparms, continuity, NURBS health).
+            Request::SurfaceInspect {
+                key,
+                node,
+                chord_mm,
+                curvature,
+                isoparms,
+                iso_count,
+            } => {
+                self.ensure(&key, node)?;
+                // With meshQuality "display" the per-vertex buffers describe the display mesh: they match the reply's
+                // `display.positions` corner for corner (tests/surface_inspect.rs). Without it, the plate mesh.
+                let display = self.display;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let text = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count, display)?;
+                Ok(Answer::Plain(text))
             }
             // --- I5, I6: read from the solid the node already holds.
             Request::FaceOutline { key, node, face, inset_mm, chord_mm, frame } => {

@@ -21,7 +21,9 @@ import { livePlate, openMeshPicker, pickAddedMesh } from "../files";
 import { fx } from "../fx";
 import { sketchHistoryButtons, sketchRedo, sketchUndo } from "../sketch";
 import { state } from "../state";
-import { applyTool } from "./apply";
+import { applyOp, applyTool } from "./apply";
+import { installNurbsStub } from "./nurbs-tool";
+import { sewOp, thickenOp } from "../../model-request";
 import { gearsInTree, type WorldGear } from "../../gear-pair";
 import { modelTrees } from "../model-trees";
 import { newSolidInView, plateBoxes } from "./create";
@@ -40,6 +42,8 @@ import { repeatNow } from "./repeat";
 import { editJoinGhost } from "./run-edit";
 import { userFontIdsOfTrees } from "./save";
 import { S, surfacesOnly } from "./shared";
+import { selectedEdges } from "../../model-blend";
+import { syncEdgeBadges } from "./surface-tools";
 import { setMode, step } from "./tree";
 import { syncUndo } from "./undo";
 import { boxOf, frameModel, ghostId, inView, objectPose, openBox, openPose, pivotOf, present, refreshModelContext, viewFrame, viewed } from "./view";
@@ -56,6 +60,18 @@ export function bindToolbar() {
   document.querySelector("#modelPickFace")?.addEventListener("click", () => setMode("face"));
   document.querySelector("#modelPickEdge")?.addEventListener("click", () => setMode("edge"));
   document.querySelector("#modelApply")?.addEventListener("click", () => void applyTool());
+  document.querySelector("#modelSheetThickenGo")?.addEventListener("click", () => {
+    const input = document.querySelector<HTMLInputElement>("#modelSheetThickenMm");
+    const thickness = Number(input?.value ?? 2);
+    if (!(thickness > 0) || !Number.isFinite(thickness)) {
+      readout("Enter a positive wall thickness in mm to thicken this sheet.");
+      return;
+    }
+    void applyOp(thickenOp(thickness), `Thickening sheet to ${thickness} mm…`);
+  });
+  document.querySelector("#modelSheetSewGo")?.addEventListener("click", () => {
+    void applyOp(sewOp({ capPlanar: true, makeSolid: true }), "Capping & sewing sheet into a solid…");
+  });
   document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
   // While Place is open, Undo and Redo step its moves; the solid's history waits until it closes.
   document.querySelector("#modelUndo")?.addEventListener("click", () => {
@@ -104,6 +120,7 @@ export function bindToolbar() {
 }
 
 export function bindChrome() {
+  installNurbsStub();
   mountModelChrome({
     clearSelection() {
       if (S.lens && !S.editing && S.open) {
@@ -112,6 +129,7 @@ export function bindChrome() {
       }
       S.picks = [];
       paintBlendHighlight();
+      syncEdgeBadges([]);
       syncModelChrome([]);
       const solid = viewed();
       if (solid) readout(`${about(solid)} Pick a face or an edge.`);
@@ -126,6 +144,7 @@ export function bindChrome() {
       return userFontIdsOfTrees();
     },
     paramsChanged(typed) {
+      syncEdgeBadges(selectedEdges(S.picks));
       if (openModelTool()) endStressPick();
       // --- F4. The draft lives only while the Hole panel is the points layout. ---
       if (S.sketchHoleDraft && openModelTool() !== "hole" && !S.holdSketchHoles) S.sketchHoleDraft = null;

@@ -12,6 +12,8 @@ import {
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../../model-primitive";
 import { unionBox } from "../../measure";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
+import { isOpenSheet } from "../../model-sheet";
+import { markSheet, meshSheet } from "./sheet-gate";
 import {
   ROOT,
   newTree,
@@ -71,9 +73,9 @@ export async function createSolid() {
  * A new plate object whose root is an extrude, a revolve, or a loft, with no primitive under it (K2). The sketch
  * editor (F1) calls this for "New object". Cut and intersect are refused: the feature is the solid.
  */
-export async function createFeatureSolid(op: FeatureOp, pose?: Affine): Promise<boolean> {
+export async function createFeatureSolid(op: FeatureOp, pose?: Affine, keepTool = false): Promise<boolean> {
   if (S.busy || S.jumping || state.stage !== "model") return false;
-  if (op.op !== "fuse") {
+  if (op.kind !== "sheet" && op.kind !== "nurbsSurface" && op.op !== "fuse") {
     const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
     readout(`A new solid is the ${noun} itself. Cut and intersect need a part that is already there.`);
     return false;
@@ -85,6 +87,7 @@ export async function createFeatureSolid(op: FeatureOp, pose?: Affine): Promise<
     root: from,
     bounds: (positions) => boundsOf(positions),
     ...(pose ? { pose } : {}),
+    ...(keepTool ? { keepTool: true } : {}),
   });
 }
 
@@ -96,6 +99,8 @@ async function finishNewSolid(made: {
   bounds: (positions: Float32Array) => Bounds;
   /** Where the solid's own frame sits in model space. Absent stands it beside the other objects. */
   pose?: Affine;
+  /** S6 sculpt stays open so the next drag commits the same surface again. */
+  keepTool?: boolean;
 }): Promise<boolean> {
   const id = freshPlateId();
   const key = freshTreeKey(id);
@@ -104,7 +109,7 @@ async function finishNewSolid(made: {
   S.busy = true;
   syncUndo();
   const feature = made.root.kind === "feature" ? made.root.op : null;
-  readout(feature?.kind === "loft" ? (feature.drawing?.sweep ? "Sweeping…" : "Lofting…") : "Building the solid…");
+  readout(feature?.kind === "nurbsSurface" ? "Building the surface…" : feature?.kind === "loft" ? (feature.drawing?.sweep ? "Sweeping…" : "Lofting…") : "Building the solid…");
   const body = await post(made.request(key, chord));
   if (mine === S.ticket) S.busy = false;
   syncUndo();
@@ -130,10 +135,13 @@ async function finishNewSolid(made: {
   const fileName = `${name}.stl`;
   const bytes = encodeStl(positions, fileName);
   setMeshSeat(bytes, seat);
-  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes), ...meshSheet(parsed) };
   const pose = made.pose ?? newSolidPose(others, made.bounds(positions));
   const { bedX, bedY } = state.profile;
   state.plate = addedSolid(state.plate, { name, fileName, bytes, sourcePos: positions, stepTolerance: chord }, id, key, pose, bedX, bedY);
+  // --- Organic surfaces S4: a new object that is an open sheet goes on the plate like any part (so it saves, reopens
+  // and thickens later), marked from the kernel's reply; Prepare shows it as a sheet, and Slice and Export stop on it.
+  markSheet(id, isOpenSheet(parsed, made.root, ROOT));
   applySelectedToState(state.plate);
   modelTrees.set(key, withNode(newTree(key, made.root, rootLabel(made.root, name), parsed.fingerprint), ROOT, { mesh }));
   keepSolid(key, ROOT, chord, parsed);
@@ -145,7 +153,7 @@ async function finishNewSolid(made: {
   S.picks = [];
   S.parked = null;
   S.shownFor = id;
-  closeModelTool();
+  if (!made.keepTool) closeModelTool();
   S.open = { objectId: id, key, solid: parsed };
   present(parsed, `${name}. ${about(parsed)} Pick a face or an edge.`);
   return true;
@@ -217,7 +225,7 @@ export function addPiece(at: Opened, other: ParsedSolid, key: string, split: Nod
   const fileName = `${stlName(state.mesh.name).replace(/\.stl$/i, "")} split.stl`;
   const bytes = encodeStl(positions, fileName);
   setMeshSeat(bytes, seat);
-  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes), ...meshSheet(other) };
   const name = placePiece(key, mesh);
   if (!name) {
     flushEdit();
@@ -242,6 +250,7 @@ export function placePiece(key: string, mesh: PlateMesh): string | null {
   if (!next || !selected || !piece) return null;
   const step = mesh.step ? { brep: mesh.step } : {};
   state.plate = { objects: next.objects.map((obj) => (obj.id === piece.id ? { ...obj, ...step, modelTree: key } : obj)), selectedId: selected };
+  markSheet(piece.id, mesh.sheet);
   applySelectedToState(state.plate);
   return piece.name;
 }

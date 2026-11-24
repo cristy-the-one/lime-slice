@@ -56,11 +56,12 @@ export interface Hit {
   fromInside: boolean;
 }
 
-/** The first triangle a ray meets, Möller–Trumbore. `direction` need not be a unit vector. */
-export function firstHit(pos: Float32Array, origin: Vec, direction: Vec): Hit | null {
+/** The first triangle a ray meets, Möller–Trumbore. `direction` need not be a unit vector. Uses analytic vertex normals when provided. */
+export function firstHit(pos: Float32Array, origin: Vec, direction: Vec, normals?: Float32Array): Hit | null {
   const length = Math.hypot(direction[0], direction[1], direction[2]);
   if (!(length > 0)) return null;
   const d: Vec = [direction[0] / length, direction[1] / length, direction[2] / length];
+  const hasNormals = !!normals && normals.length === pos.length;
   let best: Hit | null = null;
   for (let tri = 0; tri * 9 + 8 < pos.length; tri += 1) {
     const b = tri * 9;
@@ -77,10 +78,18 @@ export function firstHit(pos: Float32Array, origin: Vec, direction: Vec): Hit | 
     if (v < -1e-9 || u + v > 1 + 1e-9) continue;
     const t = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) / det;
     if (t < 0 || (best && t >= best.distanceMm)) continue;
-    const n: Vec = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
-    const nl = Math.hypot(n[0], n[1], n[2]);
-    if (!(nl > 0)) continue;
-    const normal: Vec = [n[0] / nl, n[1] / nl, n[2] / nl];
+    const fn: Vec = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    const fnl = Math.hypot(fn[0], fn[1], fn[2]);
+    if (!(fnl > 0)) continue;
+    let normal: Vec = [fn[0] / fnl, fn[1] / fnl, fn[2] / fnl];
+    if (hasNormals) {
+      const w0 = 1 - u - v;
+      const nx = w0 * normals[b]! + u * normals[b + 3]! + v * normals[b + 6]!;
+      const ny = w0 * normals[b + 1]! + u * normals[b + 4]! + v * normals[b + 7]!;
+      const nz = w0 * normals[b + 2]! + u * normals[b + 5]! + v * normals[b + 8]!;
+      const nl = Math.hypot(nx, ny, nz);
+      if (nl > 1e-9) normal = [nx / nl, ny / nl, nz / nl];
+    }
     best = {
       triangle: tri,
       distanceMm: t,
@@ -98,7 +107,7 @@ function vec3(value: unknown): Vec | null {
 
 /** surface_at: the first hit of a ray, or of a straight-down ray at x, y. */
 export function surfaceAt(
-  solid: { positions: Float32Array; triangles: Uint32Array; bounds: Box },
+  solid: { positions: Float32Array; normals?: Float32Array; triangles: Uint32Array; bounds: Box },
   input: Record<string, unknown>,
 ): Record<string, unknown> {
   const point = vec3(input.point);
@@ -117,7 +126,7 @@ export function surfaceAt(
   } else {
     return { ok: false, reason: "Give a point and a direction, or x and y." };
   }
-  const hit = firstHit(solid.positions, origin, aim);
+  const hit = firstHit(solid.positions, origin, aim, solid.normals);
   if (!hit) return { ok: true, hit: false, reason: "The ray misses the solid." };
   const face = solid.triangles.length * 9 === solid.positions.length ? solid.triangles[hit.triangle] : undefined;
   return {

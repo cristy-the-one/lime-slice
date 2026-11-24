@@ -51,12 +51,21 @@ pub(super) struct Resolved {
 /// kept by `filter`; the op keeps the step pick as sent. Other ops pass through.
 pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String> {
     match op {
-        Op::Fillet { edges, size } => {
+        Op::Fillet {
+            edges,
+            size,
+            continuity,
+            rho,
+            variable,
+        } => {
             let (refs, picks) = resolve_blend(from, edges, "fillet", steps)?;
             Ok(Resolved {
                 op: Op::Fillet {
                     edges: refs,
                     size: *size,
+                    continuity: *continuity,
+                    rho: *rho,
+                    variable: variable.clone(),
                 },
                 picks,
             })
@@ -95,6 +104,170 @@ pub(super) fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolv
                 *edges = refs;
             }
             Ok(Resolved { op, picks })
+        }
+        // --- Organic surfaces S2: resolve solid edges when a sweep uses an edge spine.
+        Op::Sweep {
+            spine: super::ops::Curve3D::Edges { edges },
+            ..
+        } => {
+            let (refs, picks) = resolve_blend(from, edges, "sweep along", steps)?;
+            let mut op = op.clone();
+            if let Op::Sweep {
+                spine: super::ops::Curve3D::Edges { edges },
+                ..
+            } = &mut op
+            {
+                *edges = refs;
+            }
+            Ok(Resolved { op, picks })
+        }
+        Op::ReplaceFace { face, sheet } => {
+            let stored = resolve_one_face(from, *face)?;
+            let index = stored.index;
+            Ok(Resolved {
+                op: Op::ReplaceFace {
+                    face: FacePick::Ref(stored),
+                    sheet: sheet.clone(),
+                },
+                picks: vec![index],
+            })
+        }
+        Op::Patch {
+            boundaries,
+            guides,
+            points,
+            tolerance,
+        } => {
+            let mut stored = Vec::with_capacity(boundaries.len());
+            for bound in boundaries {
+                let (edges, _) = if bound.edges.is_empty() {
+                    (Vec::new(), Vec::new())
+                } else {
+                    resolve_blend(from, &bound.edges, "patch", steps)?
+                };
+                let face = match bound.face {
+                    Some(face) => Some(FacePick::Ref(resolve_one_face(from, face)?)),
+                    None => None,
+                };
+                stored.push(super::ops::SurfaceBoundary {
+                    curve: bound.curve.clone(),
+                    edges,
+                    face,
+                    continuity: bound.continuity,
+                });
+            }
+            Ok(Resolved {
+                op: Op::Patch {
+                    boundaries: stored,
+                    guides: guides.clone(),
+                    points: points.clone(),
+                    tolerance: *tolerance,
+                },
+                picks: Vec::new(),
+            })
+        }
+        Op::BlendSurface {
+            a,
+            b,
+            continuity,
+            tension_a,
+            tension_b,
+            tolerance,
+        } => {
+            // A side given as a curve has no edges to resolve, as a patch side.
+            let mut side_edges = |edges: &[EdgePick]| -> Result<Vec<EdgePick>, String> {
+                if edges.is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(resolve_blend(from, edges, "blend", steps)?.0)
+            };
+            let edges_a = side_edges(&a.edges)?;
+            let edges_b = side_edges(&b.edges)?;
+            let face_of = |face: Option<FacePick>, from: &mut Shape| -> Result<Option<FacePick>, String> {
+                Ok(match face {
+                    Some(face) => Some(FacePick::Ref(resolve_one_face(from, face)?)),
+                    None => None,
+                })
+            };
+            Ok(Resolved {
+                op: Op::BlendSurface {
+                    a: super::ops::SurfaceBoundary {
+                        curve: a.curve.clone(),
+                        edges: edges_a,
+                        face: face_of(a.face, from)?,
+                        continuity: a.continuity,
+                    },
+                    b: super::ops::SurfaceBoundary {
+                        curve: b.curve.clone(),
+                        edges: edges_b,
+                        face: face_of(b.face, from)?,
+                        continuity: b.continuity,
+                    },
+                    continuity: *continuity,
+                    tension_a: *tension_a,
+                    tension_b: *tension_b,
+                    tolerance: *tolerance,
+                },
+                picks: Vec::new(),
+            })
+        }
+        Op::NurbsSurface {
+            poles,
+            weights,
+            degree_u,
+            degree_v,
+            knots_u,
+            mults_u,
+            knots_v,
+            mults_v,
+            periodic_u,
+            periodic_v,
+            insert_u,
+            insert_v,
+            elevate_u,
+            elevate_v,
+        } => Ok(Resolved {
+            op: Op::NurbsSurface {
+                poles: poles.clone(),
+                weights: weights.clone(),
+                degree_u: *degree_u,
+                degree_v: *degree_v,
+                knots_u: knots_u.clone(),
+                mults_u: mults_u.clone(),
+                knots_v: knots_v.clone(),
+                mults_v: mults_v.clone(),
+                periodic_u: *periodic_u,
+                periodic_v: *periodic_v,
+                insert_u: insert_u.clone(),
+                insert_v: insert_v.clone(),
+                elevate_u: *elevate_u,
+                elevate_v: *elevate_v,
+            },
+            picks: Vec::new(),
+        }),
+        Op::SplitFace {
+            faces,
+            curve,
+            direction,
+        } => {
+            if faces.is_empty() {
+                return Err("Pick at least one face to split.".into());
+            }
+            let mut refs = Vec::with_capacity(faces.len());
+            let mut picks = Vec::with_capacity(faces.len());
+            for face in faces {
+                let stored = resolve_one_face(from, *face)?;
+                picks.push(stored.index);
+                refs.push(FacePick::Ref(stored));
+            }
+            Ok(Resolved {
+                op: Op::SplitFace {
+                    faces: refs,
+                    curve: curve.clone(),
+                    direction: *direction,
+                },
+                picks,
+            })
         }
         // K3. A plain extrude has no face to resolve and falls through below.
         Op::Extrude {

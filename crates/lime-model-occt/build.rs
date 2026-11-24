@@ -44,6 +44,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(lime_occt_test_hooks)");
     println!("cargo:rerun-if-env-changed=OCCT_ROOT");
     println!("cargo:rerun-if-changed=cpp/kernel.cpp");
+    println!("cargo:rerun-if-changed=cpp/organic_fill.inc");
     println!("cargo:rerun-if-changed=cpp/tree.cpp");
     println!("cargo:rerun-if-changed=cpp/fault.cpp");
     println!("cargo:rerun-if-changed=cpp/text.cpp");

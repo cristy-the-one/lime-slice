@@ -1,4 +1,5 @@
 /** Apply: the tool's op sent to the engine, the pull apply, and the message after. */
+import { viewRequest } from "../../model-mesh-quality";
 import { boxUnder } from "../../model-space";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { locatedBoxes } from "../../model-check.ts";
@@ -27,6 +28,7 @@ import { flushEdit, markModelEdit, noteEdit } from "../history";
 import { closeSketchSession, holdSketchForApply } from "../sketch";
 import { POINT_REFUSAL, holeSizeRefusal } from "../../sketch/holes.ts";
 import { freshTreeKey, modelTrees } from "../model-trees";
+import { sheetVerdict } from "../../model-sheet";
 import { applySelectedToState, syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { splitPrintOp, splitPrintOpen } from "../../ui/split-print.ts";
@@ -92,6 +94,11 @@ export function recentSolid(key: string, node: NodeId, chord: number): ParsedSol
 }
 
 export function keepSolid(key: string, node: NodeId, chord: number, solid: ParsedSolid) {
+  // The node keeps the kernel's sheet verdict for its History badge (the one rule: src/model-sheet.ts).
+  const tree = modelTrees.get(key);
+  const verdict = sheetVerdict(solid);
+  const step = tree?.nodes.get(node);
+  if (tree && step && (step.sheet ?? false) !== verdict) modelTrees.set(key, withNode(tree, node, { sheet: verdict }));
   const name = `${nodeName(key, node)}@${chord}`;
   solids.delete(name);
   solids.set(name, solid);
@@ -142,6 +149,11 @@ export async function applyTool() {
     return;
   }
   const tool = modelTool();
+  if (tool === "sculpt") {
+    const { nurbsTool } = await import("./nurbs-tool.ts");
+    await (await nurbsTool()).commitNurbs();
+    return;
+  }
   if (S.editing) {
     if (button && !button.disabled) await runEdit(S.editing);
     return;
@@ -250,7 +262,7 @@ export async function applyOp(op: ModelOp, working: string): Promise<boolean> {
   S.busy = true;
   syncUndo();
   readout(working);
-  const body = await treeCall(at.key, parent, applyRequest(at.key, parent, node, op, chord, pieceKey));
+  const body = await treeCall(at.key, parent, viewRequest(applyRequest(at.key, parent, node, op, chord, pieceKey)));
   if (mine === S.ticket) S.busy = false;
   syncUndo();
   const latest = modelTrees.get(at.key);

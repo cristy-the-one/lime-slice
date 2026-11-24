@@ -1,4 +1,5 @@
 /** api */
+import { drawnSolid } from "./types";
 import * as THREE from "three";
 import { BLEND_GHOST_STEP_MM } from "./constants";
 import { type CameraPose, mmPerPixel } from "../sketch/frame";
@@ -11,13 +12,28 @@ import { polylinePairs, readAccent } from "./helpers";
 import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
 import { treeRaycast } from "./solid-ray";
 import type { ViewCtx } from "./ctx";
+import { createZebraMaterial, syncZebraMaterial } from "./analysis-shaders";
 
 export function buildApi(ctx: ViewCtx): ModelView {
-  const { alignLine, bedRef, body, camera, canvas, contextMat, controls, datum, edgeMaterial, handleGroup, projected, raycaster, renderer, sketchGroup, snapLineMat, solidMaterial, targetMat } = ctx;
-
+  const { alignLine, bedRef, body, camera, canvas, contextMat, controls, datum, edgeMaterial, handleGroup, nakedEdgeMaterial, projected, raycaster, renderer, sheetBackMaterial, sketchGroup, snapLineMat, solidMaterial, targetMat } = ctx;
+  // --- S6. The live NURBS preview: one Zebra mesh in the open part's frame (inside `posed`), drawn by the frame loop
+  // like everything else. A drag rewrites its arrays in place; a new knot layout gets a new geometry, the old one disposed.
+  const nurbsMaterial = createZebraMaterial();
+  let nurbsGeometry = new THREE.BufferGeometry();
+  const nurbsMesh = new THREE.Mesh(nurbsGeometry, nurbsMaterial);
+  nurbsMesh.visible = false;
+  nurbsMesh.frustumCulled = false;
+  ctx.posed?.add(nurbsMesh);
+  let nurbsArrays: Float32Array | null = null;
+  let nurbsSerial = 0;
+  const solidWatchers = new Set<() => void>();
 
   return {
-    setSolid(next, at) {
+    setSolid(given, at, sheetLook) {
+      // The view draws, picks and paints the display mesh when the reply has one (`drawnSolid`); face and edge ids are
+      // the same B-rep faces and edges in both meshes.
+      const next = given ? drawnSolid(given) : given;
+      for (const cb of solidWatchers) queueMicrotask(cb);
       ctx.clearBody();
       ctx.solid = next;
       // The arrow's face hit was on the solid just replaced: a press must not drag from where that face was.
@@ -32,6 +48,13 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.ownBox = null;
       ctx.setPosedMatrix(at);
       if (!next || next.positions.length < 9) {
+        // Nothing shown: the shared solid material leaves the sheet's front-only mode for whatever it draws next.
+        if (solidMaterial.side !== THREE.DoubleSide) {
+          solidMaterial.side = THREE.DoubleSide;
+          solidMaterial.needsUpdate = true;
+        }
+        delete canvas.dataset.shapeKind;
+        delete canvas.dataset.nakedEdges;
         ctx.clearGhosts();
         ctx.ghost = null;
         ctx.applyScale();
@@ -40,18 +63,38 @@ export function buildApi(ctx: ViewCtx): ModelView {
         ctx.kick();
         return;
       }
+      const naked = next.nakedEdges ?? [];
+      const isSheet = sheetLook ?? naked.length > 0;
+      canvas.dataset.shapeKind = isSheet ? "sheet" : "solid";
+      canvas.dataset.nakedEdges = String(naked.length);
+      solidMaterial.side = isSheet ? THREE.FrontSide : THREE.DoubleSide;
+      solidMaterial.needsUpdate = true;
       ctx.boundaries = faceOutlines(next.positions, next.triangles);
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(next.positions, 3));
       const color = new Float32Array(next.positions.length);
       geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-      const smooth = smoothNormalsOf(next.positions, next.triangles);
-      geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
-      canvas.dataset.solidPoints = `${smooth.points}/${next.positions.length / 3}`;
-      ctx.mesh = new THREE.Mesh(geometry, solidMaterial);
+      if (next.normals && next.normals.length === next.positions.length) {
+        geometry.setAttribute("normal", new THREE.BufferAttribute(next.normals, 3));
+        canvas.dataset.normalsSource = "analytic";
+        canvas.dataset.solidPoints = `${next.positions.length / 3}/${next.positions.length / 3}`;
+      } else {
+        const smooth = smoothNormalsOf(next.positions, next.triangles);
+        geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
+        canvas.dataset.normalsSource = "smooth";
+        canvas.dataset.solidPoints = `${smooth.points}/${next.positions.length / 3}`;
+      }
+      const activeMat: THREE.Material = ctx.look.shading === "zebra" ? ctx.zebraMaterial : solidMaterial;
+      ctx.mesh = new THREE.Mesh(geometry, activeMat);
       // Every ray at the solid (hover, press, pick, Measure, the hidden-line samples) asks a box tree, not every triangle.
       ctx.mesh.raycast = treeRaycast;
       body.add(ctx.mesh);
+      if (isSheet) {
+        ctx.sheetBackMesh = new THREE.Mesh(geometry, sheetBackMaterial);
+        ctx.sheetBackMesh.raycast = () => undefined;
+        ctx.sheetBackMesh.visible = ctx.look.shading !== "zebra";
+        body.add(ctx.sheetBackMesh);
+      }
       const { segments, drawn } = drawnEdgeSegments(next.edges, next.seams);
       canvas.dataset.edgesDrawn = `${drawn}/${next.edges.length}`;
       if (segments.length > 0) {
@@ -61,7 +104,27 @@ export function buildApi(ctx: ViewCtx): ModelView {
         ctx.edgeLines.raycast = () => undefined;
         body.add(ctx.edgeLines);
       }
+      if (isSheet) {
+        const nakedSet = new Set(naked);
+        const nakedSegs: number[] = [];
+        for (const edge of next.edges) {
+          if (!nakedSet.has(edge.id)) continue;
+          const pts = edge.points;
+          for (let i = 0; i + 5 < pts.length; i += 3) {
+            nakedSegs.push(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, pts[i + 4]!, pts[i + 5]!);
+          }
+        }
+        if (nakedSegs.length > 0) {
+          const nakedGeo = new THREE.BufferGeometry();
+          nakedGeo.setAttribute("position", new THREE.Float32BufferAttribute(nakedSegs, 3));
+          ctx.nakedEdgeLines = new THREE.LineSegments(nakedGeo, nakedEdgeMaterial);
+          ctx.nakedEdgeLines.renderOrder = 2;
+          ctx.nakedEdgeLines.raycast = () => undefined;
+          body.add(ctx.nakedEdgeLines);
+        }
+      }
       ctx.paintFaces();
+      ctx.syncSurfaceLook();
       ctx.measureSolid(next.positions);
       ctx.drawDatum();
       ctx.rebuildGhost();
@@ -157,7 +220,8 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.rebuildGhost();
       ctx.kick();
     },
-    setPreview(next) {
+    setPreview(given) {
+      const next = given ? drawnSolid(given) : given;
       if (next === (ctx.preview?.shape ?? null)) return;
       if (next) ctx.showPreview(next);
       else ctx.clearPreview();
@@ -279,12 +343,19 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.paintLines();
       ctx.kick();
     },
-    // --- A10.
+    // --- A10 & Organic surfaces S1.
     setLook(state) {
       ctx.look = state;
       ctx.rebuildGhost();
+      ctx.syncSurfaceLook();
       ctx.paintFaces();
       ctx.repaintPreview();
+      ctx.kick();
+    },
+    setSurfaceInspect(data) {
+      ctx.surfaceInspect = data;
+      ctx.syncSurfaceLook();
+      ctx.paintFaces();
       ctx.kick();
     },
     onSectionDrag(cb) {
@@ -335,6 +406,63 @@ export function buildApi(ctx: ViewCtx): ModelView {
         x: rect.left + (projected.x * 0.5 + 0.5) * rect.width,
         y: rect.top + (-projected.y * 0.5 + 0.5) * rect.height,
       };
+    },
+    setNurbsPreview(mesh) {
+      if (!mesh) {
+        if (!nurbsArrays && !nurbsMesh.visible) return;
+        nurbsMesh.visible = false;
+        nurbsGeometry.dispose();
+        nurbsGeometry = new THREE.BufferGeometry();
+        nurbsMesh.geometry = nurbsGeometry;
+        nurbsArrays = null;
+        body.visible = true;
+        delete canvas.dataset.nurbsDensity;
+        delete canvas.dataset.nurbsSerial;
+        ctx.kick();
+        return;
+      }
+      if (mesh.positions !== nurbsArrays) {
+        nurbsGeometry.dispose();
+        nurbsGeometry = new THREE.BufferGeometry();
+        nurbsGeometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
+        nurbsGeometry.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
+        nurbsGeometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+        nurbsMesh.geometry = nurbsGeometry;
+        nurbsArrays = mesh.positions;
+      } else {
+        nurbsGeometry.getAttribute("position").needsUpdate = true;
+        nurbsGeometry.getAttribute("normal").needsUpdate = true;
+      }
+      syncZebraMaterial(nurbsMaterial, ctx.look, false);
+      nurbsMesh.visible = true;
+      // The committed surface is the preview's last state: hidden while the preview stands in for it.
+      body.visible = false;
+      nurbsSerial += 1;
+      canvas.dataset.nurbsDensity = String(mesh.density);
+      canvas.dataset.nurbsSerial = String(nurbsSerial);
+      ctx.kick();
+    },
+    projectMany(points, out) {
+      // One layout read and one camera update for the whole list, not one per point.
+      camera.updateMatrixWorld();
+      const rect = canvas.getBoundingClientRect();
+      for (let i = 0; i < out.length / 3; i += 1) {
+        projected.set(points[i * 3]!, points[i * 3 + 1]!, points[i * 3 + 2]!);
+        projected.project(camera);
+        const visible = projected.z >= -1 && projected.z <= 1;
+        out[i * 3] = (projected.x * 0.5 + 0.5) * rect.width;
+        out[i * 3 + 1] = (-projected.y * 0.5 + 0.5) * rect.height;
+        out[i * 3 + 2] = visible ? 1 : 0;
+      }
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    },
+    onSolidChange(cb) {
+      solidWatchers.add(cb);
+      return () => solidWatchers.delete(cb);
+    },
+    onCameraChange(cb) {
+      controls.addEventListener("change", cb);
+      return () => controls.removeEventListener("change", cb);
     },
     setAlign(ends) {
       if (!ends) {
@@ -387,9 +515,16 @@ export function buildApi(ctx: ViewCtx): ModelView {
       solidMaterial.transparent = on;
       solidMaterial.opacity = on ? 0.35 : 1;
       solidMaterial.needsUpdate = true;
+      ctx.syncSurfaceLook();
       edgeMaterial.transparent = on;
       edgeMaterial.opacity = on ? 0.35 : 1;
       edgeMaterial.needsUpdate = true;
+      sheetBackMaterial.transparent = on;
+      sheetBackMaterial.opacity = on ? 0.35 : 1;
+      sheetBackMaterial.needsUpdate = true;
+      nakedEdgeMaterial.transparent = on;
+      nakedEdgeMaterial.opacity = on ? 0.35 : 1;
+      nakedEdgeMaterial.needsUpdate = true;
       canvas.dataset.solidOpacity = String(solidMaterial.opacity);
       ctx.kick();
     },

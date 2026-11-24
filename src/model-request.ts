@@ -7,7 +7,7 @@ import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
 import { partitionNumbers } from "./modeling/partition.ts";
-import { savedNodes, type BooleanKind, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BlendSurfaceOp, type BooleanKind, type Curve3D, type Curve3DSegment, type DraftNeutral, type DraftOp, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftBoundary, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type NurbsSurfaceOp, type PatchOp, type ProfileLoop, type ProfileSegment, type ReplaceFaceOp, type RevolveOp, type SewOp, type SheetOp, type SheetSpec, type ShellOp, type SplitFaceOp, type SurfaceBoundary, type SurfaceContinuity, type SweepMode, type SweepOp, type SweepTransition, type ThickenDirection, type ThickenOp, type TrimKeep, type TrimSplitOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project names its solids without loading these requests (./brep-file.ts).
 export { isBrep, solidFileName } from "./brep-file.ts";
@@ -125,7 +125,111 @@ function copyLoops(loops: readonly ProfileLoop[]): ProfileLoop[] {
 function copySegment(seg: ProfileSegment): ProfileSegment {
   if (seg.kind === "line") return { kind: "line", to: [seg.to[0], seg.to[1]] };
   if (seg.kind === "arc") return { kind: "arc", through: [seg.through[0], seg.through[1]], to: [seg.to[0], seg.to[1]] };
+  if (seg.kind === "nurbs") {
+    return {
+      kind: "nurbs",
+      ...(seg.poles ? { poles: seg.poles.map(([u, v]) => [u, v] as Vec2) } : {}),
+      ...(seg.weights ? { weights: [...seg.weights] } : {}),
+      ...(seg.degree !== undefined ? { degree: seg.degree } : {}),
+      ...(seg.knots ? { knots: [...seg.knots] } : {}),
+      ...(seg.mults ? { mults: [...seg.mults] } : {}),
+      to: [seg.to[0], seg.to[1]],
+    };
+  }
   return { kind: "spline", through: seg.through.map(([u, v]) => [u, v] as Vec2), to: [seg.to[0], seg.to[1]] };
+}
+
+function copyCurve3D(curve: Curve3D): Curve3D {
+  const v3 = (p: Vec3): Vec3 => [p[0], p[1], p[2]];
+  if (curve.kind === "polyline") return { kind: "polyline", points: curve.points.map(v3), ...(curve.closed ? { closed: true as const } : {}) };
+  if (curve.kind === "spline") return { kind: "spline", through: curve.through.map(v3), ...(curve.closed ? { closed: true as const } : {}) };
+  if (curve.kind === "nurbs") {
+    return {
+      kind: "nurbs",
+      poles: curve.poles.map(v3),
+      ...(curve.weights ? { weights: [...curve.weights] } : {}),
+      ...(curve.degree !== undefined ? { degree: curve.degree } : {}),
+      ...(curve.knots ? { knots: [...curve.knots] } : {}),
+      ...(curve.mults ? { mults: [...curve.mults] } : {}),
+      ...(curve.closed ? { closed: true as const } : {}),
+    };
+  }
+  if (curve.kind === "segments") {
+    return {
+      kind: "segments",
+      start: v3(curve.start),
+      segments: curve.segments.map((seg): Curve3DSegment => {
+        if (seg.kind === "line") return { kind: "line", to: v3(seg.to) };
+        if (seg.kind === "arc") return { kind: "arc", through: v3(seg.through), to: v3(seg.to) };
+        if (seg.kind === "nurbs") {
+          return {
+            kind: "nurbs",
+            ...(seg.poles ? { poles: seg.poles.map(v3) } : {}),
+            ...(seg.weights ? { weights: [...seg.weights] } : {}),
+            ...(seg.degree !== undefined ? { degree: seg.degree } : {}),
+            ...(seg.knots ? { knots: [...seg.knots] } : {}),
+            ...(seg.mults ? { mults: [...seg.mults] } : {}),
+            to: v3(seg.to),
+          };
+        }
+        return { kind: "spline", through: seg.through.map(v3), to: v3(seg.to) };
+      }),
+    };
+  }
+  return { kind: "edges", edges: [...curve.edges] };
+}
+
+function copySection(section: LoftSection): LoftSection {
+  if (section.apex) {
+    return { origin: [...section.apex], turn: [0, 0, 0], apex: [...section.apex] };
+  }
+  return {
+    origin: [...section.origin],
+    turn: [...section.turn],
+    ...(section.loops && section.loops.length > 0
+      ? { loops: copyLoops(section.loops) }
+      : section.radius !== undefined
+        ? { radius: section.radius, ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}) }
+        : { profile: (section.profile ?? []).map(([u, v]) => [u, v] as Vec2), ...shapeFields({ smooth: section.smooth, corners: section.corners }) }),
+  };
+}
+
+function copyLoftBoundary(cond: LoftBoundary): LoftBoundary {
+  if (cond.kind === "free") return { kind: "free" };
+  if (cond.kind === "normal") return { kind: "normal", ...(cond.tension !== undefined ? { tension: cond.tension } : {}) };
+  if (cond.kind === "tangent") return { kind: "tangent", dir: [...cond.dir], ...(cond.tension !== undefined ? { tension: cond.tension } : {}) };
+  return { kind: "curvature", ...(cond.dir ? { dir: [...cond.dir] } : {}), ...(cond.tension !== undefined ? { tension: cond.tension } : {}) };
+}
+
+/** Real kernel pipe-shell sweep along a 3D spine curve (`BRepOffsetAPI_MakePipeShell`). */
+export function sweepOp(
+  op: BooleanKind,
+  sections: readonly LoftSection[],
+  spine: Curve3D,
+  options: { mode?: SweepMode; transition?: SweepTransition; scale?: readonly [number, number][]; twistDeg?: number } = {},
+): SweepOp {
+  const mode = options.mode
+    ? options.mode.kind === "fixedBinormal"
+      ? { kind: "fixedBinormal" as const, dir: [...options.mode.dir] as Vec3 }
+      : options.mode.kind === "auxSpine"
+        ? {
+            kind: "auxSpine" as const,
+            spine: copyCurve3D(options.mode.spine),
+            ...(options.mode.curvilinear !== undefined ? { curvilinear: options.mode.curvilinear } : {}),
+            ...(options.mode.keepContact !== undefined ? { keepContact: options.mode.keepContact } : {}),
+          }
+        : { kind: options.mode.kind }
+    : undefined;
+  return {
+    kind: "sweep",
+    op,
+    sections: sections.map(copySection),
+    spine: copyCurve3D(spine),
+    ...(mode ? { mode } : {}),
+    ...(options.transition ? { transition: options.transition } : {}),
+    ...(options.scale && options.scale.length >= 2 ? { scale: options.scale.map(([u, f]) => [u, f] as [number, number]) } : {}),
+    ...(options.twistDeg !== undefined && options.twistDeg !== 0 ? { twistDeg: options.twistDeg } : {}),
+  };
 }
 
 /** Splines through a profile's points, sharp at `corners`. Each field is sent only when on, as the engine stores it. */
@@ -138,21 +242,31 @@ function shapeFields(shape: ProfileShape): { smooth?: true; corners?: number[] }
   return { ...(shape.smooth ? { smooth: true as const } : {}), ...(shape.smooth && shape.corners?.length ? { corners: [...shape.corners] } : {}) };
 }
 
-/** A loft through `sections`, each a profile (with its shape) or a circle or ellipse, on its own plane. */
-export function loftOp(op: BooleanKind, sections: readonly LoftSection[], ruled = false): LoftOp {
+/** A loft through `sections`, each a profile (with its shape), a circle or ellipse, loops, or a point apex, with optional S3 guides and boundary conditions. */
+export function loftOp(
+  op: BooleanKind,
+  sections: readonly LoftSection[],
+  ruled = false,
+  options: {
+    guides?: readonly Curve3D[];
+    startCondition?: LoftBoundary;
+    endCondition?: LoftBoundary;
+    closed?: boolean;
+    smoothing?: boolean;
+    maxDegree?: number;
+  } = {},
+): LoftOp {
   return {
     kind: "loft",
     op,
-    sections: sections.map((section) => ({
-      origin: [...section.origin],
-      turn: [...section.turn],
-      ...(section.loops && section.loops.length > 0
-        ? { loops: copyLoops(section.loops) }
-        : section.radius !== undefined
-          ? { radius: section.radius, ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}) }
-          : { profile: (section.profile ?? []).map(([u, v]) => [u, v] as Vec2), ...shapeFields({ smooth: section.smooth, corners: section.corners }) }),
-    })),
+    sections: sections.map(copySection),
     ...(ruled ? { ruled: true as const } : {}),
+    ...(options.guides && options.guides.length > 0 ? { guides: options.guides.map(copyCurve3D) } : {}),
+    ...(options.startCondition ? { startCondition: copyLoftBoundary(options.startCondition) } : {}),
+    ...(options.endCondition ? { endCondition: copyLoftBoundary(options.endCondition) } : {}),
+    ...(options.closed ? { closed: true as const } : {}),
+    ...(options.smoothing ? { smoothing: true as const } : {}),
+    ...(options.maxDegree !== undefined ? { maxDegree: options.maxDegree } : {}),
   };
 }
 
@@ -169,6 +283,142 @@ export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonl
     ...(axis.dir ? { axisDir: [...axis.dir] as Vec2 } : {}),
     ...(axis.angleDeg != null ? { angleDeg: axis.angleDeg } : {}),
     ...(copied ? {} : shapeFields(shape)),
+  };
+}
+
+function copySheetSpec(spec: SheetSpec): SheetSpec {
+  return {
+    mode: spec.mode,
+    curves: spec.curves.map(copyCurve3D),
+    ...(spec.dir ? { dir: [...spec.dir] as Vec3 } : {}),
+    ...(spec.distance !== undefined ? { distance: spec.distance } : {}),
+    ...(spec.axisOrigin ? { axisOrigin: [...spec.axisOrigin] as Vec3 } : {}),
+    ...(spec.angleDeg !== undefined ? { angleDeg: spec.angleDeg } : {}),
+    ...(spec.ruled ? { ruled: true as const } : {}),
+    ...(spec.symmetric ? { symmetric: true as const } : {}),
+  };
+}
+
+/** S4: Open B-rep surface ("Sheet") from 3D curves. */
+export function sheetOp(spec: SheetSpec): SheetOp {
+  return { kind: "sheet", ...copySheetSpec(spec) };
+}
+
+/** S4: Sew open faces/shells within tolerance (optional planar capping & auto-promotion to solid). */
+export function sewOp(options: { tolerance?: number; makeSolid?: boolean; capPlanar?: boolean } = {}): SewOp {
+  return {
+    kind: "sew",
+    ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
+    ...(options.makeSolid === false ? { makeSolid: false } : {}),
+    ...(options.capPlanar ? { capPlanar: true as const } : {}),
+  };
+}
+
+/** S4: Thicken an open sheet into a watertight solid. */
+export function thickenOp(thickness: number, options: { direction?: ThickenDirection; tolerance?: number } = {}): ThickenOp {
+  return {
+    kind: "thicken",
+    thickness,
+    ...(options.direction && options.direction !== "normal" ? { direction: options.direction } : {}),
+    ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
+  };
+}
+
+/** S4: Split a solid or sheet cleanly by an open sculpted surface. */
+export function trimSplitOp(sheet: SheetSpec, keep?: TrimKeep): TrimSplitOp {
+  return { kind: "trimSplit", sheet: copySheetSpec(sheet), ...(keep && keep !== "above" ? { keep } : {}) };
+}
+
+/** S4: Replace a face of a solid with a sculpted surface. */
+export function replaceFaceOp(face: number | FaceRef, sheet: SheetSpec): ReplaceFaceOp {
+  return {
+    kind: "replaceFace",
+    face: typeof face === "number" ? face : { ...face, mid: [...face.mid] },
+    sheet: copySheetSpec(sheet),
+  };
+}
+
+/** S4: Project/imprint a 3D curve onto selected face(s), splitting them into distinct sub-faces. */
+export function splitFaceOp(faces: readonly (number | FaceRef)[], curve: Curve3D, direction?: Vec3): SplitFaceOp {
+  return {
+    kind: "splitFace",
+    faces: faces.map((f) => (typeof f === "number" ? f : { ...f, mid: [...f.mid] })),
+    curve: copyCurve3D(curve),
+    ...(direction ? { direction: [...direction] as Vec3 } : {}),
+  };
+}
+
+function copyBoundary(bound: SurfaceBoundary): SurfaceBoundary {
+  return {
+    ...(bound.curve ? { curve: copyCurve3D(bound.curve) } : {}),
+    ...(bound.edges && bound.edges.length > 0 ? { edges: bound.edges.map((edge) => (typeof edge === "number" ? edge : { ...edge })) } : {}),
+    ...(bound.face !== undefined ? { face: typeof bound.face === "number" ? bound.face : { ...bound.face, mid: [...bound.face.mid] } } : {}),
+    ...(bound.continuity ? { continuity: bound.continuity } : {}),
+  };
+}
+
+/** S5: Fill an opening. The result is a sheet. */
+export function patchOp(boundaries: readonly SurfaceBoundary[], options: { guides?: readonly Curve3D[]; points?: readonly Vec3[]; tolerance?: number } = {}): PatchOp {
+  return {
+    kind: "patch",
+    boundaries: boundaries.map(copyBoundary),
+    ...(options.guides && options.guides.length > 0 ? { guides: options.guides.map(copyCurve3D) } : {}),
+    ...(options.points && options.points.length > 0 ? { points: options.points.map((point) => [...point] as Vec3) } : {}),
+    ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
+  };
+}
+
+/** S6: A NURBS sheet from the same poles, weights and knots the preview evaluated. */
+export function nurbsSurfaceOp(spec: {
+  poles: readonly (readonly Vec3[])[];
+  weights?: readonly (readonly number[])[];
+  degreeU?: number;
+  degreeV?: number;
+  knotsU?: readonly number[];
+  multsU?: readonly number[];
+  knotsV?: readonly number[];
+  multsV?: readonly number[];
+  periodicU?: boolean;
+  periodicV?: boolean;
+  insertU?: readonly (readonly [number, number])[];
+  insertV?: readonly (readonly [number, number])[];
+  elevateU?: number;
+  elevateV?: number;
+}): NurbsSurfaceOp {
+  const copyRow = (pole: Vec3): Vec3 => [pole[0], pole[1], pole[2]];
+  return {
+    kind: "nurbsSurface",
+    poles: spec.poles.map((row) => row.map(copyRow)),
+    ...(spec.weights ? { weights: spec.weights.map((row) => [...row]) } : {}),
+    ...(spec.degreeU !== undefined ? { degreeU: spec.degreeU } : {}),
+    ...(spec.degreeV !== undefined ? { degreeV: spec.degreeV } : {}),
+    ...(spec.knotsU ? { knotsU: [...spec.knotsU] } : {}),
+    ...(spec.multsU ? { multsU: [...spec.multsU] } : {}),
+    ...(spec.knotsV ? { knotsV: [...spec.knotsV] } : {}),
+    ...(spec.multsV ? { multsV: [...spec.multsV] } : {}),
+    ...(spec.periodicU ? { periodicU: true } : {}),
+    ...(spec.periodicV ? { periodicV: true } : {}),
+    ...(spec.insertU && spec.insertU.length > 0 ? { insertU: spec.insertU.map((pair) => [pair[0], pair[1]] as [number, number]) } : {}),
+    ...(spec.insertV && spec.insertV.length > 0 ? { insertV: spec.insertV.map((pair) => [pair[0], pair[1]] as [number, number]) } : {}),
+    ...(spec.elevateU !== undefined ? { elevateU: spec.elevateU } : {}),
+    ...(spec.elevateV !== undefined ? { elevateV: spec.elevateV } : {}),
+  };
+}
+
+/** S5: Bridge two open edges or chains at G1 or G2. */
+export function blendSurfaceOp(
+  a: SurfaceBoundary,
+  b: SurfaceBoundary,
+  options: { continuity?: SurfaceContinuity; tensionA?: number; tensionB?: number; tolerance?: number } = {},
+): BlendSurfaceOp {
+  return {
+    kind: "blendSurface",
+    a: copyBoundary(a),
+    b: copyBoundary(b),
+    ...(options.continuity ? { continuity: options.continuity } : {}),
+    ...(options.tensionA !== undefined ? { tensionA: options.tensionA } : {}),
+    ...(options.tensionB !== undefined ? { tensionB: options.tensionB } : {}),
+    ...(options.tolerance !== undefined ? { tolerance: options.tolerance } : {}),
   };
 }
 
@@ -279,8 +529,8 @@ export function withoutSketch(op: ModelOp): ModelOp {
       const { sketch: _sketch, ...rest } = op;
       next = rest;
     }
-  } else if (op.kind === "loft") {
-    // --- F3. A loft's drawing is the same kind of client field. No drawing leaves the op as it was. ---
+  } else if (op.kind === "loft" || op.kind === "sweep") {
+    // --- F3/S2. A loft or sweep's drawing is the same kind of client field. No drawing leaves the op as it was. ---
     if (op.drawing) {
       const { drawing: _drawing, ...rest } = op;
       next = rest;
@@ -317,8 +567,8 @@ export function keepSketch(stored: ModelOp, source: ModelOp): ModelOp {
   // --- F2. The engine's echo of a revolve has no sketch either. ---
   if ((stored.kind === "extrude" || stored.kind === "revolve") && stored.kind === source.kind && source.sketch && !stored.sketch) {
     next = { ...stored, sketch: source.sketch };
-  } else if (stored.kind === "loft" && source.kind === "loft" && source.drawing && !stored.drawing) {
-    // --- F3. The engine's echo of a loft has no drawing either. ---
+  } else if ((stored.kind === "loft" || stored.kind === "sweep") && stored.kind === source.kind && source.drawing && !stored.drawing) {
+    // --- F3/S2. The engine's echo of a loft or sweep has no drawing either. ---
     next = { ...stored, drawing: source.drawing };
   } else if (stored.kind === "group" && source.kind === "group") {
     let changed = false;

@@ -38,7 +38,7 @@ jobs:
             tag="v$(jq -r .version src-tauri/tauri.conf.json)"
           fi
           prerelease=false
-          [[ "$tag" == *-tandem-beta.* ]] && prerelease=true
+          [[ "$tag" == *-beta.* ]] && prerelease=true
           # The tags endpoint does not return drafts, so search the list.
           id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
             --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)"
@@ -226,6 +226,9 @@ jobs:
           cargo build -p lime-mcp-engine --release
           New-Item -ItemType Directory -Force -Path src-tauri/resources/mcp | Out-Null
           Copy-Item target\release\lime_mcp_engine.dll src-tauri/resources/mcp/
+      # Skipped only for a Tandem beta, whose build drops tauri.shell.json (the step that picks the config, below), the
+      # config that ships lime_shell.dll. Any other tag, an organic `-beta.` or a stable vX.Y.Z, builds with that config
+      # and needs the handler, so this stays `-tandem-beta.` while the pre-release check above is every `-beta.`.
       - name: Build the Explorer thumbnail handler
         if: matrix.platform == 'windows-latest' && !(github.ref_type == 'tag' && contains(github.ref_name, '-tandem-beta.'))
         shell: pwsh

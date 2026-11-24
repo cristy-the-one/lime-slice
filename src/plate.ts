@@ -137,6 +137,8 @@ export interface PlateFileObject {
   chain?: ChainLink;
   /** Inverse-kinematics limits, degrees. Omitted when the joint is free. */
   jointLimits?: JointLimits;
+  /** --- Organic surfaces S4: an open sheet (`PlateObject.sheet`). Omitted for a solid. Such a project is version 5. */
+  sheet?: true;
 }
 
 /** One solid on the plate. Geometry stays in the session, not in the undo JSON. */
@@ -177,6 +179,12 @@ export interface PlateObject {
   chain?: ChainLink;
   /** Inverse-kinematics limits, degrees. Absent when the joint is free. */
   jointLimits?: JointLimits;
+  /**
+   * --- Organic surfaces S4: this object's mesh is an open sheet, not a solid (the kernel's verdict when Model put the
+   * mesh here; see src/model-sheet.ts). Slice and Export stop on it. Duplicate and Split shells carry it; Close holes
+   * clears it only when no edge is left open. Saved with the project.
+   */
+  sheet?: true;
 }
 
 export interface PlateState {
@@ -208,6 +216,7 @@ export interface PlateSnapObject {
   pivot?: [number, number, number];
   chain?: ChainLink;
   jointLimits?: JointLimits;
+  sheet?: true;
 }
 
 export interface PlateSnap {
@@ -435,6 +444,7 @@ export function plateFileIsVersion2(objects: {
   frame?: ObjectFrame;
   workplane?: Workplane;
   sim?: unknown;
+  sheet?: true;
 }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
@@ -449,7 +459,9 @@ export function plateFileIsVersion2(objects: {
     !isIdentity(one?.modelPose) ||
     one?.frame != null ||
     one?.workplane != null ||
-    one?.sim != null
+    one?.sim != null ||
+    // --- Organic surfaces S4: a lone object marked an open sheet keeps the mark (a version 1 file has no object row).
+    one?.sheet === true
   );
 }
 
@@ -716,6 +728,22 @@ function freshObject(id: string, name: string, mesh: IncomingMesh): PlateObject 
  * through a plate does not park the second piece beside the first.
  * Selection stays on the piece that was already on the plate.
  */
+/**
+ * Object `id` with the sheet verdict of the mesh Model just put on it: true marks it, false clears it, undefined (a mesh
+ * whose verdict is unknown, such as a part's own imported file) leaves the mark as it was.
+ */
+export function withSheet(plate: PlateState, id: string, sheet: boolean | undefined): PlateState {
+  if (sheet === undefined) return plate;
+  const obj = plate.objects.find((item) => item.id === id);
+  if (!obj || (obj.sheet === true) === sheet) return plate;
+  const objects = plate.objects.map((item) => {
+    if (item.id !== id) return item;
+    const { sheet: _was, ...rest } = item;
+    return sheet ? { ...rest, sheet: true as const } : rest;
+  });
+  return { ...plate, objects };
+}
+
 export function addedSplit(plate: PlateState, mesh: IncomingMesh): PlateState | null {
   const parent = plate.objects.find((obj) => obj.id === plate.selectedId);
   if (!parent) return null;
@@ -764,7 +792,7 @@ export function withPieceMesh(plate: PlateState, id: string, mesh: { fileName: s
  * its settings stay. Its file becomes an STL of those triangles, so the STEP, the Model tree and the paint, which were
  * the old mesh's, go.
  */
-export function withMendedMesh(plate: PlateState, id: string, sourcePos: Float32Array): PlateState | null {
+export function withMendedMesh(plate: PlateState, id: string, sourcePos: Float32Array, stillOpen = false): PlateState | null {
   const parent = plate.objects.find((obj) => obj.id === id);
   if (!parent) return null;
   const fileName = `${parent.fileName.replace(/\.(stl|3mf|step|stp)$/i, "")}.stl`;
@@ -776,8 +804,9 @@ export function withMendedMesh(plate: PlateState, id: string, sourcePos: Float32
   setMeshSeat(bytes, seat);
   const objects = plate.objects.map((obj) => {
     if (obj.id !== id) return obj;
-    const { brep: _brep, modelTree: _tree, ...rest } = obj;
-    const next: PlateObject = { ...rest, fileName, bytes, sourcePos, supportEdits: [], supportPaint: [], seamPaint: [], reinforcement: [] };
+    const { brep: _brep, modelTree: _tree, sheet, ...rest } = obj;
+    // A mended sheet is a plain mesh: still a sheet only while an edge is left open.
+    const next: PlateObject = { ...rest, fileName, bytes, sourcePos, supportEdits: [], supportPaint: [], seamPaint: [], reinforcement: [], ...(sheet && stillOpen ? { sheet: true as const } : {}) };
     hold(next);
     return next;
   });
@@ -882,6 +911,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       ...(obj.pivot ? { pivot: [...obj.pivot] as [number, number, number] } : {}),
       ...(obj.chain ? { chain: { parent: obj.chain.parent, offset: [...obj.chain.offset] as [number, number, number], turn: [...obj.chain.turn] as Mat3 } } : {}),
       ...(obj.jointLimits ? { jointLimits: { ...(obj.jointLimits.x ? { x: [...obj.jointLimits.x] as [number, number] } : {}), ...(obj.jointLimits.y ? { y: [...obj.jointLimits.y] as [number, number] } : {}), ...(obj.jointLimits.z ? { z: [...obj.jointLimits.z] as [number, number] } : {}) } } : {}),
+      ...(obj.sheet ? { sheet: true as const } : {}),
     })),
   };
 }
@@ -917,6 +947,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       ...(row.pivot ? { pivot: [...row.pivot] as [number, number, number] } : {}),
       ...(row.chain ? { chain: { parent: row.chain.parent, offset: [...row.chain.offset] as [number, number, number], turn: [...row.chain.turn] as Mat3 } } : {}),
       ...(row.jointLimits ? { jointLimits: copyLimits(row.jointLimits) } : {}),
+      ...(row.sheet ? { sheet: true as const } : {}),
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;
@@ -950,6 +981,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       ...(row.pivot ? { pivot: [...row.pivot] as [number, number, number] } : {}),
       ...(row.chain ? { chain: { parent: row.chain.parent, offset: [...row.chain.offset] as [number, number, number], turn: [...row.chain.turn] as Mat3 } } : {}),
       ...(row.jointLimits ? { jointLimits: copyLimits(row.jointLimits) } : {}),
+      ...(row.sheet ? { sheet: true as const } : {}),
     };
     if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
     // A Model step's mesh was saved as an STL already lowered, so reading it says 0; from a file before seats, Model learns it again.
@@ -1338,6 +1370,8 @@ export function replaceWithShells(plate: PlateState, id: string, worlds: readonl
       reinforcement: [],
       settings: { ...parent.settings },
       ...(isIdentity(bedToModel) ? {} : { modelPose: bedToModel }),
+      // A shell of an open sheet is a piece of that sheet.
+      ...(parent.sheet ? { sheet: true as const } : {}),
     };
     setMeshSeat(piece.bytes, 0);
     hold(piece);

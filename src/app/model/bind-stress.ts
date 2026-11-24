@@ -1,4 +1,5 @@
 /** The Model view's binders for this area: called once, in order, by bindModelView. */
+import { sheetPartNote } from "../../model-sheet";
 import { boundsOf } from "../../mesh-place";
 import { faceCentre } from "../../model-plane";
 import { applyPose } from "../../model-space";
@@ -65,6 +66,9 @@ export function bindStress() {
     undo: () => undoUserEdit(),
     redo: () => redoUserEdit(),
     sliceRequest(patch) {
+      // An open sheet has no inside to print or to load: the study's slice stops with the sheet prompt.
+      const sheet = sheetPartNote(state.plate.objects.filter((obj) => obj.id === state.plate.selectedId));
+      if (sheet) return { reason: sheet };
       const mesh = stressMesh();
       if (mesh && "reason" in mesh) return { reason: mesh.reason };
       return stressSliceRequest(patch, mesh ?? undefined);

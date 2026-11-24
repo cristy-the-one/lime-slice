@@ -4,6 +4,7 @@
  * Pure geometry and the gesture. The editor shell (`session.ts`) owns undo, snapping, and the
  * heads-up box. No solver: a typed size or a drag places the geometry directly.
  */
+import { sampleNurbsCurve2DChord } from "../modeling/nurbs-eval.ts";
 import { cornerLines, filletCorner, filletCorners, offset, offsetWall, trim, trimPieces, type WallOptions } from "./edit.ts";
 import {
   arcFrom3,
@@ -28,6 +29,9 @@ import {
   addArc,
   addCircle,
   addLine,
+  addNurbs,
+  fitSplineArrays,
+  splineEndsClosed,
   addPoint,
   addSpline,
   pointNear,
@@ -36,6 +40,7 @@ import {
   sketchPoint,
   type SketchData,
   type SketchEntity,
+  type SplineMode,
 } from "./model.ts";
 import { faceOutlineAt, refChain, type RefChain, type RefGeom } from "./refs.ts";
 
@@ -89,6 +94,8 @@ export interface DrawState {
   hud: number[] | null;
   /** O1: Offset's Both sides, Close the ends and Keep the line as a helper, remembered between offsets. */
   wall: WallOptions;
+  /** S2 (U3): "cv" = exact control-point NURBS (default); "through" = interpolating through-points spline. */
+  splineMode: SplineMode;
 }
 
 export interface DrawField {
@@ -127,8 +134,16 @@ export interface DrawResult {
 const MIN_SIDES = 3;
 const MAX_SIDES = 360;
 
+/** The Spline tool's mode the person last chose, kept for the session: a new sketch or a History Edit starts with it. */
+let lastSplineMode: SplineMode = "cv";
+
+/** Remember the Spline tool's mode for the next sketch (`withSplineMode` calls it). */
+export function rememberSplineMode(mode: SplineMode) {
+  lastSplineMode = mode;
+}
+
 export function freshDraw(): DrawState {
-  return { sides: 6, gesture: null, note: null, tangentArm: false, hud: null, wall: { both: false, close: false, helper: false } };
+  return { sides: 6, gesture: null, note: null, tangentArm: false, hud: null, wall: { both: false, close: false, helper: false }, splineMode: lastSplineMode };
 }
 
 /** O1: the wall options after one is switched. Close the ends brings the helper line with it, as it starts out on. */
@@ -365,7 +380,10 @@ export function drawRubber(sketch: SketchData, state: DrawState, tool: DrawTool,
     const points = gesture.points.map((id) => sketchPoint(sketch, id)?.at).filter((point): point is Pt => !!point);
     if (!points.length) return null;
     const controls = [...points, at];
-    return controls.length >= 2 ? sampleSpline(controls, false) : controls;
+    if (controls.length < 2) return controls;
+    return state.splineMode === "cv"
+      ? sampleNurbsCurve2DChord({ poles: controls }, 0.02, 1500)
+      : sampleSpline(controls, false);
   }
   // Offset and several corners draw their ghost as separate pieces (`drawGhosts`).
   if (gesture.kind === "offset" || gesture.kind === "filletMany") return null;
@@ -641,12 +659,17 @@ function splinePointer(sketch: SketchData, state: DrawState, ev: DrawPointer): D
     return { sketch: closed, state: { ...state, gesture: null, note: null, hud: null }, selection: ev.selection, committed: true };
   }
   const added = ensurePoint(sketch, ev.at);
+  // Back on the first point with fewer than three points: a closed control-point curve needs three distinct poles,
+  // so the click is ignored rather than drawing A, B, A.
+  if (state.splineMode === "cv" && gesture.points.length > 0 && added.id === gesture.points[0] && new Set(gesture.points).size < 3) {
+    return { sketch, state: { ...state, gesture }, selection: ev.selection, committed: false };
+  }
   const ids = [...gesture.points, added.id];
   if (ids.length < 2) {
     return { sketch: added.sketch, state: { ...state, gesture: { kind: "spline", points: ids, entity: null }, hud: null }, selection: ev.selection, committed: false };
   }
   if (gesture.entity == null) {
-    const spline = addSpline(added.sketch, ids);
+    const spline = state.splineMode === "cv" ? addNurbs(added.sketch, ids) : addSpline(added.sketch, ids);
     return { sketch: spline.sketch, state: { ...state, gesture: { kind: "spline", points: ids, entity: spline.id }, hud: null }, selection: ev.selection, committed: true };
   }
   return { sketch: retargetSpline(added.sketch, gesture.entity, ids), state: { ...state, gesture: { kind: "spline", points: ids, entity: gesture.entity }, hud: null }, selection: ev.selection, committed: true };
@@ -1045,7 +1068,8 @@ function ensurePoint(sketch: SketchData, at: Pt): { sketch: SketchData; id: numb
 }
 
 function retargetSpline(sketch: SketchData, id: number, through: number[]): SketchData {
-  return { ...sketch, entities: sketch.entities.map((entity) => (entity.id === id && entity.kind === "spline" ? { ...entity, through: [...through] } : entity)) };
+  // Weights and knots name the old points; any that no longer fit are dropped.
+  return { ...sketch, entities: sketch.entities.map((entity) => (entity.id === id && entity.kind === "spline" ? fitSplineArrays({ ...entity, through: [...through] }, splineEndsClosed(sketch, { ...entity, through })) : entity)) };
 }
 
 /** The tangent arc's start: the end of the last line, and that line's direction. */

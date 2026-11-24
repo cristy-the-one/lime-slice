@@ -81,13 +81,16 @@ export type BooleanKind = "fuse" | "cut" | "common";
 /** A join between two objects' trees: this tree's solid with `tool`'s step, placed by `relative`. */
 export type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
+/** Cross-section profile continuity for `fillet`. Default `"g1"` (circular arc). */
+export type FilletContinuity = "g1" | "g2" | "conic";
+
 /** One edit, in the solid's own frame. A fresh fillet or chamfer names edges by index. */
 type ModelOpBase =
   /** `merge` joins the faces and edges the boolean leaves on one surface; absent on a step saved before it. */
   | ({ kind: "boolean"; op: BooleanKind; merge?: true } & PrimitiveSpec)
   | HoleOp
   | { kind: "split"; origin: Vec3; normal: Vec3 }
-  | { kind: "fillet"; edges: EdgePick[]; size: number }
+  | { kind: "fillet"; edges: EdgePick[]; size: number; continuity?: FilletContinuity; rho?: number; variable?: [number, number][] }
   /**
    * Equal distances, or with `size2` two: `size` along each edge's upper face and `size2` along the other. With
    * `angleDeg`, `size` along that face at that angle from it. `flip` swaps which face takes `size`.
@@ -103,6 +106,7 @@ type ModelOpBase =
   | ExtrudeOp
   | RevolveOp
   | LoftOp
+  | SweepOp
   | ShellOp
   | GroupOp
   | FaceExtrudeOp
@@ -110,7 +114,16 @@ type ModelOpBase =
   | DraftOp
   | PartitionModelOp
   | TransitionOp
-  | LetteringOp;
+  | LetteringOp
+  | SheetOp
+  | SewOp
+  | ThickenOp
+  | TrimSplitOp
+  | ReplaceFaceOp
+  | SplitFaceOp
+  | PatchOp
+  | BlendSurfaceOp
+  | NurbsSurfaceOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -201,7 +214,164 @@ export interface PartitionModelOp {
 export type ProfileSegment =
   | { kind: "line"; to: Vec2 }
   | { kind: "arc"; through: Vec2; to: Vec2 }
-  | { kind: "spline"; through: Vec2[]; to: Vec2 };
+  | { kind: "spline"; through: Vec2[]; to: Vec2 }
+  | { kind: "nurbs"; poles?: Vec2[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[]; to: Vec2 };
+
+/** One segment of a 3D composite spine curve. */
+export type Curve3DSegment =
+  | { kind: "line"; to: Vec3 }
+  | { kind: "arc"; through: Vec3; to: Vec3 }
+  | { kind: "spline"; through: Vec3[]; to: Vec3 }
+  | { kind: "nurbs"; poles?: Vec3[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[]; to: Vec3 };
+
+/** Exact 3D spine / rail curve for real kernel sweeps and surface tools. */
+export type Curve3D =
+  | { kind: "polyline"; points: Vec3[]; closed?: true }
+  | { kind: "spline"; through: Vec3[]; closed?: true }
+  | { kind: "nurbs"; poles: Vec3[]; weights?: number[]; degree?: number; knots?: number[]; mults?: number[]; closed?: true }
+  | { kind: "segments"; start: Vec3; segments: Curve3DSegment[] }
+  | { kind: "edges"; edges: EdgePick[] };
+
+/** Frame evolution law along a swept spine. */
+export type SweepMode =
+  | { kind: "correctedFrenet" }
+  | { kind: "frenet" }
+  | { kind: "fixedBinormal"; dir: Vec3 }
+  | { kind: "auxSpine"; spine: Curve3D; curvilinear?: boolean; keepContact?: boolean };
+
+/** Corner transition at C0 / sharp joints along a swept spine. */
+export type SweepTransition = "round" | "right" | "transformed";
+
+/** Exact kernel pipe-shell sweep along a 3D spine curve (`BRepOffsetAPI_MakePipeShell`). */
+export interface SweepOp {
+  kind: "sweep";
+  op: BooleanKind;
+  sections: LoftSection[];
+  spine: Curve3D;
+  mode?: SweepMode;
+  transition?: SweepTransition;
+  /** `[u, factor]` scale stations along normalized spine parameter `u` in `[0, 1]`. */
+  scale?: [number, number][];
+  /** Total smooth twist along the spine, in degrees. */
+  twistDeg?: number;
+  /** Stripped before the engine sees the op. */
+  drawing?: LoftDrawing;
+}
+
+/** S4: How an open sheet is built from 3D curves. */
+export type SheetMode = "extrude" | "revolve" | "loft" | "planar";
+
+/** S4: Specification of an open B-rep surface ("Sheet"). */
+export interface SheetSpec {
+  mode: SheetMode;
+  curves: Curve3D[];
+  dir?: Vec3;
+  distance?: number;
+  axisOrigin?: Vec3;
+  angleDeg?: number;
+  ruled?: true;
+  symmetric?: true;
+}
+
+/** S4: Build an open B-rep surface ("Sheet"), standalone or compounded onto an existing sheet. */
+export interface SheetOp extends SheetSpec {
+  kind: "sheet";
+}
+
+/** S4: Sew open faces/shells within tolerance; auto-promotes to solid when zero naked edges remain. */
+export interface SewOp {
+  kind: "sew";
+  tolerance?: number;
+  makeSolid?: boolean;
+  capPlanar?: true;
+}
+
+/** S4: Direction for thickening an open sheet into a watertight solid. */
+export type ThickenDirection = "normal" | "reverse" | "both";
+
+/** S4: Thicken an open sheet/shell into a watertight solid. */
+export interface ThickenOp {
+  kind: "thicken";
+  thickness: number;
+  direction?: ThickenDirection;
+  tolerance?: number;
+}
+
+/** S4: Which half `trimSplit` keeps. */
+export type TrimKeep = "above" | "below" | "both";
+
+/** S4: Split a solid or sheet cleanly using an open sculpted surface. */
+export interface TrimSplitOp {
+  kind: "trimSplit";
+  sheet: SheetSpec;
+  keep?: TrimKeep;
+}
+
+/** S4: Replace a face of a solid with a sculpted surface, extending or trimming adjacent walls cleanly. */
+export interface ReplaceFaceOp {
+  kind: "replaceFace";
+  face: number | FaceRef;
+  sheet: SheetSpec;
+}
+
+/** S4: Project and imprint a 3D curve onto selected face(s), splitting them into distinct sub-faces. */
+export interface SplitFaceOp {
+  kind: "splitFace";
+  faces: (number | FaceRef)[];
+  curve: Curve3D;
+  direction?: Vec3;
+}
+
+/** How a patch or blend side meets the face beside it. Absent on an edge that touches a face means G1. */
+export type SurfaceContinuity = "g0" | "g1" | "g2";
+
+/** One side of a patch, or one side of a blend. */
+export interface SurfaceBoundary {
+  curve?: Curve3D;
+  edges?: EdgePick[];
+  face?: number | FaceRef;
+  continuity?: SurfaceContinuity;
+}
+
+/** S5: Fill an opening. A sheet, so Sew, Thicken, and auto-promotion still apply. */
+export interface PatchOp {
+  kind: "patch";
+  boundaries: SurfaceBoundary[];
+  guides?: Curve3D[];
+  points?: Vec3[];
+  tolerance?: number;
+}
+
+/** S6: An M by N NURBS pole grid. A sheet, so Sew, Thicken and TrimSplit run on it. */
+export interface NurbsSurfaceOp {
+  kind: "nurbsSurface";
+  poles: Vec3[][];
+  weights?: number[][];
+  degreeU?: number;
+  degreeV?: number;
+  knotsU?: number[];
+  multsU?: number[];
+  knotsV?: number[];
+  multsV?: number[];
+  periodicU?: boolean;
+  periodicV?: boolean;
+  /** Each pair is `[parameter, times]`. */
+  insertU?: [number, number][];
+  insertV?: [number, number][];
+  elevateU?: number;
+  elevateV?: number;
+}
+
+/** S5: Bridge two open edges or chains at G1 or G2, with a tension on each side. */
+export interface BlendSurfaceOp {
+  kind: "blendSurface";
+  a: SurfaceBoundary;
+  b: SurfaceBoundary;
+  continuity?: SurfaceContinuity;
+  tensionA?: number;
+  tensionB?: number;
+  tolerance?: number;
+}
 
 /** A closed loop on a profile's plane. A loop inside no other is an outline; one inside an outline is its hole. */
 export interface ProfileLoop {
@@ -287,7 +457,8 @@ export interface RevolveOp {
 
 /**
  * One cross-section of a loft, on a plane as a profile's is: a closed outline of `[u, v]` points (smooth, sharp at
- * `corners`, as a profile's), or a circle of `radius` about the plane's origin, an ellipse with `radiusV` along V.
+ * `corners`, as a profile's), a circle of `radius` about the plane's origin (an ellipse with `radiusV` along V),
+ * `loops`, or a point `apex` cap (valid as first or last loft section).
  */
 export interface LoftSection {
   origin: Vec3;
@@ -299,7 +470,16 @@ export interface LoftSection {
   corners?: number[];
   /** K1: closed loops in place of `profile` or `radius`. Absent otherwise. */
   loops?: ProfileLoop[];
+  /** S3: degenerate point cap at the start or end of a loft. */
+  apex?: Vec3;
 }
+
+/** S3: Start or end boundary tangency/curvature condition for a controlled loft. */
+export type LoftBoundary =
+  | { kind: "free" }
+  | { kind: "normal"; tension?: number }
+  | { kind: "tangent"; dir: Vec3; tension?: number }
+  | { kind: "curvature"; dir?: Vec3; tension?: number };
 
 /**
  * --- F3. A sweep remembered on the loft it became. The kernel never reads it.
@@ -331,6 +511,18 @@ export interface LoftOp {
   op: BooleanKind;
   sections: LoftSection[];
   ruled?: true;
+  /** S3: 3D guide rail curves shaping the loft between sections. */
+  guides?: Curve3D[];
+  /** S3: Start boundary condition (free, normal, tangent, curvature). */
+  startCondition?: LoftBoundary;
+  /** S3: End boundary condition (free, normal, tangent, curvature). */
+  endCondition?: LoftBoundary;
+  /** S3: Close the last section smoothly back to the first (periodic ring / torus). */
+  closed?: true;
+  /** S3: Enable curvature-fairing B-spline smoothing. */
+  smoothing?: true;
+  /** S3: Cap maximum U/V B-spline degree (default 8). */
+  maxDegree?: number;
   /** --- F3. Stripped before the engine sees the op. An old loft has none. --- */
   drawing?: LoftDrawing;
 }
@@ -421,6 +613,11 @@ export interface PlateMesh {
   token: string;
   /** The node's STEP, once written. The plate object carries it as `brep` while it holds this node. */
   step?: ArrayBuffer;
+  /**
+   * --- Organic surfaces S4: the kernel's verdict on this mesh (`sheetVerdict` in src/model-sheet.ts), set where a
+   * mesh is made from a Model reply. Absent: unknown (a part's own imported file), which leaves the object's mark alone.
+   */
+  sheet?: boolean;
 }
 
 export interface ModelNode {
@@ -455,6 +652,11 @@ export interface ModelNode {
    * its own. An app that does not know the mark reads it as an ordinary step.
    */
   builtWith?: NodeId;
+  /**
+   * --- Organic surfaces S4: the kernel's sheet verdict on this node's last reply (`sheetVerdict`), for its History
+   * badge. Not saved: the plate object's mark (`PlateObject.sheet`) is what Slice and Export read.
+   */
+  sheet?: boolean;
 }
 
 /**
@@ -503,11 +705,11 @@ export interface RunMark {
   n: number;
 }
 
-/** An extrude, a revolve, or a loft that can start a solid on its own (K2). */
-export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp;
+/** An extrude, a revolve, a loft, a sweep, an open sheet, or a NURBS surface that can start a part on its own (K2 / S2 / S4 / S6). */
+export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp | SweepOp | SheetOp | NurbsSurfaceOp;
 
 export function isFeatureOp(op: ModelOp): op is FeatureOp {
-  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft";
+  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "sweep" || op.kind === "sheet" || op.kind === "nurbsSurface";
 }
 
 /**
@@ -529,6 +731,11 @@ export interface ModelTree {
   committed: NodeId;
   /** The child Redo goes to from each node: the newest one applied or jumped through. */
   lastChild: ReadonlyMap<NodeId, NodeId>;
+  /**
+   * The root was replaced and every node rebuilt under its own id (`withoutBuilds`): the plate's node, even when it is
+   * the one shown, has a new solid to take. Kept until a commit gives that node its mesh again.
+   */
+  rebuilt?: true;
 }
 
 export const ROOT: NodeId = 0;
@@ -710,6 +917,8 @@ function canonicalValue(op: ModelOp): unknown {
   if (op.kind === "shell" && op.openFaces) return { ...op, openFaces: op.openFaces.map(index) };
   if (op.kind === "extrude" && op.upTo !== undefined) return { ...op, upTo: index(op.upTo) };
   if (op.kind === "faceExtrude") return { ...op, face: index(op.face), ...(op.upTo !== undefined ? { upTo: index(op.upTo) } : {}) };
+  if (op.kind === "replaceFace") return { ...op, face: index(op.face) };
+  if (op.kind === "splitFace") return { ...op, faces: op.faces.map(index) };
   if (op.kind === "moveFaces") return { ...op, faces: op.faces.map((row) => ({ ...row, face: index(row.face) })) };
   if (op.kind === "draft") {
     const face = (pick: number | FaceRef) => (typeof pick === "number" ? pick : pick.index);
@@ -741,9 +950,89 @@ export function renumberedSteps(op: ModelOp, ids: ReadonlyMap<NodeId, NodeId>): 
     if (!renamed && steps.every((step, i) => step === op.steps[i])) return op;
     return { ...op, steps, ...(renamed ? { source: { ...(op.source as Record<string, unknown>), of: renamed } } : {}) };
   }
-  if (op.kind !== "fillet" && op.kind !== "chamfer") return op;
-  if (!op.edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))) return op;
-  return { ...op, edges: op.edges.map((edge) => (isEdgeStep(edge) && ids.has(edge.fromNode) ? { ...edge, fromNode: ids.get(edge.fromNode)! } : edge)) };
+  // Every field that can hold an earlier step's edges: blend and transition edges, a curve made of edges (a sweep's
+  // spine or auxiliary spine, a loft's guides, a sheet's curves, a split line), and a patch's or blend's sides.
+  const picks = (edges: EdgePick[]): EdgePick[] =>
+    edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))
+      ? edges.map((edge) => (isEdgeStep(edge) && ids.has(edge.fromNode) ? { ...edge, fromNode: ids.get(edge.fromNode)! } : edge))
+      : edges;
+  const curve = (c: Curve3D): Curve3D => {
+    if (c.kind !== "edges") return c;
+    const edges = picks(c.edges);
+    return edges === c.edges ? c : { ...c, edges };
+  };
+  const curves = (list: Curve3D[]): Curve3D[] => {
+    const next = list.map(curve);
+    return next.every((c, i) => c === list[i]) ? list : next;
+  };
+  const side = (b: SurfaceBoundary): SurfaceBoundary => {
+    const edges = b.edges ? picks(b.edges) : undefined;
+    const c = b.curve ? curve(b.curve) : undefined;
+    return edges === b.edges && c === b.curve ? b : { ...b, ...(edges ? { edges } : {}), ...(c ? { curve: c } : {}) };
+  };
+  const sheet = (spec: SheetSpec): SheetSpec => {
+    const next = curves(spec.curves);
+    return next === spec.curves ? spec : { ...spec, curves: next };
+  };
+  switch (op.kind) {
+    case "fillet":
+    case "chamfer":
+    case "transition": {
+      const edges = picks(op.edges);
+      return edges === op.edges ? op : { ...op, edges };
+    }
+    case "sweep": {
+      const spine = curve(op.spine);
+      const aux = op.mode?.kind === "auxSpine" ? curve(op.mode.spine) : null;
+      if (spine === op.spine && (!aux || (op.mode?.kind === "auxSpine" && aux === op.mode.spine))) return op;
+      return { ...op, spine, ...(aux && op.mode?.kind === "auxSpine" ? { mode: { ...op.mode, spine: aux } } : {}) };
+    }
+    case "loft": {
+      if (!op.guides) return op;
+      const guides = curves(op.guides);
+      return guides === op.guides ? op : { ...op, guides };
+    }
+    case "sheet": {
+      const next = curves(op.curves);
+      return next === op.curves ? op : { ...op, curves: next };
+    }
+    case "trimSplit":
+    case "replaceFace": {
+      const next = sheet(op.sheet);
+      return next === op.sheet ? op : { ...op, sheet: next };
+    }
+    case "splitFace": {
+      const next = curve(op.curve);
+      return next === op.curve ? op : { ...op, curve: next };
+    }
+    case "patch": {
+      const boundaries = op.boundaries.map(side);
+      const guides = op.guides ? curves(op.guides) : undefined;
+      if (boundaries.every((b, i) => b === op.boundaries[i]) && guides === op.guides) return op;
+      return { ...op, boundaries, ...(guides ? { guides } : {}) };
+    }
+    case "blendSurface": {
+      const a = side(op.a);
+      const b = side(op.b);
+      return a === op.a && b === op.b ? op : { ...op, a, b };
+    }
+    default:
+      return op;
+  }
+}
+
+/**
+ * `tree` with everything a build left on its nodes dropped: fingerprints and plate meshes. A root edit
+ * rebuilds every node under the same ids, so a node's old plate mesh must not go back to the plate (`commitModel` takes
+ * a node's stored mesh first). The Prepare state (`keep`) stays.
+ */
+export function withoutBuilds(tree: ModelTree): ModelTree {
+  const nodes = new Map(tree.nodes);
+  for (const [id, node] of nodes) {
+    const { mesh: _mesh, ...rest } = node;
+    nodes.set(id, { ...rest, fingerprint: null });
+  }
+  return { ...tree, nodes, rebuilt: true };
 }
 
 /** The node whose plate mesh is `token`: how a plate restored by Prepare undo finds its place in the tree. */
@@ -859,7 +1148,9 @@ export interface VisitStep {
 }
 
 export function visitStep(tree: ModelTree): VisitStep | null {
-  if (tree.current === tree.committed) return null;
+  // A root replaced in place (a sketch root or a NURBS grid edited) leaves the plate's node without its mesh: it commits
+  // again though it is the node shown, so the plate takes the new solid.
+  if (tree.current === tree.committed && !(tree.rebuilt && !tree.nodes.get(tree.committed)?.mesh)) return null;
   const keep = tree.nodes.get(tree.current)?.keep ?? null;
   return { from: tree.committed, to: tree.current, keep, resetScale: keep === null && scaleBetween(tree, tree.committed, tree.current) };
 }
@@ -887,7 +1178,7 @@ function primitiveTitle(spec: PrimitiveSpec): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft" } as const;
+const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft", sweep: "Sweep", sheet: "Sheet", nurbsSurface: "NURBS" } as const;
 
 /**
  * --- F1/E1. A group of extrudes that came from one sketch: no composite `source`, so it is not a pocket,
@@ -948,7 +1239,13 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const picked = op.edges.filter((edge) => !isEdgeStep(edge)).length;
       const steps = op.edges.filter(isEdgeStep).map((edge) => `${edge.filter && edge.filter !== "all" ? `${edge.filter} ` : ""}edges of node ${edge.fromNode}`);
       const count = [...(picked > 0 || steps.length === 0 ? [picked === 1 ? "1 edge" : `${picked} edges`] : []), ...steps].join(" + ");
-      if (op.kind === "fillet") return `Fillet ${count} r ${n(op.size)}`;
+      if (op.kind === "fillet") {
+        const profile = op.continuity === "g2" ? ", G2" : op.continuity === "conic" ? `, conic ρ=${n(op.rho ?? 0.5)}` : "";
+        const radii = op.variable && op.variable.length >= 2
+          ? ` r ${n(op.variable[0]![1])}→${n(op.variable[op.variable.length - 1]![1])}`
+          : ` r ${n(op.size)}`;
+        return `Fillet ${count}${radii}${profile}`;
+      }
       const second = op.size2 !== undefined ? ` × ${n(op.size2)}` : op.angleDeg !== undefined ? ` at ${n(op.angleDeg)}°` : "";
       return `Chamfer ${count} ${n(op.size)}${second}${second && op.flip ? ", flipped" : ""}`;
     }
@@ -982,7 +1279,14 @@ export function opLabel(op: ModelOp, parts?: number): string {
         return `${verb} along ${op.drawing.sweep.path.length} points`;
       }
       const verb = op.op === "fuse" ? "Loft" : `${BOOLEAN_VERB[op.op]} loft`;
-      return `${verb} through ${op.sections.length} sections${op.ruled ? ", ruled" : ""}`;
+      const flags = [op.ruled ? "ruled" : "", op.closed ? "closed" : "", op.guides?.length ? `${op.guides.length} guide${op.guides.length === 1 ? "" : "s"}` : ""].filter(Boolean);
+      return `${verb} through ${op.sections.length} sections${flags.length ? `, ${flags.join(", ")}` : ""}`;
+    }
+    case "sweep": {
+      const verb = op.op === "fuse" ? "Sweep" : `${BOOLEAN_VERB[op.op]} sweep`;
+      const via = op.spine.kind === "nurbs" ? "NURBS spine" : op.spine.kind === "edges" ? `${op.spine.edges.length} edge${op.spine.edges.length === 1 ? "" : "s"}` : op.spine.kind === "segments" ? `${op.spine.segments.length}-segment spine` : `${op.spine.kind === "polyline" ? op.spine.points.length : op.spine.through.length}-point spine`;
+      const twist = op.twistDeg ? `, twist ${n(op.twistDeg)}°` : "";
+      return `${verb} along ${via}${twist}`;
     }
     case "shell": {
       const open = op.openFaces?.length ?? 0;
@@ -1035,6 +1339,30 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const walls = op.faces.length === 1 ? "1 wall" : `${op.faces.length} walls`;
       return `Draft ${walls} ${n(op.angleDeg)}°`;
     }
+    case "sheet": {
+      const mode = op.mode === "extrude" ? "extruded" : op.mode === "revolve" ? "revolved" : op.mode === "loft" ? "lofted" : "planar";
+      return `Sheet (${mode})`;
+    }
+    case "sew":
+      return op.capPlanar ? "Cap & sew to solid" : "Sew surfaces";
+    case "thicken": {
+      const side = op.direction === "both" ? " symmetric" : op.direction === "reverse" ? " inward" : "";
+      return `Thicken ${n(op.thickness)} mm${side}`;
+    }
+    case "trimSplit":
+      return op.keep === "both" ? "Split by surface (both)" : `Trim by surface (${op.keep ?? "above"})`;
+    case "replaceFace":
+      return "Replace face with surface";
+    case "splitFace": {
+      const count = op.faces.length === 1 ? "1 face" : `${op.faces.length} faces`;
+      return `Split ${count} by curve`;
+    }
+    case "patch":
+      return `Patch ${op.boundaries.length} sides`;
+    case "blendSurface":
+      return `Blend ${op.continuity === "g2" ? "G2" : "G1"}`;
+    case "nurbsSurface":
+      return `NURBS ${op.poles.length}×${op.poles[0]?.length ?? 0}`;
   }
 }
 
@@ -1077,6 +1405,9 @@ export function historyCaption(op: ModelOp | null, fallback: string): string {
     return `Revolve ${sketchTitle(op.sketch, 1)}, ${n(op.angleDeg ?? 360)}°${featureMode(op.op)}`;
   }
   if (op.kind === "loft" && op.drawing?.sweep) {
+    return `Sweep ${sketchTitle(op.drawing.sweep.profile, 1)}${featureMode(op.op)}`;
+  }
+  if (op.kind === "sweep" && op.drawing?.sweep) {
     return `Sweep ${sketchTitle(op.drawing.sweep.profile, 1)}${featureMode(op.op)}`;
   }
   if (op.kind === "loft" && op.drawing?.sketches && op.drawing.sketches.length >= 2) {

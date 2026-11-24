@@ -24,6 +24,12 @@ sources:
   - id: ribnet
     resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/src/modeling/auto-ribs.ts
     title: src/modeling/auto-ribs.ts (03b1c1d6)
+  - id: organic-schema
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/mcp/schema.ts
+    title: mcp/schema.ts (feature/organic-surfaces)
+  - id: organic-checks
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/mcp/organic-checks.ts
+    title: mcp/organic-checks.ts (feature/organic-surfaces)
 ---
 
 # How the list is built
@@ -189,6 +195,8 @@ First hit of a ray on the solid, part frame, mm: point, normal, distanceMm, face
 ### model_check
 
 Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, walls thinner than two nozzle widths, and open or touching mesh edges, each with where it is.
+
+Since 7.2.0, `surfaces: true` adds `continuity` (G0, G1, G2 and gap counts over every sampled shared edge; `edges` at most 256 rows, with `edgesTotal` and a `note` when there were more; `sharpVertices` at most 64) and `surfaceHealth`; when the surfaces cannot be read, `surfaces` says why.[^organic-schema] The organic ops (`sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch`, `blendSurface`, a spine `sweep`, loft and fillet v2) refuse in one sentence a field the kernel would change or drop.[^organic-checks]
 
 ### model_apply
 
@@ -434,3 +442,5 @@ Added after 4.2.0. Builds a plan as one `ribNet` History row; `verify: true` run
 [^ribs-schema]: mcp/schema.ts (03b1c1d6)
 [^ribs-panel]: src/auto-ribs.ts (03b1c1d6)
 [^ribnet]: src/modeling/auto-ribs.ts (03b1c1d6)
+[^organic-schema]: mcp/schema.ts (feature/organic-surfaces)
+[^organic-checks]: mcp/organic-checks.ts (feature/organic-surfaces)

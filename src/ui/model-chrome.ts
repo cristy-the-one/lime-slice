@@ -16,7 +16,7 @@ import { showLessonsFor } from "./lessons-note";
 import { endsText, type PickedPoint } from "../measure-points";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { pushToast } from "./toasts";
-import type { ChamferChoice, EditPanel } from "../model-edit";
+import type { ChamferChoice, EditPanel, FilletChoice } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
 import { lastFace, selectedEdges, selectedFaces } from "../model-blend";
@@ -226,6 +226,9 @@ const TOOL_TITLES: Partial<Record<ModelTool, string>> = {
   pattern: "Pattern",
   mirror: "Mirror",
   draft: "Draft",
+  patch: "Patch",
+  blend: "Blend",
+  sculpt: "NURBS",
 };
 
 function toolTitle(next: ModelTool): string {
@@ -294,6 +297,9 @@ const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly
 const BED_KEY = "lime-slice-model-bed";
 /** Tools that leave the open solid as it is, so they run on surfaces with no closed solid too. */
 const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place", "workplane", "check"]);
+/** Patch and blend run on an open sheet, which is not an editable solid. */
+const SHEET_TOOLS: ReadonlySet<string> = new Set(["patch", "blend", "sculpt"]);
+let sheetMode = false;
 const WP_FIELDS = ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"] as const;
 
 // --- A5. Fillet and chamfer: picked edges, or every edge one history step made. ---
@@ -478,6 +484,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     const featureItem = target?.closest<HTMLButtonElement>("#modelFeatureMenu [data-tool]");
+    if (featureItem?.dataset.tool === "sculpt") {
+      closeFeatureMenu();
+      toggleTool("sculpt");
+      return;
+    }
     if (featureItem?.dataset.tool && isFeatureTool(featureItem.dataset.tool)) {
       if (featureItem.getAttribute("aria-disabled") === "true") {
         const why = featureItem.dataset.tip || featureItem.title;
@@ -516,7 +527,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // --- end A4 ---
-    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextDir [data-dir], #modelTextWrap [data-wrap], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form]");
+    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextDir [data-dir], #modelTextWrap [data-wrap], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form], #modelFilletProfile [data-fillet-profile], #modelBlendContinuity [data-blend-continuity]");
     if (featureMode) {
       // --- Text with real fonts: a style the font cannot make says why, and changes nothing.
       if (featureMode.getAttribute("aria-disabled") === "true") {
@@ -658,6 +669,12 @@ export function mountModelChrome(next: ModelChromeHooks) {
       hooks?.paramsChanged();
       return;
     }
+    if (ev.target instanceof HTMLElement && ev.target.id === "modelFilletVariable") {
+      syncFields();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
     // --- A4. Align to the path changes the group at once. ---
     if (ev.target instanceof HTMLElement && (ev.target.id === "modelPatAlign" || ev.target.id === "modelPatCombine")) {
       refreshNote();
@@ -684,7 +701,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow" || ev.target.id === "modelPartHoleFor" || ev.target.id === "modelPartSection")) return;
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelFilletVariable" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind" || ev.target.id === "modelPartKind" || ev.target.id === "modelPartNominal" || ev.target.id === "modelShaftFit" || ev.target.id === "modelPartArticle" || ev.target.id === "modelPartHollow" || ev.target.id === "modelPartHoleFor" || ev.target.id === "modelPartSection")) return;
     if (ev.target instanceof HTMLInputElement && (ev.target.id === "modelPartLength" || ev.target.id === "modelPartDiameter" || ev.target.id === "modelPartBore")) ev.target.dataset.touched = "1";
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
@@ -901,11 +918,26 @@ export function openModelTool(): ModelTool | null {
   return tool;
 }
 
+/** S6. Open the NURBS tool on the open part, for History Edit of a NURBS step. */
+export function openSculptTool() {
+  if (tool !== "sculpt") toggleTool("sculpt");
+}
+
 /** Whether the open shape can be edited. Surfaces only can be measured and placed, so the edit tools turn off. */
+/** An open sheet keeps Patch and Blend available. A closed solid does not use this. */
+export function setSheetMode(next: boolean) {
+  sheetMode = next;
+  // On a solid these two stay in the Features menu, so the rail keeps the height the layout specs measure.
+  for (const id of ["#modelToolPatch", "#modelToolBlend", "#modelToolNurbs"]) {
+    document.querySelector<HTMLElement>(id)?.toggleAttribute("hidden", !next);
+  }
+  refreshTools();
+}
+
 export function setModelEditable(next: boolean) {
   editable = next;
   if (!editable && card) closeModelCard();
-  if (!editable && tool && !KEEPS_SOLID.has(tool)) closeTool();
+  if (!editable && tool && !KEEPS_SOLID.has(tool) && !(sheetMode && SHEET_TOOLS.has(tool))) closeTool();
   refreshTools();
 }
 
@@ -1071,6 +1103,7 @@ function toggleTool(next: ModelTool, editing = false) {
   hooks?.paramsChanged();
   // --- A7 model check --- after the panel is shown, so the note it writes is the one on screen.
   if (next === "check") openModelCheck();
+  document.dispatchEvent(new CustomEvent("lime-nurbs"));
 }
 
 /**
@@ -1140,6 +1173,7 @@ function fillEdit() {
     setEdgeSource("picked", { quiet: true });
   }
   if (panel.tool === "chamfer") paintChamfer(panel.chamfer ?? { form: "equal", flip: false });
+  if (panel.tool === "fillet") paintFillet(panel.fillet ?? { continuity: "g1", variable: false });
   // --- A2 shell ---
   if (panel.shellClosed !== undefined) setShellClosed(panel.shellClosed);
   if (panel.join) {
@@ -1230,6 +1264,7 @@ function closeTool() {
   if (ended) hooks?.editClosed();
   refreshDatum();
   hooks?.paramsChanged();
+  document.dispatchEvent(new CustomEvent("lime-nurbs"));
 }
 
 /** Boolean is open on another object rather than a primitive. */
@@ -1411,6 +1446,9 @@ function syncFields() {
     const flatOk = node.dataset.flat === undefined || tool !== "text" || curvedNow === null;
     // --- end A3 ---
     const chamferOk = !node.dataset.chamfer || node.dataset.chamfer.split(" ").includes(chamferChoice().form);
+    const filletNow = filletChoice();
+    const filletProfileOk = !node.dataset.filletProfile || node.dataset.filletProfile.split(" ").includes(filletNow.continuity);
+    const filletVarOk = node.dataset.filletVar === undefined || filletNow.variable;
     // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
     const whenOk = !node.dataset.when || (node.dataset.when === edgeSource && (tool === "fillet" || tool === "chamfer"));
     // --- A4. A pattern mode shows only its own fields. Count stays for every mode. ---
@@ -1423,7 +1461,7 @@ function syncFields() {
     // --- A gear's Flat is for a D bore.
     const gearBoreOk = (!node.dataset.gearBore || (node.dataset.gearBore === gearBoreShape() && gearKind() === "external")) && (!node.dataset.gearKind || node.dataset.gearKind.split(" ").includes(gearKind()));
     const partOk = !node.dataset.partKind || node.dataset.partKind.split(" ").includes(partKindNow());
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk && partOk));
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && filletProfileOk && filletVarOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk && partOk));
   });
   // --- A3 composite features ---
   // --- Text with real fonts: what the font picked allows, and the sample line, whenever the card shows.
@@ -2110,6 +2148,30 @@ function applyHoleDefaults() {
 const HOLE_CHOICES: ReadonlySet<string> = new Set(["modelThrough", "modelCounterbore", "modelScrew"]);
 
 /** The hole's Through all and Counterbore boxes, as ticked. */
+/** S3 (U5). Fillet profile (G1 circular, G2 smooth, conic) and variable-radius toggle. */
+/** S5. The blend's seam, G1 unless G2 is pressed. */
+export function blendChoice(): "g1" | "g2" {
+  const on = document.querySelector<HTMLButtonElement>('#modelBlendContinuity [aria-pressed="true"]')?.dataset.blendContinuity;
+  return on === "g2" ? "g2" : "g1";
+}
+
+export function filletChoice(): FilletChoice {
+  const on = document.querySelector<HTMLButtonElement>('#modelFilletProfile [aria-pressed="true"]')?.dataset.filletProfile;
+  const continuity = on === "g2" || on === "conic" ? on : "g1";
+  return { continuity, variable: document.querySelector<HTMLInputElement>("#modelFilletVariable")?.checked ?? false };
+}
+
+function paintFillet(choice: FilletChoice) {
+  document.querySelectorAll<HTMLButtonElement>("#modelFilletProfile [data-fillet-profile]").forEach((button) => {
+    const on = button.dataset.filletProfile === choice.continuity;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
+  const box = document.querySelector<HTMLInputElement>("#modelFilletVariable");
+  if (box) box.checked = choice.variable;
+  syncFields();
+}
+
 /** A chamfer's sides: equal, two sizes, or a size and an angle, and whether Size runs along the lower face. */
 export function chamferChoice(): ChamferChoice {
   const on = document.querySelector<HTMLButtonElement>('#modelChamferForm [aria-pressed="true"]')?.dataset.chamferForm;
@@ -2302,7 +2364,7 @@ function refreshTools() {
     const id = button.dataset.tool ?? "";
     button.dataset.tipIdle ??= button.dataset.tip ?? "";
     const held = locked != null && id !== "create" && id !== "check";
-    const viewOnly = !editable && !KEEPS_SOLID.has(id);
+    const viewOnly = !editable && !KEEPS_SOLID.has(id) && !(sheetMode && SHEET_TOOLS.has(id));
     const blocked = held ? locked : viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
     const off = held || viewOnly || !toolAvailable(id, picks, legal);
     // aria-disabled stays in the tab order, so a keyboard user can land on the button and read why.
@@ -2391,6 +2453,12 @@ function refreshNote() {
     }
   } else if ((tool === "fillet" || tool === "chamfer") && selectedEdges(picks).length === 0) {
     text = "Pick an edge.";
+  } else if (tool === "patch" && selectedEdges(picks).length < 2) {
+    text = "Pick the edges around the opening.";
+  } else if (tool === "blend" && selectedEdges(picks).length < 2) {
+    text = "Pick an open edge on each side.";
+  } else if (tool === "sculpt") {
+    text = "Drag a pole, a row, or a column. Release commits the surface.";
   } else if (tool === "scale") {
     text = "About the centre. Placement scale becomes 100%.";
   } else if (tool === "measure") {
@@ -2576,6 +2644,7 @@ function dragContext(): DragContext {
     // --- A4. Linear until the panel says polar or path. ---
     ...(tool === "pattern" ? { repeat: { mode: repeatModeNow() } } : {}),
     ...(tool === "chamfer" ? { chamfer: chamferChoice().form } : {}),
+    ...(tool === "fillet" ? { fillet: filletChoice() } : {}),
     ...(tool === "place" && hooks?.placeAxes() ? { placeAxes: hooks.placeAxes()! } : {}),
   };
 }

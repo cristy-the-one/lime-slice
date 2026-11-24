@@ -5,7 +5,11 @@
  * margin the kernel uses to close a profile loop. A spline here is a centripetal Catmull-Rom
  * through the controls, close enough to draw; the kernel's own interpolant is what a feature builds.
  */
-import { sketchPoint, type Pt, type SketchData, type SketchEntity } from "./model.ts";
+import { sampleNurbsCurve2DChord } from "../modeling/nurbs-eval.ts";
+
+/** How far a drawn control-point curve may stray from the exact curve, mm. */
+export const CV_CHORD_MM = 0.005;
+import { impliedMults, sketchPoint, type Pt, type SketchData, type SketchEntity } from "./model.ts";
 
 export type { Pt };
 
@@ -394,11 +398,20 @@ export function projectToSpline(samples: readonly Pt[], pt: Pt, closed = false):
   return best;
 }
 
+export interface NurbsCurveMeta {
+  poles: Pt[];
+  weights?: number[];
+  degree?: number;
+  knots?: number[];
+  mults?: number[];
+  closed: boolean;
+}
+
 export type Curve =
   | { kind: "line"; a: Pt; b: Pt }
   | { kind: "arc"; arc: ArcGeom }
   | { kind: "circle"; centre: Pt; radius: number }
-  | { kind: "spline"; controls: Pt[]; closed: boolean; samples: Pt[] };
+  | { kind: "spline"; controls: Pt[]; closed: boolean; samples: Pt[]; nurbs?: NurbsCurveMeta };
 
 /** The drawable curve of an entity, or null when it has no length. A collinear arc is the straight line between its ends. */
 export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null {
@@ -435,6 +448,38 @@ export function curveOf(sketch: SketchData, entity: SketchEntity): Curve | null 
     ? controls.slice(0, -1)
     : controls;
   if (unique.length < 2) return null;
+  if (entity.mode === "cv") {
+    // A periodic curve needs three distinct poles. A closed CV spline over two points (A, B, A) is drawn as the
+    // open curve through its poles, never thrown: a file or an MCP sketch can hold one.
+    const periodic = closed && unique.length >= 3;
+    const poles = periodic ? unique : controls;
+    const weights = entity.weights && entity.weights.length >= poles.length ? entity.weights.slice(0, poles.length) : undefined;
+    const nurbs: NurbsCurveMeta = {
+      poles,
+      ...(weights ? { weights } : {}),
+      ...(entity.degree !== undefined ? { degree: entity.degree } : {}),
+      ...(entity.knots ? { knots: [...entity.knots] } : {}),
+      // An old curve's knots without multiplicities go out with the ones the preview reads (the kernel needs both).
+      ...(entity.mults ? { mults: [...entity.mults] } : entity.knots && entity.knots.length > 0 ? { mults: periodic ? entity.knots.map(() => 1) : impliedMults(entity.knots, Math.max(1, Math.min(entity.degree ?? 3, poles.length - 1))) } : {}),
+      closed: periodic,
+    };
+    // Samples by bending: within CV_CHORD_MM of the curve, the total bounded (`sampleNurbsCurve2DChord`).
+    // A closed control-point spline is the kernel's periodic NURBS, custom knots included.
+    // Sampling those knots as a clamped open curve ends on the last pole and leaves a seam
+    // the kernel's Geom_BSplineCurve does not have.
+    const samples = sampleNurbsCurve2DChord(
+      {
+        poles,
+        ...(weights ? { weights } : {}),
+        ...(nurbs.degree !== undefined ? { degree: nurbs.degree } : {}),
+        ...(nurbs.knots && nurbs.knots.length > 0 ? { knots: nurbs.knots } : {}),
+        ...(nurbs.mults && nurbs.mults.length > 0 ? { mults: nurbs.mults } : {}),
+        ...(periodic ? { periodic: true } : {}),
+      },
+      CV_CHORD_MM,
+    );
+    return { kind: "spline", controls: periodic ? unique : controls, closed: periodic, samples, nurbs };
+  }
   return { kind: "spline", controls: unique, closed, samples: sampleSpline(unique, closed) };
 }
 

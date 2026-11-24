@@ -1,4 +1,4 @@
-//! K2: a tree can open from an extrude, revolve, or loft, with no primitive under it. The tool is the solid.
+//! K2: a tree can open from an extrude, revolve, loft, sweep, or sheet, with no primitive under it. The tool is the solid.
 //! `LIME_REQUIRE_OCCT=1` makes a missing kernel a failure.
 
 use serde_json::{json, Value};
@@ -119,6 +119,6 @@ fn a_feature_root_refuses_a_cut_and_a_second_source() {
     }));
     assert_eq!(
         hole["error"],
-        "A new solid starts from an extrude, a revolve, or a loft."
+        "A new solid starts from an extrude, a revolve, a loft, a sweep, a sheet, or a patch."
     );
 }

@@ -32,7 +32,8 @@ export const ROOT_BROKEN = "This solid's primitive builds differently in this mo
 
 /** Ops that name edges or faces by the solid's own numbering: they build only on a step the history built. */
 // --- P1: a face pull names faces, so a seed solid is rebuilt before the step, as a fillet is. ---
-export const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces", "draft", "transition"]);
+// --- S4: Replace face and Split face name faces by index too (`face`, `faces`).
+export const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces", "draft", "transition", "patch", "blendSurface", "replaceFace", "splitFace", "nurbsSurface"]);
 
 export const solids = new Map<string, ParsedSolid>();
 
@@ -234,6 +235,11 @@ export const S = {
   lens: null as Lens | null,
   /** The last edit, so Undo goes from its tip back to the step shown before it, and Redo forward again. */
   editBack: null as { key: string; tip: NodeId; back: NodeId; undone: boolean } | null,
+  /**
+   * --- S6. The NURBS sculpt tool's own Undo and Redo: one step per drag, on the surface the drags changed. Set once the
+   * tool's code has loaded; `can` is true only while the open object is still where the last drag left it.
+   */
+  sculptHistory: null as { can(way: "undo" | "redo"): boolean; step(way: "undo" | "redo"): Promise<void> } | null,
   /**
    * --- A7 model check --- A probe's hollows and loose pieces, drawn in model space.
    * A check still in flight keeps the boxes already drawn.

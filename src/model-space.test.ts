@@ -115,6 +115,8 @@ check("a fillet names edges, which no pose moves", toSolidOp(fillet, skew) === f
 const group: ModelOp = { kind: "group", label: "Two cuts", source: { kind: "pocket" }, steps: [box, hole] };
 eq("a turned pose moves each step of a group", toSolidOp(group, skew), { ...group, steps: [toSolidOp(box, skew), toSolidOp(hole, skew)] });
 check("with no pose a group is the op typed", toSolidOp(group, IDENTITY_POSE) === group);
+const nurbs: ModelOp = { kind: "nurbsSurface", poles: [[[0, 0, 0], [0, 10, 0]], [[10, 0, 1], [10, 10, 1]]], degreeU: 3, degreeV: 3 };
+eq("a move stores a NURBS grid in the part's frame", toSolidOp(nurbs, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 10] }), { ...nurbs, poles: [[[0, 0, -10], [0, 10, -10]], [[10, 0, -9], [10, 10, -9]]] });
 
 // History labels name the step in the part's own frame, so moving the part later never renames it.
 const raisedTen: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 10] };
@@ -242,6 +244,28 @@ eq("rigid: a turn and a move are; a scale, a mirror and a shear are not", [
   eq("a model-frame member opens in model space", viewFrameOf({ modelPose: member, frame: "model" }, true), IDENTITY_POSE);
   eq("so does a part-frame object in no assembly", viewFrameOf({ modelPose: member, frame: "part" }, false), IDENTITY_POSE);
   eq("and a member that stands where its file put it", viewFrameOf({ frame: "part" }, true), IDENTITY_POSE);
+}
+
+// S5: a blend's typed side curves go into the solid's frame and back, as a patch's do.
+{
+  const blend: ModelOp = {
+    kind: "blendSurface",
+    a: { curve: { kind: "polyline", points: [[0, 0, 0], [10, 0, 0]] }, continuity: "g1" },
+    b: { curve: { kind: "nurbs", poles: [[0, 5, 8], [5, 7, 9], [10, 5, 8]] }, edges: [] },
+    continuity: "g2",
+    tensionA: 1.2,
+  };
+  const solid = toSolidOp(blend, skew) as Extract<ModelOp, { kind: "blendSurface" }>;
+  const back = inversePose(skew);
+  const aPts = solid.a.curve?.kind === "polyline" ? solid.a.curve.points : [];
+  const bPts = solid.b.curve?.kind === "nurbs" ? solid.b.curve.poles : [];
+  check("a blend's side A curve goes into the solid's frame", aPts.length === 2 && nearVec(aPts[1]!, applyPose(back, [10, 0, 0])) && nearVec(aPts[0]!, applyPose(back, [0, 0, 0])));
+  check("a blend's side B nurbs poles go into the solid's frame", bPts.length === 3 && nearVec(bPts[1]!, applyPose(back, [5, 7, 9])));
+  check("a blend keeps its continuity, tension and edges", solid.continuity === "g2" && solid.tensionA === 1.2 && solid.a.continuity === "g1" && Array.isArray(solid.b.edges));
+  const round = toSolidOp(solid, back) as Extract<ModelOp, { kind: "blendSurface" }>;
+  const rA = round.a.curve?.kind === "polyline" ? round.a.curve.points : [];
+  const rB = round.b.curve?.kind === "nurbs" ? round.b.curve.poles : [];
+  check("solid frame and back is the blend as typed", rA.every((p, i) => nearVec(p, [[0, 0, 0], [10, 0, 0]][i] as Vec3)) && rB.every((p, i) => nearVec(p, [[0, 5, 8], [5, 7, 9], [10, 5, 8]][i] as Vec3)));
 }
 
 if (failed) {

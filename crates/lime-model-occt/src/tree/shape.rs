@@ -16,11 +16,18 @@ use super::ffi::{
     lime_tree_mesh_free,
     lime_tree_mesh_order,
     lime_tree_solids,
+    lime_tree_surface_inspect_free,
     RawMesh,
     RawShape,
+    RawSurfaceInspect,
 };
 #[cfg(lime_occt_test_hooks)]
-use super::ffi::{lime_tree_test_fault, lime_tree_test_mesh, lime_tree_test_nurbs, lime_tree_test_text};
+use super::ffi::{
+    lime_tree_eval_nurbs_curve, lime_tree_eval_nurbs_surface, lime_tree_test_fault, lime_tree_test_mesh,
+    lime_tree_test_nurbs, lime_tree_test_place, lime_tree_test_text,
+};
+#[cfg(lime_occt_test_hooks)]
+use super::request::{EvalNurbsCurve, EvalNurbsSurface};
 
 /// One solid owned by the kernel. Freed when dropped.
 pub(super) struct Shape(pub(super) NonNull<RawShape>);
@@ -44,6 +51,28 @@ impl Mesh {
 impl Drop for Mesh {
     fn drop(&mut self) {
         unsafe { lime_tree_mesh_free(self.0.as_ptr()) };
+    }
+}
+
+/// One lazy surface inspection owned by the kernel, while its reply is written.
+pub(super) struct SurfaceInspect(pub(super) NonNull<RawSurfaceInspect>);
+
+impl SurfaceInspect {
+    /// Bytes the inspection view points at, borrowed for as long as the inspection lives.
+    ///
+    /// # Safety
+    /// `ptr` and `len` are one array of the `SurfaceInspectView` filled by `lime_tree_surface_inspect`.
+    pub(super) unsafe fn bytes(&self, ptr: *const u8, len: usize) -> &[u8] {
+        if len == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+}
+
+impl Drop for SurfaceInspect {
+    fn drop(&mut self) {
+        unsafe { lime_tree_surface_inspect_free(self.0.as_ptr()) };
     }
 }
 
@@ -177,6 +206,16 @@ impl Shape {
         Shape::made(|error| unsafe { lime_tree_test_nurbs(self.raw(), error) })?.brep_bytes()
     }
 
+    /// Debug builds only: this shape mirrored in x = 0, or moved by `offset` as a location, as BinTools bytes.
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn test_place(&self, mirror: bool, offset: [f64; 3]) -> Result<Vec<u8>, String> {
+        // SAFETY: `self` is held for this call; `offset` holds the three numbers the kernel reads.
+        Shape::made(|error| unsafe {
+            lime_tree_test_place(self.raw(), c_int::from(mirror), offset.as_ptr(), error)
+        })?
+        .brep_bytes()
+    }
+
     /// Debug builds only: how good the solid's mesh at `chord` is (triangles, the farthest from the surface, the
     /// sharpest corner, slivers).
     #[cfg(lime_occt_test_hooks)]
@@ -205,4 +244,208 @@ impl Shape {
         unsafe { lime_tree_test_fault(self.raw(), &mut error) };
         take_text(error).unwrap_or_default()
     }
+}
+
+/// Points from `Geom_BSplineCurve::D0`, as `[[x, y, z], ...]`.
+#[cfg(lime_occt_test_hooks)]
+pub(super) fn eval_nurbs_curve_points(curve: &EvalNurbsCurve) -> Result<Vec<[f64; 3]>, String> {
+    if curve.poles.is_empty() || curve.params.is_empty() {
+        return Err("A NURBS evaluation needs poles and parameters.".into());
+    }
+    if !curve.weights.is_empty() && curve.weights.len() != curve.poles.len() {
+        return Err("NURBS weights count must match the number of poles.".into());
+    }
+    if curve.knots.len() != curve.mults.len() {
+        return Err("NURBS knots and multiplicities must be the same length.".into());
+    }
+    let mut xyz = Vec::with_capacity(curve.poles.len() * 3);
+    for pole in &curve.poles {
+        xyz.extend_from_slice(pole);
+    }
+    let mut out = vec![0.0; curve.params.len() * 3];
+    let mut error: *mut c_char = std::ptr::null_mut();
+    let weights = if curve.weights.is_empty() {
+        std::ptr::null()
+    } else {
+        curve.weights.as_ptr()
+    };
+    let knots = if curve.knots.is_empty() {
+        std::ptr::null()
+    } else {
+        curve.knots.as_ptr()
+    };
+    let mults = if curve.mults.is_empty() {
+        std::ptr::null()
+    } else {
+        curve.mults.as_ptr()
+    };
+    // SAFETY: the vectors live for this call. The kernel writes `out` and, on failure, an error string we free.
+    let ok = unsafe {
+        lime_tree_eval_nurbs_curve(
+            xyz.as_ptr(),
+            curve.poles.len() as c_int,
+            weights,
+            curve.degree,
+            knots,
+            mults,
+            curve.knots.len() as c_int,
+            if curve.periodic { 1 } else { 0 },
+            curve.params.as_ptr(),
+            curve.params.len() as c_int,
+            out.as_mut_ptr(),
+            &mut error,
+        )
+    };
+    let message = take_text(error);
+    if ok == 0 {
+        return Err(message.unwrap_or_else(|| "Open CASCADE did not evaluate the NURBS curve.".into()));
+    }
+    Ok(out.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect())
+}
+
+/// Points from `Geom_BSplineSurface::D0`, as `[[x, y, z], ...]`.
+#[cfg(lime_occt_test_hooks)]
+pub(super) fn eval_nurbs_surface_points(surface: &EvalNurbsSurface) -> Result<Vec<[f64; 3]>, String> {
+    if surface.periodic_u
+        || surface.periodic_v
+        || !surface.insert_u.is_empty()
+        || !surface.insert_v.is_empty()
+        || surface.elevate_u.is_some()
+        || surface.elevate_v.is_some()
+    {
+        return eval_built_nurbs_surface_points(surface);
+    }
+    let nu = surface.poles.len();
+    let nv = surface.poles.first().map(|row| row.len()).unwrap_or(0);
+    if nu < 2 || nv < 2 || surface.params.is_empty() {
+        return Err("A NURBS surface evaluation needs a pole grid and parameters.".into());
+    }
+    if surface.poles.iter().any(|row| row.len() != nv) {
+        return Err("Every NURBS surface row needs the same number of poles.".into());
+    }
+    if !surface.weights.is_empty()
+        && (surface.weights.len() != nu || surface.weights.iter().any(|row| row.len() != nv))
+    {
+        return Err("NURBS surface weights must match the pole grid.".into());
+    }
+    if surface.knots_u.len() != surface.mults_u.len() || surface.knots_v.len() != surface.mults_v.len() {
+        return Err("NURBS knots and multiplicities must be the same length.".into());
+    }
+    let mut xyz = Vec::with_capacity(nu * nv * 3);
+    for row in &surface.poles {
+        for pole in row {
+            xyz.extend_from_slice(pole);
+        }
+    }
+    let mut weight_flat = Vec::new();
+    if !surface.weights.is_empty() {
+        for row in &surface.weights {
+            weight_flat.extend_from_slice(row);
+        }
+    }
+    let mut params = Vec::with_capacity(surface.params.len() * 2);
+    for uv in &surface.params {
+        params.extend_from_slice(uv);
+    }
+    let mut out = vec![0.0; surface.params.len() * 3];
+    let mut error: *mut c_char = std::ptr::null_mut();
+    let weights = if weight_flat.is_empty() {
+        std::ptr::null()
+    } else {
+        weight_flat.as_ptr()
+    };
+    let knots_u = if surface.knots_u.is_empty() {
+        std::ptr::null()
+    } else {
+        surface.knots_u.as_ptr()
+    };
+    let mults_u = if surface.mults_u.is_empty() {
+        std::ptr::null()
+    } else {
+        surface.mults_u.as_ptr()
+    };
+    let knots_v = if surface.knots_v.is_empty() {
+        std::ptr::null()
+    } else {
+        surface.knots_v.as_ptr()
+    };
+    let mults_v = if surface.mults_v.is_empty() {
+        std::ptr::null()
+    } else {
+        surface.mults_v.as_ptr()
+    };
+    // SAFETY: the vectors live for this call. The kernel writes `out` and, on failure, an error string we free.
+    let ok = unsafe {
+        lime_tree_eval_nurbs_surface(
+            xyz.as_ptr(),
+            nu as c_int,
+            nv as c_int,
+            weights,
+            surface.degree_u,
+            surface.degree_v,
+            knots_u,
+            mults_u,
+            surface.knots_u.len() as c_int,
+            knots_v,
+            mults_v,
+            surface.knots_v.len() as c_int,
+            params.as_ptr(),
+            surface.params.len() as c_int,
+            out.as_mut_ptr(),
+            &mut error,
+        )
+    };
+    let message = take_text(error);
+    if ok == 0 {
+        return Err(message.unwrap_or_else(|| "Open CASCADE did not evaluate the NURBS surface.".into()));
+    }
+    Ok(out.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect())
+}
+
+/// Points on the surface `nurbsSurface` commits for these numbers: the op's own blob and build, so Open CASCADE's knot
+/// insertion, degree elevation and periodic knots are what is evaluated.
+#[cfg(lime_occt_test_hooks)]
+fn eval_built_nurbs_surface_points(surface: &EvalNurbsSurface) -> Result<Vec<[f64; 3]>, String> {
+    let unsigned = |values: &[i32]| -> Result<Vec<u32>, String> {
+        values.iter().map(|&m| u32::try_from(m).map_err(|_| "A knot multiplicity is 1 or more.".to_string())).collect()
+    };
+    let mults_u = unsigned(&surface.mults_u)?;
+    let mults_v = unsigned(&surface.mults_v)?;
+    let degree = |d: i32| u32::try_from(d).ok().filter(|d| *d > 0);
+    let spec = super::k1::NurbsSurfaceSpec {
+        poles: &surface.poles,
+        weights: &surface.weights,
+        degree_u: degree(surface.degree_u),
+        degree_v: degree(surface.degree_v),
+        knots_u: &surface.knots_u,
+        knots_v: &surface.knots_v,
+        mults_u: &mults_u,
+        mults_v: &mults_v,
+        periodic_u: surface.periodic_u,
+        periodic_v: surface.periodic_v,
+        insert_u: &surface.insert_u,
+        insert_v: &surface.insert_v,
+        elevate_u: surface.elevate_u,
+        elevate_v: surface.elevate_v,
+    };
+    let blob = super::k1::encode_nurbs_blob(&spec)?;
+    let params: Vec<f64> = surface.params.iter().flatten().copied().collect();
+    let mut out = vec![0.0; surface.params.len() * 3];
+    let mut error: *mut c_char = std::ptr::null_mut();
+    // SAFETY: the vectors live for this call. The kernel writes `out` and, on failure, an error string we free.
+    let ok = unsafe {
+        super::ffi::lime_tree_eval_built_nurbs_surface(
+            blob.as_ptr(),
+            blob.len() as c_int,
+            params.as_ptr(),
+            surface.params.len() as c_int,
+            out.as_mut_ptr(),
+            &mut error,
+        )
+    };
+    let message = take_text(error);
+    if ok == 0 {
+        return Err(message.unwrap_or_else(|| "Open CASCADE did not evaluate the NURBS surface.".into()));
+    }
+    Ok(out.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect())
 }

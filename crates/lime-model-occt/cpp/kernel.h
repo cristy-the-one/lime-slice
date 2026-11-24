@@ -22,6 +22,13 @@
 
 namespace lime_occt {
 
+/// The continuity bounds, in one place: what a patch, a blend and a G2 fillet are built to, and what model_check
+/// {surfaces:true} classes an edge by. G0: the gap is under kContinuityGapMm. G1: G0 and the oriented normals meet within
+/// kContinuityAngleDeg. G2: G1 and the normal curvature across the edge jumps by at most kContinuityJump per mm.
+constexpr double kContinuityGapMm = 1e-4;
+constexpr double kContinuityAngleDeg = 0.1;
+constexpr double kContinuityJump = 1e-3;
+
 /// The refusal for a step Open CASCADE crashed inside: an access violation, an illegal instruction, or an integer
 /// divide by zero that no check of ours can see coming, such as the null edge BRepOffset_Inter2d hands
 /// BRepAdaptor_Curve when a wall beside raised lettering is pushed.
@@ -81,18 +88,42 @@ struct Held {
     /// the two share (`inherit_about`), so a step measures only what it changed.
     std::vector<std::string> face_about;
     std::vector<std::string> edge_about;
+    /// The Model view's display mesh lives on a copy of `shape`, so its finer triangles never reach the faces of
+    /// `shape`, whose mesh is the one committed, sliced and exported. `display_faces[i]` is the copy of face i + 1,
+    /// with its orientation; `display_meshed` is the chord the copy was meshed at, 0 for none yet.
+    TopoDS_Shape display_shape;
+    std::vector<TopoDS_Face> display_faces;
+    double display_meshed = 0;
 };
 
 /// One tessellation as the reply sends it, as binary arrays.
 struct Mesh {
     /// Nine per triangle: the corners of a triangle soup, wound outward.
     std::vector<float> positions;
+    /// Nine per triangle: exact outward unit surface normals at each corner (`BRepLProp_SLProps`). Display mesh only:
+    /// empty for the standard mesh.
+    std::vector<float> normals;
     /// The face index of each triangle.
     std::vector<uint32_t> triangles;
     /// Every edge's polyline, one after another, three per point.
     std::vector<float> edge_points;
     /// Edge `i` is points `edge_offsets[i]` up to `edge_offsets[i + 1]`.
     std::vector<uint32_t> edge_offsets;
+};
+
+/// --- Organic surfaces S1: lazy surface inspection (per-vertex curvature scalars, UV isoparms,
+/// shared-edge G0/G1/G2 continuity, and NURBS surface health).
+struct SurfaceInspect {
+    /// One per triangle corner (same order as Mesh::positions / 3): minimum bend radius in mm (1e9 when flat).
+    std::vector<float> min_radius_mm;
+    /// One per triangle corner: Gaussian curvature K = k1 * k2 (1/mm²).
+    std::vector<float> gaussian;
+    /// One per triangle corner: signed Mean curvature H = (k1 + k2)/2 (1/mm; negative convex, positive concave).
+    std::vector<float> mean;
+    /// Line-segment pairs (6 floats per segment) of UV isoparametric curves on curved/freeform faces.
+    std::vector<float> iso_points;
+    /// JSON object holding `continuity` and `surfaceHealth`.
+    std::string meta;
 };
 
 char* alloc(const std::string& text);
@@ -116,7 +147,13 @@ double volume_of(const TopoDS_Shape& shape);
 /// difference of those faces' volumes about one point.
 double faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& about);
 /// Mesh the faces unless they are meshed at this chord already, and read the mesh out.
-Mesh tessellate(Held& held, double chord);
+/// `display`: the Model view's finer mesh with analytic normals (mesh_angle_of), on a copy of the shape. Otherwise the
+/// mesh every commit, slice and export uses: half a radian, no normals.
+Mesh tessellate(Held& held, double chord, bool display = false);
+/// The last Hermite patch or blend's own measure at its stations, as JSON, for the tests.
+std::string last_fill_report();
+/// --- Organic surfaces S1: lazy curvature buffers, UV isoparms, shared-edge G0/G1/G2 continuity, and NURBS health.
+SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count, bool display = false);
 /// What a reply says of the shape whatever the chord, as a JSON object: `volumeMm3`, `solid`,
 /// `faces` (area and outward normal), and `edgeLengths`.
 std::string describe(Held& held);
@@ -511,13 +548,18 @@ struct ProfileSpec {
 // --- K1 profile v2 (loops, arcs, holes). Distinct from ProfileSpec so other packages can edit that struct. ---
 
 /// One edge of a loop, from the previous end (the loop's start, for the first) to `to`.
-enum class ProfileSegKind { Line, Arc, Spline };
+enum class ProfileSegKind { Line, Arc, Spline, Nurbs };
 
 struct ProfileSeg {
     ProfileSegKind kind = ProfileSegKind::Line;
     double to[2] = {0, 0};
-    /// u, v pairs. One pair for an arc, one or more for a spline, none for a line.
+    /// u, v pairs. One pair for an arc, one or more for a spline/nurbs (interior control poles), none for a line.
     std::vector<double> through;
+    /// --- Organic surfaces S2: optional NURBS parameters (used when kind == ProfileSegKind::Nurbs).
+    int degree = 0;
+    std::vector<double> weights;
+    std::vector<double> knots;
+    std::vector<int> mults;
 };
 
 /// A closed loop on the profile plane. The last segment's `to` meets `start`.
@@ -534,6 +576,9 @@ struct LoftSection {
     double radius_v = 0;
     /// K1: closed loops instead of `profile`. Empty when the section uses a radius or a profile.
     std::vector<ProfileLoop> loops;
+    /// S3: punctual point-apex section (first or last section only).
+    bool has_apex = false;
+    double apex[3] = {0, 0, 0};
 };
 
 /// K1. Read one loop blob from `data`. `used` is how many doubles it consumed. The blob is `encode_loops` in tree.rs:
@@ -639,6 +684,111 @@ TopoDS_Shape combine_profile_tools(
     const std::string& which,
     const std::vector<TopoDS_Shape>& tools,
     const char* noun,
+    double& volume,
+    std::string& error);
+
+/// --- Organic surfaces S2: exact 3D curve specification (`Curve3D`) for `build_sweep` (and later S3–S5 rails/patches).
+enum class Curve3DSegKind { Line, Arc, Spline, Nurbs };
+
+struct Curve3DSeg {
+    Curve3DSegKind kind = Curve3DSegKind::Line;
+    double to[3] = {0, 0, 0};
+    /// x, y, z triples between previous end and `to` (1 for Arc, 1+ for Spline, 0+ for Nurbs interior poles).
+    std::vector<double> pts;
+    int degree = 0;
+    std::vector<double> weights;
+    std::vector<double> knots;
+    std::vector<int> mults;
+};
+
+struct Curve3DSpec {
+    /// 0 = Polyline, 1 = Spline, 2 = Nurbs, 3 = Segments, 4 = Solid edge indices.
+    int kind = 0;
+    bool closed = false;
+    int degree = 0;
+    double start[3] = {0, 0, 0};
+    std::vector<double> pts;
+    std::vector<double> weights;
+    std::vector<double> knots;
+    std::vector<int> mults;
+    std::vector<Curve3DSeg> segments;
+    std::vector<int> edge_indices;
+};
+
+struct SweepSpec {
+    std::vector<LoftSection> sections;
+    Curve3DSpec spine;
+    /// 0 = CorrectedFrenet (default), 1 = Frenet, 2 = FixedBinormal.
+    int mode = 0;
+    double binormal[3] = {0, 0, 1};
+    /// 0 = RoundCorner (default), 1 = RightCorner (mitred), 2 = Transformed.
+    int transition = 0;
+    /// Optional [t, scale] pairs along normalized spine 0..1 (Law_Interpol).
+    std::vector<double> scale_stations;
+    /// Optional smooth total twist along spine in degrees.
+    double twist_deg = 0.0;
+    bool has_aux_spine = false;
+    Curve3DSpec aux_spine;
+};
+
+/// Decode a `Curve3DSpec` blob written by Rust `encode_curve3d`.
+bool decode_curve3d(const double* data, int count, Curve3DSpec& out, int& used, std::string& error);
+
+/// True kernel sweep (`BRepOffsetAPI_MakePipeShell`) combined with `current` by `which` (or standalone when `current` is null).
+TopoDS_Shape build_sweep(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const SweepSpec& spec,
+    const Held* held_for_edges,
+    double& volume,
+    std::string& error);
+
+/// --- Organic surfaces S3: variable-radius, G2 curvature-continuous, and conic-rho fillets.
+struct FilletV2Spec {
+    double size = 0.0;
+    /// 0 = Circular G1 (default), 1 = Smooth G2 quintic NURBS, 2 = Conic rational quadratic (rho).
+    int continuity = 0;
+    /// Conic rho in (0.05, 0.95); default 0.5 (parabola).
+    double rho = 0.5;
+    /// Optional flat [u0, r0, u1, r1, ...] variable-radius stations along edge parameter u in [0, 1].
+    std::vector<double> variable;
+};
+
+bool fillet_v2_build(
+    const TopoDS_Shape& current,
+    const std::vector<TopoDS_Edge>& edges,
+    const FilletV2Spec& spec,
+    TopoDS_Shape& built,
+    double& volume,
+    std::string& error);
+
+/// --- Organic surfaces S3: controlled Loft v2 (apex caps, guide rails, boundary tangency/curvature, closed periodic, degree cap).
+struct LoftBoundarySpec {
+    /// 0 = Free, 1 = Normal, 2 = Tangent, 3 = Curvature.
+    int kind = 0;
+    bool has_dir = false;
+    double dir[3] = {0, 0, 1};
+    double tension = 1.0;
+};
+
+struct LoftV2Spec {
+    std::vector<LoftSection> sections;
+    bool ruled = false;
+    std::vector<Curve3DSpec> guides;
+    LoftBoundarySpec start_cond;
+    LoftBoundarySpec end_cond;
+    bool closed = false;
+    bool smoothing = false;
+    int max_degree = 0;
+};
+
+TopoDS_Shape build_loft_v2(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const LoftV2Spec& spec,
+    const Held* held_for_edges,
     double& volume,
     std::string& error);
 
@@ -840,10 +990,168 @@ TopoDS_Shape build_lettering_skin(
     std::string& note,
     std::string& error);
 
+/// S4: Specification for building an open B-rep surface ("Sheet") from 3D curves.
+/// `mode`: 0 = extrude, 1 = revolve, 2 = loft, 3 = planar.
+struct SheetSpec {
+    int mode = 0;
+    std::vector<Curve3DSpec> curves;
+    double dir[3] = {0, 0, 1};
+    double distance = 10.0;
+    double axis_origin[3] = {0, 0, 0};
+    double angle_deg = 360.0;
+    bool ruled = false;
+    bool symmetric = false;
+};
+
+/// S4: Build an open surface ("Sheet"), standalone when `current` is null or compounded with `current`.
+TopoDS_Shape build_sheet(
+    const TopoDS_Shape& current,
+    const Held* held_for_edges,
+    const SheetSpec& spec,
+    std::string& error);
+
+/// S4: Sew faces/shells (plus optional extra placed shapes) within `tolerance`.
+/// When `cap_planar` is true, planar naked boundary loops are capped before sewing.
+/// When `make_solid` is true and zero naked edges remain, auto-promotes to a watertight solid.
+TopoDS_Shape build_sew(
+    const TopoDS_Shape& current,
+    const std::vector<const TopoDS_Shape*>& extra_tools,
+    const std::vector<std::array<double, 12>>& tool_places,
+    double tolerance,
+    bool make_solid,
+    bool cap_planar,
+    double& volume,
+    bool& promoted_to_solid,
+    int& naked_after,
+    std::string& error);
+
+/// S4: Thicken an open surface/shell into a watertight solid (`direction`: 0 = normal, 1 = reverse, 2 = both).
+TopoDS_Shape build_thicken(
+    const TopoDS_Shape& current,
+    double thickness,
+    int direction,
+    double tolerance,
+    double& volume,
+    std::string& error);
+
+/// S4: Split a solid or sheet by an open surface (`cutter`). `keep_mode`: 0 = above, 1 = below, 2 = both.
+TopoDS_Shape build_trim_split(
+    const TopoDS_Shape& current,
+    const TopoDS_Shape& cutter,
+    int keep_mode,
+    TopoDS_Shape* other_out,
+    double& volume,
+    std::string& error);
+
+/// S4: Replace `target_face` on a solid with `replacement` sculpted surface, extending/trimming side walls cleanly.
+TopoDS_Shape build_replace_face(
+    const TopoDS_Shape& current,
+    const TopoDS_Face& target_face,
+    const TopoDS_Shape& replacement,
+    double& volume,
+    std::string& error);
+
+/// S5: One side of a patch or blend. `continuity` is -1 (default), 0 (G0), 1 (G1), or 2 (G2).
+/// `face` is a 0-based face index, or -1 when the side does not name one.
+struct PatchBoundSpec {
+    int continuity = -1;
+    int face = -1;
+    std::vector<int> edges;
+    bool has_curve = false;
+    Curve3DSpec curve;
+};
+
+/// S5: Fill a boundary. Two to four G0 sides with no guide point use GeomFill.
+/// G1, G2, a guide point, or five or more sides are N Hermite–Coons pieces.
+struct PatchBuildSpec {
+    std::vector<PatchBoundSpec> bounds;
+    std::vector<Curve3DSpec> guides;
+    std::vector<std::array<double, 3>> points;
+    double tolerance = 0;
+};
+
+/// S5: One Hermite sheet between two edges. Continuity is G1 or G2.
+struct BlendBuildSpec {
+    PatchBoundSpec a;
+    PatchBoundSpec b;
+    int continuity = -1;
+    double tension_a = 0;
+    double tension_b = 0;
+    double tolerance = 0;
+};
+
+/// S5: A sheet that fills `spec` on `current` (null when the patch starts a part).
+TopoDS_Shape build_patch(
+    const TopoDS_Shape& current,
+    const Held* held,
+    const PatchBuildSpec& spec,
+    std::string& error);
+
+/// S5: A Hermite sheet bridging `spec` on `current`.
+TopoDS_Shape build_blend(
+    const TopoDS_Shape& current,
+    const Held* held,
+    const BlendBuildSpec& spec,
+    std::string& error);
+
+/// S6: One NURBS sheet from the blob `build_nurbs_shape` writes. `current` is empty when the surface starts a part.
+TopoDS_Shape build_nurbs_surface(
+    const TopoDS_Shape& current,
+    const double* blob,
+    int len,
+    std::string& error);
+
+/// S4: Project/imprint a 3D curve onto `target_faces` of a solid or sheet, splitting those faces cleanly.
+TopoDS_Shape build_split_face(
+    const TopoDS_Shape& current,
+    const Held* held_for_edges,
+    const std::vector<TopoDS_Face>& target_faces,
+    const Curve3DSpec& curve,
+    bool has_dir,
+    const double dir[3],
+    double& volume,
+    std::string& error);
+
 #ifdef LIME_OCCT_TEST_HOOKS
 /// Debug builds only, for tests: the cheap checks of a text build next to the exact calls they stand in for, on the face nearest
 /// `point`, as JSON.
 std::string text_checks_json(const TopoDS_Shape& shape, const double point[3]);
+
+/// Debug builds only. Points of the same `Geom_BSplineCurve` a profile NURBS edge is built from, one xyz per parameter.
+/// Empty knots mean the clamped or periodic vector `nurbs-eval.ts` builds. Not an MCP tool.
+bool eval_nurbs_curve(
+    const double* poles_xyz,
+    int npoles,
+    const double* weights,
+    int degree,
+    const double* knots,
+    const int* mults,
+    int nknots,
+    bool periodic,
+    const double* params,
+    int nparams,
+    double* out_xyz,
+    std::string& error);
+
+/// Debug builds only. Points of a tensor-product `Geom_BSplineSurface`. Poles are u-major, `nu` by `nv`.
+/// Empty knots mean the clamped vector `nurbs-eval.ts` builds. Not an MCP tool.
+bool eval_nurbs_surface(
+    const double* poles_xyz,
+    int nu,
+    int nv,
+    const double* weights,
+    int degree_u,
+    int degree_v,
+    const double* knots_u,
+    const int* mults_u,
+    int nknots_u,
+    const double* knots_v,
+    const int* mults_v,
+    int nknots_v,
+    const double* params_uv,
+    int nparams,
+    double* out_xyz,
+    std::string& error);
 #endif
 
 }  // namespace lime_occt

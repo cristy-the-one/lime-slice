@@ -19,6 +19,9 @@ const RAIL = `
             <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive">New solid</button>
             <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
             <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
+            <button class="model-tool" id="modelToolPatch" type="button" data-tool="patch" hidden aria-pressed="false" data-tip="Patch: fill an opening. Each edge shows G0, G1, or G2.">Patch</button>
+            <button class="model-tool" id="modelToolNurbs" type="button" data-tool="sculpt" hidden aria-pressed="false" data-tip="NURBS: drag poles on a surface. On a solid it stays in the Features menu.">NURBS</button>
+            <button class="model-tool" id="modelToolBlend" type="button" data-tool="blend" hidden aria-pressed="false" data-tip="Blend: bridge two open edges. G1 or G2, with a tension on each side.">Blend</button>
           </div>
         </div>
         <div class="rail-group" data-group="shape" data-solid-only role="group" aria-label="Shape">
@@ -47,7 +50,7 @@ const RAIL = `
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
               <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, plugins, stress, split to print, print transition"></button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, patch, blend, NURBS, parameters, plugins, stress, split to print, print transition"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -55,6 +58,9 @@ const RAIL = `
                 <button class="model-tool" type="button" role="menuitem" data-tool="array">Array</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="patch">Patch</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="blend">Blend</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="sculpt">NURBS</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
                 <!-- --- Plugins (docs/plan-recipe-plugins.md D13): the library's card, beside Parameters. No rail button. --- -->
@@ -115,6 +121,31 @@ const RAIL = `
         <label class="model-look-offset">Offset <input id="modelSectionOffset" type="number" step="0.1" value="0" aria-label="Section offset"></label>
         <label class="model-keep"><input id="modelSectionFlip" type="checkbox"> Flip</label>
         <label class="model-keep"><input id="modelColourSteps" type="checkbox"> Colour by step</label>
+        <!-- --- Organic surfaces S1 (U1–U2): Shading analysis modes & UV surface grid. --- -->
+        <span class="model-look-label">Shading</span>
+        <div class="model-look-axis" id="modelShading" role="group" aria-label="Surface shading">
+          <button type="button" data-shading="normal" aria-pressed="true" data-tip="Standard solid shading">Normal</button>
+          <button type="button" data-shading="step" aria-pressed="false" data-tip="Colour each face by the step that made it">Step</button>
+          <button type="button" data-shading="zebra" aria-pressed="false" data-tip="Zebra reflection stripes to inspect G0 / G1 / G2 smoothness (Alt+Z)">Zebra</button>
+          <button type="button" data-shading="curvature" aria-pressed="false" data-tip="Bend tightness &amp; curvature heatmap (Alt+C)">Curv</button>
+        </div>
+        <div class="model-look-sub" id="modelZebraRow" hidden>
+          <label class="model-look-offset">Stripes <input id="modelZebraStripes" class="model-look-range" type="range" min="4" max="32" step="2" value="12" aria-label="Zebra stripe count"></label>
+          <div class="model-look-axis" id="modelZebraAxis" role="group" aria-label="Zebra band direction">
+            <button type="button" data-zebra-axis="view" aria-pressed="true">View</button>
+            <button type="button" data-zebra-axis="horizontal" aria-pressed="false">Horiz</button>
+            <button type="button" data-zebra-axis="vertical" aria-pressed="false">Vert</button>
+          </div>
+        </div>
+        <div class="model-look-sub" id="modelCurvatureRow" hidden>
+          <div class="model-look-axis" id="modelCurvatureMode" role="group" aria-label="Curvature readout">
+            <button type="button" data-curvature-mode="radius" aria-pressed="true" data-tip="Tightest bend radius in mm — red highlights bends tighter than the threshold">Radius</button>
+            <button type="button" data-curvature-mode="gaussian" aria-pressed="false" data-tip="Gaussian curvature K: dome (warm), flat/cylinder (neutral), saddle (blue)">Gauss</button>
+            <button type="button" data-curvature-mode="mean" aria-pressed="false" data-tip="Mean curvature H: convex ridge (warm) vs concave valley (blue)">Mean</button>
+          </div>
+          <label class="model-look-offset" id="modelCurvatureWarnRow">Warn &lt; <input id="modelCurvatureWarn" type="number" min="0.1" max="100" step="0.2" value="2" aria-label="Bend radius warning threshold, millimetres"> mm</label>
+        </div>
+        <label class="model-keep" data-tip="Show real UV isoparametric grid lines on curved faces (Alt+I)"><input id="modelIsoparms" type="checkbox"> Surface grid (Isoparms)</label>
         <p class="model-note" id="modelSectionNote" hidden></p>
         <!-- --- Split to print, Explode (D12): a view of the pieces, never saved. Shown when the part has pieces. --- -->
         <div class="model-explode" id="modelExplodeRow" hidden>
@@ -152,6 +183,18 @@ const DOCK = `
                 <button class="btn mode on" id="modelEdgesPicked" type="button" data-edge-mode="picked" aria-pressed="true">Picked</button>
                 <button class="btn mode" id="modelEdgesStep" type="button" data-edge-mode="step" aria-pressed="false" data-tip="Every sharp edge a history step made that is still on this solid">A step</button>
               </div>
+              <!-- S3 (U5): Fillet profile: circular arc (G1, default), curvature-continuous (G2), or conic rho. -->
+              <div class="modes" id="modelBlendContinuity" data-for="blend" role="group" aria-label="Blend continuity">
+                <button class="btn mode on" type="button" data-blend-continuity="g1" aria-pressed="true" data-tip="The blend leaves each edge with the same tangent as the sheet.">G1</button>
+                <button class="btn mode" type="button" data-blend-continuity="g2" aria-pressed="false" data-tip="The blend also matches curvature across each edge.">G2</button>
+              </div>
+              <div class="modes" id="modelFilletProfile" data-for="fillet" role="group" aria-label="Fillet profile">
+                <button class="btn mode on" type="button" data-fillet-profile="g1" aria-pressed="true" data-tip="Circular arc cross-section (G1, default)">Circular G1</button>
+                <button class="btn mode" type="button" data-fillet-profile="g2" aria-pressed="false" data-tip="Curvature-continuous blend (G2), exact on a straight edge between two flat faces">Smooth G2</button>
+                <button class="btn mode" type="button" data-fillet-profile="conic" aria-pressed="false" data-tip="Conic profile with fullness ρ, on a straight edge between two flat faces">Conic</button>
+              </div>
+              <!-- Organic surfaces: G2 and conic are built exactly only on a straight edge between two flat faces; the kernel refuses edges that meet at a corner, and says why. -->
+              <p class="model-note" id="modelFilletProfileNote" data-for="fillet" data-fillet-profile="g2 conic" data-tip="Built exactly only on a straight edge between two flat faces. Picked edges that meet at a corner are refused, with the reason.">Only on straight edges between flat faces.</p>
               <!-- Gaps 13: equal sides, two sizes, or a size and an angle. -->
               <div class="modes" id="modelChamferForm" data-for="chamfer" role="group" aria-label="Chamfer sides">
                 <button class="btn mode on" type="button" data-chamfer-form="equal" aria-pressed="true" data-tip="Size along both faces">Equal</button>
@@ -241,6 +284,39 @@ const DOCK = `
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
                 <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
+                <label data-for="blend">Side A tension<input id="modelBlendTensionA" type="range" min="0.2" max="3" step="0.05" value="1" aria-label="Side A tension"></label>
+                <label data-for="blend">Side B tension<input id="modelBlendTensionB" type="range" min="0.2" max="3" step="0.05" value="1" aria-label="Side B tension"></label>
+                <div data-for="sculpt" class="model-sculpt">
+                  <p id="modelNurbsNote">Drag a pole, a row, or a column. Release commits the surface.</p>
+                  <button type="button" id="modelNurbsNew" data-tip="A flat 8 × 8 bicubic surface, as a new object beside the others.">New NURBS surface</button>
+                  <div class="sculpt-modes" role="group" aria-label="What a drag moves">
+                    <button type="button" data-sculpt-mode="pole" aria-pressed="true">Pole</button>
+                    <button type="button" data-sculpt-mode="row" aria-pressed="false">Row</button>
+                    <button type="button" data-sculpt-mode="column" aria-pressed="false">Column</button>
+                  </div>
+                  <label data-tip="Poles within this distance of the selection follow it, less the farther they are. 0 moves the selection alone.">Falloff (mm)<input id="modelNurbsFalloff" type="range" min="0" max="80" step="1" value="0"></label>
+                  <label class="sculpt-check" data-tip="Mirror each drag across the part's own X = 0 plane."><input id="modelNurbsSymmetry" type="checkbox" aria-describedby="modelNurbsSymmetryNote"> Symmetry (part X = 0)</label>
+                  <p id="modelNurbsSymmetryNote" hidden></p>
+                  <button type="button" id="modelNurbsMakeSymmetric" hidden data-tip="Each pole and its mirror pole meet halfway, so the surface is symmetric about the part's X = 0 plane.">Make symmetric</button>
+                  <details>
+                    <summary>Exact NURBS</summary>
+                    <label>Degree U<input id="modelNurbsDegreeU" data-own-enter type="number" min="1" max="8" step="1" value="3"></label>
+                    <label>Degree V<input id="modelNurbsDegreeV" data-own-enter type="number" min="1" max="8" step="1" value="3"></label>
+                    <label data-tip="The selected pole's weight. Above 1 pulls the surface toward it.">Weight<input id="modelNurbsWeight" data-own-enter type="number" min="0.05" step="0.05" value="1"></label>
+                    <label data-tip="Where Insert and Crease cut across the surface: 0 at one edge, 1 at the other.">Knot at<input id="modelNurbsParam" data-own-enter type="number" min="0" max="1" step="0.05" value="0.5"></label>
+                    <button type="button" id="modelNurbsInsertU">Insert U knot</button>
+                    <button type="button" id="modelNurbsInsertV">Insert V knot</button>
+                    <button type="button" id="modelNurbsCreaseU">Crease U</button>
+                    <button type="button" id="modelNurbsCreaseV">Crease V</button>
+                    <button type="button" id="modelNurbsElevateU">Raise U degree</button>
+                    <button type="button" id="modelNurbsElevateV">Raise V degree</button>
+                  </details>
+                </div>
+                <!-- S3 (U5): Conic fullness rho and variable-radius stations along the edge. -->
+                <label data-for="fillet" data-fillet-profile="conic" data-snap="0.05" data-tip="Conic fullness ρ: 0.05 flat, 0.5 parabolic, 0.95 very full."><span class="scrub-label" data-scrub>Conic ρ</span><input id="modelFilletRho" type="number" step="0.05" min="0.05" max="0.95" value="0.5" aria-label="Conic fullness rho"></label>
+                <label data-for="fillet" data-fillet-var="1" data-snap="0.5" data-tip="Radius at the start of the edge (u = 0)."><span class="scrub-label" data-scrub>Start r</span><input id="modelFilletStart" type="number" step="0.1" min="0.05" value="1" aria-label="Variable fillet start radius"></label>
+                <label data-for="fillet" data-fillet-var="1" data-snap="0.5" data-tip="Optional radius at the middle (u = 0.5). 0 tapers linearly."><span class="scrub-label" data-scrub>Middle r</span><input id="modelFilletMid" type="number" step="0.1" min="0" value="0" aria-label="Variable fillet middle radius"></label>
+                <label data-for="fillet" data-fillet-var="1" data-snap="0.5" data-tip="Radius at the end of the edge (u = 1)."><span class="scrub-label" data-scrub>End r</span><input id="modelFilletEnd" type="number" step="0.1" min="0.05" value="3" aria-label="Variable fillet end radius"></label>
                 <!-- Gaps 13: a chamfer's other side, by a distance or by an angle from the face Size runs along. -->
                 <label data-for="chamfer" data-chamfer="two" data-snap="1" data-tip="Along the other face."><span class="scrub-label" data-scrub>Other side</span><input id="modelChamfer2" type="number" step="0.1" min="0" value="2" aria-label="Chamfer distance along the other face"></label>
                 <label data-for="chamfer" data-chamfer="angle" data-snap="15" data-tip="From the face Size runs along."><span class="scrub-label" data-scrub>Angle°</span><input id="modelChamferAngle" type="number" step="1" min="1" max="89" value="45" aria-label="Chamfer angle from the first face, degrees"></label>
@@ -370,6 +446,7 @@ const DOCK = `
                 <label class="model-keep"><input id="modelThrough" type="checkbox"> Through all</label>
                 <label class="model-keep"><input id="modelCounterbore" type="checkbox"> Counterbore</label>
               </div>
+              <label class="model-keep" data-for="fillet" data-tip="Taper the fillet radius along the edge (Start, optional Middle, End)."><input id="modelFilletVariable" type="checkbox"> Variable radius</label>
               <p class="model-note" id="modelChamferSide" data-for="chamfer" data-chamfer="two angle">Size runs along each edge's upper face.</p>
               <label class="model-keep" data-for="chamfer" data-chamfer="two angle"><input id="modelChamferFlip" type="checkbox"> Flip the sides</label>
               <!-- A2 shell -->
@@ -508,6 +585,15 @@ const DOCK = `
           </section>
           <!-- --- S2 sketch --- -->
           <div class="sketch-cards" id="sketchCards" hidden></div>
+          <!-- --- Organic surfaces S4 (U6): open-sheet notice with one-click Thicken & Cap & Sew to solid. --- -->
+          <div class="model-sheet-bar" id="modelSheetBar" role="status" hidden>
+            <p class="model-sheet-text" id="modelSheetText">Open sheet — thicken or cap &amp; sew to make a printable solid.</p>
+            <div class="model-sheet-actions">
+              <label class="model-sheet-thick"><span>Wall</span><input id="modelSheetThickenMm" type="number" step="0.2" min="0.1" max="100" value="2" aria-label="Sheet wall thickness, millimetres"><span>mm</span></label>
+              <button class="btn primary" id="modelSheetThickenGo" type="button" data-tip="Thicken this open sheet into a watertight printable solid">Thicken</button>
+              <button class="btn" id="modelSheetSewGo" type="button" data-tip="Cap planar open borders and sew this sheet into a watertight solid">Cap &amp; Sew</button>
+            </div>
+          </div>
           <section class="model-history" id="modelHistory" aria-label="History" hidden>
             <button class="model-history-toggle" id="modelHistoryToggle" type="button" data-pane-head aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
             <div class="mh-position" id="modelPosition" role="group" aria-label="Position">
@@ -668,6 +754,8 @@ const DOCK = `
 
 const BODY = `
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
+          <div id="modelEdgeBadges" hidden></div>
+          <div id="modelNurbsOverlay" hidden></div>
           <div id="stressLegend" class="stress-legend" hidden>
             <div class="stress-ramp-col">
               <span class="stress-ramp-end" id="stressLegendHigh"></span>

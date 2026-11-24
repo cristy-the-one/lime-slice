@@ -1,4 +1,5 @@
 /** History rows: made objects, jump, peek, lens, rename, and drop of a branch. */
+import { viewRequest } from "../../model-mesh-quality";
 import { toolPose, type ToolLink } from "../../model-edit";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { dropped, subtree, withNode, type ModelTree, type NodeId } from "../../model-tree";
@@ -131,7 +132,7 @@ export async function showLens(mine: number, row: RowKey, step: { tree: ModelTre
     S.jumping = true;
     S.jumpTarget = null;
     syncUndo();
-    const body = await treeCall(key, step.id, gotoRequest(key, step.id, chord));
+    const body = await treeCall(key, step.id, viewRequest(gotoRequest(key, step.id, chord)));
     const newest = mine === S.ticket && serial === S.jumpSerial;
     if (newest) S.jumping = false;
     syncUndo();

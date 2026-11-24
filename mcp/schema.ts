@@ -2,6 +2,8 @@
 
 import { FIRST_TOOLS, GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
 import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
+import { organicFirstProblem, organicProblem } from "./organic-checks.ts";
+import { nurbsSurfaceProblem } from "./nurbs-surface-checks.ts";
 import { ALIGN_RELATIONS } from "../src/place-snap.ts";
 
 const handle = { type: "string", minLength: 1, maxLength: 64, description: "obj_N. Default: the selected." };
@@ -57,6 +59,29 @@ const edgeList = {
     },
   ],
 };
+
+/** edgeList with at most `most` indexes, the kernel's cap where the organic ops read edges. */
+const cappedEdges = (most: number, description?: string) => ({
+  ...edgeList,
+  ...(description ? { description } : {}),
+  oneOf: [{ ...edgeList.oneOf[0], maxItems: most }, ...edgeList.oneOf.slice(1)],
+});
+/** A face of the part: an index, or a selector. organic-checks.ts refuses anything else in a sentence. */
+const facePick = (description: string) => ({
+  description,
+  oneOf: [
+    { type: "integer", minimum: 0 },
+    {
+      type: "object",
+      properties: {
+        normal: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Outward normal." },
+        nearPoint: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Nearest to this point." },
+        withinDeg: { type: "number", minimum: 0, maximum: 180, description: "Normal tolerance, degrees." },
+        index: { type: "integer", minimum: 0, description: "Face index." },
+      },
+    },
+  ],
+});
 
 const label = { type: "string", maxLength: 80, description: "Step name." };
 const objectName = { type: "string", minLength: 1, maxLength: 120, description: "Name in the app's object list." };
@@ -294,7 +319,16 @@ const op = {
       properties: {
         kind: { const: "fillet" },
         edges: edgeList,
-        size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+        size: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Default radius, mm." },
+        continuity: { enum: ["g1", "g2", "conic"], description: "Profile: g1 circular (default), g2 curvature-continuous, or conic." },
+        rho: { type: "number", minimum: 0.05, maximum: 0.95, description: "Conic fullness ρ (0.05–0.95, default 0.5)." },
+        variable: {
+          type: "array",
+          minItems: 2,
+          maxItems: 50,
+          items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } },
+          description: "Variable-radius [u, radius] stations along the edge (u in [0, 1], radius > 0).",
+        },
         label,
       },
     },
@@ -392,15 +426,19 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0, textOk
   const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
   // A text with a font is one step: model_probe checks it (the session says when a text with no font is several).
   if (plain && typeof kind === "string" && COMPOSITE.has(kind) && !(textOk && kind === "text")) return `${path}.kind ${kind} is several steps. Use model_apply or model_apply_batch.`;
+  const first = organicFirstProblem(value, path);
+  if (first) return first;
   const problem = validate(op, value, path);
   if (problem) return problem;
+  const organic = organicProblem(value, path);
+  if (organic) return organic;
   if ((kind === "pattern" || kind === "mirror") && depth < 4) {
     const inner = (value as { op?: unknown }).op;
     const innerKind = inner && typeof inner === "object" ? (inner as { kind?: unknown }).kind : undefined;
     if (typeof innerKind !== "string" || !REPEATABLE.has(innerKind)) return `A ${String((value as { kind?: unknown }).kind)} repeats one of ${[...REPEATABLE].join(", ")}; ${typeof innerKind === "string" ? `a ${innerKind}` : "that op"} is applied once per copy instead (${path}.op).`;
     return checkOp(inner, `${path}.op`, false, depth + 1);
   }
-  return null;
+  return nurbsSurfaceProblem(value, path);
 }
 
 const profilePlace = {
@@ -433,9 +471,14 @@ const loopsField = {
           additionalProperties: false,
           required: ["kind", "to"],
           properties: {
-            kind: { enum: ["line", "arc", "spline"], description: "line, arc, or spline." },
+            kind: { enum: ["line", "arc", "spline", "nurbs"], description: "line, arc, spline, or exact nurbs." },
             to: { ...point2, description: "End." },
             through: { description: "Arc: one point. Spline: points.", oneOf: [point2, { type: "array", minItems: 1, maxItems: 200, items: point2 }] },
+            poles: { type: "array", maxItems: 200, items: point2, description: "NURBS interior control points." },
+            weights: { type: "array", minItems: 2, maxItems: 202, items: { type: "number", exclusiveMinimum: 0 }, description: "NURBS rational weights (all poles incl. start & to)." },
+            degree: { type: "integer", minimum: 1, maximum: 10, description: "NURBS degree (default 3)." },
+            knots: { type: "array", minItems: 2, maxItems: 210, items: { type: "number" }, description: "Distinct NURBS knot values." },
+            mults: { type: "array", minItems: 2, maxItems: 210, items: { type: "integer", minimum: 1 }, description: "NURBS knot multiplicities." },
           },
         },
       },
@@ -443,9 +486,148 @@ const loopsField = {
   },
 };
 
+const curve3dSeg = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "to"],
+  properties: {
+    kind: { enum: ["line", "arc", "spline", "nurbs"], description: "Segment kind." },
+    to: { ...vec3, description: "Segment end point." },
+    through: { description: "Arc mid point or spline through points.", oneOf: [vec3, { type: "array", minItems: 1, maxItems: 200, items: vec3 }] },
+    poles: { type: "array", maxItems: 200, items: vec3, description: "NURBS interior control points." },
+    weights: { type: "array", minItems: 2, maxItems: 202, items: { type: "number", exclusiveMinimum: 0 }, description: "NURBS rational weights." },
+    degree: { type: "integer", minimum: 1, maximum: 10, description: "NURBS degree." },
+    knots: { type: "array", minItems: 2, maxItems: 210, items: { type: "number" }, description: "Distinct NURBS knot values." },
+    mults: { type: "array", minItems: 2, maxItems: 210, items: { type: "integer", minimum: 1 }, description: "NURBS knot multiplicities." },
+  },
+};
+
+const curve3dField = {
+  type: "object",
+  description: "Exact 3D spine: polyline, spline, nurbs, segments, or solid edges.",
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "points"],
+      properties: {
+        kind: { const: "polyline", description: "Polyline spine." },
+        points: { type: "array", minItems: 2, maxItems: 500, items: vec3, description: "3D vertices." },
+        closed: { type: "boolean", description: "Close loop." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "through"],
+      properties: {
+        kind: { const: "spline", description: "Interpolated 3D spline spine." },
+        through: { type: "array", minItems: 2, maxItems: 200, items: vec3, description: "3D interpolation points." },
+        closed: { type: "boolean", description: "Close periodic loop." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "poles"],
+      properties: {
+        kind: { const: "nurbs", description: "Exact 3D rational NURBS spine." },
+        poles: { type: "array", minItems: 2, maxItems: 200, items: vec3, description: "3D control points." },
+        weights: { type: "array", minItems: 2, maxItems: 200, items: { type: "number", exclusiveMinimum: 0 }, description: "Positive rational weights." },
+        degree: { type: "integer", minimum: 1, maximum: 10, description: "Polynomial degree." },
+        knots: { type: "array", minItems: 2, maxItems: 210, items: { type: "number" }, description: "Distinct knot values." },
+        mults: { type: "array", minItems: 2, maxItems: 210, items: { type: "integer", minimum: 1 }, description: "Knot multiplicities." },
+        closed: { type: "boolean", description: "Close periodic loop." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "start", "segments"],
+      properties: {
+        kind: { const: "segments", description: "Composite 3D curve segments." },
+        start: { ...vec3, description: "Start point." },
+        segments: { type: "array", minItems: 1, maxItems: 200, items: curve3dSeg, description: "Connected 3D segments." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "edges"],
+      properties: {
+        kind: { const: "edges", description: "Existing solid edges as spine." },
+        edges: cappedEdges(500),
+      },
+    },
+  ],
+};
+
 const profileShape = {
   smooth: { type: "boolean", description: "Spline through points." },
   corners: { type: "array", maxItems: 1000, items: { type: "integer", minimum: 0 }, description: "Sharp corners when smooth." },
+};
+
+const sweepSectionItem = {
+  type: "object",
+  additionalProperties: false,
+  required: ["origin"],
+  properties: {
+    origin: { ...vec3, description: "Plane origin; a circle's centre." },
+    turn: { ...vec3, description: "Plane turn, degrees X, Y, Z; W is the plane's normal." },
+    radius: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Circle, or ellipse along U." },
+    radiusV: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Ellipse along V." },
+    profile,
+    loops: loopsField,
+    ...profileShape,
+  },
+};
+
+const loftBoundaryField = {
+  type: "object",
+  description: "Start or end loft boundary condition: free, normal, or tangent. A loft steers an end by its direction only.",
+  oneOf: [
+    { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "free", description: "Natural free end (default)." } } },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: {
+        kind: { const: "normal", description: "Normal to the section plane." },
+        tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tangent tension (default 1)." },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "dir"],
+      properties: {
+        kind: { const: "tangent", description: "Explicit departure tangent vector." },
+        dir: { ...vec3, description: "Tangent direction vector." },
+        tension: { type: "number", exclusiveMinimum: 0, maximum: 5, description: "Boundary tangent tension (default 1)." },
+      },
+    },
+  ],
+};
+
+const sweepModeField = {
+  type: "object",
+  description: "Sweep frame law along the spine.",
+  oneOf: [
+    { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "correctedFrenet", description: "Rotation-minimizing frame (default)." } } },
+    { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "frenet", description: "Classical Frenet frame." } } },
+    { type: "object", additionalProperties: false, required: ["kind", "dir"], properties: { kind: { const: "fixedBinormal", description: "Fixed binormal direction." }, dir: { ...vec3, description: "Binormal vector." } } },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "spine"],
+      properties: {
+        kind: { const: "auxSpine", description: "Guide rail auxiliary spine." },
+        spine: curve3dField,
+        curvilinear: { type: "boolean", description: "Match by arc length." },
+        keepContact: { type: "boolean", description: "Keep section touching aux spine." },
+      },
+    },
+  ],
 };
 const perPoint = (what: string) => ({ description: `${what}: one number, or one per path point.` });
 
@@ -502,11 +684,10 @@ const sketchOps = [
         type: "array",
         minItems: 2,
         maxItems: 200,
-        description: "Cross-sections in order, each on its own plane.",
+        description: "Cross-sections in order, each on its own plane, or a point apex cap.",
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["origin"],
           properties: {
             origin: { ...vec3, description: "Plane origin; a circle's centre." },
             turn: { ...vec3, description: "Plane turn, degrees X, Y, Z; W is the plane's normal." },
@@ -514,26 +695,38 @@ const sketchOps = [
             radiusV: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Ellipse along V." },
             profile,
             loops: loopsField,
+            apex: { ...vec3, description: "Point apex cap (valid as first or last section)." },
             ...profileShape,
           },
         },
       },
       ruled: { type: "boolean", description: "Flat between sections." },
+      guides: { type: "array", maxItems: 20, items: curve3dField, description: "3D guide rails shaping the loft between sections." },
+      startCondition: loftBoundaryField,
+      endCondition: loftBoundaryField,
+      closed: { type: "boolean", description: "Close the last section smoothly back to the first (periodic ring)." },
+      smoothing: { type: "boolean", description: "Enable curvature-fairing B-spline smoothing." },
+      maxDegree: { type: "integer", minimum: 2, maximum: 10, description: "Cap maximum U/V B-spline degree, 2 to 10 (default 8)." },
       label,
     },
   },
   {
     type: "object",
     additionalProperties: false,
-    required: ["kind", "path"],
+    required: ["kind"],
     properties: {
       kind: { const: "sweep" },
       op: booleanKind,
       path: { type: "array", minItems: 2, maxItems: 100, items: vec3, description: "[x, y, z] points; a smooth curve runs through them." },
+      sections: { type: "array", minItems: 1, maxItems: 50, items: sweepSectionItem, description: "Exact pipe-shell cross-sections (with spine)." },
+      spine: curve3dField,
+      mode: sweepModeField,
+      transition: { enum: ["round", "right", "transformed"], description: "Corner transition at sharp spine bends: round (default), right (miter), transformed." },
+      twistDeg: { type: "number", minimum: -3600, maximum: 3600, description: "Smooth twist along the spine, degrees." },
       radius: perPoint("Circle radius, mm"),
       radiusV: perPoint("Ellipse radius toward up, mm"),
       profile: { ...profile, description: "Section outline instead of a circle, [u, v] mm about the path; V toward up." },
-      scale: perPoint("Profile size factor"),
+      scale: { description: "Profile size factor: number, per-point list, or [[u, factor], ...] stations for kernel spine sweep." },
       ...profileShape,
       up: { ...vec3, description: "Where V points at the start. Default +Z." },
       steps: { type: "integer", minimum: 1, maximum: 12, description: "Sections per span (default 3); 1 is only the points." },
@@ -642,6 +835,167 @@ const draftOp = {
   },
 };
 (op.oneOf as unknown[]).splice(5 + sketchOps.length + faceOps.length, 0, draftOp);
+// --- Organic surfaces S4: Open surfaces ("Sheets") and surface-to-solid operations. ---
+const sheetSpecFields = {
+  mode: { enum: ["extrude", "revolve", "loft", "planar"], description: "Sheet builder: extrude, revolve, loft, or planar." },
+  curves: { type: "array", minItems: 1, maxItems: 20, items: curve3dField, description: "3D boundary or section curves, at most 20." },
+  dir: { ...vec3, description: "Extrude direction or revolve axis direction." },
+  distance: { type: "number", minimum: -1000, maximum: 1000, description: "Extrude distance, mm." },
+  axisOrigin: { ...vec3, description: "Revolve axis origin point." },
+  angleDeg: { type: "number", minimum: -360, maximum: 360, description: "Revolve sweep angle, degrees." },
+  ruled: { type: "boolean", description: "Ruled surface between loft curves." },
+  symmetric: { type: "boolean", description: "Extrude equally to both sides." },
+};
+const sheetSpecField = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode", "curves"],
+  description: "Open surface sheet specification.",
+  properties: sheetSpecFields,
+};
+const sheetOps = [
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "mode", "curves"],
+    properties: {
+      kind: { const: "sheet", description: "Open surface sheet." },
+      ...sheetSpecFields,
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind"],
+    properties: {
+      kind: { const: "sew", description: "Sew open faces into a shell or watertight solid." },
+      tolerance: { type: "number", exclusiveMinimum: 0, maximum: 10, description: "Sewing tolerance, mm." },
+      makeSolid: { type: "boolean", description: "Auto-promote a watertight closed shell to a solid (default true)." },
+      capPlanar: { type: "boolean", description: "Cap planar open borders before sewing." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "thickness"],
+    properties: {
+      kind: { const: "thicken", description: "Thicken an open sheet into a watertight solid wall." },
+      thickness: { type: "number", exclusiveMinimum: 0, maximum: 200, description: "Wall thickness, mm." },
+      direction: { enum: ["normal", "reverse", "both"], description: "Offset side: normal (default), reverse, or both." },
+      tolerance: { type: "number", exclusiveMinimum: 0, maximum: 1, description: "Offset tolerance, mm." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "sheet"],
+    properties: {
+      kind: { const: "trimSplit", description: "Split a solid or sheet with a sheet built from curves (extrude, revolve, loft or planar)." },
+      sheet: sheetSpecField,
+      keep: { enum: ["above", "below", "both"], description: "Which side to keep: above (default), below, or both." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "face", "sheet"],
+    properties: {
+      kind: { const: "replaceFace", description: "Replace a solid face with a sheet built from curves (extrude, revolve, loft or planar)." },
+      face: facePick("Target face: an index, or {normal, nearPoint}."),
+      sheet: sheetSpecField,
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "faces", "curve"],
+    properties: {
+      kind: { const: "splitFace", description: "Project and imprint a 3D curve onto faces to split them." },
+      faces: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        description: "Faces to split: indexes, or {normal, nearPoint} selectors.",
+        items: facePick("Face index or selector."),
+      },
+      curve: curve3dField,
+      direction: { ...vec3, description: "Optional projection direction (default normal projection)." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "boundaries"],
+    properties: {
+      kind: { const: "patch", description: "Fill an opening with a sheet." },
+      boundaries: {
+        type: "array",
+        minItems: 2,
+        maxItems: 20,
+        description: "Boundary sides, in order. Each is edges and/or a curve, with continuity g0 or g1. A side asked g2 is not built in this version: the kernel refuses it with the curvature jump it reached.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            edges: cappedEdges(64, "Edges of this side, in order, at most 64."),
+            curve: curve3dField,
+            face: facePick("Support face: an index, or {normal, nearPoint}."),
+            continuity: { enum: ["g0", "g1", "g2"], description: "g0 or g1 (g2 is not built in this version and is refused). Absent: g1 on an edge that touches a face, otherwise g0." },
+          },
+        },
+      },
+      guides: { type: "array", maxItems: 20, items: curve3dField, description: "Interior guide curves." },
+      points: { type: "array", maxItems: 50, items: vec3, description: "Interior guide points." },
+      tolerance: { type: "number", exclusiveMinimum: 0, maximum: 0.0001, description: "Gap the fill aims for, mm." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "a", "b"],
+    properties: {
+      kind: { const: "blendSurface", description: "Bridge two open edges or chains with a sheet." },
+      a: { type: "object", additionalProperties: false, description: "Side A: edges and/or a curve.", properties: { edges: cappedEdges(64), curve: curve3dField, face: facePick("Support face."), continuity: { enum: ["g0", "g1", "g2"], description: "This side's continuity." } } },
+      b: { type: "object", additionalProperties: false, description: "Side B: edges and/or a curve.", properties: { edges: cappedEdges(64), curve: curve3dField, face: facePick("Support face."), continuity: { enum: ["g0", "g1", "g2"], description: "This side's continuity." } } },
+      continuity: { enum: ["g1", "g2"], description: "G1 or G2. A side's own continuity wins." },
+      tensionA: { type: "number", minimum: 0.15, maximum: 4, description: "Side A tension." },
+      tensionB: { type: "number", minimum: 0.15, maximum: 4, description: "Side B tension." },
+      tolerance: { type: "number", exclusiveMinimum: 0, maximum: 0.0001, description: "Gap the bridge aims for, mm." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "poles"],
+    properties: {
+      kind: { const: "nurbsSurface", description: "An M by N NURBS pole grid. The result is a sheet." },
+      poles: { type: "array", minItems: 2, maxItems: 64, description: "Poles, one row per U index, each row along V.", items: { type: "array", minItems: 2, maxItems: 64, items: vec3 } },
+      weights: { type: "array", maxItems: 64, description: "One weight per pole, each greater than 0. Absent means 1.", items: { type: "array", maxItems: 64, items: { type: "number", exclusiveMinimum: 0 } } },
+      degreeU: { type: "integer", minimum: 1, maximum: 8, description: "Degree in U. Absent means 3." },
+      degreeV: { type: "integer", minimum: 1, maximum: 8, description: "Degree in V. Absent means 3." },
+      knotsU: { type: "array", maxItems: 128, items: { type: "number" }, description: "Distinct U knots, strictly increasing. Absent builds a clamped or periodic vector." },
+      multsU: { type: "array", maxItems: 128, items: { type: "integer", minimum: 1, maximum: 9 }, description: "U multiplicities, one per distinct knot: at most the degree inside, the degree + 1 at a clamped end." },
+      knotsV: { type: "array", maxItems: 128, items: { type: "number" }, description: "Distinct V knots, strictly increasing." },
+      multsV: { type: "array", maxItems: 128, items: { type: "integer", minimum: 1, maximum: 9 }, description: "V multiplicities, one per distinct knot: at most the degree inside, the degree + 1 at a clamped end." },
+      periodicU: { type: "boolean", description: "Periodic in U. Absent is clamped." },
+      periodicV: { type: "boolean", description: "Periodic in V. Absent is clamped." },
+      insertU: { type: "array", maxItems: 32, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "U knots to insert, applied before the kernel sees the grid: [parameter inside the U range, times from 1 to the U degree], at most 32. Clamped surfaces only." },
+      insertV: { type: "array", maxItems: 32, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "V knots to insert, applied before the kernel sees the grid: [parameter inside the V range, times from 1 to the V degree], at most 32. Clamped surfaces only." },
+      elevateU: { type: "integer", minimum: 1, maximum: 8, description: "Raise the U degree to this. The surface stays where it is." },
+      elevateV: { type: "integer", minimum: 1, maximum: 8, description: "Raise the V degree to this. The surface stays where it is." },
+      label,
+    },
+  },
+];
+(op.oneOf as unknown[]).splice(5 + sketchOps.length + faceOps.length + 1, 0, ...sheetOps);
 const regionField = {
   type: "object",
   additionalProperties: false,
@@ -937,6 +1291,15 @@ export const OP_SUMMARY: Record<string, string> = {
   faceExtrude: "faceExtrude {face, distance}: a prism on a face.",
   moveFaces: "moveFaces {faces:[{face, distance}]}: push or pull faces.",
   draft: "draft {faces, angleDeg, pull, neutral}: tilt walls so the part releases. Positive opens them toward pull.",
+  sheet: "sheet {mode:extrude|revolve|loft|planar, curves, dir, distance, axisOrigin, angleDeg}: build or add an open surface sheet.",
+  sew: "sew {tolerance, capPlanar, makeSolid}: sew open sheets into a shell or watertight solid.",
+  thicken: "thicken {thickness, direction:normal|reverse|both}: thicken an open sheet into a printable solid wall.",
+  trimSplit: "trimSplit {sheet, keep:above|below|both}: cut a solid or sheet with a sheet built from curves.",
+  replaceFace: "replaceFace {face, sheet}: replace a solid face with a sheet built from curves.",
+  splitFace: "splitFace {faces, curve, direction}: imprint a 3D curve onto faces to split them.",
+  patch: "patch {boundaries:[{edges|curve, continuity}], guides, points}: fill an opening with a sheet.",
+  blendSurface: "blendSurface {a, b, continuity, tensionA, tensionB}: bridge two open edges with a sheet.",
+  nurbsSurface: "nurbsSurface {poles, weights, degreeU, degreeV, knots}: an M by N NURBS sheet.",
   boolean: "boolean {op:cut|fuse|common, primitive, dx, dy, dz | radius, height, origin | centre, turn}.",
   root: "root {primitive, sizes}: a new base solid.",
   join: "join {toolObject, op}: another object's solid as the tool.",
@@ -1509,7 +1872,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "solid_new",
-    description: "Add a primitive, a gear, a fastener, a fitting, a plate, an L-bracket, a pulley or a fit coupon, centred on X and Y on Z = 0. Needs Open CASCADE.",
+    description: "Add a primitive, a gear, a fastener, a fitting, a plate, an L-bracket, a pulley or a fit coupon, centred on X and Y on Z = 0, or a part that starts from a NURBS surface or a sheet (feature). Needs Open CASCADE.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1518,6 +1881,7 @@ export const TOOLS: ToolSpec[] = [
         kind: { enum: ["nut", "socket", "hex", "washer", "spacer", "shaft", "collar", "heat-set", "plate", "bracket", "gt2", "v"], description: "With primitive part. Same as partKind." },
         name: objectName,
         gear: { type: "object", description: "guide {kind:\"gear\"}." },
+        feature: { type: "object", description: "Instead of a primitive: a part that starts from a surface, a nurbsSurface or a sheet op as model_apply takes it (guide {kind:\"nurbsSurface\"}). The part is an open sheet until it is thickened or sewn." },
         coupon: {
           type: "object",
           additionalProperties: false,
@@ -1728,6 +2092,7 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical; on a belt, from the build direction. Default 45." },
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
+        surfaces: { type: "boolean", description: "Also inspect shared-edge continuity (G0/G1/G2, gaps) and NURBS surface health (degrees, poles, tightest bend radius). continuity.edges lists up to 256 sampled edges, the worst first chosen; edgesTotal and note say when there were more. When surfaces cannot be read, surfaces says why." },
         interference: { type: "boolean", description: "Instead: every pair of the assembly's parts at their assembled poses, clear, touch or crossing, by the mesh pass. Meshes that overlap no deeper than toleranceMm (0.05 mm, the kernel's mesh chord) touch: faces that touch in the solids, an axle in a hole of its size, overlap that much in their meshes." },
         exact: { type: "boolean", description: "With interference: each pair the mesh pass did not clear, touches included, measured by the kernel's common volume; under 0.01 mm³ is a touch." },
         crossingsOnly: { type: "boolean", description: "With interference: omit touches; unmeasured pairs stay." },
@@ -2853,6 +3218,48 @@ const LEAN_OP = {
 };
 
 /** One op kind's full schema, as a client may send it (numbers may be text, points anchors). */
+/**
+ * --- Organic surfaces: shapes the guide writes once. The 3D curve (`curve3dField`) is the same schema in about a dozen
+ * fields (spines, guides, sheet curves, patch and blend sides), and a sketch outline (`loopsField`'s item) in five. A
+ * guide reply that shows a schema writes each such field as `{shape: name}` and carries the shape once in `shapes`,
+ * when it is used more than once there. Only the guide's text changes: validation and tools/list read the schema as is.
+ */
+const SHARED_SHAPES: Readonly<Record<string, unknown>> = { curve3d: curve3dField, loop: loopsField.items };
+let sharedShapeKeys: Map<string, string> | null = null;
+
+/** `schema` with each shared shape it holds more than once written as `{shape: name}`, and those shapes. */
+export function guideShapes(schema: unknown): { schema: unknown; shapes?: Record<string, unknown> } {
+  sharedShapeKeys ??= new Map(Object.entries(SHARED_SHAPES).flatMap(([name, shape]) => [[JSON.stringify(shape), name], [JSON.stringify(textNumbers(shape)), name]] as [string, string][]));
+  const keys = sharedShapeKeys;
+  const nameOf = (row: Record<string, unknown>): string | undefined => (row.oneOf !== undefined || row.required !== undefined ? keys.get(JSON.stringify(row)) : undefined);
+  const counts = new Map<string, number>();
+  const count = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    const name = Array.isArray(value) ? undefined : nameOf(value as Record<string, unknown>);
+    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+    else for (const inner of Object.values(value)) count(inner);
+  };
+  count(schema);
+  const shared = new Set([...counts].filter(([, n]) => n > 1).map(([name]) => name));
+  if (shared.size === 0) return { schema };
+  const used = new Map<string, unknown>();
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk);
+    if (!value || typeof value !== "object") return value;
+    const row = value as Record<string, unknown>;
+    const name = nameOf(row);
+    if (name && shared.has(name)) {
+      if (!used.has(name)) used.set(name, row);
+      return { shape: name };
+    }
+    return Object.fromEntries(Object.entries(row).map(([key, inner]) => [key, walk(inner)]));
+  };
+  return { schema: walk(schema), shapes: Object.fromEntries(used) };
+}
+
+/** The line a guide reply with `shapes` carries. */
+export const SHAPES_NOTE = "A field written {shape: name} takes the schema in shapes[name], given once.";
+
 export function opSchemaFor(kind: string): Record<string, unknown> | null {
   const branch = opBranch(kind);
   return branch ? textNumbers(branch) as Record<string, unknown> : null;
@@ -3035,6 +3442,12 @@ export function validateTool(name: string, input: unknown): string | null {
 function checkTool(name: string, input: unknown): string | null {
   const tool = toolByName(name);
   if (!tool) return `There is no tool named ${name}.`;
+  // The organic ops' face fields and list caps say their own sentence, before the schema's generic one.
+  if (OP_TOOLS.has(name) && input && typeof input === "object") {
+    const given = input as { op?: unknown; ops?: unknown };
+    const first = organicFirstProblem(given.op, "op") ?? (Array.isArray(given.ops) ? given.ops.map((one, i) => organicFirstProblem(one, `ops[${i}]`)).find((found) => found !== null) ?? null : null);
+    if (first) return first;
+  }
   const problem = validate(tool.inputSchema, input ?? {});
   if (problem) return problem;
   const record = (input ?? {}) as { op?: unknown; ops?: unknown[] };

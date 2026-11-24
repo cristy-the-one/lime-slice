@@ -1,4 +1,5 @@
 /** The feasibility probe: the panel's dry-run, its answers, and the preview solids kept for it. */
+import { viewRequest } from "../../model-mesh-quality";
 import { boundsOf, type Bounds } from "../../mesh-place";
 import { boxUnder } from "../../model-space";
 import { unionBox } from "../../measure";
@@ -65,7 +66,8 @@ export function scheduleProbe(wait: number) {
   const tool = openModelTool();
   const editable = !!viewed()?.editable;
   // --- P1: Push/Pull's panel probes like a face move. The gesture probes on its own. ---
-  const op = editable && (isProbed(tool) || tool === "pushpull") && !editUntouched() ? panelOp() : null;
+  const sheetTool = tool === "patch" || tool === "blend";
+  const op = (editable || sheetTool) && (isProbed(tool) || tool === "pushpull") && !editUntouched() ? panelOp() : null;
   const picked = editable ? joinPick() : null;
   if (at && tree && !op && picked) {
     // A tool Model never opened gets its tree first: the engine builds the join from it.
@@ -174,7 +176,7 @@ async function sendProbe(serial: number, key: string, tree: string, node: NodeId
       return;
     }
   }
-  const body = await treeCall(tree, node, probeRequest(tree, node, op, state.stepTolerance));
+  const body = await treeCall(tree, node, viewRequest(probeRequest(tree, node, op, state.stepTolerance)));
   const view = probeFromBody(body, op.kind === "group" ? op.steps.length : undefined);
   if (typeof body.ok === "boolean") remember(key, view);
   // The shape the check built, as Apply would commit it: the engine keeps what it meshed for it, so Apply meshes nothing again.

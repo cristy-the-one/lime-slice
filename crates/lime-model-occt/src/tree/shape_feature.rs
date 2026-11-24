@@ -14,7 +14,10 @@ use super::ffi::{
     lime_tree_primitive,
 };
 use super::group::extrude_cells;
-use super::k1::{encode_loops, extent_flags, k1_has_loops, push_shape};
+use super::k1::{
+    build_loft_v2_shape, build_nurbs_shape, build_patch_shape, build_sheet_shape, build_sweep_shape, encode_loops, extent_flags,
+    k1_has_loops, loft_needs_v2, push_shape, NurbsSurfaceSpec,
+};
 use super::gear::build_gear;
 use super::part::build_part;
 use super::ops::{Op, Primitive, Solid};
@@ -148,32 +151,129 @@ impl Shape {
                 op: which,
                 sections,
                 ruled,
+                guides,
+                start_condition,
+                end_condition,
+                closed,
+                smoothing,
+                max_degree,
             } => {
-                let mut head = Vec::with_capacity(sections.len() * 11);
-                let mut data = Vec::new();
-                for section in sections {
-                    head.extend_from_slice(&section.origin);
-                    head.extend_from_slice(&section.turn);
-                    head.push(section.radius.unwrap_or(0.0));
-                    head.push(section.radius_v.unwrap_or(0.0));
-                    head.push(f64::from(u8::from(section.smooth)));
-                    head.push(section.profile.len() as f64);
-                    head.push(section.corners.len() as f64);
-                    data.extend(section.profile.iter().flatten().copied());
-                    data.extend(section.corners.iter().map(|&c| f64::from(c)));
-                }
-                Shape::made(|error| unsafe {
-                    lime_tree_feature_loft(
-                        which.name().as_ptr(),
-                        head.as_ptr(),
-                        sections.len() as c_int,
-                        data.as_ptr(),
-                        c_int::from(*ruled),
-                        error,
+                if loft_needs_v2(
+                    sections,
+                    guides,
+                    start_condition.as_ref(),
+                    end_condition.as_ref(),
+                    *closed,
+                    *smoothing,
+                    *max_degree,
+                ) {
+                    build_loft_v2_shape(
+                        None,
+                        *which,
+                        sections,
+                        *ruled,
+                        guides,
+                        start_condition.as_ref(),
+                        end_condition.as_ref(),
+                        *closed,
+                        *smoothing,
+                        *max_degree,
                     )
-                })
+                } else {
+                    let mut head = Vec::with_capacity(sections.len() * 11);
+                    let mut data = Vec::new();
+                    for section in sections {
+                        head.extend_from_slice(&section.origin);
+                        head.extend_from_slice(&section.turn);
+                        head.push(section.radius.unwrap_or(0.0));
+                        head.push(section.radius_v.unwrap_or(0.0));
+                        head.push(f64::from(u8::from(section.smooth)));
+                        head.push(section.profile.len() as f64);
+                        head.push(section.corners.len() as f64);
+                        data.extend(section.profile.iter().flatten().copied());
+                        data.extend(section.corners.iter().map(|&c| f64::from(c)));
+                    }
+                    Shape::made(|error| unsafe {
+                        lime_tree_feature_loft(
+                            which.name().as_ptr(),
+                            head.as_ptr(),
+                            sections.len() as c_int,
+                            data.as_ptr(),
+                            c_int::from(*ruled),
+                            error,
+                        )
+                    })
+                }
             }
-            _ => Err("A new solid starts from an extrude, a revolve, or a loft.".into()),
+            Op::Sweep {
+                op: which,
+                sections,
+                spine,
+                mode,
+                transition,
+                scale,
+                twist_deg,
+                aux_spine,
+            } => build_sweep_shape(
+                None,
+                *which,
+                sections,
+                spine,
+                mode.as_ref(),
+                *transition,
+                scale,
+                *twist_deg,
+                aux_spine.as_deref(),
+                &[],
+            ),
+            Op::Sheet { spec } => build_sheet_shape(None, spec),
+            Op::Patch {
+                boundaries,
+                guides,
+                points,
+                tolerance,
+            } => {
+                if boundaries.iter().any(|bound| !bound.edges.is_empty() || bound.face.is_some()) {
+                    Err("A patch that starts a new part uses curves. Pick edges on a sheet that is already open.".into())
+                } else {
+                    build_patch_shape(None, boundaries, guides, points, *tolerance)
+                }
+            }
+            Op::NurbsSurface {
+                poles,
+                weights,
+                degree_u,
+                degree_v,
+                knots_u,
+                mults_u,
+                knots_v,
+                mults_v,
+                periodic_u,
+                periodic_v,
+                insert_u,
+                insert_v,
+                elevate_u,
+                elevate_v,
+            } => build_nurbs_shape(
+                None,
+                &NurbsSurfaceSpec {
+                    poles,
+                    weights,
+                    degree_u: *degree_u,
+                    degree_v: *degree_v,
+                    knots_u,
+                    knots_v,
+                    mults_u,
+                    mults_v,
+                    periodic_u: *periodic_u,
+                    periodic_v: *periodic_v,
+                    insert_u,
+                    insert_v,
+                    elevate_u: *elevate_u,
+                    elevate_v: *elevate_v,
+                },
+            ),
+            _ => Err("A new solid starts from an extrude, a revolve, a loft, a sweep, a sheet, or a patch.".into()),
         }
     }
 
@@ -293,6 +393,7 @@ impl Shape {
                 op: which,
                 sections,
                 ruled,
+                ..
             } => {
                 let mut head = Vec::with_capacity(sections.len() * 11);
                 let mut data = Vec::new();

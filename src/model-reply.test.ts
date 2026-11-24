@@ -1,5 +1,5 @@
 import { bytesToBase64 } from "./base64.ts";
-import { DAMAGED, MISMATCHED, SOLID_FORMAT, decodeSolid, encodeSolid, type ParsedSolid } from "./model-reply.ts";
+import { DAMAGED, MISMATCHED, SOLID_FORMAT, decodeSolid, decodeSurfaceInspect, encodeSolid, type ParsedSolid } from "./model-reply.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -108,6 +108,24 @@ eq("step faces round-trip when they match", coloured.stepFaces, [0, null]);
 eq("step faces are written only when sent", "stepFaces" in encodeSolid(sent), false);
 eq("a short step face list is ignored", solid({ ...body, stepFaces: [0] }).stepFaces, undefined);
 eq("a step face that is not a node is ignored", solid({ ...body, stepFaces: [0, "nope"] }).stepFaces, undefined);
+
+// --- Organic surfaces S1: analytic normals & lazy surfaceInspect decoding ---
+const withNormals = encodeSolid({ ...sent, normals: sent.positions.map((_, i) => (i % 3 === 2 ? 1 : 0)) });
+const decodedNormals = solid(withNormals);
+check("normals round-trip when matching positions length", !!decodedNormals.normals && decodedNormals.normals.length === sent.positions.length && decodedNormals.normals[2] === 1);
+eq("mismatched normals buffer is ignored cleanly", solid({ ...body, normals: words([0, 0, 1], "f32") }).normals, undefined);
+
+const inspected = decodeSurfaceInspect({
+  id: 3,
+  minRadiusMm: words([2.5, 1e9], "f32"),
+  gaussian: words([0.16, 0], "f32"),
+  mean: words([-0.4, 0], "f32"),
+  isoPoints: words([0, 0, 0, 1, 0, 0], "f32"),
+  continuity: { sharedEdges: 2, g2: 0, g1: 2, g0: 0, gaps: 0, maxGapMm: 0, worstSmoothAngleDeg: 0.05, worstCurvatureJump: 0.33, notable: [] },
+  surfaceHealth: { faces: 2, kinds: { plane: 1, cylinder: 1, cone: 0, sphere: 0, torus: 0, bspline: 0, bezier: 0, other: 0 }, maxUDegree: 0, maxVDegree: 0, maxPoles: 0, rationalFaces: 0, highDegreeFaces: 0, heavyFaces: 0, minRadiusMm: 2.5, tightestFace: 1, tightestAt: [0, 0, 0] },
+});
+check("surfaceInspect decodes buffers and summaries", typeof inspected !== "string" && inspected.minRadiusMm?.[0] === 2.5 && inspected.isoPoints?.length === 6 && inspected.continuity.g1 === 2);
+eq("surfaceInspect error passes through", decodeSurfaceInspect({ error: "missing" }), "missing");
 
 if (failed) throw new Error(`${failed} model reply checks failed`);
 console.log("model-reply: ok");

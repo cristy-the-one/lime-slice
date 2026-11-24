@@ -16,7 +16,7 @@ import { heatRow, isPartKind, isShaftFit, vRow, type PartKind } from "./model-pa
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
 import { draftOp } from "./model-request.ts";
-import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, type DraftOp, type JoinOp,childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, type DraftOp, type FilletContinuity, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 import { isSketchHoleGroup, sketchHolePanel } from "./sketch/holes.ts";
 
 /**
@@ -94,6 +94,9 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
  */
 export const FEATURE_ROOT_EDIT = "This solid started from a sketch. Open the sketch to change it.";
 
+/** --- S6. A NURBS surface is sculpted on its own part, not through another part's join. */
+export const NURBS_TOOL_EDIT = "Open the part this NURBS surface belongs to, and edit it there.";
+
 /** --- Split to print. Its card edits it on its own part; through a join it is another part's step. */
 export const SPLIT_TO_PRINT_EDIT = "Edit this split to print from the part it cut.";
 
@@ -125,6 +128,9 @@ function hasPanel(op: ModelOp): boolean {
   if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") return true;
   // P1. A push/pull reopens Push/Pull on its faces. A move with a distance per face has no one field to show.
   if (op.kind === "moveFaces") return op.faces.length > 0 && op.faces.every((row) => row.distance === op.faces[0]!.distance);
+  if (op.kind === "sheet" || op.kind === "sew" || op.kind === "thicken" || op.kind === "trimSplit" || op.kind === "replaceFace" || op.kind === "splitFace" || op.kind === "patch" || op.kind === "blendSurface") return false;
+  // --- S6. A NURBS surface reopens the NURBS tool on its own grid.
+  if (op.kind === "nurbsSurface") return true;
   return true;
 }
 
@@ -263,6 +269,7 @@ export function crossPlan(tool: ModelTree, joins: readonly ToolLink[], node: Nod
 /** Why step `id` of a tool's tree, reached through `joins`, cannot be edited from the open tree's history, or null. */
 export function toolEditRefusal(tool: ModelTree, joins: readonly ToolLink[], id: NodeId): string | null {
   if (tool.nodes.get(id)?.op?.kind === "partition") return SPLIT_TO_PRINT_EDIT;
+  if (editedOp(tool, id)?.kind === "nurbsSurface") return NURBS_TOOL_EDIT;
   return editRefusal(tool, id) ??joins.map((join) => editRefusal(join.tree, join.id)).find((why) => why != null) ?? null;
 }
 
@@ -287,6 +294,12 @@ export function toolEditHead(tool: ModelTree, id: NodeId, name: string): string 
 export interface ChamferChoice {
   form: "equal" | "two" | "angle";
   flip: boolean;
+}
+
+/** S3 (U5). Fillet profile (G1 circular, G2 smooth, conic) and variable-radius toggle. */
+export interface FilletChoice {
+  continuity: FilletContinuity;
+  variable: boolean;
 }
 
 export interface EditPanel {
@@ -335,6 +348,8 @@ export interface EditPanel {
   shellClosed?: boolean;
   /** A chamfer's sides, as the panel's Equal, Two sizes, and Angle, and its Flip box. */
   chamfer?: ChamferChoice;
+  /** S3 (U5): A fillet's profile (G1, G2, conic) and variable-radius toggle. */
+  fillet?: FilletChoice;
   /** A join: its tool stays as applied; its op and Keep can change. */
   join?: { name: string; keepTool: boolean };
   // --- A3 composite features: the choices a feature group's panel reopens with, including the face. ---
@@ -425,15 +440,33 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "chamfer": {
       // --- A5. A blend of one step's edges opens on that step. Picked edges stay picked. ---
       const step = storedEdgeStep(op.edges);
-      const sides = op.kind === "chamfer"
-        ? {
-            fields: { modelBlend: op.size, ...(op.size2 !== undefined ? { modelChamfer2: op.size2 } : {}), ...(op.angleDeg !== undefined ? { modelChamferAngle: op.angleDeg } : {}) },
-            chamfer: { form: op.size2 !== undefined ? "two" as const : op.angleDeg !== undefined ? "angle" as const : "equal" as const, flip: op.flip === true },
-          }
-        : { fields: { modelBlend: op.size } };
+      if (op.kind === "chamfer") {
+        return {
+          tool: "chamfer",
+          fields: { modelBlend: op.size, ...(op.size2 !== undefined ? { modelChamfer2: op.size2 } : {}), ...(op.angleDeg !== undefined ? { modelChamferAngle: op.angleDeg } : {}) },
+          chamfer: { form: op.size2 !== undefined ? "two" as const : op.angleDeg !== undefined ? "angle" as const : "equal" as const, flip: op.flip === true },
+          edges: op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)),
+          ...(step ? { step } : {}),
+        };
+      }
+      const stations = op.variable && op.variable.length >= 2 ? op.variable : null;
+      const fields: Record<string, number> = {
+        modelBlend: op.size,
+        ...(op.rho !== undefined ? { modelFilletRho: op.rho } : {}),
+        ...(stations
+          ? {
+              modelFilletStart: stations[0]![1],
+              modelFilletMid: stations.length >= 3 ? stations[Math.floor(stations.length / 2)]![1] : 0,
+              modelFilletEnd: stations[stations.length - 1]![1],
+            }
+          : {}),
+      };
+      const continuity = op.continuity ?? "g1";
+      const hasCustomFillet = continuity !== "g1" || stations !== null;
       return {
-        tool: op.kind,
-        ...sides,
+        tool: "fillet",
+        fields,
+        ...(hasCustomFillet ? { fillet: { continuity, variable: stations !== null } } : {}),
         edges: op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)),
         ...(step ? { step } : {}),
       };
@@ -475,6 +508,16 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "extrude":
     case "revolve":
     case "loft":
+    case "sweep":
+    case "sheet":
+    case "sew":
+    case "thicken":
+    case "trimSplit":
+    case "replaceFace":
+    case "splitFace":
+    case "patch":
+    case "blendSurface":
+    case "nurbsSurface":
     case "partition":
     case "transition":
     // --- Text with real fonts: a step of a text group; the group reopens the card.

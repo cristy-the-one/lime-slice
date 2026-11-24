@@ -3,6 +3,7 @@
  * and what each key does in it. A join is a merge: the steps that made its tool come in on a lane
  * of their own and meet at the join's row. No DOM here; `ui/model-history.ts` draws the rows.
  */
+import { sheetAt } from "./model-sheet.ts";
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
@@ -76,6 +77,8 @@ export interface HistoryRow {
   blocked: boolean;
   /** The plate holds this step while the view shows another. */
   plate: boolean;
+  /** --- Organic surfaces S4 (U6): open surface (sheet) with no enclosed solid volume. */
+  sheet?: boolean;
   /** The step this row was built on. The root has none. */
   parent: NodeId | null;
   /** --- Plugin steps (D8). The recipe run this step is part of, and on its first step what ran. */
@@ -239,6 +242,12 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
     const feature = node.op ?? (node.id === ROOT && tree.root.kind === "feature" ? tree.root.op : null);
     return { label: node.name?.trim() || historyCaption(feature, node.label), opLabel: node.name?.trim() ? node.label : null, broken: node.broken ?? null };
   };
+  // The one rule (src/model-sheet.ts) on the verdict the node keeps from its last kernel reply: no badge on a
+  // surfaces-only STEP's root, as on v7.1.2.
+  // A node with no reply kept yet (a tree read from a file, or one the MCP server built) reads its fingerprint: no volume
+  // and some faces is the kernel's "no closed solid".
+  const isSheet = (ofTree: ModelTree, node: ModelNode): boolean =>
+    sheetAt(node.sheet ?? (node.fingerprint != null && node.fingerprint.volumeMm3 === 0 && node.fingerprint.faces > 0), ofTree.root, node.id);
 
   /**
    * The lane of the tool the join `join` takes, drawn before the join's row: its steps from the root to the one the join
@@ -281,6 +290,7 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
         ...text(node),
         blocked,
         plate: false,
+        ...(isSheet(tool.tree, node) ? { sheet: true } : {}),
         parent: node.parent,
       });
       owns.push(key);
@@ -333,6 +343,7 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
       ...text(node),
       blocked: brokenAbove.has(id),
       plate: id === tree.committed && key !== shownKey,
+      ...(isSheet(tree, node) ? { sheet: true } : {}),
       parent: node.parent,
       ...(node.run ? { run: node.run } : {}),
       ...(node.plugin ? { plugin: node.plugin } : {}),
@@ -643,6 +654,7 @@ function collapsedFold(rows: readonly HistoryRow[], fold: HistoryFold): HistoryR
     broken: broken?.broken ?? null,
     blocked: first.blocked,
     plate: members.some((row) => row.plate),
+    ...(last.sheet ? { sheet: true } : {}),
     toolStart: false,
     fold: { id: fold.id, head: true, expanded: false, keys: fold.keys, lastKey: last.key, shownLabel: shown?.label },
   };

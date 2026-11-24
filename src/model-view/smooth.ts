@@ -5,6 +5,19 @@
  * face is no seam), while two faces never share one (so a real edge stays crisp and a flat face stays flat).
  */
 
+/** How many times the JS normal weld has run since the last reset. An OCCT mesh with its own normals must leave this at 0. */
+let weldCalls = 0;
+
+/** Calls of [`smoothNormals`] since [`resetSmoothNormalsCalls`]. */
+export function smoothNormalsCallCount(): number {
+  return weldCalls;
+}
+
+/** Zero the weld counter. A test does this before showing one solid. */
+export function resetSmoothNormalsCalls(): void {
+  weldCalls = 0;
+}
+
 /** A corner whose smoothed normal would lean further than this from its own triangle keeps its own: a crease inside one face stays sharp (a face is smooth, but a mesh from a file may not be). */
 const CREASE_COS = Math.cos((35 * Math.PI) / 180);
 /** Points closer than this are one point; the soup repeats a corner bit for bit, but the seam's two sides differ by rounding. */
@@ -19,6 +32,7 @@ export interface Smoothed {
 
 /** The normal of each corner of `positions` (nine numbers a triangle), smooth within the face `triangles` names and sharp across faces. */
 export function smoothNormals(positions: ArrayLike<number>, triangles: ArrayLike<number>): Smoothed {
+  weldCalls += 1;
   const corners = Math.floor(positions.length / 3);
   const count = Math.floor(corners / 3);
   const normals = new Float32Array(corners * 3);

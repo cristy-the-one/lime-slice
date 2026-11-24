@@ -341,6 +341,7 @@ function fileObjects({ trees, tools, pieces }: Awaited<ReturnType<typeof history
         ...(obj.jointLimits.z ? { z: [...obj.jointLimits.z] as [number, number] } : {}),
       };
     }
+    if (obj.sheet) row.sheet = true;
     const seat = meshSeat(obj.bytes);
     if (seat !== undefined) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);

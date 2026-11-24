@@ -12,6 +12,7 @@ import { type IconNode, PenLine, Square, Circle, Spline, Hexagon, RectangleHoriz
 import { keyOf, tipWithShortcut } from "../../ui/commands";
 import { EDIT_DEMO_LEAD, EDIT_DEMO_KINDS, DEMOS } from "../../sketch/demos";
 import { hasOpenEnds } from "../../sketch/edit";
+import { splineEndsClosed } from "../../sketch/model";
 import { type SketchTool, activeSketch, constrainChoices } from "../../sketch/session";
 import { EDIT_BUTTONS, PURPOSE, ASSIST_PURPOSE, MAKE_BUTTONS, REASON } from "../../sketch/reasons";
 import { isConstrainTool, CONSTRAIN_MENU } from "../../sketch/constrain";
@@ -88,7 +89,100 @@ function editTools(): Node[] {
   if (!S.demo) out.push(...editHow());
   // O1: Offset's wall options, under the row while Offset is on.
   if (S.editor.tool === "offset") out.push(wallRow());
+  // S2 (U3): NURBS spline mode, curvature comb, and per-CV weight/crease/knot controls.
+  if (S.editor.tool === "spline" || selectedSplineInfo() != null) out.push(splineRow());
   return out;
+}
+
+/** What the spline row shows, so the card rebuilds when the mode, comb, or selected point changes. */
+export function splineRowKey(): string {
+  const info = selectedSplineInfo();
+  if (S.editor.tool !== "spline" && info == null) return "";
+  return `spline:${S.editor.draw.splineMode}:${S.editor.selection.entities.join(",")}:${S.editor.showCurvatureComb ? "comb" : ""}:${info ? `${info.entityId}:${info.mode}:${info.closed}:${info.cvIndex}:${info.weight}:${info.canCrease}` : ""}`;
+}
+
+function selectedSplineInfo(): { entityId: number; mode: "cv" | "through"; closed: boolean; cvIndex: number | null; weight: number; canCrease: boolean } | null {
+  const sketch = activeSketch(S.editor);
+  if (!sketch) return null;
+  const ptId = S.editor.selection.points[0];
+  if (ptId != null) {
+    const spline = sketch.entities.find((e) => e.kind === "spline" && e.through.includes(ptId));
+    if (spline && spline.kind === "spline") {
+      const idx = spline.through.indexOf(ptId);
+      const weight = spline.weights?.[idx] ?? 1;
+      return {
+        entityId: spline.id,
+        mode: spline.mode === "cv" ? "cv" : "through",
+        closed: splineEndsClosed(sketch, spline),
+        cvIndex: idx,
+        weight,
+        canCrease: idx > 0 && idx < spline.through.length - 1,
+      };
+    }
+  }
+  const entId = S.editor.selection.entities[0];
+  if (entId != null) {
+    const spline = sketch.entities.find((e) => e.id === entId && e.kind === "spline");
+    if (spline && spline.kind === "spline") {
+      return { entityId: spline.id, mode: spline.mode === "cv" ? "cv" : "through", closed: splineEndsClosed(sketch, spline), cvIndex: null, weight: 1, canCrease: false };
+    }
+  }
+  return null;
+}
+
+/** S2 (U3): Exact NURBS spline mode toggle, curvature comb, and CV weight / crease / knot controls. */
+function splineRow(): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "sketch-wall sketch-nurbs-row";
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", "Spline options");
+  const info = selectedSplineInfo();
+  // The buttons show what a click changes: the selected splines' own mode when whole splines are selected (a click
+  // converts them), else the mode the Spline tool draws with (a picked point's spline is not converted).
+  const sketch = activeSketch(S.editor);
+  const convertsSplines = !!sketch && S.editor.selection.entities.some((id) => sketch.entities.some((e) => e.id === id && e.kind === "spline"));
+  const mode = convertsSplines && info ? info.mode : S.editor.draw.splineMode;
+  const modeBtn = (value: "cv" | "through", label: string, tip: string) => {
+    const btn = textButton(label, { sketchSplineMode: value });
+    btn.setAttribute("aria-pressed", mode === value ? "true" : "false");
+    btn.dataset.tip = tip;
+    btn.title = tip;
+    return btn;
+  };
+  row.append(
+    modeBtn("cv", "Control points (NURBS)", "Exact rational NURBS curve shaped by its control cage"),
+    modeBtn("through", "Through points", "Smooth curve passing directly through each click"),
+  );
+  const comb = textButton("Curvature comb", { sketchComb: S.editor.showCurvatureComb ? "0" : "1" });
+  comb.setAttribute("aria-pressed", S.editor.showCurvatureComb ? "true" : "false");
+  comb.dataset.tip = "Show curvature needles along NURBS curves so flat spots and kinks jump out";
+  comb.title = comb.dataset.tip;
+  row.append(comb);
+  if (info) {
+    // Weights and knots belong to control points. On a through-point spline they would turn its points into poles and
+    // move the curve off them, and a closed spline is periodic, which knot insertion and creases do not handle yet:
+    // those buttons stay, disabled, with the reason as their tip.
+    const through = info.mode !== "cv" ? "Weights and knots shape control-point curves. Choose Control points (NURBS) for this spline first; it is redrawn from its points." : null;
+    const closedWhy = info.closed ? "Not available on a closed spline yet: it would open the loop." : null;
+    const off = (btn: HTMLButtonElement, why: string | null, tip: string) => {
+      btn.dataset.tip = why ?? tip;
+      btn.title = btn.dataset.tip;
+      // aria-disabled, not disabled: a disabled button shows no tip. The click handler ignores it.
+      if (why) btn.setAttribute("aria-disabled", "true");
+      return btn;
+    };
+    if (info.cvIndex != null) {
+      const wDown = off(textButton("W−", { sketchCvWeight: "down" }), through, `Decrease control point weight (current ${info.weight.toFixed(2)})`);
+      const wVal = off(textButton(`W ${info.weight.toFixed(2)}`, { sketchCvWeight: "reset" }), through, "Reset control point weight to 1.00");
+      const wUp = off(textButton("W+", { sketchCvWeight: "up" }), through, `Increase control point weight — pulls the curve closer (current ${info.weight.toFixed(2)})`);
+      row.append(wDown, wVal, wUp);
+      if (info.canCrease) {
+        row.append(off(textButton("Sharp crease", { sketchCvCrease: "1" }), through ?? closedWhy, "Raise knot multiplicity at this point for an exact C0 sharp corner"));
+      }
+    }
+    row.append(off(textButton("Insert knot", { sketchCvKnot: "1" }), through ?? closedWhy, "Add an extra control point without changing the curve shape (Boehm refinement)"));
+  }
+  return row;
 }
 
 /** O1: Both sides, Close the ends, and Keep the line as a helper, each pressed while on. */

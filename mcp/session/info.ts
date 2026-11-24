@@ -8,7 +8,7 @@ import { ingredientLines, ingredientsDir } from "../ingredients.ts";
 import { listLessons, listPresets, seenInPractice } from "../nuggets.ts";
 import { AREA_NAMES, areaDoc, hitLine, mapDoc, nearestTools, search, toolDoc } from "../catalog.ts";
 import { GUIDES, guideByUri, guideSections, type GuideSection, KIND_GUIDES, TEXT_FONT_LINES, TEXT_OWN_FONT_LINES, TEXT_REFUSALS } from "../guides.ts";
-import { OP_KINDS, OP_SUMMARY, opSchemaFor } from "../schema.ts";
+import { guideShapes, OP_KINDS, OP_SUMMARY, opSchemaFor, SHAPES_NOTE } from "../schema.ts";
 import { COMPOSITE_KINDS, isComposite, MAX_PIECES } from "../../src/modeling/compose.ts";
 import { shownName, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -110,6 +110,7 @@ async function sessionInfo(this: Session, verbose = false): Promise<Record<strin
     ...(running ? { job: { job: running.handle, tool: running.tool, ...(running.object ? { object: running.object } : {}), ...(running.ctx.stage ? { stage: running.ctx.stage } : {}) } } : {}),
     printer: this.printer().name,
     filament: this.filament().name,
+    ...(this.objects.some((obj) => obj.sheet) ? { openSheets: this.objects.filter((obj) => obj.sheet).map((obj) => obj.id) } : {}),
     ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object), ...(row.members.some((member) => member.joint) ? { joints: row.members.filter((member) => member.joint).map((member) => ({ object: member.object, joint: structuredClone(member.joint) })) } : {}) })) } : {}),
     printerSend: false,
     plugins: this.pluginsLine(),
@@ -245,7 +246,9 @@ function opGuide(this: Session, kind: string): Record<string, unknown> {
   const examples = ops.filter((line) => new RegExp(`^\\s*(\\w+, )*${kind}[:,]`).test(line) || line.includes(`kind:\"${kind}\"`));
   // --- Text with real fonts: the bundled fonts, one line each, and what a text refuses.
   const fonts = kind === "text" ? { fonts: [...TEXT_FONT_LINES, ...TEXT_OWN_FONT_LINES, ...this.fonts.list().map((font) => `${font.name}: your font, in this project. Id ${font.id}${font.weight ? `, weights ${font.weight.min} to ${font.weight.max}` : ""}${font.restricted ? ". Its licence forbids embedding, so the project keeps only the outlines of the letters used" : ""}.`)], refusals: TEXT_REFUSALS } : {};
-  return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema, examples, ...fonts };
+  // A shape used in many fields (the 3D curve) is written once: `shapes`, named where it is used.
+  const shaped = guideShapes(schema);
+  return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema: shaped.schema, ...(shaped.shapes ? { shapes: shaped.shapes, shapesNote: SHAPES_NOTE } : {}), examples, ...fonts };
 }
 
 /** The methods this module adds to Session. */

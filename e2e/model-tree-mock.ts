@@ -12,7 +12,14 @@ export interface MockSolid {
   edges: { id: number; lengthMm: number; points: number[] }[];
   /** Edges (by index) that are the seam of a round face. */
   seams?: number[];
+  /** False for an open sheet. Absent means a closed solid. */
   solid?: boolean;
+  /** Vertex normals, nine per triangle, as the kernel sends its analytic normals. Absent: the view welds its own. */
+  normals?: number[];
+  /** The view's finer mesh, sent under `display` as the kernel does for `meshQuality: "display"`. */
+  display?: { positions: number[]; normals?: number[]; triangles: number[] };
+  /** Open-border edge indexes on a sheet. */
+  nakedEdges?: number[];
   /** --- A10. The node that made each face, when a test wants colour by step. */
   stepFaces?: (number | null)[];
 }

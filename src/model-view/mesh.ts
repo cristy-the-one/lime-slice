@@ -1,7 +1,7 @@
 /** The open solid's meshes: building, disposing and painting its faces, edges, outlines and check marks. */
 import * as THREE from "three";
 import type { Bounds } from "../mesh-place";
-import { IDLE_EDGE, STRESS_LOAD } from "./constants";
+import { IDLE_EDGE, NAKED_EDGE, SHEET_BACK_TINT, STRESS_LOAD } from "./constants";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
@@ -9,9 +9,10 @@ import type { ModelSolid } from "./types";
 import { boxEdges, boxList, dashSegments } from "./helpers";
 import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
 import { colourRuns, fillFace, fillFaces } from "./face-colours";
-import { facePaint } from "../model-look";
+import { facePaint, fillCurvatureColors } from "../model-look";
 import { faceTriangles } from "../model-select";
 import { hexToThree } from "../theme";
+import { createIsoMaterial, createZebraMaterial, syncZebraMaterial } from "./analysis-shaders";
 import type { ViewCtx } from "./ctx";
 
 export function installMesh(ctx: ViewCtx): void {
@@ -29,6 +30,7 @@ export function installMesh(ctx: ViewCtx): void {
   ctx.repaintPreview = repaintPreview;
   ctx.showPreview = showPreview;
   ctx.syncLineResolution = syncLineResolution;
+  ctx.syncSurfaceLook = syncSurfaceLook;
 
   // --- A7 model check ---
   let locatedLines: LineSegments2 | null = null;
@@ -60,12 +62,58 @@ export function installMesh(ctx: ViewCtx): void {
     polygonOffsetUnits: 1,
   });
   ctx.solidMaterial = solidMaterial;
+  const zebraMaterial = createZebraMaterial();
+  ctx.zebraMaterial = zebraMaterial;
+  const isoMaterial = createIsoMaterial();
+  ctx.isoMaterial = isoMaterial;
   canvas.dataset.solidOpacity = "1";
   const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
   ctx.edgeMaterial = edgeMaterial;
+  const nakedEdgeMaterial = new THREE.LineBasicMaterial({ color: NAKED_EDGE });
+  ctx.nakedEdgeMaterial = nakedEdgeMaterial;
+  const sheetBackMaterial = new THREE.MeshStandardMaterial({
+    color: SHEET_BACK_TINT,
+    roughness: 0.7,
+    metalness: 0.05,
+    side: THREE.BackSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 2,
+    polygonOffsetUnits: 2,
+  });
+  ctx.sheetBackMaterial = sheetBackMaterial;
+
+  /** --- Organic surfaces S1: switch active solid material (Standard vs Zebra) and UV isoparm overlay. */
+  function syncSurfaceLook() {
+    syncZebraMaterial(zebraMaterial, ctx.look, ctx.solidDimmed);
+    const activeMat: THREE.Material = ctx.look.shading === "zebra" ? zebraMaterial : solidMaterial;
+    if (ctx.mesh && ctx.mesh.material !== activeMat) ctx.mesh.material = activeMat;
+    if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = !ctx.preview && ctx.look.shading !== "zebra";
+    if (ctx.preview && ctx.preview.mesh.material !== activeMat) ctx.preview.mesh.material = activeMat;
+    if (ctx.preview?.back) ctx.preview.back.visible = ctx.look.shading !== "zebra";
+    canvas.dataset.shading = ctx.look.shading;
+    canvas.dataset.isoparms = ctx.look.isoparms ? "1" : "0";
+    // Rebuild or hide the trimmed UV isoparm overlay.
+    if (ctx.isoLines) {
+      body.remove(ctx.isoLines);
+      ctx.isoLines.geometry.dispose();
+      ctx.isoLines = null;
+    }
+    const pts = ctx.look.isoparms ? ctx.surfaceInspect?.isoPoints : undefined;
+    if (pts && pts.length >= 6 && !ctx.preview) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pts, 3));
+      const lines = new THREE.LineSegments(geo, isoMaterial);
+      lines.raycast = () => undefined;
+      lines.renderOrder = 1;
+      ctx.isoLines = lines;
+      body.add(lines);
+    }
+  }
 
   function clearPreview() {
     if (!ctx.preview) return;
+    // The back mesh shares the preview's geometry: removed, not disposed twice.
+    if (ctx.preview.back) body.remove(ctx.preview.back);
     for (const object of [ctx.preview.mesh, ctx.preview.lines]) {
       if (!object) continue;
       body.remove(object);
@@ -73,7 +121,9 @@ export function installMesh(ctx: ViewCtx): void {
     }
     ctx.preview = null;
     if (ctx.mesh) ctx.mesh.visible = true;
+    if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = ctx.look.shading !== "zebra";
     if (ctx.edgeLines) ctx.edgeLines.visible = true;
+    if (ctx.nakedEdgeLines) ctx.nakedEdgeLines.visible = true;
     delete canvas.dataset.preview;
     paintFaces();
     ctx.rebuildCap();
@@ -92,11 +142,25 @@ export function installMesh(ctx: ViewCtx): void {
     const used = paintColours(shape, color, new Set(), null);
     publishFaceColours(used);
     geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-    const smooth = smoothNormalsOf(shape.positions, shape.triangles);
-    geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
-    const shaded = new THREE.Mesh(geometry, solidMaterial);
+    if (shape.normals && shape.normals.length === shape.positions.length) {
+      geometry.setAttribute("normal", new THREE.BufferAttribute(shape.normals, 3));
+    } else {
+      const smooth = smoothNormalsOf(shape.positions, shape.triangles);
+      geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
+    }
+    const activeMat: THREE.Material = ctx.look.shading === "zebra" ? zebraMaterial : solidMaterial;
+    const shaded = new THREE.Mesh(geometry, activeMat);
     shaded.raycast = () => undefined;
     body.add(shaded);
+    // A patch or blend preview is a sheet: its back gets the sheet's back tint, as the shown sheet's does (the solid
+    // material draws front faces only while a sheet is shown).
+    let back: THREE.Mesh | null = null;
+    if ((shape.nakedEdges?.length ?? 0) > 0) {
+      back = new THREE.Mesh(geometry, sheetBackMaterial);
+      back.raycast = () => undefined;
+      back.visible = ctx.look.shading !== "zebra";
+      body.add(back);
+    }
     const { segments } = drawnEdgeSegments(shape.edges, shape.seams);
     let lines: THREE.LineSegments | null = null;
     if (segments.length > 0) {
@@ -107,8 +171,10 @@ export function installMesh(ctx: ViewCtx): void {
       body.add(lines);
     }
     if (ctx.mesh) ctx.mesh.visible = false;
+    if (ctx.sheetBackMesh) ctx.sheetBackMesh.visible = false;
     if (ctx.edgeLines) ctx.edgeLines.visible = false;
-    ctx.preview = { shape, mesh: shaded, lines };
+    if (ctx.nakedEdgeLines) ctx.nakedEdgeLines.visible = false;
+    ctx.preview = { shape, mesh: shaded, lines, back };
     canvas.dataset.preview = String(shape.volumeMm3.toFixed(2));
     ctx.rebuildCap();
   }
@@ -116,7 +182,12 @@ export function installMesh(ctx: ViewCtx): void {
   function clearBody() {
     clearPreview();
     ctx.clearSectionCap();
-    for (const object of [ctx.mesh, ctx.edgeLines]) {
+    if (ctx.sheetBackMesh) {
+      // Shares geometry with ctx.mesh; remove before ctx.mesh disposes it.
+      body.remove(ctx.sheetBackMesh);
+      ctx.sheetBackMesh = null;
+    }
+    for (const object of [ctx.mesh, ctx.edgeLines, ctx.nakedEdgeLines, ctx.isoLines]) {
       if (!object) continue;
       body.remove(object);
       object.geometry.dispose();
@@ -128,6 +199,9 @@ export function installMesh(ctx: ViewCtx): void {
     }
     ctx.mesh = null;
     ctx.edgeLines = null;
+    ctx.nakedEdgeLines = null;
+    ctx.isoLines = null;
+    ctx.surfaceInspect = null;
     ctx.faceOutline = null;
     ctx.selectedEdges = null;
     ctx.hoverEdges = null;
@@ -145,9 +219,42 @@ export function installMesh(ctx: ViewCtx): void {
     }
   }
 
-  /** --- A10. One colour for a face of `shape`: its step, the accent when it is selected, or the idle grey. */
-  function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null): Set<string> {
+  /** --- A10 & S1. One colour per vertex: curvature heatmap when active (keeping selection visible), else per-face step/idle colour. */
+  function curvatureValues(shape: ModelSolid): Float32Array | null {
+    if (shape !== ctx.solid || ctx.look.shading !== "curvature" || !ctx.surfaceInspect) return null;
+    const raw =
+      ctx.look.curvatureMode === "gaussian"
+        ? ctx.surfaceInspect.gaussian
+        : ctx.look.curvatureMode === "mean"
+          ? ctx.surfaceInspect.mean
+          : ctx.surfaceInspect.minRadiusMm;
+    if (!raw || raw.length * 3 !== shape.positions.length) return null;
+    return raw;
+  }
+
+  function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null, curvBase?: Float32Array): Set<string> {
     const used = new Set<string>();
+    const curv = curvatureValues(shape);
+    if (curv) {
+      // The heatmap without picks, kept by the caller so a hover repaints two faces from it, not every vertex.
+      if (curvBase && curvBase.length === into.length) {
+        fillCurvatureColors(curvBase, curv, ctx.look.curvatureMode, ctx.look.curvatureWarnMm);
+        into.set(curvBase);
+      } else fillCurvatureColors(into, curv, ctx.look.curvatureMode, ctx.look.curvatureWarnMm);
+      if (selected.size > 0 || pickHover != null) {
+        const tint = tintNow();
+        const byFace = faceTriangles(shape.triangles);
+        for (const face of selected) {
+          const tris = byFace.get(face);
+          if (tris) fillFace(into, tris, tint);
+        }
+        if (pickHover != null && !selected.has(pickHover)) {
+          const tris = byFace.get(pickHover);
+          if (tris) fillFace(into, tris, tint);
+        }
+      }
+      return used;
+    }
     const paintOf = painter(shape, selected, pickHover);
     fillFaces(into, shape.triangles, (face) => {
       const painted = paintOf(face);
@@ -205,15 +312,20 @@ export function installMesh(ctx: ViewCtx): void {
    * What the solid's colour buffer holds: for which solid, from which inputs, with which face lit by the pointer.
    * `whole` is on from a repaint of every face until the renderer has uploaded the buffer.
    */
-  let painted: { attribute: THREE.BufferAttribute; solid: ModelSolid; key: string; hover: number | null; used: Set<string>; whole: boolean } | null = null;
+  let painted: { attribute: THREE.BufferAttribute; solid: ModelSolid; key: string; hover: number | null; used: Set<string>; whole: boolean; curvBase: Float32Array | null; curvSrc: Float32Array | null } | null = null;
 
   /** Everything a face's colour is worked out from, but the face under the pointer: `painter` and `stressTint` read these and no more. */
   function paintKey(selected: Set<number>): string {
+    const curv = ctx.solid ? curvatureValues(ctx.solid) : null;
     return [
       [...selected].sort((a, b) => a - b).join(","),
       tintNow(),
       ctx.highlightStep ?? "",
       ctx.look.colourByStep ? 1 : 0,
+      ctx.look.shading,
+      ctx.look.curvatureMode,
+      ctx.look.curvatureWarnMm,
+      curv ? curv.length : 0,
       [...ctx.stressLoad].join(","),
       [...ctx.stressHold].join(","),
       hexToThree(ctx.colors.paintEnforce),
@@ -232,15 +344,24 @@ export function installMesh(ctx: ViewCtx): void {
     const attribute = ctx.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
     const key = paintKey(selected);
-    if (painted && painted.attribute === attribute && painted.solid === ctx.solid && painted.key === key) {
+    const curvSrc = curvatureValues(ctx.solid);
+    const curving = !!curvSrc;
+    // Curvature shading keeps its heatmap (`curvBase`): a hover puts back the face the pointer left and tints the one
+    // it reached, as the face colours do, instead of recolouring and uploading every vertex.
+    const cached = painted && painted.attribute === attribute && painted.solid === ctx.solid && painted.key === key
+      && (!curving || (painted.curvSrc === curvSrc && painted.curvBase?.length === array.length));
+    if (painted && cached) {
       if (painted.hover !== hoverFace) {
-        const paintOf = painter(ctx.solid, selected, hoverFace);
+        const paintOf = curving ? null : painter(ctx.solid, selected, hoverFace);
+        const base = painted.curvBase;
         const byFace = faceTriangles(ctx.solid.triangles);
         let wrote = false;
         for (const face of [painted.hover, hoverFace]) {
           const tris = face == null ? undefined : byFace.get(face);
           if (face == null || !tris) continue;
-          fillFace(array, tris, paintOf(face).hex);
+          if (paintOf) fillFace(array, tris, paintOf(face).hex);
+          else if (face === hoverFace || selected.has(face)) fillFace(array, tris, tintNow());
+          else if (base) for (let i = 0; i < tris.length; i += 1) array.set(base.subarray(tris[i]! * 9, tris[i]! * 9 + 9), tris[i]! * 9);
           wrote = true;
           if (painted.whole) continue;
           const runs = colourRuns(tris);
@@ -258,15 +379,18 @@ export function installMesh(ctx: ViewCtx): void {
       if (!ctx.preview) publishFaceColours(painted.used);
       return;
     }
-    const used = paintColours(ctx.solid, array, selected, hoverFace);
+    const curvBase = curving ? (painted?.curvBase?.length === array.length ? painted.curvBase : new Float32Array(array.length)) : null;
+    const used = paintColours(ctx.solid, array, selected, hoverFace, curvBase ?? undefined);
     if (painted?.attribute === attribute) {
       painted.solid = ctx.solid;
       painted.key = key;
       painted.hover = hoverFace;
       painted.used = used;
       painted.whole = true;
+      painted.curvBase = curvBase;
+      painted.curvSrc = curvSrc;
     } else {
-      const record = { attribute, solid: ctx.solid, key, hover: hoverFace, used, whole: true };
+      const record = { attribute, solid: ctx.solid, key, hover: hoverFace, used, whole: true, curvBase, curvSrc };
       painted = record;
       // The renderer says when the buffer is on the card; until then a repaint of two faces must not narrow the upload.
       attribute.onUpload(() => {

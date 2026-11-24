@@ -16,6 +16,7 @@ type Box = { min: Vec3; max: Vec3 };
 /** What a read takes of a solid: its mesh, face and edge rows and box, and its edge polylines when it has them. */
 export interface ReadableSolid {
   positions: ArrayLike<number>;
+  normals?: ArrayLike<number>;
   triangles: ArrayLike<number>;
   faces: readonly FaceRow[];
   edges: readonly EdgeRow[];
@@ -28,6 +29,12 @@ const kept = new WeakMap<object, { pose: string; view: unknown }>();
 function posedPoints(points: ArrayLike<number>, pose: Affine): Float32Array {
   const out = new Float32Array(points.length - (points.length % 3));
   for (let i = 0; i + 2 < points.length; i += 3) out.set(applyPose(pose, [points[i]!, points[i + 1]!, points[i + 2]!]), i);
+  return out;
+}
+
+function posedNormals(normals: ArrayLike<number>, pose: Affine): Float32Array {
+  const out = new Float32Array(normals.length - (normals.length % 3));
+  for (let i = 0; i + 2 < normals.length; i += 3) out.set(turnDir(pose, [normals[i]!, normals[i + 1]!, normals[i + 2]!]), i);
   return out;
 }
 
@@ -88,6 +95,7 @@ export function typedView<T extends ReadableSolid>(solid: T, pose: Affine): T {
   const view = {
     ...solid,
     positions,
+    ...(solid.normals ? { normals: posedNormals(solid.normals, pose) } : {}),
     faces,
     edges,
     bounds: boxOf(positions),

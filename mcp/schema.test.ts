@@ -3,7 +3,7 @@ import { AREA_NAMES, catalogTools, firstSentence, search, toolDoc } from "./cata
 import { EXAMPLES } from "./examples.ts";
 import { FIRST_TOOLS, groupOf, TOOL_GROUPS } from "./groups.ts";
 import { DISCOVERY_INSTRUCTIONS } from "./protocol.ts";
-import { advertisedTools, annotationsFor, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, UNLISTED_TOOLS, validateTool, type ToolSpec } from "./schema.ts";
+import { advertisedTools, annotationsFor, guideShapes, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, UNLISTED_TOOLS, validateTool, type ToolSpec } from "./schema.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -36,7 +36,7 @@ check("a scale percent of 9 is rejected", validateTool("object_place", { object:
 check("a fractional edge index is rejected", validateTool("model_probe", { object: "obj_1", op: { kind: "fillet", edges: [1.5], size: 1 } }) !== null);
 check("a hole does not take a fillet size", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", size: 2 } }) !== null);
 check("a counterbore is a hole field", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", diameterMm: 4, through: true, counterboreDiameterMm: 8, counterboreDepth: 3 } }) === null);
-check("an unknown edit names the kinds", validateTool("model_probe", { op: { kind: "twist" } }) === "op.kind must be one of hole, fillet, chamfer, split, scale, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, draft, unify, boolean, root, join, pocket, boss, texture, pattern, mirror, text, array, ribs, ribNet, partition, transition, gear.");
+check("an unknown edit names the kinds", validateTool("model_probe", { op: { kind: "twist" } }) === "op.kind must be one of hole, fillet, chamfer, split, scale, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, draft, sheet, sew, thicken, trimSplit, replaceFace, splitFace, patch, blendSurface, nurbsSurface, unify, boolean, root, join, pocket, boss, texture, pattern, mirror, text, array, ribs, ribNet, partition, transition, gear.");
 const square = [[0, 0], [10, 0], [10, 10], [0, 10]];
 const longProfile = Array.from({ length: 1001 }, (_, i) => [i, i % 2]);
 check("extrude profiles accept up to 1000 points", validateTool("model_apply", { op: { kind: "extrude", profile: longProfile.slice(0, 1000), depth: 1 } }) === null && validateTool("model_apply", { op: { kind: "extrude", profile: longProfile, depth: 1 } }) !== null);
@@ -73,7 +73,65 @@ function missingDescriptions(node: unknown, missing: string[]): void {
 }
 const undescribed: string[] = [];
 for (const tool of TOOLS) missingDescriptions(tool.inputSchema, undescribed);
-check("every property has a description", undescribed.length === 0);
+check("every property has a description", undescribed.length === 0, undescribed.join(", "));
+
+// --- Organic surfaces fix round: fields the kernel changed or dropped with no word are refused in a sentence.
+{
+  const refusal = (op: unknown) => validateTool("model_apply", { op }) ?? "";
+  const starts = (name: string, op: unknown, sentence: string) => {
+    const got = refusal(op);
+    check(name, got.startsWith(sentence), got);
+  };
+  const ring = (z: number) => ({ origin: [0, 0, z], radius: 4 });
+  const line = { kind: "polyline", points: [[0, 0, 0], [0, 0, 20]] };
+  const quad = [[0, 0, 0], [0, 0, 10], [10, 0, 10], [10, 0, 20]];
+  const spineSweep = (spine: unknown, extra: Record<string, unknown> = {}) => ({ kind: "sweep", op: "fuse", sections: [ring(0)], spine, ...extra });
+  starts("an apex section takes no radius", { kind: "loft", op: "fuse", sections: [ring(0), { apex: [0, 0, 9], radius: 2 }] }, "op.sections[1].radius does not apply to an apex section, which is only the point; give apex alone.");
+  starts("a section with no apex still needs an origin", { kind: "loft", op: "fuse", sections: [{ radius: 4 }, { apex: [0, 0, 9] }] }, "op.sections[0].origin is required.");
+  check("an apex section alone passes", refusal({ kind: "loft", op: "fuse", sections: [ring(0), { apex: [0, 0, 9] }] }) === "");
+  starts("a bare sweep names the path and the spine", { kind: "sweep" }, "A sweep needs a path (a tube through points) or a spine");
+  starts("a path with a spine is refused", { kind: "sweep", path: [[0, 0, 0], [0, 0, 9]], radius: 1, spine: line, sections: [ring(0)] }, "A sweep takes a path or a spine, not both");
+  starts("a path sweep's radius on a spine sweep is refused", spineSweep(line, { radius: 2 }), "op.radius is for a sweep along a path");
+  starts("a spine sweep's sections on a path sweep are refused", { kind: "sweep", path: [[0, 0, 0], [0, 0, 9]], radius: 1, sections: [ring(0)] }, "op.sections is for a sweep along a spine");
+  starts("a spine sweep needs sections", { kind: "sweep", spine: line }, "op.sections is required with a spine");
+  starts("a scale station past the spine's end is refused", spineSweep(line, { scale: [[0, 1], [1.5, 2]] }), "op.scale[1] is at u 1.5");
+  starts("a scale station below 0 is refused", spineSweep(line, { scale: [[-0.1, 1], [1, 2]] }), "op.scale[0] is at u -0.1");
+  check("scale stations from 0 to 1 pass", refusal(spineSweep(line, { scale: [[0, 1], [0.5, 1.5], [1, 2]] })) === "");
+  starts("a degree the poles cannot carry is refused", spineSweep({ kind: "nurbs", poles: quad, degree: 5 }), "op.spine.degree is 5, but 4 poles carry at most degree 3.");
+  starts("weights that do not match the poles are refused", spineSweep({ kind: "nurbs", poles: quad, weights: [1, 1] }), "op.spine.weights has 2 values for 4 poles; give one weight per pole.");
+  starts("knots without mults are refused", spineSweep({ kind: "nurbs", poles: quad, knots: [0, 1] }), "op.spine has knots without mults");
+  starts("knots and mults of different lengths are refused", spineSweep({ kind: "nurbs", poles: quad, knots: [0, 1], mults: [4, 4, 1] }), "op.spine.knots has 2 values and mults 3");
+  starts("multiplicities that do not add up are refused", spineSweep({ kind: "nurbs", poles: quad, knots: [0, 1], mults: [3, 3] }), "op.spine: the multiplicities add up to 6; 4 poles of degree 3 need 4 + 3 + 1 = 8.");
+  starts("knots that do not rise are refused", spineSweep({ kind: "nurbs", poles: [...quad, [20, 0, 20]], knots: [0, 0.5, 0.5, 1], mults: [4, 1, 1, 4] }), "op.spine.knots must rise");
+  check("a clamped knot vector that fits passes", refusal(spineSweep({ kind: "nurbs", poles: [...quad, [20, 0, 20]], knots: [0, 0.5, 1], mults: [4, 1, 4] })) === "");
+  starts("a closed curve's multiplicities are checked as periodic", spineSweep({ kind: "nurbs", poles: quad, closed: true, knots: [0, 1, 2, 3, 4], mults: [1, 1, 1, 1, 2] }), "op.spine: a closed curve's first and last multiplicities match");
+  check("a closed curve with periodic knots passes", refusal(spineSweep({ kind: "nurbs", poles: quad, closed: true, knots: [0, 1, 2, 3, 4], mults: [1, 1, 1, 1, 1] })) === "");
+  const loop = (seg: Record<string, unknown>) => ({ kind: "extrude", op: "fuse", depth: 2, loops: [{ start: [0, 0], segments: [{ kind: "line", to: [10, 0] }, { kind: "nurbs", to: [0, 10], ...seg }, { kind: "line", to: [0, 0] }] }] });
+  starts("a profile segment's weights count its start and end", loop({ poles: [[10, 10]], weights: [1, 0.7], degree: 2 }), "op.loops[0].segments[1].weights has 2 values for 3 poles; give one weight per pole, the start and the end included.");
+  check("a rational quarter circle segment passes", refusal(loop({ poles: [[10, 10]], weights: [1, Math.SQRT1_2, 1], degree: 2 })) === "");
+  starts("a profile segment's degree is checked against its poles", loop({ poles: [[10, 10]], degree: 3 }), "op.loops[0].segments[1].degree is 3, but 3 poles carry at most degree 2.");
+  check(
+    "a closed profile segment counts its poles without the repeated start",
+    refusal({ kind: "extrude", op: "fuse", depth: 2, loops: [{ start: [12, 0], segments: [{ kind: "nurbs", poles: [[0, 10], [-12, 0], [0, -10]], weights: [1, 1, 1, 1], to: [12, 0] }] }] }) === "",
+  );
+  starts("maxDegree is what the kernel applies, 2 to 10", { kind: "loft", op: "fuse", sections: [ring(0), ring(9)], maxDegree: 11 }, "op.maxDegree must be at most 10.");
+  starts("a curvature end condition is refused with the kinds that work", { kind: "loft", op: "fuse", sections: [ring(0), ring(9)], endCondition: { kind: "curvature", dir: [0, 0, 1] } }, 'op.endCondition kind "curvature" is not built: a loft steers an end by its direction only. Use "normal" or "tangent".');
+  check("a tangent end condition passes", refusal({ kind: "loft", op: "fuse", sections: [ring(0), ring(9)], endCondition: { kind: "tangent", dir: [0, 0, 1] } }) === "");
+  starts("rho without a conic is refused", { kind: "fillet", edges: [0], size: 1, rho: 0.5 }, "op.rho is the fullness of a conic fillet");
+  check("rho on a conic passes", refusal({ kind: "fillet", edges: [0], size: 1, continuity: "conic", rho: 0.5 }) === "");
+  starts("a variable station past the edge is refused", { kind: "fillet", edges: [0], size: 1, variable: [[0, 1], [1.2, 2]] }, "op.variable[1] is at u 1.2");
+  const sheet = { mode: "planar", curves: [{ kind: "polyline", points: [[0, 0, 0], [1, 0, 0], [1, 1, 0]], closed: true }] };
+  starts("a face that is text is refused in a sentence", { kind: "replaceFace", face: "top", sheet }, "op.face is a face index (0 or more) or a selector {normal:[x, y, z], nearPoint:[x, y, z]}.");
+  starts("a splitFace face that is true is refused in a sentence", { kind: "splitFace", faces: [0, { normal: [0, 0, 1] }, true], curve: line }, "op.faces[2] is a face index");
+  check("faces as indexes and selectors pass", refusal({ kind: "splitFace", faces: [0, { normal: [0, 0, 1], nearPoint: [0, 0, 5] }], curve: line }) === "");
+  const big = Array.from({ length: 100 }, () => ({ kind: "nurbs", poles: Array.from({ length: 200 }, (_, i) => [i, 0, 0]) }));
+  starts("a sheet of 100 curves is refused with the count", { kind: "sheet", mode: "loft", curves: big }, "op.curves has 100 curves; the most is 20.");
+  starts("20 curves of 200 poles are refused by the whole-op cap", { kind: "sheet", mode: "loft", curves: big.slice(0, 20) }, "This sheet carries 4000 curve points across its curves; one op takes at most 2000.");
+  starts("a patch side of 65 edges is refused with the count", { kind: "patch", boundaries: [{ edges: Array.from({ length: 65 }, (_, i) => i) }, { edges: [1] }] }, "op.boundaries[0].edges has 65 edges; the most is 64.");
+  starts("the same refusals in model_build's ops", { kind: "fillet", edges: [0], size: 1, rho: 0.5 }, "op.rho");
+  const built = validateTool("model_build", { base: { primitive: "box", dx: 1, dy: 1, dz: 1 }, ops: [{ kind: "sweep" }] }) ?? "";
+  check("a bare sweep in model_build is refused the same way", built.startsWith("A sweep needs a path"), built);
+}
 // Discovery (docs/plan-mcp-discovery.md D5). The one token bound is on first contact: the server's instructions and
 // the default tools/list, which every client reads every session. Everything else is read on demand through guide, so
 // a tool's words cost nothing until an agent asks for that tool, and adding a tool or a field touches no other tool.
@@ -169,6 +227,25 @@ for (const [name, input] of accepted) check(`accepts ${name}`, validateTool(name
 // stay for an op's fields.
 check("a wrong tool field names the tool's fields", validateTool("workplane_set", { face: 3 }) === "input.face is not a field of this tool. It takes object, source, faceIndex, origin, turn.");
 check("a wrong tool field gets no op hint", !String(validateTool("nugget", { action: "find", name: "x" })).includes("Use label."));
+
+// --- Organic surfaces: guide {tool, schema} writes the 3D curve and the sketch outline once, named where used; put
+// back, it is the schema validation reads, field for field.
+{
+  const apply = TOOLS.find((tool) => tool.name === "model_apply")!;
+  const doc = toolDoc("model_apply", true) as { schema: unknown; shapes?: Record<string, unknown> };
+  const restore = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(restore);
+    if (!value || typeof value !== "object") return value;
+    const row = value as Record<string, unknown>;
+    if (typeof row.shape === "string" && Object.keys(row).length === 1) return doc.shapes![row.shape];
+    return Object.fromEntries(Object.entries(row).map(([key, inner]) => [key, restore(inner)]));
+  };
+  const text = JSON.stringify(doc.schema);
+  check("guide {tool:model_apply, schema} names the 3D curve as a shape, given once", !!doc.shapes?.curve3d && (text.match(/\{"shape":"curve3d"\}/g)?.length ?? 0) > 1 && !text.includes("Exact 3D spine"));
+  check("put back, the guide's schema is the schema validation reads", JSON.stringify(restore(doc.schema)) === JSON.stringify(apply.inputSchema));
+  check("a schema with one use of a shape keeps it inline", guideShapes({ type: "object", properties: {} }).shapes === undefined);
+  console.log(`guide {tool:model_apply, schema}: ~${tokens(JSON.stringify(doc))} tokens, against ~${tokens(JSON.stringify({ ...doc, schema: apply.inputSchema, shapes: undefined }))} written out`);
+}
 
 if (failed) {
   console.error(`${failed} failed`);

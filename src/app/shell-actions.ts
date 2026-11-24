@@ -123,7 +123,7 @@ export async function closeObjectHoles(id?: string | null): Promise<boolean> {
   }
   const { positions, report } = closeHoles(obj.sourcePos);
   const still = report.openAfter > 0 ? ` ${report.openAfter} ${report.openAfter === 1 ? "edge is" : "edges are"} still open.` : "";
-  const next = report.holes > 0 || report.removed > 0 ? withMendedMesh(state.plate, obj.id, positions) : null;
+  const next = report.holes > 0 || report.removed > 0 ? withMendedMesh(state.plate, obj.id, positions, report.openAfter > 0) : null;
   if (!next) {
     flushEdit();
     pushToast(report.openBefore === 0 ? `${obj.name} has no open edges.` : `No hole of ${obj.name} could be closed.${still}`, "info");

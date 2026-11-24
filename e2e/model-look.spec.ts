@@ -137,3 +137,43 @@ test("a section face is taken only right after Face, and another object starts t
   await expect(page.locator("#model")).not.toHaveAttribute("data-section", /./);
   await expect(page.locator("#modelSectionAxis [data-axis=z]")).toHaveAttribute("aria-pressed", "true");
 });
+
+test("View menu switches Normal, Step, Zebra, Curvature, and Surface grid (Isoparms)", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelLookOpen").click();
+
+  await expect(page.locator("#modelShading [data-shading=normal]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#modelZebraRow")).toBeHidden();
+  await expect(page.locator("#modelCurvatureRow")).toBeHidden();
+
+  // Zebra mode shows stripe & axis controls and updates canvas state.
+  await page.locator("#modelShading [data-shading=zebra]").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-shading", "zebra");
+  await expect(page.locator("#modelZebraRow")).toBeVisible();
+  await expect(page.locator("#modelCurvatureRow")).toBeHidden();
+  await expect(page.locator("#modelColourSteps")).not.toBeChecked();
+
+  // Curvature mode defaults to Bend tightness (Radius) with warning threshold visible.
+  await page.locator("#modelShading [data-shading=curvature]").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-shading", "curvature");
+  await expect(page.locator("#modelCurvatureRow")).toBeVisible();
+  await expect(page.locator("#modelCurvatureMode [data-curvature-mode=radius]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#modelCurvatureWarnRow")).toBeVisible();
+  await page.locator("#modelCurvatureMode [data-curvature-mode=gaussian]").click();
+  await expect(page.locator("#modelCurvatureWarnRow")).toBeHidden();
+
+  // Independent Surface grid (Isoparms) toggle and Colour-by-step sync.
+  await page.locator("#modelIsoparms").check();
+  await expect(page.locator("#model")).toHaveAttribute("data-isoparms", "1");
+  await page.locator("#modelColourSteps").check();
+  await expect(page.locator("#modelShading [data-shading=step]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#model")).toHaveAttribute("data-shading", "step");
+  await expect(page.locator("#model")).toHaveAttribute("data-isoparms", "1");
+
+  // Hotkeys toggle Zebra (Alt+Z) and Isoparms (Alt+I) directly.
+  await page.locator("#modelLookOpen").click();
+  await page.keyboard.press("Alt+z");
+  await expect(page.locator("#model")).toHaveAttribute("data-shading", "zebra");
+  await page.keyboard.press("Alt+i");
+  await expect(page.locator("#model")).toHaveAttribute("data-isoparms", "0");
+});

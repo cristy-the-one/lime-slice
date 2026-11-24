@@ -459,7 +459,14 @@ pub struct Part {
 /// `couple_gears` build an assembly of the parts the run made, where the host can assemble (`context.limits.canAssemble`).
 /// 1.17: an animation's frames fall at whole multiples of `1/fps`, from 0 to the first at or after the end, and
 /// `anim::frame_times` gives those times (docs/plan-pose-animation.md).
-pub const API: (u32, u32) = (1, 17);
+/// 1.18: organic surfaces (docs/plan-organic-surfaces.md, app 7.2.0): `ops::nurbs_seg`, `ops::curve3d_polyline`,
+/// `ops::curve3d_nurbs`, the kernel `ops::sweep` along a 3D spine, `ops::fillet_g2`, `fillet_conic`, `fillet_variable`,
+/// `ops::loft_apex` and `ops::loft`, the open sheets (`sheet_*_spec`, `sheet`, `sew`, `thicken`, `trim_split`,
+/// `replace_face`, `split_face`), `surface_boundary`, `patch` and `blend_surface`, and `ops::nurbs_surface` and
+/// `ops::NurbsSurface` (S6: weights, degrees, knots, periodic, insert, elevate; `.op()` also feeds
+/// `solid_new {feature}`). A host before 7.2.0 does not
+/// build these steps, so a plugin that uses them records 1.18.
+pub const API: (u32, u32) = (1, 18);
 
 /// What a nested plugin run made (API 1.16): the plugin and the version that ran, the part it ended on (`done`), every
 /// part it made and left on the plate, in the order made, and the numbers it ended with. The parts are this run's from
@@ -1731,6 +1738,78 @@ pub mod ops {
         Json::obj().set("kind", "hole").set("origin", origin).set("axis", axis).set("diameterMm", diameter).set("depth", depth)
     }
 
+    /// An exact 2D NURBS profile loop segment from the previous point through interior `poles` to `to`.
+    /// Optional `weights` cover all poles (start, interior poles, to); `degree` defaults to 3.
+    pub fn nurbs_seg(
+        poles: Vec<[f64; 2]>,
+        weights: Option<Vec<f64>>,
+        degree: Option<u32>,
+        knots: Option<Vec<f64>>,
+        mults: Option<Vec<u32>>,
+        to: [f64; 2],
+    ) -> Json {
+        let mut obj = Json::obj().set("kind", "nurbs").set("to", to);
+        if !poles.is_empty() {
+            obj = obj.set("poles", poles);
+        }
+        if let Some(w) = weights {
+            obj = obj.set("weights", w);
+        }
+        if let Some(d) = degree {
+            obj = obj.set("degree", d);
+        }
+        if let Some(k) = knots {
+            obj = obj.set("knots", k);
+        }
+        if let Some(m) = mults {
+            obj = obj.set("mults", Json::arr(m.into_iter().map(|v| v as f64).collect()));
+        }
+        obj
+    }
+
+    /// An exact 3D polyline spine curve for `sweep`.
+    pub fn curve3d_polyline(points: Vec<[f64; 3]>, closed: bool) -> Json {
+        let obj = Json::obj().set("kind", "polyline").set("points", points);
+        if closed { obj.set("closed", true) } else { obj }
+    }
+
+    /// An exact 3D rational NURBS spine curve for `sweep`.
+    pub fn curve3d_nurbs(
+        poles: Vec<[f64; 3]>,
+        weights: Option<Vec<f64>>,
+        degree: Option<u32>,
+        knots: Option<Vec<f64>>,
+        mults: Option<Vec<u32>>,
+        closed: bool,
+    ) -> Json {
+        let mut obj = Json::obj().set("kind", "nurbs").set("poles", poles);
+        if let Some(w) = weights {
+            obj = obj.set("weights", w);
+        }
+        if let Some(d) = degree {
+            obj = obj.set("degree", d);
+        }
+        if let Some(k) = knots {
+            obj = obj.set("knots", k);
+        }
+        if let Some(m) = mults {
+            obj = obj.set("mults", Json::arr(m.into_iter().map(|v| v as f64).collect()));
+        }
+        if closed {
+            obj = obj.set("closed", true);
+        }
+        obj
+    }
+
+    /// An exact kernel pipe-shell sweep (`BRepOffsetAPI_MakePipeShell`): `op` is "fuse", "cut", or "common".
+    pub fn sweep(op: &str, sections: Vec<Json>, spine: Json) -> Json {
+        Json::obj()
+            .set("kind", "sweep")
+            .set("op", op)
+            .set("sections", Json::arr(sections))
+            .set("spine", spine)
+    }
+
     /// A boolean with a primitive placed at `origin`: `op` is "fuse", "cut" or "common".
     pub fn boolean(op: &str, primitive: Json, origin: [f64; 3]) -> Json {
         let mut fields = match primitive {
@@ -1744,6 +1823,228 @@ pub mod ops {
     /// A fillet of `size` mm on the edges `edges` (as the MCP tool spells an edge list).
     pub fn fillet(edges: Json, size: f64) -> Json {
         Json::obj().set("kind", "fillet").set("edges", edges).set("size", size)
+    }
+
+    /// A curvature-continuous ($G^2$) smooth fillet on `edges`.
+    pub fn fillet_g2(edges: Json, size: f64) -> Json {
+        fillet(edges, size).set("continuity", "g2")
+    }
+
+    /// A rational conic fillet of fullness `rho` (0.05..0.95) on `edges`.
+    pub fn fillet_conic(edges: Json, size: f64, rho: f64) -> Json {
+        fillet(edges, size).set("continuity", "conic").set("rho", rho)
+    }
+
+    /// A variable-radius fillet with `[u, radius]` stations (`u` in `0..=1`) and optional continuity (`"g1"`, `"g2"`, `"conic"`).
+    pub fn fillet_variable(edges: Json, stations: &[[f64; 2]], continuity: Option<&str>) -> Json {
+        let size = stations.first().map(|s| s[1]).unwrap_or(1.0);
+        let mut obj = fillet(edges, size).set("variable", Json::arr(stations.iter().map(|s| Json::from(*s)).collect()));
+        if let Some(c) = continuity {
+            obj = obj.set("continuity", c);
+        }
+        obj
+    }
+
+    /// A point apex section for a controlled loft (`{ apex: [x, y, z] }`).
+    pub fn loft_apex(point: [f64; 3]) -> Json {
+        Json::obj().set("apex", point)
+    }
+
+    /// A controlled loft through `sections` (`op` is `"fuse"`, `"cut"`, or `"common"`).
+    /// Chain `.set("guides", ...)`, `.set("startCondition", ...)`, `.set("endCondition", ...)`, `.set("closed", true)`, or `.set("smoothing", true)`.
+    pub fn loft(op: &str, sections: Vec<Json>) -> Json {
+        Json::obj().set("kind", "loft").set("op", op).set("sections", Json::arr(sections))
+    }
+
+    /// S4: Sheet spec extruded from a 3D curve along `dir` by `distance` mm.
+    pub fn sheet_extrude_spec(curve: Json, dir: [f64; 3], distance: f64) -> Json {
+        Json::obj()
+            .set("mode", "extrude")
+            .set("curves", Json::arr(vec![curve]))
+            .set("dir", dir)
+            .set("distance", distance)
+    }
+
+    /// S4: Sheet spec revolved from a 3D curve around `(axis_origin, dir)` by `angle_deg` degrees.
+    pub fn sheet_revolve_spec(curve: Json, axis_origin: [f64; 3], dir: [f64; 3], angle_deg: f64) -> Json {
+        Json::obj()
+            .set("mode", "revolve")
+            .set("curves", Json::arr(vec![curve]))
+            .set("axisOrigin", axis_origin)
+            .set("dir", dir)
+            .set("angleDeg", angle_deg)
+    }
+
+    /// S4: Sheet spec lofted across 3D `curves` (`ruled` for straight rulings).
+    pub fn sheet_loft_spec(curves: Vec<Json>, ruled: bool) -> Json {
+        let mut obj = Json::obj().set("mode", "loft").set("curves", Json::arr(curves));
+        if ruled {
+            obj = obj.set("ruled", true);
+        }
+        obj
+    }
+
+    /// S4: Planar open sheet spec bounded by a closed 3D `curve`.
+    pub fn sheet_planar_spec(curve: Json) -> Json {
+        Json::obj().set("mode", "planar").set("curves", Json::arr(vec![curve]))
+    }
+
+    /// S4: Open sheet op built from a sheet spec (`sheet_extrude_spec`, `sheet_revolve_spec`, `sheet_loft_spec`, or `sheet_planar_spec`).
+    pub fn sheet(spec: Json) -> Json {
+        spec.set("kind", "sheet")
+    }
+
+    /// S4: Sew open faces/shells within tolerance (optional planar capping & solid auto-promotion).
+    pub fn sew(cap_planar: bool, make_solid: bool) -> Json {
+        Json::obj()
+            .set("kind", "sew")
+            .set("capPlanar", cap_planar)
+            .set("makeSolid", make_solid)
+    }
+
+    /// S5: One side of a patch or blend. `continuity` is `"g0"`, `"g1"`, or `"g2"`. A blend builds G1 and G2; a patch
+    /// side asked `"g2"` is not built in this version (the kernel refuses it), so a patch side is `"g0"` or `"g1"`.
+    pub fn surface_boundary(edges: Json, continuity: &str) -> Json {
+        Json::obj().set("edges", edges).set("continuity", continuity)
+    }
+
+    /// S5: Fill an opening. A clean 2–4 curve G0 boundary uses GeomFill; G1 or an N-sided opening is N Hermite–Coons
+    /// pieces. A G2 side is refused by the kernel in this version.
+    pub fn patch(boundaries: Vec<Json>) -> Json {
+        Json::obj().set("kind", "patch").set("boundaries", Json::arr(boundaries))
+    }
+
+    /// S6: An M by N NURBS sheet. `poles` is one row per U index. Degree defaults to 3 when left out.
+    pub fn nurbs_surface(poles: Vec<Vec<[f64; 3]>>) -> Json {
+        let rows: Vec<Json> = poles.into_iter().map(Json::from).collect();
+        Json::obj().set("kind", "nurbsSurface").set("poles", rows)
+    }
+
+    /// S6: a `nurbsSurface` op built field by field, for what `nurbs_surface` leaves at its defaults:
+    /// `ops::NurbsSurface::new(poles).degrees(3, 2).weights(w).knots_u(vec![0.0, 0.5, 1.0], vec![4, 1, 4]).op()`.
+    /// Each setter writes the field `guide {kind:"nurbsSurface"}` names, as the server takes it. The server refuses what
+    /// does not fit (a degree the poles cannot carry, weights or knots that do not match, an insert past the degree).
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct NurbsSurface {
+        op: Json,
+        insert_u: Vec<[f64; 2]>,
+        insert_v: Vec<[f64; 2]>,
+    }
+
+    impl NurbsSurface {
+        /// The grid: one row per U index, each row along V.
+        pub fn new(poles: Vec<Vec<[f64; 3]>>) -> NurbsSurface {
+            NurbsSurface { op: nurbs_surface(poles), insert_u: Vec::new(), insert_v: Vec::new() }
+        }
+        /// One weight per pole, each above 0, in the poles' rows.
+        pub fn weights(self, weights: Vec<Vec<f64>>) -> NurbsSurface {
+            let rows: Vec<Json> = weights.into_iter().map(Json::from).collect();
+            NurbsSurface { op: self.op.set("weights", Json::arr(rows)), ..self }
+        }
+        /// The degree in U and in V, 1 to 8 (3 when left out).
+        pub fn degrees(self, u: u32, v: u32) -> NurbsSurface {
+            NurbsSurface { op: self.op.set("degreeU", u).set("degreeV", v), ..self }
+        }
+        /// Distinct U knots, rising, and one multiplicity per knot.
+        pub fn knots_u(self, knots: Vec<f64>, mults: Vec<u32>) -> NurbsSurface {
+            let mults: Vec<f64> = mults.into_iter().map(f64::from).collect();
+            NurbsSurface { op: self.op.set("knotsU", knots).set("multsU", mults), ..self }
+        }
+        /// Distinct V knots, rising, and one multiplicity per knot.
+        pub fn knots_v(self, knots: Vec<f64>, mults: Vec<u32>) -> NurbsSurface {
+            let mults: Vec<f64> = mults.into_iter().map(f64::from).collect();
+            NurbsSurface { op: self.op.set("knotsV", knots).set("multsV", mults), ..self }
+        }
+        /// Closed (periodic) in U, in V, or both. A closed direction needs at least 3 poles.
+        pub fn periodic(self, u: bool, v: bool) -> NurbsSurface {
+            let mut op = self.op;
+            if u {
+                op = op.set("periodicU", true);
+            }
+            if v {
+                op = op.set("periodicV", true);
+            }
+            NurbsSurface { op, ..self }
+        }
+        /// Insert the U knot `param` `times` times (1 to the U degree); the surface keeps its shape. Clamped grids only.
+        pub fn insert_u(mut self, param: f64, times: u32) -> NurbsSurface {
+            self.insert_u.push([param, f64::from(times)]);
+            self
+        }
+        /// Insert the V knot `param` `times` times (1 to the V degree); the surface keeps its shape. Clamped grids only.
+        pub fn insert_v(mut self, param: f64, times: u32) -> NurbsSurface {
+            self.insert_v.push([param, f64::from(times)]);
+            self
+        }
+        /// Raise the U degree to `u` and the V degree to `v` (up to 8); the surface keeps its shape. Clamped grids only.
+        pub fn elevate(self, u: Option<u32>, v: Option<u32>) -> NurbsSurface {
+            let mut op = self.op;
+            if let Some(u) = u {
+                op = op.set("elevateU", u);
+            }
+            if let Some(v) = v {
+                op = op.set("elevateV", v);
+            }
+            NurbsSurface { op, ..self }
+        }
+        /// The op to apply, or to give `solid_new` as its `feature` (a part that starts from the surface).
+        pub fn op(self) -> Json {
+            let mut op = self.op;
+            if !self.insert_u.is_empty() {
+                op = op.set("insertU", Json::arr(self.insert_u.into_iter().map(Json::from).collect()));
+            }
+            if !self.insert_v.is_empty() {
+                op = op.set("insertV", Json::arr(self.insert_v.into_iter().map(Json::from).collect()));
+            }
+            op
+        }
+    }
+
+    /// S5: Bridge two open edges or chains at `"g1"` or `"g2"`, with a tension on each side.
+    pub fn blend_surface(a: Json, b: Json, continuity: &str, tension_a: f64, tension_b: f64) -> Json {
+        Json::obj()
+            .set("kind", "blendSurface")
+            .set("a", a)
+            .set("b", b)
+            .set("continuity", continuity)
+            .set("tensionA", tension_a)
+            .set("tensionB", tension_b)
+    }
+
+    /// S4: Thicken an open sheet into a watertight solid wall (`direction`: `"normal"`, `"reverse"`, or `"both"`).
+    pub fn thicken(thickness: f64, direction: &str) -> Json {
+        Json::obj()
+            .set("kind", "thicken")
+            .set("thickness", thickness)
+            .set("direction", direction)
+    }
+
+    /// S4: Split a solid or sheet cleanly with a sculpted surface (`keep`: `"above"`, `"below"`, or `"both"`).
+    pub fn trim_split(sheet_spec: Json, keep: &str) -> Json {
+        Json::obj()
+            .set("kind", "trimSplit")
+            .set("sheet", sheet_spec)
+            .set("keep", keep)
+    }
+
+    /// S4: Replace a solid face (`face` index or selector JSON) with a sculpted NURBS surface.
+    pub fn replace_face(face: Json, sheet_spec: Json) -> Json {
+        Json::obj()
+            .set("kind", "replaceFace")
+            .set("face", face)
+            .set("sheet", sheet_spec)
+    }
+
+    /// S4: Project and imprint a 3D `curve` onto `faces` (optional projection `direction`).
+    pub fn split_face(faces: Vec<Json>, curve: Json, direction: Option<[f64; 3]>) -> Json {
+        let mut obj = Json::obj()
+            .set("kind", "splitFace")
+            .set("faces", Json::arr(faces))
+            .set("curve", curve);
+        if let Some(d) = direction {
+            obj = obj.set("direction", d);
+        }
+        obj
     }
 
     /// The kernel's gear step (API 1.12): a spur gear with true involute flanks, `thickness` mm along its axis, its base
@@ -6764,7 +7065,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 17));
+        assert_eq!(API, (1, 18));
     }
 
     #[test]
@@ -7822,5 +8123,87 @@ mod animation_tests {
         assert_eq!(ask.get("max").and_then(Json::as_f64), Some(30.0));
         assert_eq!(ask.get("tolerance").and_then(Json::as_f64), Some(0.005));
         assert!(ContactAsk::new("Wheel", 1).json(&at).get("against").is_none(), "any part, unless one is named");
+    }
+
+    #[test]
+    fn s3_fillet_v2_and_loft_v2_ops_build_expected_json() {
+        use crate::ops;
+        let f_g2 = ops::fillet_g2(Json::arr(vec![Json::from(0.0)]), 3.0);
+        assert_eq!(f_g2.get("continuity").and_then(Json::as_str), Some("g2"));
+        let f_conic = ops::fillet_conic(Json::arr(vec![Json::from(0.0)]), 4.0, 0.7);
+        assert_eq!(f_conic.get("continuity").and_then(Json::as_str), Some("conic"));
+        assert_eq!(f_conic.get("rho").and_then(Json::as_f64), Some(0.7));
+        let f_var = ops::fillet_variable(Json::arr(vec![Json::from(0.0)]), &[[0.0, 1.0], [1.0, 4.0]], Some("g2"));
+        assert_eq!(f_var.get("continuity").and_then(Json::as_str), Some("g2"));
+        assert_eq!(f_var.at("variable.1.1").and_then(Json::as_f64), Some(4.0));
+        let apex = ops::loft_apex([0.0, 0.0, 20.0]);
+        assert_eq!(apex.at("apex.2").and_then(Json::as_f64), Some(20.0));
+        let loft = ops::loft("fuse", vec![apex]).set("closed", true).set("smoothing", true);
+        assert_eq!(loft.get("kind").and_then(Json::as_str), Some("loft"));
+        assert_eq!(loft.get("closed").and_then(Json::as_bool), Some(true));
+        assert_eq!(loft.get("smoothing").and_then(Json::as_bool), Some(true));
+    }
+
+    #[test]
+    fn s5_patch_and_blend_ops_build_expected_json() {
+        use crate::ops;
+        let side = ops::surface_boundary(Json::arr(vec![Json::from(0.0)]), "g1");
+        let patch = ops::patch(vec![side.clone(), ops::surface_boundary(Json::arr(vec![Json::from(1.0)]), "g2")]);
+        assert_eq!(patch.get("kind").and_then(Json::as_str), Some("patch"));
+        assert_eq!(patch.at("boundaries.1.continuity").and_then(Json::as_str), Some("g2"));
+        let blend = ops::blend_surface(side, ops::surface_boundary(Json::arr(vec![Json::from(2.0)]), "g1"), "g1", 1.0, 1.4);
+        assert_eq!(blend.get("kind").and_then(Json::as_str), Some("blendSurface"));
+        assert_eq!(blend.get("continuity").and_then(Json::as_str), Some("g1"));
+        assert_eq!(blend.get("tensionB").and_then(Json::as_f64), Some(1.4));
+        let surface = ops::nurbs_surface(vec![vec![[0.0, 0.0, 0.0], [0.0, 10.0, 0.0]], vec![[10.0, 0.0, 0.0], [10.0, 10.0, 1.0]]]);
+        assert_eq!(surface.get("kind").and_then(Json::as_str), Some("nurbsSurface"));
+        assert_eq!(surface.at("poles.1.1.2").and_then(Json::as_f64), Some(1.0));
+        let grid: Vec<Vec<[f64; 3]>> = (0..4).map(|u| (0..4).map(|v| [f64::from(u) * 10.0, f64::from(v) * 10.0, 0.0]).collect()).collect();
+        let built = ops::NurbsSurface::new(grid.clone())
+            .weights(vec![vec![1.0; 4]; 4])
+            .degrees(3, 2)
+            .knots_u(vec![0.0, 1.0], vec![4, 4])
+            .knots_v(vec![0.0, 0.5, 1.0], vec![3, 1, 3])
+            .insert_u(0.5, 1)
+            .elevate(None, Some(3))
+            .op();
+        assert_eq!(built.get("kind").and_then(Json::as_str), Some("nurbsSurface"));
+        assert_eq!(built.at("weights.3.3").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(built.get("degreeU").and_then(Json::as_f64), Some(3.0));
+        assert_eq!(built.get("degreeV").and_then(Json::as_f64), Some(2.0));
+        assert_eq!(built.at("multsV.1").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(built.at("insertU.0.1").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(built.get("elevateV").and_then(Json::as_f64), Some(3.0));
+        assert!(built.get("elevateU").is_none() && built.get("insertV").is_none());
+        let closed = ops::NurbsSurface::new(grid).periodic(true, false).op();
+        assert_eq!(closed.get("periodicU").and_then(Json::as_bool), Some(true));
+        assert!(closed.get("periodicV").is_none());
+    }
+
+    #[test]
+    fn s4_open_sheet_ops_build_expected_json() {
+        use crate::ops;
+        let c = ops::curve3d_nurbs(vec![[0.0, 0.0, 0.0], [10.0, 0.0, 4.0], [20.0, 0.0, 0.0]], None, Some(2), None, None, false);
+        let spec = ops::sheet_extrude_spec(c.clone(), [0.0, 1.0, 0.0], 20.0);
+        let sh = ops::sheet(spec.clone());
+        assert_eq!(sh.get("kind").and_then(Json::as_str), Some("sheet"));
+        assert_eq!(sh.get("mode").and_then(Json::as_str), Some("extrude"));
+        assert_eq!(sh.get("distance").and_then(Json::as_f64), Some(20.0));
+        let sew = ops::sew(true, true);
+        assert_eq!(sew.get("kind").and_then(Json::as_str), Some("sew"));
+        assert_eq!(sew.get("capPlanar").and_then(Json::as_bool), Some(true));
+        let thick = ops::thicken(2.5, "both");
+        assert_eq!(thick.get("kind").and_then(Json::as_str), Some("thicken"));
+        assert_eq!(thick.get("thickness").and_then(Json::as_f64), Some(2.5));
+        assert_eq!(thick.get("direction").and_then(Json::as_str), Some("both"));
+        let ts = ops::trim_split(spec.clone(), "below");
+        assert_eq!(ts.get("kind").and_then(Json::as_str), Some("trimSplit"));
+        assert_eq!(ts.get("keep").and_then(Json::as_str), Some("below"));
+        let rf = ops::replace_face(Json::from(5.0), spec);
+        assert_eq!(rf.get("kind").and_then(Json::as_str), Some("replaceFace"));
+        assert_eq!(rf.get("face").and_then(Json::as_f64), Some(5.0));
+        let sf = ops::split_face(vec![Json::from(5.0)], c, Some([0.0, 0.0, -1.0]));
+        assert_eq!(sf.get("kind").and_then(Json::as_str), Some("splitFace"));
+        assert_eq!(sf.at("direction.2").and_then(Json::as_f64), Some(-1.0));
     }
 }

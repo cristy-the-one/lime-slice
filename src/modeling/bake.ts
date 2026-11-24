@@ -15,12 +15,13 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
-import { draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, revolveOp, shellOp, stepEdges, type ProfileShape } from "../model-request.ts";
+import { blendSurfaceOp, draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, nurbsSurfaceOp, patchOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
+import { applyRefinements, surfaceRefusal } from "./nurbs-eval.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
 import type { BeltSettings } from "../belt.ts";
-import type { DraftNeutral, EdgePick, LoftSection, ModelOp, ProfileLoop, ProfileSegment, Vec2 } from "../model-tree.ts";
+import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, FilletContinuity, LoftBoundary, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SheetSpec, SurfaceBoundary, SurfaceContinuity, SweepMode, SweepTransition, ThickenDirection, TrimKeep, Vec2, Vec3 } from "../model-tree.ts";
 import { drillDown, isGlobalFrame, planePoint, planePrimitive, type Workplane } from "../workplane.ts";
 
 /** A baked op: as stored, as typed with its defaults filled, and any notes. */
@@ -175,13 +176,278 @@ export function readLoopsField(value: unknown): { loops?: ProfileLoop[] } | { re
           through.push(at);
         }
         segments.push({ kind: "spline", through, to });
+      } else if (piece.kind === "nurbs") {
+        let poles: Vec2[] | undefined;
+        if (piece.poles !== undefined) {
+          if (!Array.isArray(piece.poles) || piece.poles.length > 200) return { reason: "NURBS poles must be an array of [u, v] points." };
+          poles = [];
+          for (const point of piece.poles) {
+            const at = pairOf(point);
+            if (!at) return { reason: "NURBS poles are [u, v]." };
+            poles.push(at);
+          }
+        }
+        const meta = readNurbsMetaField(piece);
+        if ("reason" in meta) return meta;
+        segments.push({ kind: "nurbs", ...(poles ? { poles } : {}), ...meta, to });
       } else {
-        return { reason: "A segment kind is line, arc, or spline." };
+        return { reason: "A segment kind is line, arc, spline, or nurbs." };
       }
     }
     loops.push({ start, segments });
   }
   return { loops };
+}
+
+function readNurbsMetaField(piece: Record<string, unknown>): { weights?: number[]; degree?: number; knots?: number[]; mults?: number[] } | { reason: string } {
+  let weights: number[] | undefined;
+  if (piece.weights !== undefined) {
+    if (!Array.isArray(piece.weights) || piece.weights.some((w) => typeof w !== "number" || !Number.isFinite(w) || !(w > 0))) {
+      return { reason: "NURBS weights must be positive numbers." };
+    }
+    weights = [...piece.weights];
+  }
+  let degree: number | undefined;
+  if (piece.degree !== undefined) {
+    if (typeof piece.degree !== "number" || !Number.isInteger(piece.degree) || piece.degree < 1 || piece.degree > 10) {
+      return { reason: "NURBS degree must be an integer from 1 to 10." };
+    }
+    degree = piece.degree;
+  }
+  let knots: number[] | undefined;
+  if (piece.knots !== undefined) {
+    if (!Array.isArray(piece.knots) || piece.knots.some((k) => typeof k !== "number" || !Number.isFinite(k))) {
+      return { reason: "NURBS knots must be numbers." };
+    }
+    knots = [...piece.knots];
+  }
+  let mults: number[] | undefined;
+  if (piece.mults !== undefined) {
+    if (!Array.isArray(piece.mults) || piece.mults.some((m) => typeof m !== "number" || !Number.isInteger(m) || m < 1)) {
+      return { reason: "NURBS mults must be positive integers." };
+    }
+    mults = [...piece.mults];
+  }
+  return { ...(weights ? { weights } : {}), ...(degree !== undefined ? { degree } : {}), ...(knots ? { knots } : {}), ...(mults ? { mults } : {}) };
+}
+
+function vec3Of(value: unknown): Vec3 | null {
+  if (!Array.isArray(value) || value.length !== 3 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  return [value[0] as number, value[1] as number, value[2] as number];
+}
+
+function readContinuityField(value: unknown, what: string): SurfaceContinuity | undefined | { reason: string } {
+  if (value === undefined) return undefined;
+  if (value === "g0" || value === "g1" || value === "g2") return value;
+  return { reason: `${what} continuity is g0, g1, or g2.` };
+}
+
+function readTension(value: unknown, side: string): number | undefined | { reason: string } {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0.15 || value > 4) {
+    return { reason: `${side} tension is from 0.15 to 4.` };
+  }
+  return value;
+}
+
+function readBoundaryField(value: unknown, ctx: BakeContext, what: string): SurfaceBoundary | { reason: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { reason: `${what} needs a curve or an edge of the sheet.` };
+  }
+  const raw = value as Record<string, unknown>;
+  const continuity = readContinuityField(raw.continuity, what);
+  if (continuity !== undefined && typeof continuity !== "string") return continuity;
+  let edges: EdgePick[] | undefined;
+  if (raw.edges !== undefined) {
+    const resolved = resolveEdges({ edges: raw.edges, kind: "patch" }, ctx);
+    if ("reason" in resolved) {
+      return { reason: resolved.reason.startsWith("Pick an edge") ? `${what} needs a curve or an edge of the sheet.` : resolved.reason };
+    }
+    edges = resolved;
+  }
+  let curve: Curve3D | undefined;
+  if (raw.curve !== undefined) {
+    const read = readCurve3DField(raw.curve, ctx);
+    if ("reason" in read) return read;
+    curve = read;
+  }
+  if (!edges && !curve) return { reason: `${what} needs a curve or an edge of the sheet.` };
+  let face: number | undefined;
+  if (raw.face !== undefined) {
+    const picked = bakedFace(raw.face, ctx);
+    if (typeof picked !== "number") return picked;
+    face = picked;
+  }
+  return {
+    ...(curve ? { curve } : {}),
+    ...(edges ? { edges } : {}),
+    ...(face !== undefined ? { face } : {}),
+    ...(typeof continuity === "string" ? { continuity } : {}),
+  };
+}
+
+function readBoundariesField(value: unknown, ctx: BakeContext): SurfaceBoundary[] | { reason: string } {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 20) {
+    return { reason: "A patch needs between 2 and 20 boundary curves or edges." };
+  }
+  const boundaries: SurfaceBoundary[] = [];
+  for (const raw of value) {
+    const bound = readBoundaryField(raw, ctx, "A patch side");
+    if ("reason" in bound) return bound;
+    boundaries.push(bound);
+  }
+  return boundaries;
+}
+
+function readCurve3DField(value: unknown, ctx: BakeContext): Curve3D | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "spine must be a Curve3D object." };
+  const raw = value as Record<string, unknown>;
+  if (raw.kind === "polyline") {
+    if (!Array.isArray(raw.points) || raw.points.length < 2) return { reason: "A polyline spine needs at least 2 points." };
+    const points = raw.points.map(vec3Of);
+    if (points.some((p) => !p)) return { reason: "Polyline spine points are [x, y, z]." };
+    return { kind: "polyline", points: points as Vec3[], ...(raw.closed === true ? { closed: true as const } : {}) };
+  }
+  if (raw.kind === "spline") {
+    if (!Array.isArray(raw.through) || raw.through.length < 2) return { reason: "A spline spine needs at least 2 points." };
+    const through = raw.through.map(vec3Of);
+    if (through.some((p) => !p)) return { reason: "Spline spine points are [x, y, z]." };
+    return { kind: "spline", through: through as Vec3[], ...(raw.closed === true ? { closed: true as const } : {}) };
+  }
+  if (raw.kind === "nurbs") {
+    if (!Array.isArray(raw.poles) || raw.poles.length < 2) return { reason: "A NURBS spine needs at least 2 poles." };
+    const poles = raw.poles.map(vec3Of);
+    if (poles.some((p) => !p)) return { reason: "NURBS spine poles are [x, y, z]." };
+    const meta = readNurbsMetaField(raw);
+    if ("reason" in meta) return meta;
+    return { kind: "nurbs", poles: poles as Vec3[], ...meta, ...(raw.closed === true ? { closed: true as const } : {}) };
+  }
+  if (raw.kind === "segments") {
+    const start = vec3Of(raw.start);
+    if (!start) return { reason: "A segments spine starts at [x, y, z]." };
+    if (!Array.isArray(raw.segments) || raw.segments.length < 1) return { reason: "A segments spine needs at least 1 segment." };
+    const segments: Curve3DSegment[] = [];
+    for (const item of raw.segments) {
+      if (!item || typeof item !== "object") return { reason: "A spine segment is incomplete." };
+      const seg = item as Record<string, unknown>;
+      const to = vec3Of(seg.to);
+      if (!to) return { reason: "A spine segment ends at [x, y, z]." };
+      if (seg.kind === "line") segments.push({ kind: "line", to });
+      else if (seg.kind === "arc") {
+        const through = vec3Of(seg.through);
+        if (!through) return { reason: "An arc spine segment needs through: [x, y, z]." };
+        segments.push({ kind: "arc", through, to });
+      } else if (seg.kind === "spline") {
+        if (!Array.isArray(seg.through) || seg.through.length < 1) return { reason: "A spline spine segment needs through points." };
+        const through = seg.through.map(vec3Of);
+        if (through.some((p) => !p)) return { reason: "Spline spine segment points are [x, y, z]." };
+        segments.push({ kind: "spline", through: through as Vec3[], to });
+      } else if (seg.kind === "nurbs") {
+        let poles: Vec3[] | undefined;
+        if (seg.poles !== undefined) {
+          if (!Array.isArray(seg.poles)) return { reason: "NURBS spine segment poles must be [x, y, z][]." };
+          const parsed = seg.poles.map(vec3Of);
+          if (parsed.some((p) => !p)) return { reason: "NURBS spine segment poles are [x, y, z]." };
+          poles = parsed as Vec3[];
+        }
+        const meta = readNurbsMetaField(seg);
+        if ("reason" in meta) return meta;
+        segments.push({ kind: "nurbs", ...(poles ? { poles } : {}), ...meta, to });
+      } else return { reason: "Spine segment kind must be line, arc, spline, or nurbs." };
+    }
+    return { kind: "segments", start, segments };
+  }
+  if (raw.kind === "edges") {
+    const picked = resolveEdges({ edges: raw.edges }, ctx);
+    if ("reason" in picked) return picked;
+    return { kind: "edges", edges: picked };
+  }
+  return { reason: "spine.kind must be polyline, spline, nurbs, segments, or edges." };
+}
+
+function readSheetSpecField(value: unknown, ctx: BakeContext): SheetSpec | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "sheet specification must be an object." };
+  const raw = value as Record<string, unknown>;
+  const mode = raw.mode;
+  if (mode !== "extrude" && mode !== "revolve" && mode !== "loft" && mode !== "planar") {
+    return { reason: "sheet mode must be extrude, revolve, loft, or planar." };
+  }
+  if (!Array.isArray(raw.curves) || raw.curves.length < 1 || raw.curves.length > 100) {
+    return { reason: "A sheet needs at least 1 3D curve." };
+  }
+  if (mode === "loft" && raw.curves.length < 2) {
+    return { reason: "A loft sheet needs at least 2 3D curves." };
+  }
+  const curves: Curve3D[] = [];
+  for (const [idx, item] of raw.curves.entries()) {
+    const parsed = readCurve3DField(item, ctx);
+    if ("reason" in parsed) return { reason: `curves[${idx}]: ${parsed.reason}` };
+    curves.push(parsed);
+  }
+  let dir: Vec3 | undefined;
+  if (raw.dir !== undefined) {
+    const v = vec3Of(raw.dir);
+    if (!v || Math.hypot(v[0], v[1], v[2]) < 1e-9) return { reason: "dir must be a non-zero [x, y, z] vector." };
+    dir = v;
+  }
+  let distance: number | undefined;
+  if (raw.distance !== undefined) {
+    if (typeof raw.distance !== "number" || !Number.isFinite(raw.distance) || raw.distance === 0) {
+      return { reason: "distance must be a non-zero finite number." };
+    }
+    distance = raw.distance;
+  }
+  let axisOrigin: Vec3 | undefined;
+  if (raw.axisOrigin !== undefined) {
+    const v = vec3Of(raw.axisOrigin);
+    if (!v) return { reason: "axisOrigin must be [x, y, z]." };
+    axisOrigin = v;
+  }
+  let angleDeg: number | undefined;
+  if (raw.angleDeg !== undefined) {
+    if (typeof raw.angleDeg !== "number" || !Number.isFinite(raw.angleDeg) || raw.angleDeg === 0) {
+      return { reason: "angleDeg must be a non-zero finite number." };
+    }
+    angleDeg = raw.angleDeg;
+  }
+  if (mode === "extrude" && (!dir || distance === undefined)) {
+    return { reason: "An extruded sheet needs dir and distance." };
+  }
+  if (mode === "revolve" && !dir) {
+    return { reason: "A revolved sheet needs axis dir." };
+  }
+  return {
+    mode,
+    curves,
+    ...(dir ? { dir } : {}),
+    ...(distance !== undefined ? { distance } : {}),
+    ...(axisOrigin ? { axisOrigin } : {}),
+    ...(angleDeg !== undefined ? { angleDeg } : {}),
+    ...(raw.ruled === true ? { ruled: true as const } : {}),
+    ...(raw.symmetric === true ? { symmetric: true as const } : {}),
+  };
+}
+
+function readSweepModeField(value: unknown, ctx: BakeContext): SweepMode | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "sweep mode must be an object." };
+  const raw = value as Record<string, unknown>;
+  if (raw.kind === "correctedFrenet" || raw.kind === "frenet") return { kind: raw.kind };
+  if (raw.kind === "fixedBinormal") {
+    const dir = vec3Of(raw.dir);
+    if (!dir) return { reason: "fixedBinormal needs dir: [x, y, z]." };
+    return { kind: "fixedBinormal", dir };
+  }
+  if (raw.kind === "auxSpine") {
+    const spine = readCurve3DField(raw.spine, ctx);
+    if ("reason" in spine) return spine;
+    return {
+      kind: "auxSpine",
+      spine,
+      ...(typeof raw.curvilinear === "boolean" ? { curvilinear: raw.curvilinear } : {}),
+      ...(typeof raw.keepContact === "boolean" ? { keepContact: raw.keepContact } : {}),
+    };
+  }
+  return { reason: "sweep mode.kind must be correctedFrenet, frenet, fixedBinormal, or auxSpine." };
 }
 
 function pairOf(value: unknown): Vec2 | null {
@@ -200,10 +466,37 @@ export function readShape(spec: Record<string, unknown>, points: number): Profil
   return { smooth: true, corners: [...new Set(spec.corners as number[])] };
 }
 
-/** One loft section: origin and turn as a profile's plane, then a radius (radiusV for an ellipse) or a profile. */
+export function readLoftBoundaryField(value: unknown): LoftBoundary | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "Loft boundary condition must be an object." };
+  const raw = value as Record<string, unknown>;
+  if (raw.kind === "free") return { kind: "free" };
+  let tension: number | undefined;
+  if (raw.tension !== undefined) {
+    if (typeof raw.tension !== "number" || !Number.isFinite(raw.tension) || !(raw.tension > 0)) {
+      return { reason: "Loft boundary tension must be a positive number." };
+    }
+    tension = raw.tension;
+  }
+  if (raw.kind === "normal") return { kind: "normal", ...(tension !== undefined ? { tension } : {}) };
+  if (raw.kind === "tangent") {
+    const dir = vec3Of(raw.dir);
+    if (!dir || Math.hypot(...dir) < 1e-9) return { reason: "Loft tangent boundary needs a non-zero dir [x, y, z]." };
+    return { kind: "tangent", dir, ...(tension !== undefined ? { tension } : {}) };
+  }
+  // The kernel builds no curvature (G2) loft end; a step saved with one still reads, and the kernel says why it fails.
+  if (raw.kind === "curvature") return { reason: "A loft end cannot be held to curvature (G2). Use free, normal, or tangent." };
+  return { reason: "Loft boundary kind must be free, normal, or tangent." };
+}
+
+/** One loft section: origin and turn as a profile's plane, then a radius (radiusV for an ellipse) or a profile, or an apex point cap. */
 export function readSection(value: unknown): LoftSection | { reason: string } {
   if (!value || typeof value !== "object") return { reason: "A section is an object with origin and a radius or a profile." };
   const spec = value as Record<string, unknown>;
+  if (spec.apex !== undefined) {
+    const apex = vec3Of(spec.apex);
+    if (!apex) return { reason: "A point apex section needs apex: [x, y, z]." };
+    return { origin: [...apex] as Vec3, turn: [0, 0, 0], apex };
+  }
   const origin = readVec3(spec.origin, [NaN, NaN, NaN]);
   if (origin.some((n) => !Number.isFinite(n))) return { reason: "A section needs an origin [x, y, z]." };
   const turn = readVec3(spec.turn, [0, 0, 0]);
@@ -264,7 +557,39 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     if ("reason" in picked) return picked;
     const size = spec.size;
     if (typeof size !== "number") return { reason: "This edit needs a size in millimetres." };
-    if (kind === "fillet") return { op: toSolidOp({ kind, edges: picked, size }, ctx.pose), typed: { kind, edges: picked, size } };
+    if (kind === "fillet") {
+      let continuity: FilletContinuity | undefined;
+      if (spec.continuity !== undefined) {
+        if (spec.continuity !== "g1" && spec.continuity !== "g2" && spec.continuity !== "conic") {
+          return { reason: "Fillet continuity must be g1, g2, or conic." };
+        }
+        if (spec.continuity !== "g1") continuity = spec.continuity;
+      }
+      let rho: number | undefined;
+      if (spec.rho !== undefined) {
+        if (typeof spec.rho !== "number" || !Number.isFinite(spec.rho) || spec.rho < 0.05 || spec.rho > 0.95) {
+          return { reason: "Conic fillet rho must be between 0.05 and 0.95." };
+        }
+        rho = spec.rho;
+      }
+      let variable: [number, number][] | undefined;
+      if (spec.variable !== undefined) {
+        if (!Array.isArray(spec.variable) || spec.variable.length < 2) {
+          return { reason: "Variable fillet needs at least two [u, radius] stations." };
+        }
+        const parsed = spec.variable.map(pairOf);
+        if (parsed.some((p) => !p || p[0] < 0 || p[0] > 1 || !(p[1] > 0))) {
+          return { reason: "Variable fillet stations are [u, radius] with u in [0, 1] and radius > 0." };
+        }
+        variable = parsed as [number, number][];
+      }
+      const extra = {
+        ...(continuity ? { continuity } : {}),
+        ...(rho !== undefined ? { rho } : {}),
+        ...(variable ? { variable } : {}),
+      };
+      return { op: toSolidOp({ kind, edges: picked, size, ...extra }, ctx.pose), typed: { kind, edges: picked, size, ...extra } };
+    }
     // Gaps 13. A second distance or an angle, and which face takes `size`. Absent fields keep equal sides.
     const second = typeof spec.size2 === "number" ? { size2: spec.size2 } : {};
     const angle = typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {};
@@ -401,6 +726,45 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
   }
   if (kind === "loft" || kind === "sweep") {
     const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
+    // S2: Real kernel pipe-shell sweep when `spine` is supplied (`BRepOffsetAPI_MakePipeShell`).
+    if (kind === "sweep" && spec.spine !== undefined) {
+      if (!Array.isArray(spec.sections) || spec.sections.length < 1) return { reason: "A kernel sweep needs at least 1 section." };
+      const sections: LoftSection[] = [];
+      for (const [index, value] of (spec.sections as unknown[]).entries()) {
+        const section = readSection(value);
+        if ("reason" in section) return { reason: `sections[${index}]: ${section.reason}` };
+        sections.push(section);
+      }
+      const spine = readCurve3DField(spec.spine, ctx);
+      if ("reason" in spine) return spine;
+      let mode: SweepMode | undefined;
+      if (spec.mode !== undefined) {
+        const parsed = readSweepModeField(spec.mode, ctx);
+        if ("reason" in parsed) return parsed;
+        mode = parsed;
+      }
+      let transition: SweepTransition | undefined;
+      if (spec.transition !== undefined) {
+        if (spec.transition !== "round" && spec.transition !== "right" && spec.transition !== "transformed") {
+          return { reason: "sweep transition must be round, right, or transformed." };
+        }
+        transition = spec.transition;
+      }
+      let scale: [number, number][] | undefined;
+      if (spec.scale !== undefined) {
+        if (!Array.isArray(spec.scale) || spec.scale.length < 2) return { reason: "Kernel sweep scale needs at least two [u, factor] stations." };
+        const parsed = spec.scale.map(pairOf);
+        if (parsed.some((p) => !p || !(p[1] > 0))) return { reason: "Kernel sweep scale stations are [u, factor] with factor > 0." };
+        scale = parsed as [number, number][];
+      }
+      let twistDeg: number | undefined;
+      if (spec.twistDeg !== undefined) {
+        if (typeof spec.twistDeg !== "number" || !Number.isFinite(spec.twistDeg)) return { reason: "twistDeg must be a finite number." };
+        twistDeg = spec.twistDeg;
+      }
+      const made = sweepOp(booleanOp, sections, spine, { mode, transition, scale, twistDeg });
+      return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+    }
     let sections: LoftSection[];
     if (kind === "sweep") {
       const made = sweepSections(spec as unknown as SweepSpec);
@@ -415,9 +779,47 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
         if ("reason" in section) return { reason: `sections[${index}]: ${section.reason}` };
         sections.push(section);
       }
+      let guides: Curve3D[] | undefined;
+      if (spec.guides !== undefined) {
+        if (!Array.isArray(spec.guides)) return { reason: "Loft guides must be an array of Curve3D objects." };
+        guides = [];
+        for (const [idx, g] of (spec.guides as unknown[]).entries()) {
+          const curve = readCurve3DField(g, ctx);
+          if ("reason" in curve) return { reason: `guides[${idx}]: ${curve.reason}` };
+          guides.push(curve);
+        }
+      }
+      let startCondition: LoftBoundary | undefined;
+      if (spec.startCondition !== undefined) {
+        const parsed = readLoftBoundaryField(spec.startCondition);
+        if ("reason" in parsed) return { reason: `startCondition: ${parsed.reason}` };
+        startCondition = parsed;
+      }
+      let endCondition: LoftBoundary | undefined;
+      if (spec.endCondition !== undefined) {
+        const parsed = readLoftBoundaryField(spec.endCondition);
+        if ("reason" in parsed) return { reason: `endCondition: ${parsed.reason}` };
+        endCondition = parsed;
+      }
+      let maxDegree: number | undefined;
+      if (spec.maxDegree !== undefined) {
+        if (typeof spec.maxDegree !== "number" || !Number.isInteger(spec.maxDegree) || spec.maxDegree < 2 || spec.maxDegree > 10) {
+          return { reason: "Loft maxDegree must be an integer from 2 to 10." };
+        }
+        maxDegree = spec.maxDegree;
+      }
+      const made = loftOp(booleanOp, sections, spec.ruled === true, {
+        ...(guides?.length ? { guides } : {}),
+        ...(startCondition ? { startCondition } : {}),
+        ...(endCondition ? { endCondition } : {}),
+        ...(spec.closed === true ? { closed: true } : {}),
+        ...(spec.smoothing === true ? { smoothing: true } : {}),
+        ...(maxDegree !== undefined ? { maxDegree } : {}),
+      });
+      return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
     }
     const made = loftOp(booleanOp, sections, spec.ruled === true);
-    const typed = kind === "sweep" ? { ...cleanOp(spec), op: booleanOp, sections: sections.length } : { ...made };
+    const typed = { ...cleanOp(spec), op: booleanOp, sections: sections.length };
     return { op: toSolidOp(made, ctx.pose), typed };
   }
   if (kind === "shell") {
@@ -514,6 +916,197 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     }
     const made = draftOp(faces, angle, { ...(defaultPull || !pull ? {} : { pull }), ...(neutral !== undefined ? { neutral } : {}) });
     return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  // --- Organic surfaces S4: Open surfaces ("Sheets") and surface-to-solid ops. ---
+  if (kind === "sheet") {
+    const built = readSheetSpecField(spec, ctx);
+    if ("reason" in built) return built;
+    const made = sheetOp(built);
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "sew") {
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0)) {
+        return { reason: "Sew tolerance must be above 0 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const makeSolid = spec.makeSolid === undefined ? undefined : spec.makeSolid === true;
+    const capPlanar = spec.capPlanar === true ? true : undefined;
+    const made = sewOp({ ...(tolerance !== undefined ? { tolerance } : {}), ...(makeSolid !== undefined ? { makeSolid } : {}), ...(capPlanar ? { capPlanar } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "thicken") {
+    const thickness = spec.thickness;
+    if (typeof thickness !== "number" || !Number.isFinite(thickness) || !(thickness > 0)) {
+      return { reason: "Thicken needs a positive wall thickness in millimetres." };
+    }
+    let direction: ThickenDirection | undefined;
+    if (spec.direction !== undefined) {
+      if (spec.direction !== "normal" && spec.direction !== "reverse" && spec.direction !== "both") {
+        return { reason: "Thicken direction must be normal, reverse, or both." };
+      }
+      direction = spec.direction;
+    }
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0)) {
+        return { reason: "Thicken tolerance must be above 0 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const made = thickenOp(thickness, { ...(direction ? { direction } : {}), ...(tolerance !== undefined ? { tolerance } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "trimSplit") {
+    const built = readSheetSpecField(spec.sheet, ctx);
+    if ("reason" in built) return built;
+    let keep: TrimKeep | undefined;
+    if (spec.keep !== undefined) {
+      if (spec.keep !== "above" && spec.keep !== "below" && spec.keep !== "both") {
+        return { reason: "trimSplit keep must be above, below, or both." };
+      }
+      keep = spec.keep;
+    }
+    const made = trimSplitOp(built, keep);
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "replaceFace") {
+    const face = bakedFace(spec.face, ctx);
+    if (typeof face !== "number") return face;
+    const built = readSheetSpecField(spec.sheet, ctx);
+    if ("reason" in built) return built;
+    const made = replaceFaceOp(face, built);
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "splitFace") {
+    if (!Array.isArray(spec.faces) || spec.faces.length < 1 || spec.faces.length > 50) {
+      return { reason: "Pick at least one face to split." };
+    }
+    const faces: number[] = [];
+    for (const raw of spec.faces) {
+      const face = bakedFace(raw, ctx);
+      if (typeof face !== "number") return face;
+      if (!faces.includes(face)) faces.push(face);
+    }
+    const curve = readCurve3DField(spec.curve, ctx);
+    if ("reason" in curve) return curve;
+    let direction: Vec3 | undefined;
+    if (spec.direction !== undefined) {
+      const v = vec3Of(spec.direction);
+      if (!v || Math.hypot(v[0], v[1], v[2]) < 1e-9) return { reason: "splitFace direction must be a non-zero [x, y, z] vector." };
+      direction = v;
+    }
+    const made = splitFaceOp(faces, curve, direction);
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "patch") {
+    const boundaries = readBoundariesField(spec.boundaries, ctx);
+    if ("reason" in boundaries) return boundaries;
+    const guides: Curve3D[] = [];
+    if (spec.guides !== undefined) {
+      if (!Array.isArray(spec.guides)) return { reason: "A patch guide is a 3D curve." };
+      for (const raw of spec.guides) {
+        const curve = readCurve3DField(raw, ctx);
+        if ("reason" in curve) return curve;
+        guides.push(curve);
+      }
+    }
+    const points: Vec3[] = [];
+    if (spec.points !== undefined) {
+      if (!Array.isArray(spec.points)) return { reason: "A patch guide point is [x, y, z] in millimetres." };
+      for (const raw of spec.points) {
+        const point = vec3Of(raw);
+        if (!point) return { reason: "A patch guide point is [x, y, z] in millimetres." };
+        points.push(point);
+      }
+    }
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0) || spec.tolerance > 1e-4) {
+        return { reason: "Patch tolerance is the gap the fill aims for, above 0 and at most 0.0001 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const made = patchOp(boundaries, { ...(guides.length > 0 ? { guides } : {}), ...(points.length > 0 ? { points } : {}), ...(tolerance !== undefined ? { tolerance } : {}) });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "blendSurface") {
+    const a = readBoundaryField(spec.a, ctx, "Side A");
+    if ("reason" in a) return a;
+    const b = readBoundaryField(spec.b, ctx, "Side B");
+    if ("reason" in b) return b;
+    const continuity = readContinuityField(spec.continuity, "A blend");
+    if (typeof continuity !== "string" && continuity !== undefined) return continuity;
+    if (continuity === "g0") return { reason: "A blend is G1 or G2. Set the seam to G1 or G2." };
+    const tensionA = readTension(spec.tensionA, "Side A");
+    if (typeof tensionA !== "number" && tensionA !== undefined) return tensionA;
+    const tensionB = readTension(spec.tensionB, "Side B");
+    if (typeof tensionB !== "number" && tensionB !== undefined) return tensionB;
+    let tolerance: number | undefined;
+    if (spec.tolerance !== undefined) {
+      if (typeof spec.tolerance !== "number" || !Number.isFinite(spec.tolerance) || !(spec.tolerance > 0) || spec.tolerance > 1e-4) {
+        return { reason: "Blend tolerance is the gap the bridge aims for, above 0 and at most 0.0001 mm." };
+      }
+      tolerance = spec.tolerance;
+    }
+    const made = blendSurfaceOp(a, b, {
+      ...(continuity ? { continuity } : {}),
+      ...(tensionA !== undefined ? { tensionA } : {}),
+      ...(tensionB !== undefined ? { tensionB } : {}),
+      ...(tolerance !== undefined ? { tolerance } : {}),
+    });
+    return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  if (kind === "nurbsSurface") {
+    if (!Array.isArray(spec.poles)) return { reason: "A NURBS surface needs a grid of poles." };
+    const poles: Vec3[][] = [];
+    for (const raw of spec.poles) {
+      if (!Array.isArray(raw)) return { reason: "Every row of this surface needs the same number of poles." };
+      const row: Vec3[] = [];
+      for (const point of raw) {
+        const pole = vec3Of(point);
+        if (!pole) return { reason: "A pole on this surface is not a number." };
+        row.push(pole);
+      }
+      poles.push(row);
+    }
+    const made = nurbsSurfaceOp({
+      poles,
+      ...(Array.isArray(spec.weights) ? { weights: spec.weights as number[][] } : {}),
+      ...(typeof spec.degreeU === "number" ? { degreeU: spec.degreeU } : {}),
+      ...(typeof spec.degreeV === "number" ? { degreeV: spec.degreeV } : {}),
+      ...(Array.isArray(spec.knotsU) ? { knotsU: spec.knotsU as number[] } : {}),
+      ...(Array.isArray(spec.multsU) ? { multsU: spec.multsU as number[] } : {}),
+      ...(Array.isArray(spec.knotsV) ? { knotsV: spec.knotsV as number[] } : {}),
+      ...(Array.isArray(spec.multsV) ? { multsV: spec.multsV as number[] } : {}),
+      ...(spec.periodicU === true ? { periodicU: true } : {}),
+      ...(spec.periodicV === true ? { periodicV: true } : {}),
+    });
+    const refusal = surfaceRefusal(made);
+    if (refusal) return { reason: refusal };
+    // --- S6. Knot insertion and degree elevation are applied here, with the same exact maths the sculpt tool uses, so
+    // the stored op is the grid the kernel builds and nothing the call asked for is dropped.
+    const pairs = (value: unknown): [number, number][] | null | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value)) return null;
+      const out: [number, number][] = [];
+      for (const pair of value) {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "number" || typeof pair[1] !== "number") return null;
+        out.push([pair[0], pair[1]]);
+      }
+      return out;
+    };
+    const insertU = pairs(spec.insertU);
+    const insertV = pairs(spec.insertV);
+    if (insertU === null || insertV === null) return { reason: "Each knot to insert is [parameter, times]." };
+    const elevateU = typeof spec.elevateU === "number" ? spec.elevateU : undefined;
+    const elevateV = typeof spec.elevateV === "number" ? spec.elevateV : undefined;
+    const refined = applyRefinements(made, { ...(insertU ? { insertU } : {}), ...(insertV ? { insertV } : {}), ...(elevateU !== undefined ? { elevateU } : {}), ...(elevateV !== undefined ? { elevateV } : {}) });
+    if (typeof refined === "string") return { reason: refined };
+    const baked = nurbsSurfaceOp(refined);
+    return { op: toSolidOp(baked, ctx.pose), typed: { ...baked } };
   }
   // --- A gear (src/model-gear.ts): a boolean whose tool is the gear primitive, placed as a cylinder is. Fuse by default.
   if (kind === "gear") {

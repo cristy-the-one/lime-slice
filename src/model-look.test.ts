@@ -1,4 +1,4 @@
-import { facePaint, idleLook, offsetAfterDrag, sectionPlane, stepHex } from "./model-look.ts";
+import { curvatureColorRgb, facePaint, fillCurvatureColors, idleLook, offsetAfterDrag, sectionPlane, stepHex, withShading } from "./model-look.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -61,6 +61,31 @@ const selected = facePaint({ index: 0, owner: 1, selected: true, pickHover: fals
 eq("a selected face stays the accent", selected.hex, accent);
 const hinted = facePaint({ index: 2, owner: 3, selected: false, pickHover: false, stepHover: true, colourByStep: false, accent });
 check("a hovered step tints its faces while colour is off", hinted.stepHex === stepHex(3) && hinted.hex !== accent);
+
+// --- Organic surfaces S1: shading sync & curvature colormap ---
+const asStep = withShading(idleLook(), "step");
+eq("withShading(step) turns on colourByStep", [asStep.shading, asStep.colourByStep], ["step", true]);
+const asZebra = withShading(asStep, "zebra");
+eq("withShading(zebra) clears colourByStep", [asZebra.shading, asZebra.colourByStep], ["zebra", false]);
+
+const tightRed = curvatureColorRgb(0.8, "radius", 2.0);
+const gentle = curvatureColorRgb(15.0, "radius", 2.0);
+const flat = curvatureColorRgb(1e9, "radius", 2.0);
+check("radius tighter than warnMm highlights vivid red", tightRed[0] > 0.85 && tightRed[1] < 0.3 && tightRed[2] < 0.3);
+check("radius well above warnMm is not red", gentle[0] < 0.6 && gentle[2] > gentle[0]);
+check("flat radius is calm neutral", Math.abs(flat[0] - flat[1]) < 0.05 && Math.abs(flat[1] - flat[2]) < 0.05);
+
+const dome = curvatureColorRgb(0.08, "gaussian", 2.0);
+const saddle = curvatureColorRgb(-0.08, "gaussian", 2.0);
+check("gaussian dome is warm and saddle is blue", dome[0] > dome[2] && saddle[2] > saddle[0]);
+
+const convex = curvatureColorRgb(-0.4, "mean", 2.0);
+const concave = curvatureColorRgb(0.4, "mean", 2.0);
+check("mean convex is warm and concave is blue", convex[0] > convex[2] && concave[2] > concave[0]);
+
+const buf = new Float32Array(6);
+fillCurvatureColors(buf, [0.5, 1e9], "radius", 2.0);
+check("fillCurvatureColors writes per-vertex RGB triples", buf[0]! > 0.85 && Math.abs(buf[3]! - buf[4]!) < 0.05);
 
 if (failed) throw new Error(`${failed} model look checks failed`);
 console.log("model-look: ok");

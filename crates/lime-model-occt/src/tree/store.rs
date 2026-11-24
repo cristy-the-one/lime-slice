@@ -177,6 +177,9 @@ impl Store {
                 filter: Some(filter),
             })],
             size: 1.0,
+            continuity: None,
+            rho: None,
+            variable: Vec::new(),
         };
         let steps = self.step_edges(&key, current, &op)?;
         self.ensure(&key, current)?;
@@ -282,10 +285,12 @@ impl Store {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn open(
         &mut self,
         key: String,
         root: Shape,
+        step_root: bool,
         saved: Vec<SavedNode>,
         current: NodeId,
         seed: Option<SeedSolid>,
@@ -293,6 +298,7 @@ impl Store {
     ) -> Result<Answer, Failure> {
         self.clock += 1;
         let mut doc = Doc::new(root, self.clock);
+        doc.step_root = step_root;
         for node in saved {
             if node.id == ROOT || doc.nodes.contains_key(&node.id) {
                 return Err(Failure::Message(format!(
@@ -378,11 +384,12 @@ impl Store {
 
     fn cached_reply(&mut self, key: &str, id: NodeId, chord: f64) -> Option<Arc<String>> {
         let chord = chord_key(chord);
+        let display = self.display;
         self.clock += 1;
         let reply = self
             .replies
             .iter_mut()
-            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord)?;
+            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord && reply.display == display)?;
         reply.used = self.clock;
         Some(Arc::clone(&reply.text))
     }
@@ -392,6 +399,7 @@ impl Store {
         if let Some(text) = self.cached_reply(key, id, chord) {
             return Ok(text);
         }
+        let display = self.display;
         let doc = doc_in(&mut self.docs, key)?;
         // --- A10. `stepFaces` rides on the cached solid reply. A face's node is the one that made it.
         let owners = doc
@@ -399,20 +407,23 @@ impl Store {
             .get(&id)
             .map(|node| node.face_owners.clone())
             .unwrap_or_default();
-        let mut text = doc.shape(id).reply(id, chord)?;
+        let mut text = doc.shape(id).reply(id, chord, display)?;
         if !owners.is_empty() {
             text = with_fields(&text, &[("stepFaces", Part::Json(json!(owners).to_string()))]);
         }
         let text = Arc::new(text);
-        self.remember(key, id, chord, Arc::clone(&text));
+        self.remember(key, id, chord, display, Arc::clone(&text));
         Ok(text)
     }
 
-    pub(super) fn remember(&mut self, key: &str, id: NodeId, chord: f64, text: Arc<String>) {
+    /// `display`: the text is the Model view's display mesh. Pieces and pins that start trees of their own go to the
+    /// plate, so they are always remembered, and meshed, as the standard mesh.
+    pub(super) fn remember(&mut self, key: &str, id: NodeId, chord: f64, display: bool, text: Arc<String>) {
         self.replies.push(Reply {
             key: key.to_string(),
             node: id,
             chord: chord_key(chord),
+            display,
             text,
             used: self.clock,
         });

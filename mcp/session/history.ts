@@ -12,10 +12,11 @@ import { exportedCommit, exportsPieces } from "../partition.ts";
 import { partStem } from "../../src/modeling/partition-export.ts";
 import { dropRefusal } from "../../src/model-history.ts";
 import { crossEditRequest, exportRequest, gotoRequest, isBrep, keepSketch, probeRequest, wholeTreeRequest } from "../../src/model-request.ts";
-import { readBroken, readBuilt, nodeHandle, parseNode, solidView } from "../../src/modeling/model-calls.ts";
+import { readBroken, readBuilt, nodeHandle, parseNode } from "../../src/modeling/model-calls.ts";
+import { markSheet, showsSheet, solidView } from "./sheet.ts";
 import { historyReply, measureReply } from "../../src/modeling/part-reads.ts";
 import { IDENTITY_POSE, typedPoseOf } from "../../src/model-space.ts";
-import { dropped, jumped, redoTarget, reserveId, rootLabel, undoTarget, type PartitionModelOp, type Fingerprint, type ModelOp, type ModelTree, type NodeId } from "../../src/model-tree.ts";
+import { dropped, jumped, pathTo, redoTarget, reserveId, rootLabel, undoTarget, type PartitionModelOp, type Fingerprint, type ModelOp, type ModelTree, type NodeId } from "../../src/model-tree.ts";
 import { runEndingAt, runRedoFrom } from "../../src/plugin-step.ts";
 import { meshRecord, type LimeProject } from "../../src/project.ts";
 import { ProtocolError } from "../engine.ts";
@@ -121,11 +122,18 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
   if (refusal) return refuse("step-kept", refusal);
   const baked = this.bake(obj, raw);
   if ("reason" in baked) return refusePartReason(baked.reason, "bad-op");
-  // --- K2 feature root. Reopen from the baked extrude, revolve, or loft. A probe on the solid is not a preview of replacing it, so the engine's open is the check. ---
+  // --- K2 feature root. Reopen from the baked extrude, revolve, or loft, or (S6) a NURBS surface or a sheet, with the
+  // later steps replayed on it. A probe on the solid is not a preview of replacing it, so the engine's open is the check. ---
   if (tree.root.kind === "feature") {
     const op = baked.op;
+    if (op.kind === "nurbsSurface" || op.kind === "sheet") {
+      const root = { kind: "feature" as const, op };
+      const reopened = await this.reopenRoot(obj, tree, node, root);
+      if ("refusal" in reopened) return reopened.refusal;
+      return { ok: true, node: nodeHandle(node), ...this.rootShown(obj, reopened), stored: op, typed: baked.typed };
+    }
     if (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft") {
-      return refuse("bad-op", "This solid started from a sketch. Replace it with an extrude, a revolve, or a loft.");
+      return refuse("bad-op", "This part started from a sketch or a surface. Replace its first step with an extrude, a revolve, a loft, a nurbsSurface or a sheet.");
     }
     if (op.op !== "fuse") {
       const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
@@ -133,8 +141,8 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
     }
     const root = { kind: "feature" as const, op };
     const reopened = await this.reopenRoot(obj, tree, node, root);
-    if (reopened) return reopened;
-    return { ok: true, node: nodeHandle(node), stored: op, typed: baked.typed };
+    if ("refusal" in reopened) return reopened.refusal;
+    return { ok: true, node: nodeHandle(node), ...this.rootShown(obj, reopened), stored: op, typed: baked.typed };
   }
   if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return refuse("bad-op", "The new solid's first step takes a root edit.");
   // A root's probe only says its sizes can be rebuilt from; the reopen below is the check, so probe: true stands for it.
@@ -143,32 +151,58 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
   // --- D25. The new sizes keep the expressions this call typed; typed numbers drop the old ones.
   const root = { kind: "primitive" as const, solid, ...(exprs ? { exprs } : {}) };
   const reopened = await this.reopenRoot(obj, tree, node, root);
-  if (reopened) return reopened;
-  return { ok: true, node: nodeHandle(node), stored: baked.op, typed: baked.typed };
+  if ("refusal" in reopened) return reopened.refusal;
+  return { ok: true, node: nodeHandle(node), ...this.rootShown(obj, reopened), stored: baked.op, typed: baked.typed };
 }
 
 /**
- * A new root under the steps already there: the engine opens the whole tree again on it, showing the root, so every
- * later step builds on the new root when it is shown. Opening the root alone left the engine without those steps, and
- * a goto to one answered "unknown". Each step's solid changes with the root, so no old fingerprint or plated solid is
- * kept. A refusal is returned; null when it opened.
+ * What a root edit's reply says about the part after it: the step on screen (the one the history was on, rebuilt on
+ * the new root), its volume, and, when a later step would not build on the new root, which one and why.
  */
-async function reopenRoot(this: Session, obj: PlateObject, tree: ModelTree, node: number, root: Exclude<ModelTree["root"], { kind: "piece" | "step" }>): Promise<Record<string, unknown> | null> {
+function rootShown(this: Session, obj: PlateObject, shown: { shown: NodeId; replayRefused?: string }): Record<string, unknown> {
+  return {
+    current: nodeHandle(shown.shown),
+    ...(obj.solid ? { volumeMm3: obj.solid.volumeMm3 } : {}),
+    ...(shown.replayRefused ? { replayRefused: shown.replayRefused, note: `The new first step is shown: the steps after it did not build on it (${shown.replayRefused}).` } : {}),
+  };
+}
+
+/**
+ * A new root under the steps already there: the engine opens the whole tree again on it, on the step the history was on,
+ * so the steps after the root are built again on the new one and the part on screen is that step's (a thicken over a
+ * NURBS surface root shows the thickened wall, not the bare sheet). When a later step does not build on the new root,
+ * the root itself is opened and shown, with the reason, so the edit is kept and the step can be fixed. Opening the
+ * root alone left the engine without those steps, and a goto to one answered "unknown". Each step's solid changes with
+ * the root, so no old fingerprint or plated solid is kept.
+ */
+async function reopenRoot(this: Session, obj: PlateObject, tree: ModelTree, node: number, root: Exclude<ModelTree["root"], { kind: "piece" | "step" }>): Promise<{ refusal: Record<string, unknown> } | { shown: NodeId; replayRefused?: string }> {
   const nodes = new Map([...tree.nodes].map(([id, row]) => [id, { ...row, fingerprint: null as Fingerprint | null }]));
   const row = nodes.get(node);
   if (row && root.kind === "feature") nodes.set(node, { ...row, label: rootLabel(root, row.label) });
-  const next = jumped({ ...tree, root, nodes }, node);
-  const budget = Math.max(this.modelTimeoutMs(), modelSteps(next) * 2000);
-  const reply = await this.treeCall(wholeTreeRequest(next, root, node, obj.stepTolerance || CHORD), "root", budget);
-  if (typeof reply.error === "string" && reply.error) return refuse("kernel-refused", plainModelError(reply.error, "create"));
+  // The step the user was on, when it is below the edited one (always, for the root); else the edited step.
+  const was = tree.nodes.has(tree.current) && pathTo(tree, tree.current).includes(node) ? tree.current : node;
+  const open = async (at: NodeId) => {
+    const next = jumped({ ...tree, root, nodes }, at);
+    const budget = Math.max(this.modelTimeoutMs(), modelSteps(next) * 2000);
+    return { next, reply: await this.treeCall(wholeTreeRequest(next, root, at, obj.stepTolerance || CHORD), "root", budget) };
+  };
+  let shown: NodeId = was;
+  let replayRefused: string | undefined;
+  let { next, reply } = await open(was);
+  if (typeof reply.error === "string" && reply.error && was !== node) {
+    replayRefused = plainModelError(reply.error, "edit");
+    shown = node;
+    ({ next, reply } = await open(node));
+  }
+  if (typeof reply.error === "string" && reply.error) return { refusal: refuse("kernel-refused", plainModelError(reply.error, "create")) };
   const solid = solidView(reply);
-  const rooted = nodes.get(node);
-  if (rooted && solid) nodes.set(node, { ...rooted, fingerprint: solid.fingerprint });
+  const rooted = nodes.get(shown);
+  if (rooted && solid) nodes.set(shown, { ...rooted, fingerprint: solid.fingerprint });
   obj.tree = next;
   if (solid) obj.solid = solid;
   obj.platedNode = null;
   obj.probes.clear();
-  return null;
+  return { shown, ...(replayRefused ? { replayRefused } : {}) };
 }
 
 function rename(this: Session, obj: PlateObject, node: number | null, label: string): Record<string, unknown> {
@@ -413,7 +447,11 @@ async function commitObject(this: Session, obj: PlateObject): Promise<string | n
   }
   if (!obj.solid || obj.solid.positions.length < 9) return null;
   await this.brepRoot(obj, tree);
+  // --- Organic surfaces S4. An open sheet goes on the plate as a sheet, marked, as the app keeps one (mcp/session/sheet.ts):
+  // its open borders are what it is, not a mesh to mend, and Slice and the exports stop on the mark.
+  const sheet = showsSheet(obj);
   if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) {
+    markSheet(obj, sheet);
     // A project saved before version 3 keeps the plate's step as STEP: the step is written again as the engine's own
     // solid, which the next open builds from at once. A step that will not write keeps its STEP.
     // Once per solid: an engine that cannot write the binary format keeps the STEP, and is not asked again.
@@ -431,7 +469,7 @@ async function commitObject(this: Session, obj: PlateObject): Promise<string | n
   const mended = closeCracks(obj.solid.positions);
   const closed = edgeReport(mended, 1);
   obj.commitWarning = undefined;
-  if (closed.open > 0 || closed.nonManifold > 0) {
+  if (!sheet && (closed.open > 0 || closed.nonManifold > 0)) {
     const why = notClosedReason(closed);
     const before = obj.bytes.byteLength > 0 && obj.source.length >= 9 ? edgeReport(closeCracks(obj.source), 0) : null;
     const cameOpen = before !== null && (before.open > 0 || before.nonManifold > 0);
@@ -458,6 +496,7 @@ async function commitObject(this: Session, obj: PlateObject): Promise<string | n
   if (this.scaleSince(tree, from, tree.current)) obj.scale = 1;
   obj.platedNode = tree.current;
   obj.tree = { ...obj.tree!, committed: tree.current };
+  markSheet(obj, sheet);
   // A copy edited by hand is its own part from now on; copies linked to this one follow it.
   delete obj.linkedTo;
   await this.syncLinked(obj);
@@ -484,6 +523,8 @@ async function syncLinked(this: Session, obj: PlateObject): Promise<void> {
     copy.scale = obj.scale;
     copy.stepTolerance = obj.stepTolerance;
     copy.commitWarning = obj.commitWarning;
+    if (obj.sheet) copy.sheet = true;
+    else delete copy.sheet;
     if (obj.brep) copy.brep = obj.brep;
     else delete copy.brep;
     if (obj.buildLog) copy.buildLog = structuredClone(obj.buildLog);
@@ -687,6 +728,7 @@ export const historyMethods = {
   step,
   editRoot,
   reopenRoot,
+  rootShown,
   rename,
   edit,
   reserveOn,

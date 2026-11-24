@@ -1,4 +1,5 @@
 /** Face push/pull: the live dry-run, its guard, and the diameter sync. */
+import { viewRequest } from "../../model-mesh-quality";
 import { decodeSolid } from "../../model-reply";
 import { probeFromBody } from "../../model-feasibility";
 import { type ModelOp, type NodeId } from "../../model-tree";
@@ -67,7 +68,7 @@ export function probePull(op: ModelOp) {
 
 async function sendPullProbe(gen: number, key: string, treeKey: string, node: NodeId, op: ModelOp) {
   if (gen !== pullGen || !S.pullProbe) return;
-  const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op, state.stepTolerance));
+  const body = await treeCall(treeKey, node, viewRequest(probeRequest(treeKey, node, op, state.stepTolerance)));
   if (gen !== pullGen || !S.pullProbe || state.stage !== "model") return;
   const view = probeFromBody(body);
   if (typeof body.ok === "boolean") remember(key, view);

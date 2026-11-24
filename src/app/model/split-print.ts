@@ -1,4 +1,5 @@
 /** Split to print: the card's frame, its check, and the exported-part notes. */
+import { viewRequest } from "../../model-mesh-quality";
 import { base64ToBytes } from "../../base64";
 import { toSolidOp } from "../../model-space";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
@@ -283,7 +284,7 @@ export function checkSplitPrint(typed: PartitionOp | null, wait: number) {
 
 async function sendSplitCheck(serial: number, key: string, treeKey: string, node: NodeId, op: PartitionModelOp) {
   if (serial !== splitCheckSerial || state.stage !== "model") return;
-  const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op));
+  const body = await treeCall(treeKey, node, viewRequest(probeRequest(treeKey, node, op)));
   const view: SplitPrintCheck = body.ok === true
     ? { phase: "done", ok: true, parts: readParts(body.parts), notes: kernelNotes(body), ...readPinsCheck(body.pins), ...readPlacedIds(body.connectors) }
     : { phase: "done", ok: false, error: sentence(plainModelError(text(body.error) || "These planes do not cut this solid.")) };

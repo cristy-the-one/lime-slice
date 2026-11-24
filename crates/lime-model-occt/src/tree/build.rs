@@ -13,6 +13,7 @@ use super::ffi::{
     lime_tree_extrude_extent,
     lime_tree_draft,
     lime_tree_face_extrude,
+    lime_tree_fillet_v2,
     lime_tree_hole,
     lime_tree_join,
     lime_tree_loft,
@@ -26,8 +27,12 @@ use super::ffi::{
 };
 use super::group::{build_combined, build_group};
 use super::joints::{joined_of, keep_built, stored_joints, Joined};
-use super::k1::{build_k1_loops, k1_has_loops, push_shape};
-use super::ops::{FacePick, Neutral, Op, Primitive};
+use super::k1::{
+    build_blend_shape, build_k1_loops, build_loft_v2_shape, build_nurbs_shape, build_patch_shape, build_replace_face_shape,
+    build_sew_shape, build_sheet_shape, build_split_face_shape, build_sweep_shape, build_thicken_shape,
+    build_trim_split_shape, k1_has_loops, loft_needs_v2, push_shape, NurbsSurfaceSpec,
+};
+use super::ops::{FacePick, FilletContinuity, Neutral, Op, Primitive};
 use super::outcome::Failure;
 use super::partition::{
     partition_max,
@@ -320,8 +325,76 @@ pub(super) fn build(
         Op::Transition { .. } => return transition::build(from, op, &picks),
         // --- Text with real fonts.
         Op::Lettering { .. } => return lettering::build(from, op),
-        Op::Fillet { size, .. } | Op::Chamfer { size, .. } => {
-            let chamfer = matches!(op, Op::Chamfer { .. });
+        Op::Fillet {
+            size,
+            continuity,
+            rho,
+            variable,
+            ..
+        } => {
+            let indexes = &picks;
+            let mut max_mm = 0.0;
+            let max_ptr: *mut f64 = if probe {
+                &mut max_mm
+            } else {
+                std::ptr::null_mut()
+            };
+            let use_v2 = continuity.is_some() || rho.is_some() || !variable.is_empty();
+            let built = if use_v2 {
+                let cont_id = match continuity.unwrap_or(FilletContinuity::G1) {
+                    FilletContinuity::G1 => 0,
+                    FilletContinuity::G2 => 1,
+                    FilletContinuity::Conic => 2,
+                };
+                let var_flat: Vec<f64> = variable.iter().flatten().copied().collect();
+                Shape::made(|error| unsafe {
+                    lime_tree_fillet_v2(
+                        from.raw(),
+                        indexes.as_ptr(),
+                        indexes.len() as c_int,
+                        *size,
+                        cont_id,
+                        rho.unwrap_or(0.5),
+                        if var_flat.is_empty() { std::ptr::null() } else { var_flat.as_ptr() },
+                        var_flat.len() as c_int,
+                        max_ptr,
+                        error,
+                    )
+                })
+            } else {
+                Shape::made(|error| unsafe {
+                    lime_tree_blend(
+                        from.raw(),
+                        indexes.as_ptr(),
+                        indexes.len() as c_int,
+                        *size,
+                        0,
+                        max_ptr,
+                        error,
+                    )
+                })
+            };
+            return match built {
+                Ok(kept) => Ok(Built {
+                    op,
+                    kept,
+                    other: None,
+                    pieces: Vec::new(),
+                    pins: None,
+                    numbered: None,
+                    joined: None,
+                    skipped: 0,
+                    sides: Vec::new(),
+                    report: None,
+                }),
+                Err(message) => Err(BuildFail {
+                    message,
+                    max_mm: probe.then_some(max_mm),
+                    failed_step: None,
+                }),
+            };
+        }
+        Op::Chamfer { size, .. } => {
             let indexes = &picks;
             let mut max_mm = 0.0;
             let max_ptr: *mut f64 = if probe {
@@ -335,7 +408,7 @@ pub(super) fn build(
                     indexes.as_ptr(),
                     indexes.len() as c_int,
                     *size,
-                    c_int::from(chamfer),
+                    1,
                     max_ptr,
                     error,
                 )
@@ -477,32 +550,82 @@ pub(super) fn build(
             op: which,
             sections,
             ruled,
+            guides,
+            start_condition,
+            end_condition,
+            closed,
+            smoothing,
+            max_degree,
         } => {
-            let mut head = Vec::with_capacity(sections.len() * 11);
-            let mut data = Vec::new();
-            for section in sections {
-                head.extend_from_slice(&section.origin);
-                head.extend_from_slice(&section.turn);
-                head.push(section.radius.unwrap_or(0.0));
-                head.push(section.radius_v.unwrap_or(0.0));
-                head.push(f64::from(u8::from(section.smooth)));
-                head.push(section.profile.len() as f64);
-                head.push(section.corners.len() as f64);
-                data.extend(section.profile.iter().flatten().copied());
-                data.extend(section.corners.iter().map(|&c| f64::from(c)));
-            }
-            Shape::made(|error| unsafe {
-                lime_tree_loft(
-                    from.raw(),
-                    which.name().as_ptr(),
-                    head.as_ptr(),
-                    sections.len() as c_int,
-                    data.as_ptr(),
-                    c_int::from(*ruled),
-                    error,
+            if loft_needs_v2(
+                sections,
+                guides,
+                start_condition.as_ref(),
+                end_condition.as_ref(),
+                *closed,
+                *smoothing,
+                *max_degree,
+            ) {
+                build_loft_v2_shape(
+                    Some(from),
+                    *which,
+                    sections,
+                    *ruled,
+                    guides,
+                    start_condition.as_ref(),
+                    end_condition.as_ref(),
+                    *closed,
+                    *smoothing,
+                    *max_degree,
                 )
-            })
+            } else {
+                let mut head = Vec::with_capacity(sections.len() * 11);
+                let mut data = Vec::new();
+                for section in sections {
+                    head.extend_from_slice(&section.origin);
+                    head.extend_from_slice(&section.turn);
+                    head.push(section.radius.unwrap_or(0.0));
+                    head.push(section.radius_v.unwrap_or(0.0));
+                    head.push(f64::from(u8::from(section.smooth)));
+                    head.push(section.profile.len() as f64);
+                    head.push(section.corners.len() as f64);
+                    data.extend(section.profile.iter().flatten().copied());
+                    data.extend(section.corners.iter().map(|&c| f64::from(c)));
+                }
+                Shape::made(|error| unsafe {
+                    lime_tree_loft(
+                        from.raw(),
+                        which.name().as_ptr(),
+                        head.as_ptr(),
+                        sections.len() as c_int,
+                        data.as_ptr(),
+                        c_int::from(*ruled),
+                        error,
+                    )
+                })
+            }
         }
+        Op::Sweep {
+            op: which,
+            sections,
+            spine,
+            mode,
+            transition,
+            scale,
+            twist_deg,
+            aux_spine,
+        } => build_sweep_shape(
+            Some(from),
+            *which,
+            sections,
+            spine,
+            mode.as_ref(),
+            *transition,
+            scale,
+            *twist_deg,
+            aux_spine.as_deref(),
+            &picks,
+        ),
         Op::Shell { thickness, .. } => Shape::made(|error| unsafe {
             lime_tree_shell(
                 from.raw(),
@@ -574,6 +697,80 @@ pub(super) fn build(
                 )
             })
         }
+        // --- Organic surfaces S4: Open Sheets & Surface-to-Solid Workflow.
+        Op::Sheet { spec } => build_sheet_shape(Some(from), spec),
+        Op::Sew {
+            tolerance,
+            make_solid,
+            cap_planar,
+        } => build_sew_shape(from, *tolerance, *make_solid, *cap_planar).map(|(shape, _, _)| shape),
+        Op::Thicken {
+            thickness,
+            direction,
+            tolerance,
+        } => build_thicken_shape(from, *thickness, *direction, *tolerance),
+        Op::TrimSplit { sheet, keep } => match build_trim_split_shape(from, sheet, *keep) {
+            Ok((kept_shape, extra)) => {
+                other = extra;
+                Ok(kept_shape)
+            }
+            Err(err) => Err(err),
+        },
+        Op::ReplaceFace { sheet, .. } => {
+            let face = picks.first().copied().unwrap_or(-1);
+            build_replace_face_shape(from, face, sheet)
+        }
+        Op::SplitFace {
+            curve, direction, ..
+        } => build_split_face_shape(from, &picks, curve, *direction),
+        Op::Patch {
+            boundaries,
+            guides,
+            points,
+            tolerance,
+        } => build_patch_shape(Some(from), boundaries, guides, points, *tolerance),
+        Op::BlendSurface {
+            a,
+            b,
+            continuity,
+            tension_a,
+            tension_b,
+            tolerance,
+        } => build_blend_shape(from, a, b, *continuity, *tension_a, *tension_b, *tolerance),
+        Op::NurbsSurface {
+            poles,
+            weights,
+            degree_u,
+            degree_v,
+            knots_u,
+            mults_u,
+            knots_v,
+            mults_v,
+            periodic_u,
+            periodic_v,
+            insert_u,
+            insert_v,
+            elevate_u,
+            elevate_v,
+        } => build_nurbs_shape(
+            Some(from),
+            &NurbsSurfaceSpec {
+                poles,
+                weights,
+                degree_u: *degree_u,
+                degree_v: *degree_v,
+                knots_u,
+                knots_v,
+                mults_u,
+                mults_v,
+                periodic_u: *periodic_u,
+                periodic_v: *periodic_v,
+                insert_u,
+                insert_v,
+                elevate_u: *elevate_u,
+                elevate_v: *elevate_v,
+            },
+        ),
     };
     match kept {
         Ok(kept) => Ok(Built {

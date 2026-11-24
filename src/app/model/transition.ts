@@ -1,4 +1,5 @@
 /** Print transitions: the card's check, find, fix, ghost, and the stale-pose note. */
+import { viewRequest } from "../../model-mesh-quality";
 import { replayChain } from "../../model-edit";
 import { outwardFromMesh } from "../../model-blend";
 import { pathTo, type ModelTree, type NodeId, type TransitionOp } from "../../model-tree";
@@ -120,7 +121,7 @@ export function checkTransition(op: TransitionOp | null, wait: number) {
 
 async function sendTransitionCheck(serial: number, key: string, treeKey: string, node: NodeId, op: TransitionOp) {
   if (serial !== transitionSerial || state.stage !== "model") return;
-  const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op));
+  const body = await treeCall(treeKey, node, viewRequest(probeRequest(treeKey, node, op)));
   const rows = body.ok === true ? readTransitionRows(body.transition, op.orient ?? state.orient) : null;
   const view: Exclude<TransitionCheck, null | { phase: "checking" }> = rows
     ? { phase: "done", ok: true, rows }

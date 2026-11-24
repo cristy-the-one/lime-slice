@@ -7,7 +7,7 @@
 import { EXAMPLES } from "./examples.ts";
 import { FIRST_TOOLS, groupOf, TOOL_GROUPS } from "./groups.ts";
 import { GUIDES, guideSections, KIND_GUIDES } from "./guides.ts";
-import { OP_KINDS, OP_SUMMARY, opFields, TOOLS, UNLISTED_TOOLS, type ToolSpec } from "./schema.ts";
+import { guideShapes, OP_KINDS, OP_SUMMARY, opFields, SHAPES_NOTE, TOOLS, UNLISTED_TOOLS, type ToolSpec } from "./schema.ts";
 
 export { FIRST_TOOLS };
 
@@ -396,7 +396,15 @@ export function toolDoc(name: string, withSchema: boolean): Record<string, unkno
   };
   if (takesOps(tool)) doc.ops = `op kinds: ${OP_KINDS.join(", ")}. guide {kind:"fillet"} gives one kind's fields and examples.`;
   if (UNLISTED_TOOLS.has(tool.name)) doc.note = "Kept for older callers; nugget is the tool to use now.";
-  if (withSchema) doc.schema = tool.inputSchema;
+  if (withSchema) {
+    // A shape used in many fields (the 3D curve) is written once: `shapes`, named where it is used.
+    const { schema, shapes } = guideShapes(tool.inputSchema);
+    doc.schema = schema;
+    if (shapes) {
+      doc.shapes = shapes;
+      doc.shapesNote = SHAPES_NOTE;
+    }
+  }
   return doc;
 }
 

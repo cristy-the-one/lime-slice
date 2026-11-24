@@ -84,7 +84,18 @@ export function mountTooltips(root: ParentNode = document) {
       ],
     }).then(({ x, y }) => {
       if (host !== el) return;
-      tip.style.left = `${x}px`;
+      let left = x;
+      const panel = document.querySelector<HTMLElement>("#modelPanel");
+      // A rail tip sits to the right of its button. The tool card grew with the fillet profile,
+      // so that spot covers the card. Move the tip just past the card; it stays right of the rail.
+      if (inRail && panel && !panel.hidden) {
+        const card = panel.getBoundingClientRect();
+        const width = tip.offsetWidth;
+        const height = tip.offsetHeight;
+        const hitsCard = left < card.right && left + width > card.left && y < card.bottom && y + height > card.top;
+        if (hitsCard) left = Math.min(card.right + 8, window.innerWidth - width - 8);
+      }
+      tip.style.left = `${left}px`;
       tip.style.top = `${y}px`;
     });
   };

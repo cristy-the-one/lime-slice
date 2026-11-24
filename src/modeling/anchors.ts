@@ -5,6 +5,7 @@
 import { eulerOrient } from "../mesh-place.ts";
 import { primitiveBox } from "../model-feasibility.ts";
 import type { ModelOp, ProfileLoop } from "../model-tree.ts";
+import { loopStartsOffCurve, sampleNurbsSegment } from "../sketch/nurbs-seg.ts";
 import { splinePoints } from "./sweep.ts";
 
 type V3 = [number, number, number];
@@ -118,15 +119,19 @@ function loopPoints(loops: readonly ProfileLoop[]): [number, number][] {
   const out: [number, number][] = [];
   for (const loop of loops) {
     let cursor: readonly number[] = loop.start;
-    out.push([cursor[0]!, cursor[1]!]);
+    // A lone closed nurbs segment starts and ends at a pole, off the outline: its samples are the outline.
+    const offCurve = loopStartsOffCurve(loop);
+    if (!offCurve) out.push([cursor[0]!, cursor[1]!]);
     for (const seg of loop.segments) {
       if (seg.kind === "arc") {
         out.push([seg.through[0], seg.through[1]]);
         out.push(...arcExtremes(cursor, seg.through, seg.to));
       } else if (seg.kind === "spline") {
         for (const point of seg.through) out.push([point[0], point[1]]);
+      } else if (seg.kind === "nurbs") {
+        for (const point of sampleNurbsSegment(cursor, seg)) out.push([point[0], point[1]]);
       }
-      out.push([seg.to[0], seg.to[1]]);
+      if (!offCurve) out.push([seg.to[0], seg.to[1]]);
       cursor = seg.to;
     }
   }
@@ -206,11 +211,53 @@ export function opBox(op: ModelOp): Box | null {
     case "loft": {
       let box: Box | null = null;
       for (const section of op.sections) {
+        if (section.apex) {
+          box = grow(box, section.apex);
+          continue;
+        }
         const [u, v, w] = axes(section.turn);
         if (section.loops?.length) {
           for (const [pu, pv] of loopPoints(section.loops)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
         } else if (section.radius !== undefined) box = circleBox(box, section.origin, w, Math.max(section.radius, section.radiusV ?? 0));
         else for (const [pu, pv] of reach(section.profile ?? [], section.smooth, section.corners)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
+      }
+      for (const g of op.guides ?? []) {
+        if (g.kind === "polyline") for (const p of g.points) box = grow(box, p);
+        else if (g.kind === "spline") for (const p of g.through) box = grow(box, p);
+        else if (g.kind === "nurbs") for (const p of g.poles) box = grow(box, p);
+        else if (g.kind === "segments") {
+          box = grow(box, g.start);
+          for (const seg of g.segments) {
+            if (seg.kind === "arc") box = grow(box, seg.through);
+            else if (seg.kind === "spline") for (const p of seg.through) box = grow(box, p);
+            else if (seg.kind === "nurbs" && seg.poles) for (const p of seg.poles) box = grow(box, p);
+            box = grow(box, seg.to);
+          }
+        }
+      }
+      return box;
+    }
+    case "sweep": {
+      let box: Box | null = null;
+      for (const section of op.sections) {
+        const [u, v, w] = axes(section.turn);
+        if (section.loops?.length) {
+          for (const [pu, pv] of loopPoints(section.loops)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
+        } else if (section.radius !== undefined) box = circleBox(box, section.origin, w, Math.max(section.radius, section.radiusV ?? 0));
+        else for (const [pu, pv] of reach(section.profile ?? [], section.smooth, section.corners)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
+      }
+      const sp = op.spine;
+      if (sp.kind === "polyline") for (const p of sp.points) box = grow(box, p);
+      else if (sp.kind === "spline") for (const p of sp.through) box = grow(box, p);
+      else if (sp.kind === "nurbs") for (const p of sp.poles) box = grow(box, p);
+      else if (sp.kind === "segments") {
+        box = grow(box, sp.start);
+        for (const seg of sp.segments) {
+          if (seg.kind === "arc") box = grow(box, seg.through);
+          else if (seg.kind === "spline") for (const p of seg.through) box = grow(box, p);
+          else if (seg.kind === "nurbs" && seg.poles) for (const p of seg.poles) box = grow(box, p);
+          box = grow(box, seg.to);
+        }
       }
       return box;
     }
@@ -225,6 +272,30 @@ export function opBox(op: ModelOp): Box | null {
     case "group": {
       let box: Box | null = null;
       for (const step of op.steps) box = unionBox(box, opBox(step));
+      return box;
+    }
+    case "sheet": {
+      let box: Box | null = null;
+      for (const c of op.curves) {
+        if (c.kind === "polyline") for (const p of c.points) box = grow(box, p);
+        else if (c.kind === "spline") for (const p of c.through) box = grow(box, p);
+        else if (c.kind === "nurbs") for (const p of c.poles) box = grow(box, p);
+        else if (c.kind === "segments") {
+          box = grow(box, c.start);
+          for (const seg of c.segments) {
+            if (seg.kind === "arc") box = grow(box, seg.through);
+            else if (seg.kind === "spline") for (const p of seg.through) box = grow(box, p);
+            else if (seg.kind === "nurbs" && seg.poles) for (const p of seg.poles) box = grow(box, p);
+            box = grow(box, seg.to);
+          }
+        }
+      }
+      return box;
+    }
+    // --- S6. A NURBS sheet lies inside its poles' hull (weights are above 0), so their box holds it.
+    case "nurbsSurface": {
+      let box: Box | null = null;
+      for (const row of op.poles) for (const p of row) box = grow(box, p);
       return box;
     }
     default:

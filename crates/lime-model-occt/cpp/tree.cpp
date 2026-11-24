@@ -83,12 +83,27 @@ struct LimeShape {
 struct LimeMeshView {
     const unsigned char* positions;
     size_t positions_bytes;
+    const unsigned char* normals;
+    size_t normals_bytes;
     const unsigned char* triangles;
     size_t triangles_bytes;
     const unsigned char* edge_points;
     size_t edge_points_bytes;
     const unsigned char* edge_offsets;
     size_t edge_offsets_bytes;
+    const char* meta;
+};
+
+/// --- Organic surfaces S1: lazy surface inspection arrays as bytes, plus JSON `continuity` & `surfaceHealth`.
+struct LimeSurfaceInspectView {
+    const unsigned char* min_radius_mm;
+    size_t min_radius_bytes;
+    const unsigned char* gaussian;
+    size_t gaussian_bytes;
+    const unsigned char* mean;
+    size_t mean_bytes;
+    const unsigned char* iso_points;
+    size_t iso_points_bytes;
     const char* meta;
 };
 
@@ -620,6 +635,59 @@ LimeShape* lime_tree_blend(
             return nullptr;
         }
         return adopt(built, volume, blend_failed(is_chamfer, found.size()), error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// --- Organic surfaces S3: variable-radius, G2 curvature-continuous, and conic-rho fillets.
+LimeShape* lime_tree_fillet_v2(
+    const LimeShape* from,
+    const int* edges,
+    int count,
+    double size,
+    int continuity,
+    double rho,
+    const double* variable,
+    int variable_len,
+    double* max_mm,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<TopoDS_Edge> found;
+        for (int i = 0; i < count; ++i) {
+            if (edges[i] < 0 || edges[i] >= from->held.edges.Extent()) {
+                set_error(error, "That edge is not on this solid");
+                return nullptr;
+            }
+            found.push_back(TopoDS::Edge(from->held.edges(edges[i] + 1)));
+        }
+        if (found.empty()) {
+            set_error(error, "Pick an edge to fillet.");
+            return nullptr;
+        }
+        FilletV2Spec spec;
+        spec.size = size;
+        spec.continuity = continuity;
+        spec.rho = rho;
+        if (variable != nullptr && variable_len >= 4) {
+            spec.variable.assign(variable, variable + variable_len);
+        }
+        std::string message;
+        TopoDS_Shape built;
+        double volume = 0.0;
+        if (!fillet_v2_build(from->held.shape, found, spec, built, volume, message)) {
+            if (max_mm != nullptr && message.find("did not fit") != std::string::npos && spec.variable.empty() && size > 0.0) {
+                *max_mm = largest_blend(from->held.shape, found, size, false);
+            }
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(built, volume, blend_failed(false, found.size()), error, from).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -2697,15 +2765,18 @@ int lime_tree_edge(LimeShape* shape, int index, double* mid, double* length) {
 
 /// The tessellation for the Model reply, read through `view` until lime_tree_mesh_free, and the
 /// shape's description, which lives as long as the shape. Null, and `error` set, when Open CASCADE fails.
-Mesh* lime_tree_mesh(LimeShape* shape, double chord, LimeMeshView* view, char** error) {
+/// `display` non-zero: the Model view's finer mesh with normals; 0: the mesh that is committed, sliced and exported.
+Mesh* lime_tree_mesh(LimeShape* shape, double chord, int display, LimeMeshView* view, char** error) {
     try {
         LIME_CATCH_FAULTS;
-        auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord));
+        auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord, display != 0));
         if (shape->held.about.empty()) {
             shape->held.about = describe(shape->held);
         }
         view->positions = reinterpret_cast<const unsigned char*>(mesh->positions.data());
         view->positions_bytes = mesh->positions.size() * sizeof(float);
+        view->normals = reinterpret_cast<const unsigned char*>(mesh->normals.data());
+        view->normals_bytes = mesh->normals.size() * sizeof(float);
         view->triangles = reinterpret_cast<const unsigned char*>(mesh->triangles.data());
         view->triangles_bytes = mesh->triangles.size() * sizeof(uint32_t);
         view->edge_points = reinterpret_cast<const unsigned char*>(mesh->edge_points.data());
@@ -2724,6 +2795,786 @@ Mesh* lime_tree_mesh(LimeShape* shape, double chord, LimeMeshView* view, char** 
 }
 
 void lime_tree_mesh_free(Mesh* mesh) { delete mesh; }
+
+/// --- Organic surfaces S1: lazy surface inspection (per-vertex curvature buffers, UV isoparms,
+/// shared-edge G0/G1/G2 continuity, and NURBS surface health).
+SurfaceInspect* lime_tree_surface_inspect(
+    LimeShape* shape,
+    double chord,
+    int want_curvature,
+    int want_isoparms,
+    int iso_count,
+    int display,
+    LimeSurfaceInspectView* view,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        auto data = std::make_unique<SurfaceInspect>(
+            surface_inspect(shape->held, chord, want_curvature != 0, want_isoparms != 0, iso_count, display != 0));
+        view->min_radius_mm = reinterpret_cast<const unsigned char*>(data->min_radius_mm.data());
+        view->min_radius_bytes = data->min_radius_mm.size() * sizeof(float);
+        view->gaussian = reinterpret_cast<const unsigned char*>(data->gaussian.data());
+        view->gaussian_bytes = data->gaussian.size() * sizeof(float);
+        view->mean = reinterpret_cast<const unsigned char*>(data->mean.data());
+        view->mean_bytes = data->mean.size() * sizeof(float);
+        view->iso_points = reinterpret_cast<const unsigned char*>(data->iso_points.data());
+        view->iso_points_bytes = data->iso_points.size() * sizeof(float);
+        view->meta = data->meta.c_str();
+        return data.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+void lime_tree_surface_inspect_free(SurfaceInspect* data) { delete data; }
+
+namespace {
+
+bool decode_sweep_sections(
+    const double* head,
+    int count,
+    const double* data,
+    const double* loop_blob,
+    int loop_count,
+    const int* loop_at,
+    std::vector<LoftSection>& sections,
+    std::string& error) {
+    if (count < 1 || count > 64) {
+        error = count < 1 ? "A sweep needs at least one section." : "A sweep takes at most 64 sections.";
+        return false;
+    }
+    sections.clear();
+    sections.reserve(static_cast<size_t>(count));
+    size_t pos = 0;
+    for (int i = 0; i < count; ++i) {
+        const double* h = head + i * 11;
+        LoftSection section;
+        for (int k = 0; k < 3; ++k) {
+            section.profile.origin[k] = h[k];
+            section.profile.turn[k] = h[k + 3];
+        }
+        section.radius = h[6];
+        section.radius_v = h[7];
+        section.profile.smooth = h[8] != 0.0;
+        const int npts = static_cast<int>(std::llround(h[9]));
+        const int ncorners = static_cast<int>(std::llround(h[10]));
+        if (loop_at != nullptr && loop_at[i] >= 0) {
+            int used = 0;
+            if (!decode_profile_loops(loop_blob + loop_at[i], loop_count - loop_at[i], section.loops, used, error)) {
+                return false;
+            }
+        } else {
+            if (npts > 0) {
+                section.profile.points.assign(data + pos, data + pos + static_cast<size_t>(npts) * 2);
+                pos += static_cast<size_t>(npts) * 2;
+            }
+            if (ncorners > 0) {
+                section.profile.corners.reserve(static_cast<size_t>(ncorners));
+                for (int c = 0; c < ncorners; ++c) {
+                    section.profile.corners.push_back(static_cast<int>(std::llround(data[pos++])));
+                }
+            }
+        }
+        sections.push_back(std::move(section));
+    }
+    return true;
+}
+
+}  // namespace
+
+/// --- Organic surfaces S2: real kernel sweep (`BRepOffsetAPI_MakePipeShell`), optionally combined with `from` (null = feature root).
+LimeShape* lime_tree_sweep(
+    const LimeShape* from,
+    const char* op,
+    const double* head,
+    int section_count,
+    const double* data,
+    const double* loop_blob,
+    int loop_count,
+    const int* loop_at,
+    const double* spine_blob,
+    int spine_count,
+    const double* aux_blob,
+    int aux_count,
+    int mode,
+    const double* binormal,
+    int transition,
+    const double* scale_stations,
+    int scale_count,
+    double twist_deg,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        SweepSpec spec;
+        std::string message;
+        if (!decode_sweep_sections(head, section_count, data, loop_blob, loop_count, loop_at, spec.sections, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        int used = 0;
+        if (!decode_curve3d(spine_blob, spine_count, spec.spine, used, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        if (aux_blob != nullptr && aux_count > 0) {
+            int aux_used = 0;
+            if (!decode_curve3d(aux_blob, aux_count, spec.aux_spine, aux_used, message)) {
+                set_error(error, message);
+                return nullptr;
+            }
+            spec.has_aux_spine = true;
+        }
+        spec.mode = mode;
+        if (binormal != nullptr) {
+            spec.binormal[0] = binormal[0];
+            spec.binormal[1] = binormal[1];
+            spec.binormal[2] = binormal[2];
+        }
+        spec.transition = transition;
+        if (scale_stations != nullptr && scale_count >= 4) {
+            spec.scale_stations.assign(scale_stations, scale_stations + scale_count);
+        }
+        spec.twist_deg = twist_deg;
+
+        double volume = 0.0;
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const double before = from != nullptr ? from->held.volume : 0.0;
+        const Held* held_edges = from != nullptr ? &from->held : nullptr;
+        const TopoDS_Shape shape = build_sweep(base, before, op != nullptr ? op : "fuse", spec, held_edges, volume, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not build the sweep" : message);
+            return nullptr;
+        }
+        auto made = hold(shape, volume);
+        if (from != nullptr) {
+            inherit_about(made->held, from->held);
+        }
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// --- Organic surfaces S3: Controlled Loft v2 (apex caps, guide rails, boundary tangency/curvature, closed periodic, degree cap).
+/// `apex_flags[s] != 0` marks section `s` as a punctual apex at `head[11*s .. 11*s+3]`.
+/// `guides_blob` holds `guide_count` packed `Curve3DSpec` records in sequence.
+/// `conds` is 10 doubles: `[start_kind, start_has_dir, sdx, sdy, sdz, start_tension, end_kind, end_has_dir, edx, edy, edz, end_tension]` (12 doubles).
+LimeShape* lime_tree_loft_v2(
+    const LimeShape* from,
+    const char* op,
+    const double* head,
+    int section_count,
+    const double* data,
+    const double* loop_blob,
+    int loop_count,
+    const int* loop_at,
+    const int* apex_flags,
+    int ruled,
+    int closed,
+    int smoothing,
+    int max_degree,
+    const double* conds,
+    const double* guides_blob,
+    int guides_len,
+    int guide_count,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        LoftV2Spec spec;
+        spec.ruled = ruled != 0;
+        spec.closed = closed != 0;
+        spec.smoothing = smoothing != 0;
+        spec.max_degree = max_degree;
+        std::string message;
+        if (!decode_sweep_sections(head, section_count, data, loop_blob, loop_count, loop_at, spec.sections, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        if (apex_flags != nullptr) {
+            for (int s = 0; s < section_count; ++s) {
+                if (apex_flags[s] != 0) {
+                    const double* h = head + 11 * static_cast<size_t>(s);
+                    spec.sections[static_cast<size_t>(s)].has_apex = true;
+                    spec.sections[static_cast<size_t>(s)].apex[0] = h[0];
+                    spec.sections[static_cast<size_t>(s)].apex[1] = h[1];
+                    spec.sections[static_cast<size_t>(s)].apex[2] = h[2];
+                }
+            }
+        }
+        if (conds != nullptr) {
+            spec.start_cond.kind = static_cast<int>(std::llround(conds[0]));
+            spec.start_cond.has_dir = conds[1] != 0.0;
+            spec.start_cond.dir[0] = conds[2];
+            spec.start_cond.dir[1] = conds[3];
+            spec.start_cond.dir[2] = conds[4];
+            spec.start_cond.tension = conds[5];
+            spec.end_cond.kind = static_cast<int>(std::llround(conds[6]));
+            spec.end_cond.has_dir = conds[7] != 0.0;
+            spec.end_cond.dir[0] = conds[8];
+            spec.end_cond.dir[1] = conds[9];
+            spec.end_cond.dir[2] = conds[10];
+            spec.end_cond.tension = conds[11];
+        }
+        if (guides_blob != nullptr && guides_len > 0 && guide_count > 0) {
+            int offset = 0;
+            for (int g = 0; g < guide_count; ++g) {
+                if (offset >= guides_len) {
+                    set_error(error, "Guide curve data is incomplete.");
+                    return nullptr;
+                }
+                Curve3DSpec guide;
+                int used = 0;
+                if (!decode_curve3d(guides_blob + offset, guides_len - offset, guide, used, message)) {
+                    set_error(error, message);
+                    return nullptr;
+                }
+                offset += used;
+                spec.guides.push_back(std::move(guide));
+            }
+        }
+        double volume = 0.0;
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const double before = from != nullptr ? from->held.volume : 0.0;
+        const Held* held_edges = from != nullptr ? &from->held : nullptr;
+        const TopoDS_Shape shape = build_loft_v2(base, before, op != nullptr ? op : "fuse", spec, held_edges, volume, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not build the loft" : message);
+            return nullptr;
+        }
+        auto made = hold(shape, volume);
+        if (from != nullptr) {
+            inherit_about(made->held, from->held);
+        }
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+// --- Organic surfaces S4: Open Sheets & Surface-to-Solid Workflow ---
+
+static bool decode_sheet_spec(
+    int mode,
+    const double* params,
+    const double* curves_blob,
+    int curves_len,
+    int curve_count,
+    SheetSpec& spec,
+    std::string& message) {
+    spec.mode = mode;
+    if (params != nullptr) {
+        spec.dir[0] = params[0];
+        spec.dir[1] = params[1];
+        spec.dir[2] = params[2];
+        spec.distance = params[3];
+        spec.axis_origin[0] = params[4];
+        spec.axis_origin[1] = params[5];
+        spec.axis_origin[2] = params[6];
+        spec.angle_deg = params[7];
+        spec.ruled = params[8] != 0.0;
+        spec.symmetric = params[9] != 0.0;
+    }
+    if (curves_blob == nullptr || curves_len <= 0 || curve_count <= 0) {
+        message = "A sheet needs at least one 3D curve.";
+        return false;
+    }
+    int offset = 0;
+    for (int i = 0; i < curve_count; ++i) {
+        if (offset >= curves_len) {
+            message = "Sheet curve data is incomplete.";
+            return false;
+        }
+        Curve3DSpec curve;
+        int used = 0;
+        if (!decode_curve3d(curves_blob + offset, curves_len - offset, curve, used, message)) {
+            return false;
+        }
+        offset += used;
+        spec.curves.push_back(std::move(curve));
+    }
+    return true;
+}
+
+LimeShape* lime_tree_sheet(
+    const LimeShape* from,
+    int mode,
+    const double* params,
+    const double* curves_blob,
+    int curves_len,
+    int curve_count,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        SheetSpec spec;
+        if (!decode_sheet_spec(mode, params, curves_blob, curves_len, curve_count, spec, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const Held* held_edges = from != nullptr ? &from->held : nullptr;
+        const TopoDS_Shape shape = build_sheet(base, held_edges, spec, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not build the sheet." : message);
+            return nullptr;
+        }
+        auto made = hold(shape, 0.0);
+        if (from != nullptr) inherit_about(made->held, from->held);
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+LimeShape* lime_tree_sew(
+    const LimeShape* from,
+    const LimeShape* const* extra_tools,
+    const double* places,
+    int extra_count,
+    double tolerance,
+    int make_solid,
+    int cap_planar,
+    int* out_promoted,
+    int* out_naked,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<const TopoDS_Shape*> tools;
+        std::vector<std::array<double, 12>> tool_places;
+        for (int i = 0; i < extra_count; ++i) {
+            if (extra_tools != nullptr && extra_tools[i] != nullptr) {
+                tools.push_back(&extra_tools[i]->held.shape);
+                std::array<double, 12> p = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+                if (places != nullptr) {
+                    std::memcpy(p.data(), places + i * 12, 12 * sizeof(double));
+                }
+                tool_places.push_back(p);
+            }
+        }
+        std::string message;
+        double volume = 0.0;
+        bool promoted = false;
+        int naked = 0;
+        const TopoDS_Shape shape = build_sew(
+            from->held.shape, tools, tool_places, tolerance, make_solid != 0, cap_planar != 0,
+            volume, promoted, naked, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not sew these surfaces." : message);
+            return nullptr;
+        }
+        if (out_promoted != nullptr) *out_promoted = promoted ? 1 : 0;
+        if (out_naked != nullptr) *out_naked = naked;
+        return hold(shape, volume).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+LimeShape* lime_tree_thicken(
+    const LimeShape* from,
+    double thickness,
+    int direction,
+    double tolerance,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape shape = build_thicken(from->held.shape, thickness, direction, tolerance, volume, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not thicken this surface." : message);
+            return nullptr;
+        }
+        return hold(shape, volume).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+LimeShape* lime_tree_trim_split(
+    const LimeShape* from,
+    const LimeShape* tool_shape,
+    const double* place,
+    int sheet_mode,
+    const double* sheet_params,
+    const double* curves_blob,
+    int curves_len,
+    int curve_count,
+    int keep_mode,
+    LimeShape** other_out,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        TopoDS_Shape cutter;
+        if (tool_shape != nullptr) {
+            cutter = tool_shape->held.shape;
+            if (place != nullptr) {
+                gp_Trsf trsf;
+                trsf.SetValues(
+                    place[0], place[1], place[2], place[9],
+                    place[3], place[4], place[5], place[10],
+                    place[6], place[7], place[8], place[11]);
+                cutter = BRepBuilderAPI_Transform(cutter, trsf, Standard_True).Shape();
+            }
+        } else {
+            SheetSpec spec;
+            if (!decode_sheet_spec(sheet_mode, sheet_params, curves_blob, curves_len, curve_count, spec, message)) {
+                set_error(error, message);
+                return nullptr;
+            }
+            cutter = build_sheet(TopoDS_Shape(), &from->held, spec, message);
+            if (cutter.IsNull()) {
+                set_error(error, message.empty() ? "Open CASCADE could not build the cutting surface." : message);
+                return nullptr;
+            }
+        }
+        TopoDS_Shape other_shape;
+        double volume = 0.0;
+        const TopoDS_Shape kept = build_trim_split(
+            from->held.shape, cutter, keep_mode, other_out != nullptr ? &other_shape : nullptr, volume, message);
+        if (kept.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not split with this surface." : message);
+            return nullptr;
+        }
+        // A split of a sheet is the face the cutter left. It has no solid volume,
+        // so adopting it would throw the piece away.
+        std::unique_ptr<LimeShape> kept_out = has_solid(kept)
+            ? adopt(kept, volume, "Open CASCADE could not split with this surface.", error, from)
+            : hold(kept, 0.0);
+        if (!kept_out) {
+            return nullptr;
+        }
+        // Only once the kept piece is held: a refusal hands back no other piece to free.
+        if (other_out != nullptr && !other_shape.IsNull()) {
+            double other_vol = has_solid(other_shape) ? volume_of(other_shape) : 0.0;
+            *other_out = hold(other_shape, other_vol).release();
+        }
+        return kept_out.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+LimeShape* lime_tree_replace_face(
+    const LimeShape* from,
+    int face_index,
+    const LimeShape* tool_shape,
+    const double* place,
+    int sheet_mode,
+    const double* sheet_params,
+    const double* curves_blob,
+    int curves_len,
+    int curve_count,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (face_index < 0 || face_index >= from->held.faces.Extent()) {
+            set_error(error, "That face is not on this solid.");
+            return nullptr;
+        }
+        std::string message;
+        TopoDS_Shape replacement;
+        if (tool_shape != nullptr) {
+            replacement = tool_shape->held.shape;
+            if (place != nullptr) {
+                gp_Trsf trsf;
+                trsf.SetValues(
+                    place[0], place[1], place[2], place[9],
+                    place[3], place[4], place[5], place[10],
+                    place[6], place[7], place[8], place[11]);
+                replacement = BRepBuilderAPI_Transform(replacement, trsf, Standard_True).Shape();
+            }
+        } else {
+            SheetSpec spec;
+            if (!decode_sheet_spec(sheet_mode, sheet_params, curves_blob, curves_len, curve_count, spec, message)) {
+                set_error(error, message);
+                return nullptr;
+            }
+            replacement = build_sheet(TopoDS_Shape(), &from->held, spec, message);
+            if (replacement.IsNull()) {
+                set_error(error, message.empty() ? "Open CASCADE could not build the replacement surface." : message);
+                return nullptr;
+            }
+        }
+        const TopoDS_Face target = TopoDS::Face(from->held.faces(face_index + 1));
+        double volume = 0.0;
+        const TopoDS_Shape out = build_replace_face(from->held.shape, target, replacement, volume, message);
+        if (out.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not replace this face." : message);
+            return nullptr;
+        }
+        return adopt(out, volume, "Open CASCADE could not replace this face.", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+LimeShape* lime_tree_split_face(
+    const LimeShape* from,
+    const int* face_indexes,
+    int face_count,
+    const double* curve_blob,
+    int curve_len,
+    int has_dir,
+    const double* dir,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (face_indexes == nullptr || face_count <= 0) {
+            set_error(error, "Pick at least one face to split.");
+            return nullptr;
+        }
+        std::vector<TopoDS_Face> targets;
+        targets.reserve(static_cast<size_t>(face_count));
+        for (int i = 0; i < face_count; ++i) {
+            const int idx = face_indexes[i];
+            if (idx < 0 || idx >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this shape.");
+                return nullptr;
+            }
+            targets.push_back(TopoDS::Face(from->held.faces(idx + 1)));
+        }
+        std::string message;
+        Curve3DSpec curve;
+        int used = 0;
+        if (curve_blob == nullptr || curve_len <= 0 || !decode_curve3d(curve_blob, curve_len, curve, used, message)) {
+            set_error(error, message.empty() ? "SplitFace needs a valid 3D curve." : message);
+            return nullptr;
+        }
+        const double d[3] = {
+            dir != nullptr ? dir[0] : 0.0,
+            dir != nullptr ? dir[1] : 0.0,
+            dir != nullptr ? dir[2] : 1.0,
+        };
+        double volume = 0.0;
+        const TopoDS_Shape out = build_split_face(from->held.shape, &from->held, targets, curve, has_dir != 0, d, volume, message);
+        if (out.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not split this face." : message);
+            return nullptr;
+        }
+        // A sheet split stays a sheet: it has no solid volume to adopt.
+        if (!has_solid(from->held.shape)) {
+            return hold(out, 0.0).release();
+        }
+        return adopt(out, volume, "Open CASCADE could not split this face.", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+// --- Organic surfaces S5: Patch and BlendSurface. The blob is the one Rust `encode_surface_blob` writes.
+
+static bool decode_bound(const double* data, int len, int& at, PatchBoundSpec& bound, std::string& message) {
+    if (data == nullptr || at + 3 > len) {
+        message = "A patch side needs a curve or an edge of the sheet.";
+        return false;
+    }
+    bound.continuity = static_cast<int>(std::llround(data[at++]));
+    bound.face = static_cast<int>(std::llround(data[at++]));
+    const int n_edges = static_cast<int>(std::llround(data[at++]));
+    if (n_edges < 0 || n_edges > 64 || at + n_edges >= len) {
+        message = "A patch side needs a curve or an edge of the sheet.";
+        return false;
+    }
+    bound.edges.reserve(static_cast<size_t>(n_edges));
+    for (int i = 0; i < n_edges; ++i) bound.edges.push_back(static_cast<int>(std::llround(data[at++])));
+    if (at >= len) {
+        message = "A patch side needs a curve or an edge of the sheet.";
+        return false;
+    }
+    const int has_curve = static_cast<int>(std::llround(data[at++]));
+    if (has_curve != 0) {
+        int used = 0;
+        if (!decode_curve3d(data + at, len - at, bound.curve, used, message)) return false;
+        at += used;
+        bound.has_curve = true;
+    }
+    return true;
+}
+
+static bool decode_surface_blob(const double* data, int len, PatchBuildSpec& patch, BlendBuildSpec& blend, bool as_blend, std::string& message) {
+    if (data == nullptr || len < 7) {
+        message = as_blend
+            ? "A blend needs two open edges or chains. Pick one chain on each sheet."
+            : "A patch needs between 2 and 20 boundary curves or edges.";
+        return false;
+    }
+    int at = 0;
+    const int n_bounds = static_cast<int>(std::llround(data[at++]));
+    const int n_guides = static_cast<int>(std::llround(data[at++]));
+    const int n_points = static_cast<int>(std::llround(data[at++]));
+    const double tolerance = data[at++];
+    const double tension_a = data[at++];
+    const double tension_b = data[at++];
+    const int op_continuity = static_cast<int>(std::llround(data[at++]));
+    if (n_bounds < 0 || n_bounds > 20 || n_guides < 0 || n_guides > 20 || n_points < 0 || n_points > 50) {
+        message = "A patch needs between 2 and 20 boundary curves or edges.";
+        return false;
+    }
+    std::vector<PatchBoundSpec> bounds;
+    bounds.reserve(static_cast<size_t>(n_bounds));
+    for (int i = 0; i < n_bounds; ++i) {
+        PatchBoundSpec bound;
+        if (!decode_bound(data, len, at, bound, message)) return false;
+        bounds.push_back(std::move(bound));
+    }
+    std::vector<Curve3DSpec> guides;
+    guides.reserve(static_cast<size_t>(n_guides));
+    for (int i = 0; i < n_guides; ++i) {
+        Curve3DSpec curve;
+        int used = 0;
+        if (at >= len || !decode_curve3d(data + at, len - at, curve, used, message)) return false;
+        at += used;
+        guides.push_back(std::move(curve));
+    }
+    if (at + n_points * 3 > len) {
+        message = "A patch side needs a curve or an edge of the sheet.";
+        return false;
+    }
+    std::vector<std::array<double, 3>> points;
+    points.reserve(static_cast<size_t>(n_points));
+    for (int i = 0; i < n_points; ++i) {
+        points.push_back({data[at], data[at + 1], data[at + 2]});
+        at += 3;
+    }
+    if (as_blend) {
+        if (bounds.size() != 2) {
+            message = "A blend needs two open edges or chains. Pick one chain on each sheet.";
+            return false;
+        }
+        blend.a = std::move(bounds[0]);
+        blend.b = std::move(bounds[1]);
+        blend.continuity = op_continuity;
+        blend.tension_a = tension_a;
+        blend.tension_b = tension_b;
+        blend.tolerance = tolerance;
+        return true;
+    }
+    patch.bounds = std::move(bounds);
+    patch.guides = std::move(guides);
+    patch.points = std::move(points);
+    patch.tolerance = tolerance;
+    return true;
+}
+
+LimeShape* lime_tree_patch(const LimeShape* from, const double* blob, int len, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        PatchBuildSpec spec;
+        BlendBuildSpec unused;
+        if (!decode_surface_blob(blob, len, spec, unused, false, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const Held* held = from != nullptr ? &from->held : nullptr;
+        const TopoDS_Shape shape = build_patch(base, held, spec, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not fill this opening. Use G1 on a smoother boundary, or split the opening into fewer sides." : message);
+            return nullptr;
+        }
+        auto made = hold(shape, 0.0);
+        if (from != nullptr) inherit_about(made->held, from->held);
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+LimeShape* lime_tree_blend_surface(const LimeShape* from, const double* blob, int len, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (from == nullptr) {
+            set_error(error, "A blend needs two open edges or chains. Pick one chain on each sheet.");
+            return nullptr;
+        }
+        std::string message;
+        PatchBuildSpec unused;
+        BlendBuildSpec spec;
+        if (!decode_surface_blob(blob, len, unused, spec, true, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        const TopoDS_Shape shape = build_blend(from->held.shape, &from->held, spec, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE could not bridge these edges. Move them closer, or lower the tension." : message);
+            return nullptr;
+        }
+        auto made = hold(shape, 0.0);
+        inherit_about(made->held, from->held);
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+LimeShape* lime_tree_nurbs_surface(const LimeShape* from, const double* blob, int len, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();
+        const TopoDS_Shape shape = build_nurbs_surface(base, blob, len, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "This NURBS surface could not be built." : message);
+            return nullptr;
+        }
+        auto made = hold(shape, 0.0);
+        if (from != nullptr) inherit_about(made->held, from->held);
+        return made.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
 
 /// 1 and `out` set, or 0 and `error` set.
 int lime_tree_distance(
@@ -3187,6 +4038,40 @@ int lime_tree_solids(const LimeShape* shape, LimeShape** out, int max) {
 #ifdef LIME_OCCT_TEST_HOOKS
 /// Debug builds only, for tests: the shape with every surface and curve converted to NURBS, as a STEP file may store a
 /// flat face or a straight edge.
+/// Debug builds only, for tests: step's shape mirrored in the plane x = 0 (`mirror`, geometry rebuilt, so every plane
+/// has an indirect placement), or moved by `offset` as a TopLoc_Location on the shape (geometry untouched).
+LimeShape* lime_tree_test_place(const LimeShape* shape, int mirror, const double* offset, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        TopoDS_Shape made;
+        if (mirror != 0) {
+            gp_Trsf trsf;
+            trsf.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)));
+            BRepBuilderAPI_Transform transform(shape->held.shape, trsf, Standard_True);
+            made = transform.Shape();
+        } else {
+            gp_Trsf trsf;
+            trsf.SetTranslation(gp_Vec(offset[0], offset[1], offset[2]));
+            made = shape->held.shape.Moved(TopLoc_Location(trsf));
+        }
+        if (!has_solid(made)) {
+            return hold(made, 0.0).release();
+        }
+        return adopt(made, volume_of(as_solid(made)), "Open CASCADE did not place the shape", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// Debug builds only, for tests: the last Hermite patch or blend's own measure, as JSON (kernel.cpp note_last_fill).
+char* lime_tree_test_last_fill() {
+    return alloc(last_fill_report());
+}
+
 LimeShape* lime_tree_test_nurbs(const LimeShape* shape, char** error) {
     try {
         LIME_CATCH_FAULTS;
@@ -3317,6 +4202,122 @@ char* lime_tree_test_text(const LimeShape* shape, const double* point, char** er
     } catch (...) {
         set_error(error, "Open CASCADE failed");
         return nullptr;
+    }
+}
+
+/// Debug builds only. `Geom_BSplineCurve::D0` at each parameter of the curve a profile NURBS edge is built from.
+int lime_tree_eval_nurbs_curve(
+    const double* poles,
+    int npoles,
+    const double* weights,
+    int degree,
+    const double* knots,
+    const int* mults,
+    int nknots,
+    int periodic,
+    const double* params,
+    int nparams,
+    double* out,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        if (!lime_occt::eval_nurbs_curve(
+                poles, npoles, weights, degree, knots, mults, nknots, periodic != 0, params, nparams, out, message)) {
+            set_error(error, message.empty() ? "Open CASCADE did not evaluate the NURBS curve." : message);
+            return 0;
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+
+/// Debug builds only. `Geom_BSplineSurface::D0` at each (u, v).
+int lime_tree_eval_nurbs_surface(
+    const double* poles,
+    int nu,
+    int nv,
+    const double* weights,
+    int degree_u,
+    int degree_v,
+    const double* knots_u,
+    const int* mults_u,
+    int nknots_u,
+    const double* knots_v,
+    const int* mults_v,
+    int nknots_v,
+    const double* params,
+    int nparams,
+    double* out,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        if (!lime_occt::eval_nurbs_surface(
+                poles,
+                nu,
+                nv,
+                weights,
+                degree_u,
+                degree_v,
+                knots_u,
+                mults_u,
+                nknots_u,
+                knots_v,
+                mults_v,
+                nknots_v,
+                params,
+                nparams,
+                out,
+                message)) {
+            set_error(error, message.empty() ? "Open CASCADE did not evaluate the NURBS surface." : message);
+            return 0;
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+
+/// Debug builds only, for tests: points on the surface `nurbsSurface` commits for `blob` (k1.rs encode_nurbs_blob), at
+/// each `(u, v)` of `params`, into `out` (three numbers a point). 0, and `error` set, when the op would refuse.
+int lime_tree_eval_built_nurbs_surface(const double* blob, int len, const double* params, int nparams, double* out, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        const TopoDS_Shape shape = build_nurbs_surface(TopoDS_Shape(), blob, len, message);
+        if (shape.IsNull()) {
+            set_error(error, message.empty() ? "This NURBS surface could not be built." : message);
+            return 0;
+        }
+        TopExp_Explorer faces(shape, TopAbs_FACE);
+        if (!faces.More()) {
+            set_error(error, "This NURBS surface could not be built.");
+            return 0;
+        }
+        const Handle(Geom_Surface) surface = BRep_Tool::Surface(TopoDS::Face(faces.Current()));
+        for (int i = 0; i < nparams; ++i) {
+            const gp_Pnt point = surface->Value(params[i * 2], params[i * 2 + 1]);
+            out[i * 3] = point.X();
+            out[i * 3 + 1] = point.Y();
+            out[i * 3 + 2] = point.Z();
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
     }
 }
 

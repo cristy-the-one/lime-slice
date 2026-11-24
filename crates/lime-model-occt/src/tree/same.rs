@@ -38,11 +38,22 @@ pub(super) fn same_request(stored: &Op, incoming: &Op) -> bool {
         return false;
     }
     let (stored_edges, incoming_edges) = match (stored, incoming) {
-        (Op::Fillet { edges: a, size: x }, Op::Fillet { edges: b, size: y })
-            if x == y && a.len() == b.len() =>
-        {
-            (a, b)
-        }
+        (
+            Op::Fillet {
+                edges: a,
+                size: x,
+                continuity: xc,
+                rho: xr,
+                variable: xv,
+            },
+            Op::Fillet {
+                edges: b,
+                size: y,
+                continuity: yc,
+                rho: yr,
+                variable: yv,
+            },
+        ) if x == y && xc == yc && xr == yr && xv == yv && a.len() == b.len() => (a, b),
         (
             Op::Chamfer {
                 edges: a,
@@ -124,6 +135,36 @@ pub(super) fn same_request(stored: &Op, incoming: &Op) -> bool {
                     (Some(stored), Some(incoming)) => same_face_pick(stored, incoming),
                     _ => false,
                 }
+        }
+        (
+            Op::ReplaceFace {
+                face: a_face,
+                sheet: a_sheet,
+            },
+            Op::ReplaceFace {
+                face: b_face,
+                sheet: b_sheet,
+            },
+        ) => return a_sheet == b_sheet && same_face_pick(a_face, b_face),
+        (
+            Op::SplitFace {
+                faces: a_faces,
+                curve: a_curve,
+                direction: a_dir,
+            },
+            Op::SplitFace {
+                faces: b_faces,
+                curve: b_curve,
+                direction: b_dir,
+            },
+        ) => {
+            return a_curve == b_curve
+                && a_dir == b_dir
+                && a_faces.len() == b_faces.len()
+                && a_faces
+                    .iter()
+                    .zip(b_faces)
+                    .all(|(a, b)| same_face_pick(a, b));
         }
         (Op::MoveFaces { faces: stored }, Op::MoveFaces { faces: incoming }) => {
             return stored.len() == incoming.len()

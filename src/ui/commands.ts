@@ -114,6 +114,11 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-reset-view", label: "Reset view", group: "Model", keys: ["Home"], when: "model", target: "#modelResetView", keywords: "frame zoom fit camera" },
   { id: "model-frame-all", label: "Frame every object", group: "Model", keys: ["Shift+Home"], when: "model", keywords: "reset view zoom fit camera all" },
   { id: "model-history", label: "Model history", group: "Model", keys: ["Shift+H"], when: "model", target: "#modelHistoryOpen, #modelHistoryToggle", keywords: "steps tree branch undo jump rename" },
+  // --- Organic surfaces S1: surface inspection. Alt letters match the physical key (ev.code), so macOS Option+Z,
+  // which types "Ω", works too. In a sketch as well: the chords belong to no sketch tool.
+  { id: "model-zebra", label: "Zebra stripes", group: "Model", keys: ["Alt+Z"], when: "model-any", keywords: "reflection continuity g1 g2 smooth shading inspect" },
+  { id: "model-curvature", label: "Curvature shading", group: "Model", keys: ["Alt+C"], when: "model-any", keywords: "heatmap bend radius surface shading inspect" },
+  { id: "model-isoparms", label: "Surface grid (isoparms)", group: "Model", keys: ["Alt+I"], when: "model-any", keywords: "isoparametric uv lines nurbs surface inspect" },
   { id: "model-parameters", label: "Parameters", group: "Model", keys: ["Ctrl+Alt+P"], when: "model-any", typing: true, keywords: "expression variable wall height rebuild" },
   // --- Plugins (D13): the Features menu's card, and Ctrl+Alt+L.
   { id: "model-plugins", label: "Plugins", group: "Model", keys: ["Ctrl+Alt+L"], when: "model", keywords: "plugin recipe library preset run lust apply preview" },

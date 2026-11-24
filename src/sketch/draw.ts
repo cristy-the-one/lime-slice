@@ -2,6 +2,7 @@
  * What the view draws for a sketch: grid, reference, entities, the rubber band, and the
  * origin planes shown while choosing. Positions are in the same space as the frame.
  */
+import { curvatureComb2D } from "../modeling/nurbs-eval.ts";
 import { trimPieces } from "./edit.ts";
 import { curveOf, dist, pointOn } from "./geom.ts";
 import { toWorld, type SketchFrame } from "./frame.ts";
@@ -72,6 +73,32 @@ export function sketchMesh(editor: SketchEditor, frame: SketchFrame | null, grid
     const pieces = trimming ? trimPieces(sketch, entity.id) : null;
     if (!pieces) {
       strokes.push({ xyz: flat(frame, curveSamples(curve)), role });
+      // S2: Draw control-polygon cage for exact CV NURBS curves, and curvature comb when toggled on.
+      if (curve.kind === "spline" && curve.nurbs) {
+        const poly = curve.nurbs.closed ? [...curve.nurbs.poles, curve.nurbs.poles[0]!] : curve.nurbs.poles;
+        if (poly.length >= 2) strokes.push({ xyz: flat(frame, poly), role: "hint" });
+        if (editor.showCurvatureComb) {
+          const meta = curve.nurbs;
+          const periodic = meta.closed;
+          const comb = curvatureComb2D(
+            {
+              poles: meta.poles,
+              ...(meta.weights ? { weights: meta.weights } : {}),
+              ...(meta.degree !== undefined ? { degree: meta.degree } : {}),
+              ...(meta.knots && meta.knots.length > 0 ? { knots: meta.knots } : {}),
+              ...(meta.mults && meta.mults.length > 0 ? { mults: meta.mults } : {}),
+              ...(periodic ? { periodic: true } : {}),
+            },
+            { samplesPerSpan: 12 },
+          );
+          for (const [base, tip] of comb.needles) {
+            if (Math.hypot(tip[0] - base[0], tip[1] - base[1]) > 1e-4) {
+              strokes.push({ xyz: seg(frame, base, tip), role: "axis" });
+            }
+          }
+          if (comb.envelope.length >= 2) strokes.push({ xyz: flat(frame, comb.envelope), role: "axis" });
+        }
+      }
       continue;
     }
     pieces.pieces.forEach((piece, index) => {

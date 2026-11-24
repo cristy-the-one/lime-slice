@@ -15,7 +15,8 @@ import { bedFrame, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateU
 import { pieceNames, SUPPORT_NOTE } from "../../src/modeling/partition-export.ts";
 import { formatMm } from "../../src/model-plane.ts";
 import { applyRequest, editRequest, exportRequest, probeRequest } from "../../src/model-request.ts";
-import { boundsOf, readBroken, readBuilt, nodeHandle, solidView } from "../../src/modeling/model-calls.ts";
+import { boundsOf, readBroken, readBuilt, nodeHandle } from "../../src/modeling/model-calls.ts";
+import { pieceIsSheet, solidView } from "./sheet.ts";
 import { keptSide, splitKeep } from "../../src/modeling/part-reads.ts";
 import { applyPose, isIdentity, typedPoseOf, type Affine } from "../../src/model-space.ts";
 import { keptSteps, newTree, opLabel, pathTo, renumberedSteps, reserveId, withChild, withNode, type PartitionModelOp, type ModelOp, type ModelTree } from "../../src/model-tree.ts";
@@ -76,6 +77,10 @@ function keepOtherHalf(this: Session, obj: PlateObject, otherKey: string, other:
     recipe: undefined,
     rustRecipe: undefined,
   };
+  // --- Organic surfaces S4. The other half of a sheet's trimSplit is a sheet too: it takes the kernel's verdict on
+  // its own shape, as the app marks a piece, not the mark of the object it was cut from.
+  if (pieceIsSheet(piece)) half.sheet = true;
+  else delete half.sheet;
   this.objects.push(half);
   return id;
 }

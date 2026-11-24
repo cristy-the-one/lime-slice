@@ -12,18 +12,39 @@ pub(super) struct RawMesh {
     _opaque: [u8; 0],
 }
 
+#[repr(C)]
+pub(super) struct RawSurfaceInspect {
+    _opaque: [u8; 0],
+}
+
 /// `LimeMeshView` in tree.cpp: a mesh's arrays as bytes, until the mesh is freed, and the shape's
 /// description as JSON, for as long as the shape lives.
 #[repr(C)]
 pub(super) struct MeshView {
     pub(super) positions: *const u8,
     pub(super) positions_bytes: usize,
+    pub(super) normals: *const u8,
+    pub(super) normals_bytes: usize,
     pub(super) triangles: *const u8,
     pub(super) triangles_bytes: usize,
     pub(super) edge_points: *const u8,
     pub(super) edge_points_bytes: usize,
     pub(super) edge_offsets: *const u8,
     pub(super) edge_offsets_bytes: usize,
+    pub(super) meta: *const c_char,
+}
+
+/// `LimeSurfaceInspectView` in tree.cpp: lazy curvature & isoparm arrays plus JSON continuity & surface health.
+#[repr(C)]
+pub(super) struct SurfaceInspectView {
+    pub(super) min_radius_mm: *const u8,
+    pub(super) min_radius_bytes: usize,
+    pub(super) gaussian: *const u8,
+    pub(super) gaussian_bytes: usize,
+    pub(super) mean: *const u8,
+    pub(super) mean_bytes: usize,
+    pub(super) iso_points: *const u8,
+    pub(super) iso_points_bytes: usize,
     pub(super) meta: *const c_char,
 }
 
@@ -79,6 +100,20 @@ extern "C" {
         count: c_int,
         size: f64,
         chamfer: c_int,
+        max_mm: *mut f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    /// --- Organic surfaces S3: variable-radius, G2 curvature-continuous, and conic-rho fillets.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_fillet_v2(
+        from: *const RawShape,
+        edges: *const c_int,
+        count: c_int,
+        size: f64,
+        continuity: c_int,
+        rho: f64,
+        variable: *const f64,
+        variable_len: c_int,
         max_mm: *mut f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
@@ -510,6 +545,15 @@ extern "C" {
     #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_fault(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_test_place(
+        shape: *const RawShape,
+        mirror: c_int,
+        offset: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_test_last_fill() -> *mut c_char;
+    #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_nurbs(shape: *const RawShape, error: *mut *mut c_char) -> *mut RawShape;
     #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_mesh(shape: *mut RawShape, chord: f64, error: *mut *mut c_char) -> *mut c_char;
@@ -519,6 +563,49 @@ extern "C" {
         point: *const f64,
         error: *mut *mut c_char,
     ) -> *mut c_char;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_eval_nurbs_curve(
+        poles: *const f64,
+        npoles: c_int,
+        weights: *const f64,
+        degree: c_int,
+        knots: *const f64,
+        mults: *const c_int,
+        nknots: c_int,
+        periodic: c_int,
+        params: *const f64,
+        nparams: c_int,
+        out: *mut f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_eval_nurbs_surface(
+        poles: *const f64,
+        nu: c_int,
+        nv: c_int,
+        weights: *const f64,
+        degree_u: c_int,
+        degree_v: c_int,
+        knots_u: *const f64,
+        mults_u: *const c_int,
+        nknots_u: c_int,
+        knots_v: *const f64,
+        mults_v: *const c_int,
+        nknots_v: c_int,
+        params: *const f64,
+        nparams: c_int,
+        out: *mut f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn lime_tree_eval_built_nurbs_surface(
+        blob: *const f64,
+        len: c_int,
+        params: *const f64,
+        nparams: c_int,
+        out: *mut f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
     pub(super) fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
     // --- A10.
     pub(super) fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;
@@ -544,10 +631,155 @@ extern "C" {
     pub(super) fn lime_tree_mesh(
         shape: *mut RawShape,
         chord: f64,
+        display: c_int,
         view: *mut MeshView,
         error: *mut *mut c_char,
     ) -> *mut RawMesh;
     pub(super) fn lime_tree_mesh_free(mesh: *mut RawMesh);
+    pub(super) fn lime_tree_surface_inspect(
+        shape: *mut RawShape,
+        chord: f64,
+        want_curvature: c_int,
+        want_isoparms: c_int,
+        iso_count: c_int,
+        display: c_int,
+        view: *mut SurfaceInspectView,
+        error: *mut *mut c_char,
+    ) -> *mut RawSurfaceInspect;
+    pub(super) fn lime_tree_surface_inspect_free(inspect: *mut RawSurfaceInspect);
+    /// --- Organic surfaces S2: real kernel sweep (`BRepOffsetAPI_MakePipeShell`), standalone when `from` is null.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_sweep(
+        from: *const RawShape,
+        op: *const c_char,
+        head: *const f64,
+        section_count: c_int,
+        data: *const f64,
+        loop_blob: *const f64,
+        loop_count: c_int,
+        loop_at: *const c_int,
+        spine_blob: *const f64,
+        spine_count: c_int,
+        aux_blob: *const f64,
+        aux_count: c_int,
+        mode: c_int,
+        binormal: *const f64,
+        transition: c_int,
+        scale_stations: *const f64,
+        scale_count: c_int,
+        twist_deg: f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    /// --- Organic surfaces S3: controlled Loft v2 (apex caps, guide rails, boundary tangency/curvature, closed periodic, degree cap).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_loft_v2(
+        from: *const RawShape,
+        op: *const c_char,
+        head: *const f64,
+        section_count: c_int,
+        data: *const f64,
+        loop_blob: *const f64,
+        loop_count: c_int,
+        loop_at: *const c_int,
+        apex_flags: *const c_int,
+        ruled: c_int,
+        closed: c_int,
+        smoothing: c_int,
+        max_degree: c_int,
+        conds: *const f64,
+        guides_blob: *const f64,
+        guides_len: c_int,
+        guide_count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    /// --- Organic surfaces S4: Open Sheets & Surface-to-Solid Workflow.
+    pub(super) fn lime_tree_sheet(
+        from: *const RawShape,
+        mode: c_int,
+        params: *const f64,
+        curves_blob: *const f64,
+        curves_len: c_int,
+        curve_count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_sew(
+        from: *const RawShape,
+        extra_tools: *const *const RawShape,
+        places: *const f64,
+        extra_count: c_int,
+        tolerance: f64,
+        make_solid: c_int,
+        cap_planar: c_int,
+        out_promoted: *mut c_int,
+        out_naked: *mut c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    pub(super) fn lime_tree_thicken(
+        from: *const RawShape,
+        thickness: f64,
+        direction: c_int,
+        tolerance: f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_trim_split(
+        from: *const RawShape,
+        tool_shape: *const RawShape,
+        place: *const f64,
+        sheet_mode: c_int,
+        sheet_params: *const f64,
+        curves_blob: *const f64,
+        curves_len: c_int,
+        curve_count: c_int,
+        keep_mode: c_int,
+        other_out: *mut *mut RawShape,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_replace_face(
+        from: *const RawShape,
+        face_index: c_int,
+        tool_shape: *const RawShape,
+        place: *const f64,
+        sheet_mode: c_int,
+        sheet_params: *const f64,
+        curves_blob: *const f64,
+        curves_len: c_int,
+        curve_count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lime_tree_split_face(
+        from: *const RawShape,
+        face_indexes: *const c_int,
+        face_count: c_int,
+        curve_blob: *const f64,
+        curve_len: c_int,
+        has_dir: c_int,
+        dir: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    /// --- Organic surfaces S5: fill an opening, or bridge two open edges.
+    pub(super) fn lime_tree_patch(
+        from: *const RawShape,
+        blob: *const f64,
+        len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    pub(super) fn lime_tree_blend_surface(
+        from: *const RawShape,
+        blob: *const f64,
+        len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    /// S6: one NURBS sheet from an M by N pole grid. `from` is null when the surface starts a part.
+    pub(super) fn lime_tree_nurbs_surface(
+        from: *const RawShape,
+        blob: *const f64,
+        len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     pub(super) fn lime_tree_distance(
         shape: *const RawShape,
         a_kind: *const c_char,

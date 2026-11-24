@@ -12,7 +12,10 @@ import {
   type Affine,
 } from "../../model-space";
 import { unionBox } from "../../measure";
-import { type ParsedSolid } from "../../model-reply";
+import { decodeSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { cachedSurface, keepSurface, surfaceKey } from "./surface-cache";
+import { viewRequest } from "../../model-mesh-quality";
+import { isOpenSheet } from "../../model-sheet";
 import { contextParts } from "../../model-context";
 import { isHidden, isolate, pruneHidden, setHidden, showAll, visibleParts } from "../../model-hidden";
 import { extentAlong } from "../../model-plane";
@@ -24,13 +27,14 @@ import {
   refreshModelCheck,
   refreshModelGhost,
   setModelEditable,
+  setSheetMode,
   setModelLocked,
   syncModelChrome,
   syncModelSolid,
   syncPlaceFields,
   syncWorkplaneFields,
 } from "../../ui/model-chrome";
-import { explodeLook, showExplode } from "../../ui/model-look";
+import { explodeLook, lookState, mountModelLook, onExplode, onSurfaceNeed, showExplode } from "../../ui/model-look";
 import { canExplode, explodeContext, heldParts } from "../model-explode";
 import { meshSeat, meshTokenOf, modelPoseOf, setMeshSeat, type PlateObject } from "../../plate";
 import { centreOf, usingCustomPivot } from "../../pivot.ts";
@@ -47,19 +51,72 @@ import { S } from "./shared";
 import { warmMesh } from "./commit";
 import { hideEmpty } from "./create";
 import { treeOf } from "./edges";
-import { mm } from "./engine";
+import { mm, treeCall } from "./engine";
 import { readout } from "./pick";
 import type { Lens } from "./shared";
 import { runQueuedReaim } from "./transition";
 import { showEdits, syncUndo } from "./undo";
 import { openObject } from "./workplane";
 import { mountModelInspect } from "../../ui/model-inspect";
-import { mountModelLook, onExplode } from "../../ui/model-look";
 import { plateObjectSizes } from "../settings";
 import { posedFace } from "./workplane";
 
 /** Each solid's, and each plate mesh's, box in its own frame. */
 const ownBoxes = new WeakMap<Float32Array, Bounds>();
+
+let surfaceInspectTicket = 0;
+
+async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolean }) {
+  if (!need.curvature && !need.isoparms) return;
+  const open = S.open;
+  const tree = treeOf(open);
+  if (!open || !tree) return;
+  const key = S.lens?.key ?? open.key;
+  const node = S.lens?.node ?? tree.current;
+  const chord = state.stepTolerance;
+  const cacheKey = surfaceKey(key, node, chord);
+  const cached = cachedSurface(cacheKey);
+  const hasCurv = !need.curvature || !!cached?.minRadiusMm;
+  const hasIso = !need.isoparms || cached?.isoPoints !== undefined;
+  if (cached && hasCurv && hasIso) {
+    fx.model?.setSurfaceInspect({
+      ...(cached.minRadiusMm ? { minRadiusMm: cached.minRadiusMm } : {}),
+      ...(cached.gaussian ? { gaussian: cached.gaussian } : {}),
+      ...(cached.mean ? { mean: cached.mean } : {}),
+      ...(cached.isoPoints ? { isoPoints: cached.isoPoints } : {}),
+    });
+    return;
+  }
+  const mine = ++surfaceInspectTicket;
+  const wantCurv = need.curvature || !!cached?.minRadiusMm;
+  const wantIso = need.isoparms || cached?.isoPoints !== undefined;
+  // Per-vertex curvature describes the display mesh when the view draws one: the same field as the view's own requests.
+  const body = await treeCall(key, node, viewRequest({
+    call: "surfaceInspect",
+    key,
+    node,
+    chordMm: chord,
+    curvature: wantCurv,
+    isoparms: wantIso,
+    isoCount: 6,
+  }));
+  if (mine !== surfaceInspectTicket) return;
+  const decoded = decodeSurfaceInspect(body);
+  if (typeof decoded === "string") return;
+  keepSurface(cacheKey, decoded);
+  // A late reply is kept for its node but shown only while that node is still on screen: isoparm lines carry no
+  // vertex count to check against (the curvature buffers are length-checked), so they would draw on another solid.
+  const nowTree = treeOf(S.open);
+  const nowKey = S.lens?.key ?? S.open?.key;
+  const nowNode = S.lens?.node ?? nowTree?.current;
+  if (nowKey !== key || nowNode !== node || state.stepTolerance !== chord) return;
+  fx.model?.setSurfaceInspect({
+    ...(decoded.minRadiusMm ? { minRadiusMm: decoded.minRadiusMm } : {}),
+    ...(decoded.gaussian ? { gaussian: decoded.gaussian } : {}),
+    ...(decoded.mean ? { mean: decoded.mean } : {}),
+    ...(decoded.isoPoints ? { isoPoints: decoded.isoPoints } : {}),
+  });
+}
 
 let refreshingContext = false;
 
@@ -79,7 +136,11 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   hideEmpty();
   if (!view) learnSeat(parsed);
   setModelLocked(view && !S.editing ? PEEK_LOCK : null);
-  fx.model?.setSolid(parsed, openPose());
+  // One rule for the banner, the sheet tools, the viewport's sheet look and the plate mark (src/model-sheet.ts): a
+  // surfaces-only STEP is no sheet unless its plate object is marked one.
+  const marked = state.plate.objects.find((obj) => obj.id === S.open?.objectId)?.sheet === true;
+  const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id, marked);
+  fx.model?.setSolid(parsed, openPose(), isSheet);
   setInspectVolume(parsed.editable ? `${mm(parsed.volumeMm3)} mm³` : "—");
   if (S.open && S.framedFor !== S.open.objectId) {
     S.framedFor = S.open.objectId;
@@ -89,7 +150,22 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   syncWorkplaneFields();
   refreshModelContext();
   fx.model?.highlight([]);
+  setSheetMode(isSheet);
   setModelEditable(parsed.editable);
+  // --- Organic surfaces S4 (U6): show open-sheet banner with one-click Thicken & Cap & Sew when open.
+  const sheetBar = document.querySelector<HTMLElement>("#modelSheetBar");
+  if (sheetBar) {
+    sheetBar.hidden = !isSheet;
+    if (isSheet) {
+      const n = parsed.nakedEdges?.length ?? 0;
+      const label = document.querySelector<HTMLElement>("#modelSheetText");
+      if (label) {
+        label.textContent = n > 0
+          ? `Open sheet · ${n} open border${n === 1 ? "" : "s"} — thicken or cap & sew to make a printable solid.`
+          : "Open sheet — thicken or cap & sew to make a printable solid.";
+      }
+    }
+  }
   syncModelSolid();
   syncModelChrome([]);
   fx.model?.resize();
@@ -108,6 +184,11 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   if (S.reaimQueued) runQueuedReaim();
   // The plate takes this solid's mesh when Model is left: its cracks are closed meanwhile, off the UI's path.
   if (!view) warmMesh(parsed);
+  // --- Organic surfaces S1: if Curvature or Surface grid (Isoparms) is active, fetch buffers lazily for this solid.
+  const look = lookState();
+  if (look.shading === "curvature" || look.isoparms) {
+    void ensureSurfaceInspect({ curvature: look.shading === "curvature", isoparms: look.isoparms });
+  }
 }
 
 export function requestModelCheck(objectId: string) {
@@ -359,5 +440,6 @@ export function bindLook() {
       },
     });
     onExplode(() => refreshModelContext());
+    onSurfaceNeed((need) => void ensureSurfaceInspect(need));
   }
 }

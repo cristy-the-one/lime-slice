@@ -24,13 +24,57 @@ export interface ModelSolid {
   id: number;
   volumeMm3: number;
   positions: Float32Array;
+  /** --- Organic surfaces S1: exact OCCT outward unit normals (nine per triangle), when provided by the kernel. */
+  normals?: Float32Array;
   /** The face of each triangle. */
   triangles: Uint32Array;
   edges: { id: number; lengthMm: number; points: Float32Array }[];
   /** Edges (by index) that are a seam or a pole: listed and pickable as ever, but not drawn as a line. */
   seams?: number[];
+  /** --- Organic surfaces S4: open-border (naked) edges on an open sheet, highlighted bright in the viewport. */
+  nakedEdges?: number[];
   /** The history node that made each face. Null is a preview face with no step yet. */
   stepFaces?: (number | null)[];
+  /**
+   * --- Organic surfaces: the kernel's finer mesh for drawing, when the view asked for it (`meshQuality: "display"`).
+   * The viewport draws, picks and paints this one; everything else (the plate, slices, exports, checks) reads
+   * `positions`, the plate mesh. Its `triangles` are face indices like the top-level ones; edges serve both meshes.
+   */
+  display?: DisplayMesh;
+}
+
+/** A finer mesh of the same faces, for drawing only. */
+export interface DisplayMesh {
+  positions: Float32Array;
+  /** Outward unit normals, nine a triangle, in the same order. */
+  normals?: Float32Array;
+  /** The face of each triangle, as `ModelSolid.triangles`. */
+  triangles: Uint32Array;
+}
+
+const drawn = new WeakMap<ModelSolid, ModelSolid>();
+
+/**
+ * What the viewport draws of `solid`: its display mesh when it has one, else the solid itself (an older kernel, a
+ * stand-in, a piece: the view then welds smooth normals). The same object each time for the same solid.
+ */
+export function drawnSolid<T extends ModelSolid>(solid: T): T {
+  const display = solid.display;
+  if (!display) return solid;
+  const known = drawn.get(solid);
+  if (known) return known as T;
+  const { display: _display, normals: _normals, ...rest } = solid;
+  const made = { ...rest, positions: display.positions, triangles: display.triangles, ...(display.normals ? { normals: display.normals } : {}) } as T;
+  drawn.set(solid, made);
+  return made;
+}
+
+/** --- Organic surfaces S1: lazy per-vertex curvature buffers & UV isoparm segments for the open solid. */
+export interface SurfaceInspectBuffers {
+  minRadiusMm?: Float32Array;
+  gaussian?: Float32Array;
+  mean?: Float32Array;
+  isoPoints?: Float32Array;
 }
 
 /**
@@ -136,7 +180,11 @@ export interface StressDraw {
 
 export interface ModelView {
   /** The open solid, in its own frame, drawn at `pose` in model space. The camera stays where it is. */
-  setSolid(solid: ModelSolid | null, pose: Affine): void;
+  /**
+   * `sheet`: draw it as an open sheet (front-only body, back tint, naked edges lit). Model passes `isOpenSheet`
+   * (src/model-sheet.ts), so a surfaces-only STEP looks as on v7.1.2; absent, a shape with naked edges is one.
+   */
+  setSolid(solid: ModelSolid | null, pose: Affine, sheet?: boolean): void;
   /** Move the open solid in model space. Its mesh is not touched. */
   setPose(pose: Affine): void;
   /** Look at `box`, a model-space box, from the direction Model opens with. */
@@ -186,8 +234,10 @@ export interface ModelView {
   setWorkplane(plane: Workplane | null): void;
   /** While on, a picked face is teal, so it is not the ordinary accent selection. */
   setDatumPick(on: boolean): void;
-  /** --- A10. Section plane and colour by step. View only: the solid and the probe are unchanged. */
+  /** --- A10. Section plane, colour by step, and S1 surface analysis modes. View only: the solid and the probe are unchanged. */
   setLook(state: LookState): void;
+  /** --- Organic surfaces S1: supply lazy per-vertex curvature buffers and/or UV isoparms for the open solid. */
+  setSurfaceInspect(data: SurfaceInspectBuffers | null): void;
   /** A drag of the section arrow, in millimetres along the cut normal from where the drag began. */
   onSectionDrag(cb: (mm: number, phase: "start" | "move" | "end") => void): void;
   /** The history row under the pointer, or null. Its faces tint. */
@@ -200,6 +250,20 @@ export interface ModelView {
   onFacePointer(cb: (pointer: FacePointer) => void): void;
   /** P1. A model-space point, in page pixels. Null when it is behind the camera. */
   projectPoint(at: Vec3): { x: number; y: number } | null;
+  /**
+   * S6. The live NURBS preview, already evaluated, in the open part's own frame; null hides it and frees its buffers. The
+   * same arrays from one call to the next are updated in place. While it shows, the committed solid is hidden.
+   */
+  setNurbsPreview(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; density: number } | null): void;
+  /**
+   * S6. Model-space points (x, y, z flat) to view pixels in `out` (x, y, 1 when in front of the camera else 0, flat),
+   * relative to the view's top left, with one layout read for the list. Returns the view's rectangle on the page.
+   */
+  projectMany(points: ArrayLike<number>, out: Float64Array): { left: number; top: number; width: number; height: number };
+  /** S6. Called (after the call returns) whenever the view is given another solid. Returns the way to stop. */
+  onSolidChange(cb: () => void): () => void;
+  /** S6. Called whenever the camera moves (orbit, pan, wheel zoom, a glide, a reset). Returns the way to stop. */
+  onCameraChange(cb: () => void): () => void;
   /** P1. A dotted line in model space, or null to hide it. */
   setAlign(ends: [Vec3, Vec3] | null): void;
   /** P1. The distance under the pointer, for tests. Null clears it. */

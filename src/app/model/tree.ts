@@ -1,4 +1,5 @@
 /** Opening a tree and showing a node: the open, resume, and step (undo/redo) paths. */
+import { viewRequest } from "../../model-mesh-quality";
 import { IDENTITY_POSE } from "../../model-space";
 import { olderSplitNote } from "../../model-edit";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
@@ -180,7 +181,7 @@ export async function openTree(mine: number, objectId: string, label: string, fr
 export async function startTree(objectId: string, label: string, from: Exclude<ModelRoot, { kind: "piece" }>, root: PlateMesh): Promise<{ key: string; parsed: ParsedSolid } | string> {
   const key = freshTreeKey(objectId);
   const era = S.plateEra;
-  const body = await post(openRequest(key, from, state.stepTolerance));
+  const body = await post(viewRequest(openRequest(key, from, state.stepTolerance)));
   const parsed = decodeSolid(body);
   if (typeof parsed === "string" || era !== S.plateEra) {
     // An open the engine answered but this app cannot read, or no longer wants, still left a tree there.
@@ -217,7 +218,7 @@ export async function showNode(mine: number, objectId: string, key: string, node
     S.jumping = true;
     S.jumpTarget = node;
     syncUndo();
-    const body = await treeCall(key, node, gotoRequest(key, node, chord));
+    const body = await treeCall(key, node, viewRequest(gotoRequest(key, node, chord)));
     const newest = mine === S.ticket && serial === S.jumpSerial;
     if (newest) S.jumping = false;
     syncUndo();
@@ -268,6 +269,11 @@ export function redoNode(tree: ModelTree): NodeId | null {
 
 /** Undo is the parent, Redo the child last applied or jumped through, but for an edit, which Undo takes back whole. */
 export async function step(way: "undo" | "redo") {
+  // --- S6. A NURBS drag is one step of its own: Undo puts the grid back as it was before the drag.
+  if (!S.busy && !S.jumping && !S.editing && !S.sketchRootEdit && S.sculptHistory?.can(way)) {
+    await S.sculptHistory.step(way);
+    return;
+  }
   if (!S.busy && !S.jumping && !S.editing && !S.sketchRootEdit && (swapStep(way) || newObjectStep(way))) return;
   const at = S.open;
   const tree = treeOf(at);

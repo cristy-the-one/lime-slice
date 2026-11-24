@@ -391,3 +391,7 @@ mod kernel_contract {
         assert!(!text.contains("\"ok\":true"), "{text}");
     }
 }
+
+#[cfg(all(test, lime_occt, lime_occt_test_hooks))]
+#[path = "blend_fold_test.rs"]
+mod blend_fold_test;

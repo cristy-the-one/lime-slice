@@ -90,7 +90,7 @@ for (const tool of MODEL_TOOLS) {
   const dragged = new Set<string>();
   // A hole's counterbore fields show only with its box ticked, and have handles then.
   // A feature's circle and polygon sizes show only for that shape, and have handles then.
-  const features: Partial<DragContext>[] = [{}, { feature: { shape: "circle" } }, { feature: { shape: "arch" } }, { feature: { cell: "circle" } }, { feature: { cell: "polygon" } }, { feature: { along: "v" } }, { chamfer: "two" }, { chamfer: "angle" }];
+  const features: Partial<DragContext>[] = [{}, { feature: { shape: "circle" } }, { feature: { shape: "arch" } }, { feature: { cell: "circle" } }, { feature: { cell: "polygon" } }, { feature: { along: "v" } }, { chamfer: "two" }, { chamfer: "angle" }, { fillet: { continuity: "conic", variable: true } }];
   // --- A4. Polar and path fields are on screen only in that mode, and have handles then; a ring gear's rim with Ring. ---
   const repeats: Partial<DragContext>[] = [{}, { repeat: { mode: "polar" } }, { repeat: { mode: "path" } }, { ring: true }, { rack: true }];
   for (const hole of [undefined, { through: false, counterbore: true }]) {

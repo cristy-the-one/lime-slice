@@ -39,6 +39,21 @@ sources:
   - id: draft-kernel
     resource: https://github.com/cristy-the-one/lime-slice/blob/03b1c1d6fcdd995bf5b67cf9b65f5ecabfe1a289/crates/lime-model-occt/cpp/kernel.cpp
     title: crates/lime-model-occt/cpp/kernel.cpp (03b1c1d6)
+  - id: organic-ops
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/crates/lime-model-occt/src/tree/ops.rs
+    title: crates/lime-model-occt/src/tree/ops.rs (feature/organic-surfaces)
+  - id: organic-plan
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/docs/plan-organic-surfaces.md
+    title: docs/plan-organic-surfaces.md (feature/organic-surfaces)
+  - id: organic-file
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/src/model-tree-file.ts
+    title: src/model-tree-file.ts (feature/organic-surfaces)
+  - id: s6-ops
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/crates/lime-model-occt/src/tree/ops.rs
+    title: crates/lime-model-occt/src/tree/ops.rs (organic-surfaces/s6-nurbs-surface)
+  - id: s6-tool
+    resource: https://github.com/cristy-the-one/lime-slice/blob/main/src/app/model/nurbs-sculpt.ts
+    title: src/app/model/nurbs-sculpt.ts (organic-surfaces/s6-nurbs-surface)
 ---
 
 # Sketch
@@ -53,11 +68,15 @@ History ops in `ModelOp` are `boolean`, `hole`, `split`, `fillet`, `chamfer`, `s
 
 Since 6.13.0 `ModelOp` also has `draft`: `{kind: "draft", faces, angleDeg, pull?, neutral?}` tilts 1 to 50 existing flat, cylindrical or conical faces by −30° to 30° (not 0). A positive angle opens them toward `pull` (default +Z) about the neutral plane: a flat face, an `{origin, normal}` plane, or by default the plane through the faces' lowest point along the pull. History labels it "Draft 2 walls 3°".[^draft] The kernel builds it with `BRepOffsetAPI_DraftAngle`, refuses a floor and a face it cannot draft, naming the face by its index on the solid, and a group cannot contain one.[^draft-kernel] The app's face menu and the `model-draft` command open the Draft tool (angle and pull). A project saved with a `draft` step opens in 6.12 as a mesh with its History dropped, since 6.12 cannot read the op.[^draft]
 
+Since 7.2.0 (organic surfaces S1 to S5) the kernel also has `sweep` along a 3D spine (`Curve3D`: polyline, spline, nurbs, segments or edges), `sheet`, `sew`, `thicken`, `trimSplit`, `replaceFace`, `splitFace`, `patch` and `blendSurface`; a profile loop takes a `nurbs` segment; a loft takes apex sections, guides, start and end conditions, `closed`, `smoothing` and `maxDegree` 2 to 10; and a fillet takes `continuity` g1, g2 or conic, `rho` and `variable` stations.[^organic-ops] In the app these are the Look menu's Zebra, Curvature and Surface grid, the Sketch spline's control-point mode, the Fillet panel's Profile and Variable radius, and the open-sheet bar (Thicken, Cap & Sew) with Patch (G0 or G1; a side asked G2 is refused) and Blend (G1 or G2); creating a sheet, the spine sweep, the loft options and trim, replace and split face are MCP and recipe only. G2 and conic fillets are built only on a straight edge between two flat faces, and a loft end is free, normal or tangent. S6 (a direct NURBS surface, below) is in 7.2.0 too.[^organic-plan] A project with one of the new step kinds or fields, or an object marked an open sheet, is saved as version 5, which 7.1.2 and older refuse before reading ("This project is version 5. This app opens up to version 4.").[^organic-file]
+
 Primitive kinds are `box`, `cylinder`, `sphere`, `ellipsoid`, `cone`, `torus`, `wedge`, `polygon`, and `tube`.[^primitive]
 
 Extrude, revolve, and loft can store the sketch on the op. The extrude comment says the kernel never reads that sketch JSON.[^tree] A sweep is not its own kernel op. `SweepDrawing` is "a sweep remembered on the loft it became," with a profile sketch, a path, and a scale. There is no twist field. The kernel never reads the drawing.[^tree]
 
 Holes from a sketch are a `group` whose source is sketch holes, and they require a sketch on a face. Push/pull chooses the op: with nothing else held it is `moveFaces` (neighbours follow); Alt is `faceExtrude` (a prism on that face alone).[^pull]
+
+Since 7.2.0 (S6) `ModelOp` also has `nurbsSurface`: a grid of 2 to 64 poles each way, weights, degree 1 to 8 in U and V, and clamped or periodic knots, built as an open sheet; it starts a part as a feature root.[^s6-ops] The Model tool's NURBS panel makes one (New NURBS surface, an 8 × 8 grid) and shapes it by pole, row or column drags along the part's axes or the normal, with falloff, symmetry about the part's X = 0 plane, and an Exact NURBS drawer for weight, degree, knot insertion and creases; History Edit reopens it. Over MCP `solid_new {feature}` starts a part from a NURBS surface or a sheet.[^s6-tool]
 
 # Workplanes and the rail
 
@@ -80,3 +99,8 @@ Open CASCADE is required for Model. See [Engine](../architecture/engine.md). Wit
 [^readme]: README.md
 [^draft]: src/model-tree.ts (03b1c1d6)
 [^draft-kernel]: crates/lime-model-occt/cpp/kernel.cpp (03b1c1d6)
+[^organic-ops]: crates/lime-model-occt/src/tree/ops.rs (feature/organic-surfaces)
+[^organic-plan]: docs/plan-organic-surfaces.md (feature/organic-surfaces)
+[^organic-file]: src/model-tree-file.ts (feature/organic-surfaces)
+[^s6-ops]: crates/lime-model-occt/src/tree/ops.rs (organic-surfaces/s6-nurbs-surface)
+[^s6-tool]: src/app/model/nurbs-sculpt.ts (organic-surfaces/s6-nurbs-surface)

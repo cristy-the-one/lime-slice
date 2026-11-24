@@ -12,15 +12,20 @@ import { boxCrosses, boxPick, entityPointIds, hitSketch, type Screen } from "./h
 import {
   addLine,
   addPoint,
+  creaseSplineAt,
   emptySketch,
+  insertSplineKnot,
   pointNear,
   prunePoints,
+  setSplineMode,
+  setSplineWeight,
   sketchJson,
   sketchPoint,
   type Pt,
   type SketchData,
   type SketchOn,
   type SketchPlane,
+  type SplineMode,
 } from "./model.ts";
 import type { RefGeom } from "./refs.ts";
 // --- S3 drawing tools. Gesture state and geometry live in tools.ts. ---
@@ -40,6 +45,7 @@ import {
   idleDraw,
   isDrawTool,
   noCrossing,
+  rememberSplineMode,
   tangentGesture,
   toggleConstruction,
   toggleWall,
@@ -157,6 +163,8 @@ export interface SketchEditor {
   constrain: ConstrainState;
   /** Which origin plane the pointer is over, while choosing. */
   hotPlane: "XY" | "XZ" | "YZ" | "workplane" | null;
+  /** S2 (U3): show 2D curvature comb needles on NURBS curves. */
+  showCurvatureComb: boolean;
   nextName: number;
 }
 
@@ -209,6 +217,7 @@ export function sketchOff(): SketchEditor {
     draw: freshDraw(),
     constrain: freshConstrain(),
     hotPlane: null,
+    showCurvatureComb: false,
     nextName: 1,
   };
 }
@@ -344,6 +353,89 @@ export function withHelperLine(editor: SketchEditor): SketchEditor {
 export function withWall(editor: SketchEditor, key: keyof WallOptions): SketchEditor {
   if (editor.phase !== "editing") return editor;
   return { ...editor, draw: { ...editor.draw, wall: toggleWall(editor.draw.wall, key) } };
+}
+
+/** S2 (U3): toggle spline mode between exact control-point NURBS ("cv") and interpolating ("through"). */
+export function withSplineMode(editor: SketchEditor, mode: SplineMode): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  rememberSplineMode(mode);
+  const nextDraw = { ...editor.draw, splineMode: mode };
+  const sketch = activeSketch(editor);
+  const selectedSplines = sketch
+    ? editor.selection.entities.filter((id) => sketch.entities.some((e) => e.id === id && e.kind === "spline"))
+    : [];
+  if (!sketch || selectedSplines.length === 0) return { ...editor, draw: nextDraw };
+  let updated = sketch;
+  for (const id of selectedSplines) updated = setSplineMode(updated, id, mode);
+  return {
+    ...editor,
+    draw: nextDraw,
+    pinned: editor.pinned.map((item) => (item.id === editor.active ? { ...item, sketch: updated } : item)),
+    undo: [...editor.undo, { sketch, selection: { entities: [...editor.selection.entities], points: [...editor.selection.points] } }],
+    redo: [],
+  };
+}
+
+/** S2 (U3): toggle 2D curvature comb display on NURBS sketch curves. */
+export function withCurvatureComb(editor: SketchEditor, on: boolean): SketchEditor {
+  return { ...editor, showCurvatureComb: on };
+}
+
+/** S2 (U3): set rational weight on the selected control point of a NURBS curve. */
+export function setSelectedSplineWeight(editor: SketchEditor, weight: number): SketchEditor {
+  if (editor.phase !== "editing" || !(weight > 0) || !Number.isFinite(weight)) return editor;
+  const sketch = activeSketch(editor);
+  const ptId = editor.selection.points[0];
+  if (!sketch || ptId == null) return editor;
+  const spline = sketch.entities.find((e) => e.kind === "spline" && e.through.includes(ptId));
+  if (!spline || spline.kind !== "spline") return editor;
+  const idx = spline.through.indexOf(ptId);
+  const updated = setSplineWeight(sketch, spline.id, idx, weight);
+  return {
+    ...editor,
+    pinned: editor.pinned.map((item) => (item.id === editor.active ? { ...item, sketch: updated } : item)),
+    undo: [...editor.undo, { sketch, selection: { entities: [...editor.selection.entities], points: [...editor.selection.points] } }],
+    redo: [],
+  };
+}
+
+/** S2 (U3): make a sharp C0 crease (knot multiplicity = degree) at the selected interior CV. */
+export function creaseSelectedSplinePoint(editor: SketchEditor): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  const sketch = activeSketch(editor);
+  const ptId = editor.selection.points[0];
+  if (!sketch || ptId == null) return editor;
+  const spline = sketch.entities.find((e) => e.kind === "spline" && e.through.includes(ptId));
+  if (!spline || spline.kind !== "spline") return editor;
+  const idx = spline.through.indexOf(ptId);
+  if (idx <= 0 || idx >= spline.through.length - 1) return editor;
+  const updated = creaseSplineAt(sketch, spline.id, idx);
+  return {
+    ...editor,
+    pinned: editor.pinned.map((item) => (item.id === editor.active ? { ...item, sketch: updated } : item)),
+    undo: [...editor.undo, { sketch, selection: { entities: [...editor.selection.entities], points: [...editor.selection.points] } }],
+    redo: [],
+  };
+}
+
+/** S2 (U3): insert a knot (Boehm refinement, exact shape unchanged) into the selected spline. */
+export function insertSelectedSplineKnot(editor: SketchEditor, u = 0.5): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  const sketch = activeSketch(editor);
+  if (!sketch) return editor;
+  const spline = sketch.entities.find(
+    (e) =>
+      e.kind === "spline" &&
+      (editor.selection.entities.includes(e.id) || e.through.some((id) => editor.selection.points.includes(id))),
+  );
+  if (!spline || spline.kind !== "spline") return editor;
+  const updated = insertSplineKnot(sketch, spline.id, u);
+  return {
+    ...editor,
+    pinned: editor.pinned.map((item) => (item.id === editor.active ? { ...item, sketch: updated } : item)),
+    undo: [...editor.undo, { sketch, selection: { entities: [...editor.selection.entities], points: [...editor.selection.points] } }],
+    redo: [],
+  };
 }
 
 /** O1 and F1: an edit's ghost in separate pieces, or null when the rubber band shows it. */
