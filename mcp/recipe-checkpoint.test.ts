@@ -79,7 +79,10 @@ if (stoppedAgain.ok !== false || Number(session.objects.length) !== 2) throw new
 let resumed = await session.call("recipe_run", { name: "checkpoint-test", source, timeoutS: 30 });
 while (resumed.status === "running") resumed = await session.call("slice_wait", { job: resumed.job, timeoutS: 1 });
 if (resumed.ok !== true || Number(session.objects.length) !== 3 || session.objects[0]!.id !== saved || session.recipeCheckpoints.has("checkpoint-test")) throw new Error(`resume duplicated or lost parts: ${JSON.stringify(resumed)}`);
-// A restarted server adopts its own last autosave before resuming by name.
+// A restarted server adopts its own last autosave before resuming by name. The session just used still has a
+// one-second autosave timer; it must not write into the next workspace (same process, and the path is read at flush).
+if (session.autosaveTimer) { clearTimeout(session.autosaveTimer); session.autosaveTimer = null; }
+await session.autosaveSettled();
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-checkpoint-restart-"));
 writeFileSync(join(process.env.LIME_MCP_WORKSPACE, "values.json"), "[1,2,3]");
 const beforeRestart = new Session(makeEngine());
@@ -89,6 +92,10 @@ for (let i = 0; i < 500 && !beforeRestart.recipeCheckpoints.has("restart-test");
 if (!beforeRestart.recipeCheckpoints.has("restart-test")) throw new Error(`restart recipe never saved its checkpoint: ${JSON.stringify(beforeRestart.workJobs.map((row) => ({ result: row.result, error: row.error, stage: row.ctx.stage })))}`);
 let interrupted = await beforeRestart.call("slice_cancel", { job: running.job });
 while (interrupted.status === "cancelling") interrupted = await beforeRestart.call("slice_wait", { job: running.job, timeoutS: 1 });
+if (!beforeRestart.recipeCheckpoints.has("restart-test")) throw new Error(`restart cancel lost the checkpoint: ${JSON.stringify(interrupted)}`);
+// The file the next server adopts is this session's, written after the cancel, with the checkpoint still in it.
+beforeRestart.autosaveDirty = true;
+beforeRestart.flushAutosave();
 await beforeRestart.autosaveSettled();
 unlinkSync(join(process.env.LIME_MCP_WORKSPACE, "values.json"));
 renameSync(autosavePath()!, join(process.env.LIME_MCP_WORKSPACE, "autosave-2147483646.lime"));
@@ -98,6 +105,10 @@ if (!Array.isArray(info.recipeCheckpoints) || !info.recipeCheckpoints.includes("
 let after = await restarted.call("recipe_run", { name: "restart-test", timeoutS: 30 });
 while (after.status === "running") after = await restarted.call("slice_wait", { job: after.job, timeoutS: 1 });
 if (after.ok !== true || restarted.objects.length !== 3 || restarted.objects[0]!.id !== "obj_1") throw new Error(`restart did not resume: ${JSON.stringify(after)}`);
+if (beforeRestart.autosaveTimer) { clearTimeout(beforeRestart.autosaveTimer); beforeRestart.autosaveTimer = null; }
+await beforeRestart.autosaveSettled();
+if (restarted.autosaveTimer) { clearTimeout(restarted.autosaveTimer); restarted.autosaveTimer = null; }
+await restarted.autosaveSettled();
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-checkpoint-timeout-"));
 writeFileSync(join(process.env.LIME_MCP_WORKSPACE, "values.json"), "[1,2,3]");
 process.env.LIME_MCP_FAKE_MODEL_MS = "900";
