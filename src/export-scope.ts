@@ -6,9 +6,10 @@
 import { type Assembly, type Member } from "./assembly.ts";
 import { IDENTITY_POSE, type Affine } from "./model-space.ts";
 
+export { exportCommandReason, type ExportAvailability, type ExportCommandId } from "./export-reason.ts";
+
 export type ExportScope = "part" | "assembly" | "plate-assembled" | "plate-print";
 export type ExportFormat = "step" | "stl" | "3mf" | "obj" | "glb" | "pose";
-export type ExportCommandId = "export-model" | "export-part" | "export-assembly" | "export-plate";
 
 export const SCOPE_LABELS: Record<ExportScope, string> = {
   part: "Selected part",
@@ -61,20 +62,6 @@ export function defaultScope(selection: ScopeSelection): ExportScope {
   if (selection.memberOf) return "assembly";
   if (selection.selectedId) return "part";
   return "plate-assembled";
-}
-
-export interface ExportAvailability {
-  objects: number;
-  selectedId: string | null;
-  assemblies: number;
-}
-
-/** Why an Export command cannot run, or null when it can. The entry stays visible either way. */
-export function exportCommandReason(id: ExportCommandId, plate: ExportAvailability): string | null {
-  if (plate.objects === 0) return "The plate is empty.";
-  if (id === "export-part" && !plate.selectedId) return "Select a part to export.";
-  if (id === "export-assembly" && plate.assemblies === 0) return "There is no assembly to export.";
-  return null;
 }
 
 export interface LoosePart {

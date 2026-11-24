@@ -3,7 +3,7 @@
  * and a command that cannot run stays on screen with this reason.
  */
 import { assemblyOf, readAssemblies } from "../assembly.ts";
-import { exportCommandReason, type ExportCommandId } from "../export-scope.ts";
+import { exportCommandReason, type ExportCommandId } from "../export-reason.ts";
 import { session, state } from "./state.ts";
 
 export function plateExportFacts() {

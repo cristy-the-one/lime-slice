@@ -1,4 +1,3 @@
-import { zipSync } from "fflate";
 import { dropProjectFonts } from "./user-fonts.ts";
 import { sheetPartNote } from "../model-sheet";
 import { fx } from "./fx";
@@ -642,6 +641,7 @@ export async function exportPrintLayoutStl(fileName: string, mode: "one" | "each
       while (files[name]) name = `${stem}-${n++}.stl`;
       files[name] = new Uint8Array(encodeStl(part, stem));
     });
+    const { zipSync } = await import("fflate");
     await saveBytes(zipSync(files, { level: 6 }), fileName, "zip", "application/zip");
     return true;
   }
