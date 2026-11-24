@@ -25,6 +25,17 @@ Project memory (`~/.claude/projects/C--Users-marius-lime-slice/memory/`) holds t
 | Driving the app | the lime-slice MCP server | the installed `server.mjs`; never edit the owner's MCP config |
 | Plans | `docs/plan-*.md`, reviewed as docs-only PRs | the plan is the spec an implementation follows |
 
+## Where a feature goes
+
+`docs/plan-interaction-model.md` gives each stage one job: Model shapes one part, Pose puts parts together and owns design space, Prepare lays them out to print, Preview checks the slice, and G-code reads and sends the print. Files, export, printers, settings and undo belong to the app. Every feature plan and PR answers these six questions:
+
+1. **Which stage's job is it?** Name the stage, or "app level". A change to design space goes in Pose; a change to the print layout goes in Prepare.
+2. **Where is its one home?** A rail tool or a menu entry. Any other button opens that home, already filled in.
+3. **What is its command?** Give its id, label and group in `COMMANDS`, and a key if it is used often. An idea that already has a key elsewhere uses that key.
+4. **When can it not run?** Then it is shown disabled, with the reason in its tip, never hidden.
+5. **What is its word?** The same in the label, the command, the MCP tool and the guide.
+6. **How is it undone?** Ctrl+Z in its stage takes it back.
+
 ## Change history
 
 | Date | Change | Target | Reason |
@@ -33,3 +44,4 @@ Project memory (`~/.claude/projects/C--Users-marius-lime-slice/memory/`) holds t
 | 2026-10-28 | Shortened the `land-pr` and `verify-ui` descriptions | `.claude/skills/` | Descriptions load into every chat; the owner asked to cut context without losing triggers. |
 | 2026-10-29 | Added the "Target crashed is a kill" and missing-locator traps to `verify-ui` | `.claude/skills/verify-ui/SKILL.md` | Two sessions reported page crashes (Split to print, large exports) that were shell `timeout` SIGTERMs and a machine-wide `Stop-Process chrome-headless-shell`. |
 | 2026-11-05 | "Playwright smoke" gate job; `land-pr` auto-merge note | `.github/workflows/ci.yml`, `.claude/skills/land-pr/SKILL.md`, this file | Requiring the four shard names blocked bump-only PR #586: a skipped matrix job reports its name unexpanded. |
+| 2026-11-24 | "Where a feature goes" checklist | this file, `docs/plan-interaction-model.md` | The owner found the app grown by "blind evolution": export only in Pose, and only after Attach in Prepare. |
