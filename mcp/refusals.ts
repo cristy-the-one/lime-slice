@@ -193,3 +193,16 @@ export function withCode(value: Record<string, unknown>): Record<string, unknown
   if (value.ok !== false || typeof value.code === "string") return value;
   return { ...value, code: "refused" };
 }
+
+/** E1 keep's closeness: the same spelling once case and punctuation are gone. */
+export function punctuationKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** The one name that is `asked` apart from case and punctuation. None when none, or more than one, are that close. */
+export function meantName(asked: string, names: readonly string[]): string | undefined {
+  const key = punctuationKey(asked);
+  if (!key) return undefined;
+  const near = names.filter((name) => name !== asked && punctuationKey(name) === key);
+  return near.length === 1 ? near[0] : undefined;
+}

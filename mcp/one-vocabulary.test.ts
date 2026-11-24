@@ -181,19 +181,27 @@ function opOf(session: Session, object: unknown, node: unknown): R | undefined {
   const painted = await call("render_view", { object: arm.object, colours: { boss: "#ff0000", missing: "#00ff00" }, inline: false, longEdge: 48 });
   const assembly = await call("render_view", { object: arm.object, view: "assembly", colours: { boss: "#ff0000", missing: "#00ff00" }, inline: false, longEdge: 48 });
   const assemblyPng = assembly.path ? redPixels(await (await import("node:fs")).readFileSync(String(assembly.path))) : 0;
-  const named = await call("render_view", { object: arm.object, partColours: { Arm: "#ff0000", Nope: "#112233" }, inline: false, longEdge: 48 });
+  const named = await call("render_view", { object: arm.object, partColours: { Arm: "#ff0000" }, inline: false, longEdge: 48 });
   const namedPng = named.path ? redPixels(await (await import("node:fs")).readFileSync(String(named.path))) : 0;
+  const typo = await call("render_view", { object: arm.object, partColours: { arm: "#ff0000" }, inline: false });
+  const unknown = await call("render_view", { object: arm.object, partColours: { Nope: "#112233" }, inline: false });
   const orange = await call("render_view", { object: arm.object, colours: { boss: "orange" }, inline: false });
   const shape = validateTool("pose_animate", { object: arm.object, source: "fn main(){}", colours: { boss: "#ff0000" }, partColours: { Arm: "#112233" } });
-  const posed = await call("pose_animate", { object: arm.object, source: "fn main(){}", colours: { missing: "#ff0000" }, partColours: { Nope: "#00ff00" } });
+  const posed = await call("pose_animate", { object: arm.object, source: "fn main(){}", colours: { missing: "#ff0000" }, partColours: { Arm: "#112233" } });
+  const posedTypo = await call("pose_animate", { object: arm.object, source: "fn main(){}", partColours: { arm: "#00ff00" }, out: { frames: "typo-frames" } });
+  const posedNope = await call("pose_animate", { object: arm.object, source: "fn main(){}", partColours: { Nope: "#00ff00" }, out: { frames: "nope-frames" } });
   const posedWarn = warnOf(posed);
-  const views = painted.ok === true && legendOf(painted)?.includes("boss") && warnOf(painted).includes("missing") && !String(painted.reason ?? "").includes("view draws several")
+  const views = painted.ok === true && legendOf(painted)?.includes("boss") === true && warnOf(painted).includes("missing") && !String(painted.reason ?? "").includes("view draws several")
     && assembly.ok === true && assemblyPng > 0 && warnOf(assembly).includes("missing") && !String(assembly.reason ?? "").includes("view draws several")
-    && named.ok === true && namedPng > 0 && warnOf(named).includes("Nope") && !String(named.reason ?? "").includes("partColours needs")
+    && named.ok === true && namedPng > 0 && !String(named.reason ?? "").includes("partColours needs")
+    && typo.ok === false && String(typo.reason).includes("did you mean Arm")
+    && unknown.ok === false && String(unknown.reason).includes('No part named "Nope"') && !String(unknown.reason).includes("did you mean")
     && orange.ok === false && String(orange.reason).includes("#")
     && shape === null
-    && !String(posed.reason ?? "").includes("not a field") && !String(posed.reason ?? "").includes("partColours and fit say") && (posedWarn.includes("missing") || posedWarn.includes("not drawn")) && (posedWarn.includes("Nope") || posedWarn.includes("not drawn"));
-  check("item 6: render_view and pose_animate take colours and partColours, and warn where one cannot apply", views, { painted: { ok: painted.ok, reason: painted.reason, legend: legendOf(painted), warnings: painted.warnings }, assembly: { ok: assembly.ok, reason: assembly.reason, warnings: assembly.warnings, red: assemblyPng }, named: { ok: named.ok, reason: named.reason, warnings: named.warnings, red: namedPng }, orange, shape, posed: { ok: posed.ok, reason: posed.reason, warnings: posed.warnings } });
+    && !String(posed.reason ?? "").includes("not a field") && !String(posed.reason ?? "").includes("partColours and fit say") && (posedWarn.includes("missing") || posedWarn.includes("not drawn"))
+    && posedTypo.ok === false && String(posedTypo.reason).includes("did you mean Arm")
+    && posedNope.ok === false && String(posedNope.reason).includes('no part named "Nope"') && !String(posedNope.reason).includes("did you mean");
+  check("item 6: render_view and pose_animate take colours and partColours, and warn where one cannot apply", views, { painted: { ok: painted.ok, reason: painted.reason, legend: legendOf(painted), warnings: painted.warnings }, assembly: { ok: assembly.ok, reason: assembly.reason, warnings: assembly.warnings, red: assemblyPng }, named: { ok: named.ok, reason: named.reason, red: namedPng }, typo, unknown, orange, shape, posed: { ok: posed.ok, reason: posed.reason, warnings: posed.warnings }, posedTypo, posedNope });
 }
 
 // --- Item 7. A common alias is refused with the canonical field. It is not accepted.

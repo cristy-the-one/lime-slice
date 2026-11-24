@@ -196,12 +196,9 @@ assert.ok(count(join(workspace, "box-frames", "frame-001.png"), reddish) < plain
 const undrawn = await call("pose_animate", { object: finger, source, partColours: { Finger: "#00ff00" } });
 assert.equal(undrawn.ok, true, JSON.stringify(undrawn));
 assert.ok((undrawn.warnings as { reason: string }[]).some((row) => row.reason === "colours and partColours colour the drawn frames, and this call has no out, so they were not drawn."), JSON.stringify(undrawn.warnings));
-const skipped = await call("pose_animate", { object: finger, source, partColours: { Nope: "#00ff00" }, out: { frames: "skipped-frames" } });
-assert.equal(skipped.ok, true, JSON.stringify(skipped));
-assert.ok((skipped.warnings as { reason: string }[]).some((row) => row.reason.includes('No part named "Nope"') && row.reason.includes("was not drawn")), JSON.stringify(skipped.warnings));
-assert.ok(existsSync(join(workspace, "skipped-frames")));
 // Refused, naming the field, before anything is built or written.
 const refusedLooks: [Record<string, unknown>, string][] = [
+  [{ partColours: { Nope: "#00ff00" }, out: { frames: "never" } }, 'partColours: no part named "Nope" is in this assembly.'],
   [{ partColours: { Finger: "green" }, out: { frames: "never" } }, 'partColours.Finger is a colour like "#c86450".'],
   [{ fit: ["Finger", "Nope"], out: { frames: "never" } }, 'fit: no part named "Nope" is in this assembly.'],
   [{ fit: { min: [0, 0, 0], max: [0, 0, 0] }, out: { frames: "never" } }, "fit is a finite nonempty box {min, max} with min no greater than max, or a list of part names or handles."],

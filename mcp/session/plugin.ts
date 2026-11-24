@@ -15,7 +15,7 @@ import { lfOnly, recipeDataFile, recipeDataMissing, recipeSourceFile, type Recip
 import { resolveWrite } from "../workspace.ts";
 import { IMPORT_BUILD_LIMIT_MS, type RustRecipe, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
-import { NEXT, refuse } from "../refusals.ts";
+import { NEXT, punctuationKey, refuse } from "../refusals.ts";
 import { runProves, type RunProof } from "./run-proof.ts";
 import { fixedNamesHint, memberParamExample, memberParamsProblem, membersOfRun, needsLine } from "../../src/anim-members.ts";
 
@@ -166,10 +166,10 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   let id = asked || slugOf(title) || slugOf(opts.name ?? "") || "plugin";
   if (asked && opts.name === undefined) opts = { ...opts, name: asked };
   // A name that differs from a kept id only by punctuation is that id, not a new plugin.
-  const punct = id.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const punct = punctuationKey(id);
   const held = readPlugin(id, dir);
   if (punct && (!held || "reason" in held)) {
-    const near = listLibrary(dir).find((file) => file.header.plugin !== id && file.header.plugin.toLowerCase().replace(/[^a-z0-9]/g, "") === punct);
+    const near = listLibrary(dir).find((file) => file.header.plugin !== id && punctuationKey(file.header.plugin) === punct);
     if (near) return { reason: `did you mean ${near.header.plugin}?` };
   }
   let version = 1;

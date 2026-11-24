@@ -19,7 +19,7 @@ import { assemblyOf } from "../../src/assembly.ts";
 import { resolveWrite } from "../workspace.ts";
 import { type Ghost, LAYER_ROWS, type PlateObject, STRESS_LAYER_NEEDS, type ToolHandler, joinedPositions, posedPositions } from "./shared.ts";
 import type { Session } from "../session.ts";
-import { NEXT, refuse } from "../refusals.ts";
+import { meantName, NEXT, refuse } from "../refusals.ts";
 
 /** renders/<file>, or renders/<stem>-2.png and so on when that name is taken. */
 function freshRenderPath(file: string): string {
@@ -105,8 +105,9 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
       if ("reason" in rgb) return refuse("bad-view", rgb.reason);
       const matches = rows.filter((row) => row.id === name || row.name === name);
       if (matches.length !== 1) {
-        warnings.push({ reason: matches.length ? `Part name "${name}" is ambiguous; use its handle. partColours.${name} was not drawn.` : `No part named "${name}" is in this view, so partColours.${name} was not drawn.` });
-        continue;
+        if (matches.length > 1) return refuse("bad-view", `Part name "${name}" is ambiguous; use its handle.`);
+        const meant = meantName(name, rows.flatMap((row) => [row.name, row.id]));
+        return refuse("bad-view", meant ? `No part named "${name}" is in this view; did you mean ${meant}?` : `No part named "${name}" is in this view.`);
       }
       chosen.set(matches[0]!.id, rgb);
     }
