@@ -10376,14 +10376,44 @@ TopoDS_Shape point_cap(const TopoDS_Wire& wire, const gp_Pnt& at, const gp_Dir& 
     }
 }
 
-TopoDS_Shape round_cap(const TopoDS_Wire& wire, const gp_Pnt& at, const gp_Dir& outward, double length, std::string& error) {
-    const gp_Pnt far = at.Translated(gp_Vec(outward) * length);
-    BRepBuilderAPI_MakeEdge edge(at, far);
+/// A cubic that leaves the pipe's end with the same tangent and curvature. A straight stub would miss the
+/// frame's rotation there (a bent path measured 1.07 degrees), so the dome would kink.
+TopoDS_Edge round_cap_spine(const TopoDS_Wire& pipe_spine, bool at_end, double length, std::string& error) {
+    BRepAdaptor_CompCurve along(pipe_spine);
+    gp_Pnt origin;
+    gp_Vec v1, v2;
+    const double u = at_end ? along.LastParameter() : along.FirstParameter();
+    along.D2(u, origin, v1, v2);
+    const double speed = v1.Magnitude();
+    if (!(speed > 1e-12) || !(length > 1e-9)) {
+        error = "The round cap has no length.";
+        return {};
+    }
+    const double k = length / speed;
+    gp_Vec slope = v1 * k;
+    const gp_Vec bend = v2 * (k * k);
+    if (!at_end) slope.Reverse();
+    const gp_Pnt p0 = origin;
+    const gp_Pnt p1 = p0.Translated(slope / 3.0);
+    const gp_Pnt p2 = p0.Translated(slope * (2.0 / 3.0) + bend / 6.0);
+    const gp_Pnt p3 = p0.Translated(gp_Vec(gp_Dir(slope)) * length);
+    TColgp_Array1OfPnt poles(1, 4);
+    poles.SetValue(1, p0);
+    poles.SetValue(2, p1);
+    poles.SetValue(3, p2);
+    poles.SetValue(4, p3);
+    BRepBuilderAPI_MakeEdge edge(new Geom_BezierCurve(poles));
     if (!edge.IsDone()) {
         error = "The round cap has no length.";
         return {};
     }
-    BRepBuilderAPI_MakeWire spine(edge.Edge());
+    return edge.Edge();
+}
+
+TopoDS_Shape round_cap(const TopoDS_Wire& wire, const TopoDS_Wire& pipe_spine, bool at_end, double length, std::string& error) {
+    const TopoDS_Edge spine_edge = round_cap_spine(pipe_spine, at_end, length, error);
+    if (spine_edge.IsNull()) return {};
+    BRepBuilderAPI_MakeWire spine(spine_edge);
     if (!spine.IsDone()) {
         error = "The round cap has no length.";
         return {};
@@ -10397,7 +10427,7 @@ TopoDS_Shape round_cap(const TopoDS_Wire& wire, const gp_Pnt& at, const gp_Dir& 
         BRepAdaptor_CompCurve curve(spine.Wire());
         Handle(Law_Function) law = new PipeCapLaw(curve.FirstParameter(), curve.LastParameter(), 0.15);
         // The section sits on the spine's start vertex, so the dome leaves from the pipe's end face.
-        cap.SetLaw(wire, law, TopExp::FirstVertex(edge.Edge()), Standard_False, Standard_False);
+        cap.SetLaw(wire, law, TopExp::FirstVertex(spine_edge), Standard_False, Standard_False);
         Handle(Message_ProgressIndicator) watch;
         cap.Build(deadline_range(watch));
         if (!cap.IsDone() || cap.Shape().IsNull()) {
@@ -10405,12 +10435,12 @@ TopoDS_Shape round_cap(const TopoDS_Wire& wire, const gp_Pnt& at, const gp_Dir& 
             return {};
         }
         std::string end_error;
-        const TopoDS_Wire small = wire_of_end(cap.LastShape(), end_error);
-        if (small.IsNull()) {
+        const TopoDS_Wire tip_wire = wire_of_end(cap.LastShape(), end_error);
+        if (tip_wire.IsNull()) {
             error = "The round cap's tip did not close.";
             return {};
         }
-        const TopoDS_Shape lid = planar_end(small, error);
+        const TopoDS_Shape lid = planar_end(tip_wire, error);
         if (lid.IsNull()) {
             error = "The round cap's tip did not close.";
             return {};
@@ -10595,6 +10625,11 @@ TopoDS_Shape pipe_solid_from_wires(
     TopoDS_Wire cap_last;
     try {
         Handle(Message_ProgressIndicator) watch;
+        if (apply_caps) {
+            // The default angular tolerance is 0.01 rad (0.57 degrees), wider than the 0.1 degree seam bound.
+            pipe.SetTolerance(1e-6, 1e-6, 1e-4);
+            pipe.SetForceApproxC1(Standard_True);
+        }
         pipe.Build(deadline_range(watch));
         if (!pipe.IsDone() || pipe.Shape().IsNull()) {
             error = past_deadline() ? deadline_message()
@@ -10625,7 +10660,7 @@ TopoDS_Shape pipe_solid_from_wires(
             if (wire_centre(cap_first).Distance(end_at) + 1e-6 < wire_centre(cap_first).Distance(start_at)) {
                 std::swap(cap_first, cap_last);
             }
-            const auto one_end = [&](int kind, const TopoDS_Wire& wire, const gp_Pnt& at, const gp_Dir& outward) -> TopoDS_Shape {
+            const auto one_end = [&](int kind, const TopoDS_Wire& wire, bool at_end, const gp_Pnt& at, const gp_Dir& outward) -> TopoDS_Shape {
                 if (kind == 0) return planar_end(wire, error);
                 const double reach = wire_reach(wire, at);
                 if (!(reach > 1e-4)) {
@@ -10637,11 +10672,11 @@ TopoDS_Shape pipe_solid_from_wires(
                     error = "capLength is how far a round or point cap reaches, in millimetres, above 0 and at most 1000.";
                     return {};
                 }
-                return kind == 2 ? point_cap(wire, at, outward, length, error) : round_cap(wire, at, outward, length, error);
+                return kind == 2 ? point_cap(wire, at, outward, length, error) : round_cap(wire, spine, at_end, length, error);
             };
-            const TopoDS_Shape start_cap = one_end(spec.cap_start, cap_first, start_at, start_out);
+            const TopoDS_Shape start_cap = one_end(spec.cap_start, cap_first, false, start_at, start_out);
             if (start_cap.IsNull()) return {};
-            const TopoDS_Shape end_cap = one_end(spec.cap_end, cap_last, end_at, end_out);
+            const TopoDS_Shape end_cap = one_end(spec.cap_end, cap_last, true, end_at, end_out);
             if (end_cap.IsNull()) return {};
             tool = sew_capped_solid({pipe.Shape(), start_cap, end_cap}, error);
             if (tool.IsNull()) return {};

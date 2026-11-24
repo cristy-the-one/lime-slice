@@ -335,7 +335,7 @@ pub(super) fn build_sweep_shape(
         Some(SweepCap::Point) => 2,
     };
     let length = cap_length.unwrap_or(0.0);
-    if !length.is_finite() || length < 0.0 || length > 1000.0 {
+    if !(0.0..=1000.0).contains(&length) {
         return Err("capLength is how far a round or point cap reaches, in millimetres, above 0 and at most 1000.".into());
     }
     let raw_from = from.map_or(std::ptr::null(), Shape::raw);
