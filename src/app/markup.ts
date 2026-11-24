@@ -36,7 +36,7 @@ export function mountMarkup(root: HTMLElement) {
               <button type="button" data-sample="arc_post.stl">Arc post</button>
             </nav>
           </details>
-          <button type="button" id="export3mf">Export 3MF</button>
+          <button type="button" id="exportModel" data-key="Ctrl Shift E">Export…</button>
           <hr />
           <button type="button" id="calibrateOpen">Calibrate…</button>
           <button type="button" id="machineOpen">Printers and filaments…</button>

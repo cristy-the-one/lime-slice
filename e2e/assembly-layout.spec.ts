@@ -80,6 +80,9 @@ test("Lay out lays out one assembly's parts for print, around the others, and ke
 
   // These parts are meshes: a STEP assembly holds solids only, and says so.
   await page.locator("[data-assembly-step]").click();
+  const exportDialog = page.locator("[data-export-dialog]");
+  await expect(exportDialog).toBeVisible();
+  await exportDialog.locator("[data-pose-export-action='submit']").click();
   await expect(page.locator("#toasts")).toContainText("a STEP assembly holds solids only");
 });
 
@@ -130,7 +133,10 @@ test("STEP saves the assembly as named solids at their assembled poses", async (
   for (let i = 0; i < 5; i += 1) await page.getByRole("button", { name: "Nudge Z +0.1 mm" }).click();
   await page.locator("[data-assembly-view='print']").click();
 
-  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("[data-assembly-step]").click()]);
+  await page.locator("[data-assembly-step]").click();
+  const exportDialog = page.locator("[data-export-dialog]");
+  await expect(exportDialog).toBeVisible();
+  const [download] = await Promise.all([page.waitForEvent("download"), exportDialog.locator("[data-pose-export-action='submit']").click()]);
   expect(download.suggestedFilename()).toBe("body.step");
   const asked = tree.of("export").at(-1) as { format?: string; pieces?: { key: string }[]; names?: string[]; poses?: { m: number[]; t: number[] }[]; assembly?: { name?: string; parents?: number[]; partIds?: number[] } };
   expect(asked.format).toBe("step");

@@ -29,7 +29,7 @@ import { modelTrees } from "../model-trees";
 import { newSolidInView, plateBoxes } from "./create";
 import { blendTarget, edgeStepChoices, editUntouched, paintBlendHighlight, refreshStepEdges, treeOf } from "./edges";
 import { cancelEdit } from "./edit";
-import { runExport } from "./export";
+import { stepFileName } from "./export";
 import { curvedKind, featureNow, oneFeatureFace, paintTextAnchor } from "./features";
 import { drillAxis, shellSeat, splitLegal, splitState } from "./geometry";
 import { sayJoin, solidObject } from "./join";
@@ -72,7 +72,17 @@ export function bindToolbar() {
   document.querySelector("#modelSheetSewGo")?.addEventListener("click", () => {
     void applyOp(sewOp({ capPlanar: true, makeSolid: true }), "Capping & sewing sheet into a solid…");
   });
-  document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
+  document.querySelector("#modelStep")?.addEventListener("click", () => {
+    void import("../export-dialog.ts").then(({ showExport }) => {
+      showExport({
+        scope: "part",
+        format: "step",
+        explicitFormat: true,
+        objectId: state.plate.selectedId ?? undefined,
+        fileName: stepFileName(state.mesh?.name ?? "solid"),
+      });
+    });
+  });
   // While Place is open, Undo and Redo step its moves; the solid's history waits until it closes.
   document.querySelector("#modelUndo")?.addEventListener("click", () => {
     // --- S2: an open sketch has its own undo, separate from the solid. ---

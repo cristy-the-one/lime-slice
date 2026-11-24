@@ -2,6 +2,7 @@ import { ArrowDownToLine, Copy, Crosshair, LayoutGrid, Plus, RotateCw, createEle
 import { SHEET_OBJECT_NOTE } from "../model-sheet";
 import { fx } from "./fx";
 import { assemblyClashes, assemblyView, liveAssemblies } from "./assemblies.ts";
+import { modelExportReason } from "./export-availability.ts";
 import { assemblyOf } from "../assembly.ts";
 import { settleOn } from "../bed-rest-pref";
 import { state, session, STEP_TOLERANCE_DEFAULT, type CardId, type SliceResponse } from "./state";
@@ -282,6 +283,24 @@ export function renderChrome() {
   syncEmptyState(!!state.mesh);
   session.supportUi?.refresh();
   fx.syncPreviewPending?.();
+  paintModelExport();
+}
+
+/** File → Export… stays visible. An empty plate greys it and says why. */
+function paintModelExport() {
+  const button = document.querySelector<HTMLButtonElement>("#exportModel");
+  if (!button) return;
+  const reason = modelExportReason("export-model");
+  button.classList.toggle("is-disabled", reason !== null);
+  if (reason) {
+    button.setAttribute("aria-disabled", "true");
+    button.dataset.tip = reason;
+    button.title = reason;
+  } else {
+    button.setAttribute("aria-disabled", "false");
+    delete button.dataset.tip;
+    button.removeAttribute("title");
+  }
 }
 
 /** The top bar readout. Mass and price are spans so the bar can drop them, price first, when it runs short of room. */

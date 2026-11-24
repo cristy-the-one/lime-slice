@@ -179,7 +179,17 @@ async function poseExport(this: Session, input: Record<string, unknown>, meta?: 
       NEXT.assembly,
     );
   }
+  return writePoseAssembly.call(this, assembly, input, meta);
+}
 
+/** The pose writers, given an assembly that is already resolved. `poseOverride` replaces each member's modelPose. */
+export async function writePoseAssembly(
+  this: Session,
+  assembly: Assembly,
+  input: Record<string, unknown>,
+  meta?: CallMeta,
+  poseOverride?: ReadonlyMap<string, Affine>,
+): Promise<Record<string, unknown>> {
   const format = typeof input.format === "string" ? (input.format as PoseExportFormat) : ("" as PoseExportFormat);
   if (!VALID_FORMATS.has(format)) {
     return refuse("bad-argument", "format must be one of step, glb, 3mf, stl, obj, pose.");
@@ -228,7 +238,7 @@ async function poseExport(this: Session, input: Record<string, unknown>, meta?: 
     const member = exportAssembly.members[i]!;
     const part = this.find(member.object);
     if (!part) return refuse("bad-assembly", `Assembly member ${member.object} is missing.`);
-    poses.set(member.object, poseMap?.get(member.object) ?? part.modelPose ?? IDENTITY_POSE);
+    poses.set(member.object, poseOverride?.get(member.object) ?? poseMap?.get(member.object) ?? part.modelPose ?? IDENTITY_POSE);
     colors.set(member.object, colorMap?.get(member.object) ?? defaultMemberColor(i));
   }
 

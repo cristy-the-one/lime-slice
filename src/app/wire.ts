@@ -2,7 +2,7 @@ import { type ColorMode } from "../colors";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { layFlatMatrix } from "../bed-rest";
 import { setSettleOn } from "../bed-rest-pref";
-import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, linkPlateObject, notePivotTriple, removePlateObject, selectChain, selectPlateObject, setObjectPivot, showAllPlateObjects, togglePlateHidden, unlinkPlateObject, ungroupAssembly } from "./plate-actions";
+import { alignSelectedTo, arrangePlate, attachPlateObject, clearPlateSelection, duplicatePlateObject, framePlateObject, layOutAssembly, linkPlateObject, notePivotTriple, removePlateObject, selectChain, selectPlateObject, setObjectPivot, showAllPlateObjects, togglePlateHidden, unlinkPlateObject, ungroupAssembly } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { setHtml } from "../ui/html";
@@ -16,7 +16,7 @@ import { session, state, type CardId } from "./state";
 import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
-import { addDroppedFiles, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
+import { addDroppedFiles, adoptBytes, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { newProject } from "./new-project";
 import { pickModelFile } from "../platform";
@@ -336,6 +336,10 @@ export function wireApp() {
       setObjectPivot(state.plate.selectedId, null);
       return;
     }
+    if (t.id === "objectList") {
+      clearPlateSelection();
+      return;
+    }
     const plateSelect = t.closest<HTMLElement>("[data-plate-select]")?.dataset.plateSelect;
     if (plateSelect) {
       selectPlateObject(plateSelect);
@@ -360,9 +364,20 @@ export function wireApp() {
     }
     const assemblyStep = t.closest<HTMLButtonElement>("[data-assembly-step]");
     if (assemblyStep?.dataset.assemblyStep) {
-      assemblyStep.disabled = true;
-      void exportAssembly(assemblyStep.dataset.assemblyStep).finally(() => {
-        assemblyStep.disabled = false;
+      const assemblyId = assemblyStep.dataset.assemblyStep;
+      void import("./export-dialog.ts").then(({ showExport }) => {
+        void import("../modeling/partition-export.ts").then(({ exportStem }) => {
+          void import("./assemblies.ts").then(({ liveAssemblies }) => {
+            const name = liveAssemblies().find((row) => row.id === assemblyId)?.name ?? "assembly";
+            showExport({
+              scope: "assembly",
+              format: "step",
+              explicitFormat: true,
+              assemblyId,
+              fileName: `${exportStem(name)}.step`,
+            });
+          });
+        });
       });
       return;
     }
@@ -476,7 +491,10 @@ export function wireApp() {
     else if (action === "add") pickAddedMesh();
     else if (action === "save") void saveCurrentProject();
     else if (button.dataset.sample) void loadNamed(button.dataset.sample).catch(fail);
-    else if (button.id === "export3mf") void export3mf();
+    else if (button.id === "exportModel") {
+      if (button.getAttribute("aria-disabled") === "true") return;
+      void import("./export-dialog.ts").then(({ openExportCommand }) => openExportCommand("export-model"));
+    }
     else if (button.id === "machineOpen") revealPrinterDetails();
     else if (button.id === "calibrateOpen") {
       fileMenu.querySelector<HTMLElement>("summary")?.focus();

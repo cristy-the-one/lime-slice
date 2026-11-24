@@ -138,6 +138,18 @@ export async function exportAssembly(id: string) {
   pushToast(done.message, done.ok ? "info" : "error");
 }
 
+/** Leave the plate with its parts and no selection, so Export opens on the assembled plate. */
+export function clearPlateSelection() {
+  if (!state.plate.selectedId) return;
+  modelApi()?.commitModel();
+  noteEdit();
+  syncPlateFromState();
+  state.plate = { ...state.plate, selectedId: null };
+  applySelectedToState(state.plate);
+  place();
+  flushEdit();
+}
+
 export function selectPlateObject(id: string) {
   if (state.plate.selectedId === id && session.chainRoot === null) return;
   if (!state.plate.objects.some((obj) => obj.id === id)) return;

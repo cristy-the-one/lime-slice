@@ -903,7 +903,12 @@ test("Apply for the Form 4 leaves the plate as it was, Model on the split slices
   const downloads: string[] = [];
   page.on("download", (download) => downloads.push(download.suggestedFilename()));
   await page.locator("#fileMenu > summary").click();
-  await page.locator("#export3mf").click();
+  await page.locator("#exportModel").click();
+  const exportDialog = page.locator("[data-export-dialog]");
+  await expect(exportDialog).toBeVisible();
+  await exportDialog.locator("[data-export='scope']").selectOption("plate-print");
+  await exportDialog.locator("[data-pose-export='format']").selectOption("3mf");
+  await exportDialog.locator("[data-pose-export-action='submit']").click();
   await expect.poll(() => downloads, "the plate's 3MF is the whole part").toEqual(["bar.3mf"]);
 
   // A step after the cut is Model ahead of the plate again.

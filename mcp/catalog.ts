@@ -16,7 +16,7 @@ export { FIRST_TOOLS };
  * its tools, so a tool added to an area does not change it. "core" is every tool outside a group.
  */
 export const AREAS: Record<string, string> = {
-  core: "projects, importing meshes and STEP, the plate, printers, filament and settings, slicing, G-code and 3MF export, posing assemblies and animation, renders",
+  core: "projects, importing meshes and STEP, the plate, printers, filament and settings, slicing, G-code and 3MF files, posing assemblies and animation, renders",
   model: "solids and Model edits: new solids, faces and edges, probe and apply, builds, recipes and plugins, history, measuring, commit to the plate",
   paint: "painted supports, seams and reinforcement",
   supports: "the sliced support trees: read, prune, grow",
