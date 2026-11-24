@@ -468,7 +468,11 @@ Transverse transverse_at(const TopoDS_Face& face, const gp_Pnt& point, const gp_
             if (!face_parameters(face, stepped, su, sv)) return TopAbs_UNKNOWN;
             try {
                 const BRepClass_FaceClassifier cls(face, gp_Pnt2d(su, sv), 1e-6);
-                return cls.State();
+                TopAbs_State state = cls.State();
+                // A step off the end of a shell face projects back onto the boundary and classifies ON.
+                // The gap says it left the face.
+                if (state == TopAbs_ON && adapt.Value(su, sv).Distance(stepped) > 1e-3) state = TopAbs_OUT;
+                return state;
             } catch (const Standard_Failure&) {
                 return TopAbs_UNKNOWN;
             }
@@ -507,6 +511,64 @@ Transverse transverse_at(const TopoDS_Face& face, const gp_Pnt& point, const gp_
                     }
                     step *= 3.0;
                 }
+            }
+        }
+        // A pipe end is only the boundary of its wall. The 3D walk can miss a face whose closest point
+        // stays on that boundary. The pcurve still has an interior: step off the nearest edge in UV.
+        if (side == 0) {
+            try {
+                TopoDS_Edge nearest;
+                double nearest_dist = 1e-2;
+                double nearest_param = 0.0;
+                for (TopExp_Explorer explorer(face, TopAbs_EDGE); explorer.More(); explorer.Next()) {
+                    const TopoDS_Edge edge = TopoDS::Edge(explorer.Current());
+                    if (BRep_Tool::Degenerated(edge)) continue;
+                    Standard_Real first = 0.0;
+                    Standard_Real last = 0.0;
+                    const Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
+                    if (curve.IsNull() || !(last > first)) continue;
+                    GeomAPI_ProjectPointOnCurve proj(point, curve, first, last);
+                    if (proj.NbPoints() < 1 || !(proj.LowerDistance() < nearest_dist)) continue;
+                    nearest_dist = proj.LowerDistance();
+                    nearest = edge;
+                    nearest_param = proj.LowerDistanceParameter();
+                }
+                Standard_Real pfirst = 0.0;
+                Standard_Real plast = 0.0;
+                const Handle(Geom2d_Curve) pcurve = nearest.IsNull() ? Handle(Geom2d_Curve)() : BRep_Tool::CurveOnSurface(nearest, face, pfirst, plast);
+                Standard_Real cfirst = 0.0;
+                Standard_Real clast = 0.0;
+                if (!nearest.IsNull()) BRep_Tool::Curve(nearest, cfirst, clast);
+                if (!pcurve.IsNull() && plast > pfirst && clast > cfirst) {
+                    const double frac = std::clamp((nearest_param - cfirst) / (clast - cfirst), 0.0, 1.0);
+                    gp_Pnt2d uv;
+                    gp_Vec2d duv;
+                    pcurve->D1(pfirst + frac * (plast - pfirst), uv, duv);
+                    if (duv.Magnitude() > 1e-14) {
+                        gp_Vec2d perp(-duv.Y(), duv.X());
+                        perp.Normalize();
+                        gp_Pnt at;
+                        gp_Vec d1u;
+                        gp_Vec d1v;
+                        adapt.D1(uv.X(), uv.Y(), at, d1u, d1v);
+                        for (double sign : {1.0, -1.0}) {
+                            if (side != 0) break;
+                            const gp_Vec into = d1u.Multiplied(perp.X() * sign).Added(d1v.Multiplied(perp.Y() * sign));
+                            if (into.Magnitude() < 1e-12) continue;
+                            const double uv_step = 0.05 / into.Magnitude();
+                            for (double scale : {1.0, 0.2, 0.02}) {
+                                const gp_Pnt2d stepped(uv.X() + perp.X() * sign * uv_step * scale, uv.Y() + perp.Y() * sign * uv_step * scale);
+                                const BRepClass_FaceClassifier cls(face, stepped, 1e-7);
+                                if (cls.State() != TopAbs_IN) continue;
+                                const double align = into.Dot(B);
+                                if (!(std::abs(align) > 1e-8)) continue;
+                                side = align > 0.0 ? -1 : 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (const Standard_Failure&) {
             }
         }
         if (side == 0) {
@@ -1186,6 +1248,13 @@ BuiltPiece build_one_piece(
         }
         const Transverse got = transverse_at(side.face, point, tangent, 0);
         if (!got.ok) {
+            // A corner of the end wire sits on two walls. The midpoint of this edge already has the leaving direction.
+            if (side.absolute_ribbon > 0.0 && side.Ds.Magnitude() > 1e-12) {
+                gp_Vec direction = side.Ds;
+                direction.Normalize();
+                outv = direction.Multiplied(side.absolute_ribbon);
+                return true;
+            }
             error = got.error;
             return false;
         }
@@ -1195,6 +1264,8 @@ BuiltPiece build_one_piece(
                 error = "The round cap meets the pipe, but the end face has no direction to leave from.";
                 return false;
             }
+            // A corner sample can take the other wall's edge and flip. The midpoint of this edge is the leaving direction.
+            if (side.Ds.Magnitude() > 1e-12 && direction.Dot(side.Ds) < 0.0) direction = side.Ds;
             direction.Normalize();
             outv = direction.Multiplied(side.absolute_ribbon);
             return true;
@@ -1222,7 +1293,7 @@ BuiltPiece build_one_piece(
         return true;
     };
 
-    auto write_first = [&](int fixed, bool row, bool at_start, double alpha, auto&& sampler) -> bool {
+    auto write_first = [&](int fixed, bool row, bool at_start, double alpha, bool lock, auto&& sampler) -> bool {
         const int n = row ? n_u : n_v;
         const std::vector<double>& flat = row ? flat_u : flat_v;
         const int degree = row ? deg_u : deg_v;
@@ -1232,7 +1303,6 @@ BuiltPiece build_one_piece(
         for (int i = 0; i < n; ++i) {
             if (!sampler(greville_of(flat, degree, i), samples[static_cast<size_t>(i)])) return false;
         }
-        const bool lock = true;
         gp_Vec q0;
         gp_Vec qn;
         auto pole_at = [&](int along, int cross) -> gp_Pnt& {
@@ -1271,8 +1341,10 @@ BuiltPiece build_one_piece(
 
     SidePrep& side_i = sides[static_cast<size_t>(index)];
     SidePrep& side_prev = sides[static_cast<size_t>(prev)];
-    if (!write_first(0, true, true, v_start.alpha0, [&](double t, gp_Vec& o) { return sample_outer(side_i, v0, t, o); })) return {};
-    if (!write_first(0, false, true, u_start.alpha0, [&](double t, gp_Vec& o) { return sample_outer(side_prev, u0, t, o); })) return {};
+    // A round cap's ribbon is the pipe face's own derivative along the whole edge, including the corners.
+    // Locking those ends to the Coons poles leaves the seam a fraction of a degree off.
+    if (!write_first(0, true, true, v_start.alpha0, side_i.absolute_ribbon <= 0.0, [&](double t, gp_Vec& o) { return sample_outer(side_i, v0, t, o); })) return {};
+    if (!write_first(0, false, true, u_start.alpha0, side_prev.absolute_ribbon <= 0.0, [&](double t, gp_Vec& o) { return sample_outer(side_prev, u0, t, o); })) return {};
 
     auto sample_split = [&](int split_index, bool next_piece, double t, gp_Vec& outv) -> bool {
         std::string local;
@@ -1295,8 +1367,8 @@ BuiltPiece build_one_piece(
         return true;
     };
     // Piece i stores ∂S/∂u along its u=1 split (split index). The next piece stores ∂S/∂v along its v=1, which is the same split.
-    if (!write_first(0, false, false, u_end.alpha0, [&](double t, gp_Vec& o) { return sample_split(index, false, t, o); })) return {};
-    if (!write_first(0, true, false, v_end.alpha0, [&](double t, gp_Vec& o) { return sample_split(prev, true, t, o); })) return {};
+    if (!write_first(0, false, false, u_end.alpha0, true, [&](double t, gp_Vec& o) { return sample_split(index, false, t, o); })) return {};
+    if (!write_first(0, true, false, v_end.alpha0, true, [&](double t, gp_Vec& o) { return sample_split(prev, true, t, o); })) return {};
 
     if (min_degree >= 5 && n_v >= 6 && n_u >= 6) {
         auto write_second = [&](bool row, bool at_start, const EndScale& scale, auto&& sampler) -> bool {
