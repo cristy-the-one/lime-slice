@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 import { mockModelTree, type Body, type MockSolid } from "./model-tree-mock";
 
 /**
@@ -64,7 +65,7 @@ test("Measure gives a crossing pair its common volume, and a sliver reads as a t
 
   const ids = await page.locator("#objectList [data-plate-select]").evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.plateSelect!));
   await page.locator(`[data-plate-select='${ids[0]}']`).click();
-  await page.locator(`[data-plate-attach='${ids[1]}']`).click();
+  await linkInPose(page, ids[1]!, ids[0]!);
   await page.locator("[data-assembly-view='assembly']").click();
   const row = page.locator("#assemblyInterference");
   await expect(row, "two solids on one spot share volume by the mesh").toContainText("one sits inside the other");

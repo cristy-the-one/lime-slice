@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { unzipSync } from "fflate";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 
 const FAKE_STEP = "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n";
 
@@ -88,7 +89,7 @@ test("Pose Export dialog saves every format at Now and at a stopped animation fr
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   const child = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${child}']`).click();
+  await linkInPose(page, child, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
 
   const [saved] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);

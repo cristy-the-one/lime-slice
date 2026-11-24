@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { exportAssemblyFromPose, linkInPose } from "./link-in-pose";
 import { mockModelTree, type MockSolid } from "./model-tree-mock";
 
 /**
@@ -52,7 +53,7 @@ test("Lay out lays out one assembly's parts for print, around the others, and ke
   await commit(page, "#placeY", 40);
 
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${ledge}']`).click();
+  await linkInPose(page, ledge, "part");
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
   await expect(page.locator("#plateOverlap"), "the cube and the ledge share a spot of the bed").toBeVisible();
   await page.locator("[data-assembly-view='assembly']").click();
@@ -79,7 +80,7 @@ test("Lay out lays out one assembly's parts for print, around the others, and ke
   await expect(page.locator("#plateOverlap"), "Undo puts the parts back on their shared spot").toBeVisible();
 
   // These parts are meshes: a STEP assembly holds solids only, and says so.
-  await page.locator("[data-assembly-step]").click();
+  await exportAssemblyFromPose(page);
   const exportDialog = page.locator("[data-export-dialog]");
   await expect(exportDialog).toBeVisible();
   await exportDialog.locator("[data-pose-export-action='submit']").click();
@@ -123,7 +124,7 @@ test("STEP saves the assembly as named solids at their assembled poses", async (
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   const ids = await page.locator("#objectList [data-plate-select]").evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.plateSelect!));
   await page.locator(`[data-plate-select='${ids[0]}']`).click();
-  await page.locator(`[data-plate-attach='${ids[1]}']`).click();
+  await linkInPose(page, ids[1]!, ids[0]!);
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
 
   // The hook sits 0.5 mm higher than the body in the assembly.
@@ -133,7 +134,7 @@ test("STEP saves the assembly as named solids at their assembled poses", async (
   for (let i = 0; i < 5; i += 1) await page.getByRole("button", { name: "Nudge Z +0.1 mm" }).click();
   await page.locator("[data-assembly-view='print']").click();
 
-  await page.locator("[data-assembly-step]").click();
+  await exportAssemblyFromPose(page);
   const exportDialog = page.locator("[data-export-dialog]");
   await expect(exportDialog).toBeVisible();
   const [download] = await Promise.all([page.waitForEvent("download"), exportDialog.locator("[data-pose-export-action='submit']").click()]);
@@ -179,7 +180,7 @@ test("Lay out lays a flat part on its wide face and keeps the parts off the bed'
   await expect(row, "the disc stands on its edge").toContainText("24 × 6 × 24 mm");
 
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${disc}']`).click();
+  await linkInPose(page, disc, "part");
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
   await page.locator("[data-assembly-view='assembly']").click();
   const assembled = await assembledBoxes(page);

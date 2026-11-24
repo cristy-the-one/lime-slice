@@ -9,7 +9,7 @@
 import { frameWhere, placeNumbers } from "../../src/modeling/placing.ts";
 import { posedBounds, relativePose, seatLift, thenPose, type Affine } from "../../src/model-space.ts";
 import { boundsOf } from "../../src/mesh-place.ts";
-import { placeEdit, placeManyEdit, type AssemblyEdit, type AssemblyPart, type AssemblyRefusal, type AssemblyWorld } from "../../src/assembly-edit.ts";
+import { linkEdit, placeEdit, placeManyEdit, type AssemblyEdit, type AssemblyPart, type AssemblyRefusal, type AssemblyWorld } from "../../src/assembly-edit.ts";
 import { memberFields, readAssemblies, rootOf, samePose, solveAssembly, turnsOnPlate, withCouplings, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
 import { type PlateObject, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -65,6 +65,11 @@ function applyAssemblyEdit(this: Session, result: AssemblyEdit | AssemblyRefusal
 /** Join several parts at their current poses, validating the entire assembly before changing it. */
 function modelPlaceMany(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   return this.applyAssemblyEdit(placeManyEdit(this.assemblyWorld(), input));
+}
+
+/** Link `child` onto `parent` as Pose's Link does: a free parent starts an assembly named after it. */
+function assemblyLink(this: Session, input: Record<string, unknown>): Record<string, unknown> {
+  return this.applyAssemblyEdit(linkEdit(this.assemblyWorld(), input));
 }
 
 /** Attach the source root to the destination root, preserving both assembly trees and all current poses. */
@@ -157,6 +162,7 @@ function assembledBox(this: Session, obj: PlateObject, pose: Affine = obj.modelP
 
 /** The methods this module adds to Session. */
 export const placeMethods = {
+  assemblyLink,
   assemblyMerge,
   assemblyWorld,
   applyAssemblyEdit,

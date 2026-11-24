@@ -9,6 +9,7 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { unzipSync } from "fflate";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 
 const shots = path.join("docs", "screenshots", "x1-export");
 const FAKE_STEP = "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n";
@@ -137,7 +138,7 @@ test("one Export dialog covers scope, format, the old entries and the key", asyn
 
   const ids = await page.locator("#objectList [data-plate-select]").evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.plateSelect!));
   await page.locator(`[data-plate-select='${ids[0]}']`).click();
-  await page.locator(`[data-plate-attach='${ids[1]}']`).click();
+  await linkInPose(page, ids[1]!, ids[0]!);
   await expect(page.locator("[data-assembly-head]")).toBeVisible();
   await page.locator(`[data-plate-select='${ids[1]}']`).click();
   const onAssembly = await openExport();

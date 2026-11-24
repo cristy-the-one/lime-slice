@@ -8,7 +8,7 @@ import { boundsOf } from "../mesh-place.ts";
 import { applyPose, inversePose, isIdentity, poseScale, seatLift, thenPose, turnDir, type Affine } from "../model-space.ts";
 import { meshSeat, meshToModel, modelPoseOf } from "../plate.ts";
 import { aboutAxis, bodyOf as massBodyOf, movingBody, partIntegrals, swing, type BodyPart } from "../mass.ts";
-import { linked, poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
+import { poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
 import { createPoseView, type PoseCamera, type PoseHit, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
 import { cylinderJoint } from "../pose-cylinder.ts";
 import { loadModel } from "./workspaces.ts";
@@ -18,7 +18,7 @@ import { assembledParts, assemblyClashes, liveAssemblies, syncAssemblyView } fro
 import { fx } from "./fx.ts";
 import { cancelEdit, holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
 import { refreshObjectList } from "./settings.ts";
-import { exportAssembly } from "./plate-actions.ts";
+import { exportAssembly, linkAssemblyParts, ungroupAssembly } from "./plate-actions.ts";
 import { session, state } from "./state.ts";
 import { PosePlayback } from "../pose-playback.ts";
 import type { AnimationResult, AnimationPart, PoseAnimation } from "../pose-anim.ts";
@@ -428,13 +428,9 @@ function pick(id: string | null, hit?: PoseHit): void {
     if (!linkParent) { linkParent = id; message = "Now choose the child."; fx.selectPlateObject(id); syncPose(); return; }
     const parent = linkParent;
     linkParent = null;
-    const assembly = assemblyOf(liveAssemblies(), parent);
-    if (!assembly) { message = "Attach the parent to an assembly in Prepare first."; renderPanel(); return; }
-    const next = linked(assembly, id, parent, poseOf);
-    if ("reason" in next) { message = next.reason; renderPanel(); return; }
-    fx.selectPlateObject(id);
-    editAssembly(next);
     message = "Linked. Both parts kept their positions.";
+    const refused = linkAssemblyParts(id, parent);
+    if (refused) { message = refused; renderPanel(); return; }
     syncPose();
     return;
   }
@@ -686,6 +682,7 @@ function renderPanel(): void {
   if (!panel || state.stage !== "pose") return;
   panel.replaceChildren();
   addText(panel, "h3", "Parts");
+  addText(panel, "p", "Link two parts to pose them together.");
   const tree = document.createElement("div"); tree.className = "pose-tree"; panel.append(tree);
   const assemblies = liveAssemblies();
   const listed = new Set<string>();
@@ -694,11 +691,26 @@ function renderPanel(): void {
     listed.add(id); const entry = button(tree, part.name, "select"); entry.dataset.object = id; entry.style.paddingLeft = `${8 + depth * 16}px`; entry.setAttribute("aria-pressed", String(state.plate.selectedId === id));
   };
   for (const assembly of assemblies) {
-    addText(tree, "strong", assembly.name);
+    const head = document.createElement("div"); head.className = "pose-assembly"; head.dataset.poseAssembly = assembly.id;
+    const title = document.createElement("div"); title.className = "pose-assembly-name";
+    addText(title, "strong", assembly.name);
+    addText(title, "span", `${assembly.members.length} parts`);
+    const actions = document.createElement("div"); actions.className = "pose-assembly-actions";
+    const ungroup = button(actions, "Ungroup", "ungroup");
+    ungroup.dataset.poseUngroup = assembly.id; ungroup.dataset.assembly = assembly.id;
+    ungroup.setAttribute("aria-label", `Ungroup ${assembly.name}`); ungroup.dataset.tip = "Ungroup: every part keeps where it is.";
+    const exp = button(actions, "Export…", "assembly-export");
+    exp.dataset.assembly = assembly.id; exp.setAttribute("aria-label", `Export ${assembly.name}`);
+    exp.dataset.tip = "Open Export on this assembly, as STEP.";
+    head.append(title, actions); tree.append(head);
     const walk = (parent: string | null, depth: number) => { for (const member of assembly.members.filter((item) => item.parent === parent)) { if (listed.has(member.object)) continue; addPart(member.object, depth); walk(member.object, depth + 1); } };
     walk(null, 0);
   }
-  for (const part of state.plate.objects) addPart(part.id, 0);
+  const free = state.plate.objects.filter((part) => !listed.has(part.id));
+  if (free.length) {
+    addText(tree, "p", "Free parts", "pose-free");
+    for (const part of free) addPart(part.id, 0);
+  }
   // The pose is what an export writes: STEP AP242 assembly, glTF, 3MF, STL, OBJ, or Pose sheet.
   if (assemblies.length) {
     const exports = document.createElement("div"); exports.className = "pose-buttons"; panel.append(exports);
@@ -759,7 +771,7 @@ function renderPanel(): void {
   const row = selected();
   if (!row) {
     // A gear in no assembly: Couple gears makes its train (docs/plan-gear-kinds.md, stage 1).
-    if (!freeGearSection(panel)) addText(panel, "p", "Select an assembly member to add a joint. Attach free parts in Prepare.");
+    freeGearSection(panel);
     return;
   }
   addText(panel, "h3", state.plate.objects.find((item) => item.id === row.member.object)?.name ?? row.member.object);
@@ -1543,6 +1555,21 @@ function panelClick(event: Event): void {
       editAssembly(frame.assembly);
     }
     syncPose(); return;
+  }
+  if (action === "ungroup" && target.dataset.assembly) {
+    message = "Ungrouped. Every part kept where it is.";
+    ungroupAssembly(target.dataset.assembly);
+    return;
+  }
+  if (action === "assembly-export" && target.dataset.assembly) {
+    const assemblyId = target.dataset.assembly;
+    void import("./export-dialog.ts").then(({ showExport }) => {
+      void import("../modeling/partition-export.ts").then(({ exportStem }) => {
+        const name = liveAssemblies().find((row) => row.id === assemblyId)?.name ?? "assembly";
+        showExport({ scope: "assembly", format: "step", explicitFormat: true, assemblyId, fileName: `${exportStem(name)}.step` });
+      });
+    });
+    return;
   }
   if (action === "select" && target.dataset.object) { pick(target.dataset.object); return; }
   if (action === "contact-back" || action === "contact-on") { void untilContact(action === "contact-on" ? 1 : -1); return; }

@@ -2007,7 +2007,14 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
 .pose-panel[hidden], #left[hidden] { display: none; }
 .pose-panel h3 { margin: 12px 0 6px; font-size: 13px; }
 .pose-panel p { color: var(--text-dim); font-size: 12px; line-height: 1.4; }
-.pose-panel .pose-tree { display: grid; gap: 2px; max-height: 240px; overflow-y: auto; }
+.pose-panel .pose-tree { display: grid; gap: 2px; max-height: 240px; overflow-x: hidden; overflow-y: auto; }
+.pose-panel .pose-assembly { display: flex; flex-direction: column; align-items: stretch; gap: 4px; margin-top: 6px; min-width: 0; }
+.pose-panel .pose-assembly-name { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.pose-panel .pose-assembly-name strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pose-panel .pose-assembly-name span { flex: none; white-space: nowrap; opacity: 0.75; }
+.pose-panel .pose-assembly-actions { display: flex; gap: 4px; }
+.pose-panel .pose-assembly-actions .btn { width: auto; margin: 0; }
+.pose-panel .pose-free { margin: 8px 0 2px; font-size: 12px; opacity: 0.75; }
 .pose-panel .pose-tree button { justify-content: flex-start; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pose-panel .pose-tree button[aria-pressed="true"] { color: var(--pose); border-color: var(--pose); }
 .pose-panel .pose-field { display: grid; grid-template-columns: 1fr minmax(65px, 100px); align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; }
