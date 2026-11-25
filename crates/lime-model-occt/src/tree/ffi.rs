@@ -457,6 +457,8 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     pub(super) fn lime_tree_pieces(from: *const RawShape, built: *const RawShape) -> *mut c_char;
+    pub(super) fn lime_fuse_trace() -> *mut c_char;
+    pub(super) fn lime_fuse_trace_clear();
     pub(super) fn lime_tree_shell(
         from: *const RawShape,
         faces: *const c_int,

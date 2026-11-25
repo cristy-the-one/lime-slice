@@ -518,7 +518,7 @@ LimeShape* lime_tree_boolean(
         double volume = 0.0;
         Handle(BRepTools_History) history;
         TopoDS_Shape result =
-            build_boolean(from->held.shape, which, spec_of(primitive, p), volume, message, &history);
+            build_boolean(from->held.shape, which, spec_of(primitive, p), volume, message, &history, from->held.volume);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;
@@ -546,7 +546,7 @@ LimeShape* lime_tree_join(const LimeShape* from, const LimeShape* tool, const ch
         double volume = 0.0;
         Handle(BRepTools_History) history;
         const TopoDS_Shape result =
-            build_join(from->held.shape, tool->held.shape, which, place, volume, message, &history);
+            build_join(from->held.shape, tool->held.shape, which, place, volume, message, &history, from->held.volume);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;

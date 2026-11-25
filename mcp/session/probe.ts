@@ -193,6 +193,7 @@ async function atStep(this: Session, obj: PlateObject, tree: ModelTree, at: numb
  * `measure` asks the modeler for the built shape too, for model_probe's metrics; a batch step does not need it.
  */
 async function probeBaked(this: Session, obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown>; notes?: string[] }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
+  this.lastFuseTrace = null;
   const answer = (body: Record<string, unknown>) => probeEcho(baked, body);
   if (baked.op.kind === "scale") {
     obj.probes.set(probeKey(String(at), baked.op), true);
@@ -222,6 +223,8 @@ async function probeBaked(this: Session, obj: PlateObject, tree: ModelTree, at: 
     throw err;
   }
   this.lastPreview = reply.preview && typeof reply.preview === "object" ? solidView(reply.preview as Record<string, unknown>) : null;
+  const trace = reply.fuseTrace;
+  this.lastFuseTrace = trace !== null && typeof trace === "object" ? (trace as Record<string, unknown>) : null;
   const verdict = probeVerdict(baked.op, reply, typedPoseOf(obj), composite);
   if (verdict.ok === false && verdict.tooThick && baked.op.kind === "shell") {
     const advice = await this.shellAdvice(obj, tree, at, baked.op, budgetMs);
