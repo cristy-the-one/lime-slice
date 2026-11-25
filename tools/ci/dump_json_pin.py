@@ -14,7 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-PIN = "512f6e0a"
+# Full SHA. `git fetch` treats a short id as a ref name and the remote rejects it.
+PIN = "512f6e0ab10146696f574ef13201be1e9358748c"
 
 DUMP_RS = r"""//! Untracked dump of lime_occt_tree at 512f6e0a. Written by tools/ci/dump_json_pin.py.
 
