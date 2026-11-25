@@ -34,6 +34,7 @@ export {
   historyToSave,
   leaveModel,
   modelEditingPart,
+  modelHistoryName,
   noteBridgeSwap,
   noteParametersBuilt,
   releaseModelTrees,

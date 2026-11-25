@@ -200,6 +200,88 @@ export function historyRefs(history: EditHistory): TreeRef[] {
 }
 
 /**
+ * A short name for the change from `before` to `after`, when that change is one known kind.
+ * A named step (`label` on the earlier snap) is the caller's to read. This only looks at the states.
+ * Null when the two snaps differ by more than one kind, or by something this does not name.
+ */
+export function namePlateChange(before: EditSnap, after: EditSnap): string | null {
+  if (stable(before.settings) !== stable(after.settings)) return null;
+  if (stable(before.profile) !== stable(after.profile)) return null;
+  if (stable(before.machine) !== stable(after.machine)) return null;
+  if (stable(before.overrides) !== stable(after.overrides)) return null;
+  if (before.level !== after.level) return null;
+  if (before.printOrder !== after.printOrder) return null;
+  if (before.splitCustom !== after.splitCustom) return null;
+  if ((before.selectedVolumeId ?? null) !== (after.selectedVolumeId ?? null)) return null;
+  if ((before.sequentialClearanceMm ?? 0) !== (after.sequentialClearanceMm ?? 0)) return null;
+  if ((before.sequentialGantryMm ?? 0) !== (after.sequentialGantryMm ?? 0)) return null;
+  if (stable(tokensOf(before)) !== stable(tokensOf(after))) return null;
+  const grown = (after.assemblies?.length ?? 0) - (before.assemblies?.length ?? 0);
+  if (grown !== 0) return grown > 0 ? "Link" : "Ungroup";
+  if (stable(before.assemblies) !== stable(after.assemblies)) return null;
+  const bPlate = before.plate;
+  const aPlate = after.plate;
+  if (!bPlate || !aPlate || bPlate.objects.length !== aPlate.objects.length) return null;
+  const afterById = new Map(aPlate.objects.map((row) => [row.id, row]));
+  let kind: string | null = null;
+  for (const row of bPlate.objects) {
+    const next = afterById.get(row.id);
+    if (!next) return null;
+    const change = objectPoseChange(row, next);
+    if (change === "same") continue;
+    if (change === "other" || change === "mixed") return null;
+    if (kind && kind !== change) return null;
+    kind = change;
+  }
+  if (!placementAgrees(before, after)) return null;
+  return kind;
+}
+
+function stable(value: unknown): string {
+  return JSON.stringify(value ?? null);
+}
+
+function tokensOf(snap: EditSnap): [string, string][] {
+  return (snap.meshPins ?? []).map((pin): [string, string] => [pin.id, pin.token]).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** Print-layout and design-space fields aside, plus whether a solid STEP is kept. */
+function poseRest(row: PlateSnap["objects"][number]): string {
+  const { modelPose, offset, orient, partScale, centered, brep, ...keep } = row;
+  return stable({ ...keep, hasBrep: brep != null });
+}
+
+function objectPoseChange(before: PlateSnap["objects"][number], after: PlateSnap["objects"][number]): "same" | "Move" | "Rotate" | "Scale" | "mixed" | "other" {
+  if (poseRest(before) !== poseRest(after)) return "other";
+  const pose = stable(before.modelPose) !== stable(after.modelPose);
+  const offset = stable(before.offset) !== stable(after.offset) || before.centered !== after.centered;
+  const orient = stable(before.orient) !== stable(after.orient);
+  const scale = before.partScale !== after.partScale;
+  if (pose && offset) return "mixed";
+  const kinds = [...new Set([pose || offset ? "Move" : "", orient ? "Rotate" : "", scale ? "Scale" : ""].filter(Boolean))];
+  if (kinds.length === 0) return "same";
+  if (kinds.length > 1) return "mixed";
+  return kinds[0] as "Move" | "Rotate" | "Scale";
+}
+
+/** The selected object's print layout and the snap's placement move together, or neither does. */
+function placementAgrees(before: EditSnap, after: EditSnap): boolean {
+  if (before.placement.stepTolerance !== after.placement.stepTolerance) return false;
+  const id = after.plate?.selectedId ?? before.plate?.selectedId ?? null;
+  const earlier = before.plate?.objects.find((row) => row.id === id);
+  const later = after.plate?.objects.find((row) => row.id === id);
+  if (!earlier || !later) return stable(before.placement) === stable(after.placement);
+  const same = (left: unknown, right: unknown) => stable(left) === stable(right);
+  const offset = !same(earlier.offset, later.offset) || earlier.centered !== later.centered;
+  const orient = !same(earlier.orient, later.orient);
+  const scale = earlier.partScale !== later.partScale;
+  const pOffset = !same(before.placement.offset, after.placement.offset) || before.placement.centered !== after.placement.centered;
+  const pOrient = !same(before.placement.orient, after.placement.orient);
+  const pScale = before.placement.partScale !== after.placement.partScale;
+  return offset === pOffset && orient === pOrient && scale === pScale;
+}
+
+/**
  * Every step whose object has mesh `token` gets `brep` for that object. Undefined removes it.
  * Steps are changed in place, so a step stays the same step (`foldSince` tells them apart by identity).
  */

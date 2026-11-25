@@ -22,6 +22,7 @@ export { createFeatureSolid } from "./model/create";
 export { warmHeldPieces } from "./model/engine";
 export { followSelection, forgetModelTrees, leaveModel, modelEditingPart, showModel } from "./model/lifecycle";
 export { noteBridgeSwap } from "./model/plugins";
+export { modelHistoryName } from "./model/undo";
 export { noteParametersBuilt } from "./model/parameters";
 export { adoptHeldPieces, adoptSavedTrees, bridgeHistoryOf, historyToSave, releaseModelTrees } from "./model/save";
 export type { HeldToSave } from "./model/save";
