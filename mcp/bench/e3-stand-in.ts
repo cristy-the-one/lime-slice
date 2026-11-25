@@ -63,6 +63,17 @@ if (made.ok !== true) {
 }
 const object = String(made.object);
 
+const perCall: number[] = [];
+for (let i = 0; i < 8; i += 1) {
+  const z = STATIONS[0]! + ((STATIONS[STATIONS.length - 1]! - STATIONS[0]!) * i) / 7;
+  const startedOne = performance.now();
+  await call("surface_at", { object, point: [0, -200, z], direction: [0, 1, 0] });
+  perCall.push(performance.now() - startedOne);
+}
+const rest = perCall.slice(1);
+const restMean = rest.reduce((sum, ms) => sum + ms, 0) / rest.length;
+console.log(`surface_at perCall ms first=${perCall[0]!.toFixed(1)} restMean=${restMean.toFixed(1)} each=${perCall.map((ms) => ms.toFixed(1)).join(",")}`);
+
 const rays = Array.from({ length: 200 }, (_, i) => {
   const z = STATIONS[0]! + ((STATIONS[STATIONS.length - 1]! - STATIONS[0]!) * i) / 199;
   return { point: [0, -200, z], direction: [0, 1, 0] };

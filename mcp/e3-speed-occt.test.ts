@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { surfaceAt as meshSurfaceAt } from "../src/modeling/inspect.ts";
 import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import { Session } from "./session.ts";
 
@@ -110,6 +111,16 @@ try {
   const made = await call("solid_new", { feature: tub() });
   check("the stand-in tub loft builds", made.ok === true, made);
   const tubId = String(made.object);
+  const perCall: number[] = [];
+  for (let i = 0; i < 8; i += 1) {
+    const z = STATIONS[0]! + ((STATIONS[STATIONS.length - 1]! - STATIONS[0]!) * i) / 7;
+    const startedOne = performance.now();
+    await call("surface_at", { object: tubId, point: [0, -200, z], direction: [0, 1, 0] });
+    perCall.push(performance.now() - startedOne);
+  }
+  const rest = perCall.slice(1);
+  const restMean = rest.reduce((sum, ms) => sum + ms, 0) / rest.length;
+  console.log(`stand-in surface_at per call ms first=${perCall[0]!.toFixed(1)} restMean=${restMean.toFixed(1)} each=${perCall.map((ms) => ms.toFixed(1)).join(",")}`);
   const rays = Array.from({ length: 80 }, (_, i) => {
     const z = STATIONS[0]! + ((STATIONS[STATIONS.length - 1]! - STATIONS[0]!) * i) / 79;
     return { point: [0, -200, z], direction: [0, 1, 0] };
@@ -151,6 +162,65 @@ try {
     refused.ok === false && /maxDegree 3/.test(String(refused.reason)) && /smoothing/.test(String(refused.reason)) && /maxDegree 5/.test(String(refused.reason)),
     refused.reason,
   );
+
+  // A wide loft, not the car. The closed-section seam is on +Y, and z = 46 is itself a section, so the
+  // rays meet a seam. Radii vary, so the side is a B-spline. The tube is the same radius and inset.
+  const skinZ = 46;
+  const skinRadius = 90;
+  const skinXs = [4, -10, -25, -40, -55, -70, -78, -82];
+  const skinMade = await call("solid_new", {
+    feature: {
+      kind: "loft",
+      sections: [0, 20, 40, 46, 60, 80].map((z, i) => ({
+        origin: [0, 0, z],
+        turn: [0, 0, 90],
+        radius: [88, 92, 96, 90, 86, 84][i],
+      })),
+    },
+  });
+  console.log(`skin loft: ${skinMade.ok === true ? "built" : `not built ${JSON.stringify(skinMade.reason ?? skinMade).slice(0, 300)}`}`);
+  check("the wide loft builds", skinMade.ok === true, skinMade.reason ?? skinMade);
+  if (skinMade.ok === true) {
+    const body = String(skinMade.object);
+    const solid = (session as unknown as { find(id: string): { solid?: { volumeMm3: number; positions: Float32Array; triangles: Uint32Array; bounds: { min: number[]; max: number[] }; faces: { index: number; kind: string }[] } } | undefined }).find(body)?.solid;
+    const kindOf = new Map((solid?.faces ?? []).map((face) => [face.index, face.kind]));
+    const path: number[][] = [];
+    for (const x of [...skinXs].sort((a, b) => a - b)) {
+      const startedOne = performance.now();
+      const exact = await call("surface_at", { object: body, point: [x, 90, skinZ], direction: [0, -1, 0] });
+      const callMs = performance.now() - startedOne;
+      const point = exact.point as number[] | undefined;
+      const mesh = solid
+        ? meshSurfaceAt(solid as unknown as Parameters<typeof meshSurfaceAt>[0], { point: [x, 90, skinZ], direction: [0, -1, 0] })
+        : { hit: false as const };
+      const meshPoint = mesh.point as number[] | undefined;
+      const exactY = exact.hit === true && point ? point[1] : null;
+      const meshY = mesh.hit === true && meshPoint ? meshPoint[1] : null;
+      const face = exact.faceIndex as number | undefined;
+      const kind = face === undefined ? "?" : (kindOf.get(face) ?? "?");
+      const delta = exactY !== null && meshY !== null ? exactY - meshY : null;
+      const onCircle = exactY === null ? null : Math.abs(exactY - Math.sqrt(skinRadius * skinRadius - x * x));
+      console.log(`skin x=${x} exactY=${exactY === null ? "miss" : exactY.toFixed(4)} meshY=${meshY === null ? "miss" : meshY.toFixed(4)} dY=${delta === null ? "n/a" : delta.toFixed(4)} face=${face ?? "none"} kind=${kind} offCircle=${onCircle === null ? "n/a" : onCircle.toFixed(4)} ms=${callMs.toFixed(1)}`);
+      if (exactY !== null) path.push([x, exactY - 0.15, skinZ]);
+      check(
+        `x=${x} hits the near skin`,
+        exact.hit === true && exact.exact === true && exactY !== null && exactY > 0 && onCircle !== null && onCircle < 0.5,
+        exact.reason ?? exact,
+      );
+    }
+    const before = solid?.volumeMm3 ?? null;
+    const fused = path.length === skinXs.length
+      ? await call("model_apply", { object: body, op: { kind: "sweep", op: "fuse", path, radius: 0.45, caps: "round", steps: 1 } })
+      : { ok: false, reason: "a ray missed, so the tube was not fused" };
+    const after = (session as unknown as { find(id: string): { solid?: { volumeMm3: number } } | undefined }).find(body)?.solid?.volumeMm3 ?? null;
+    console.log(`skin fuse: before=${before === null ? "none" : before.toFixed(1)} after=${after === null ? "none" : after.toFixed(1)} reason=${fused.reason ?? ""}`);
+    const slack = before === null ? 0.01 : Math.max(before * 1e-4, 0.01);
+    check(
+      "the round-capped tube fuses without losing the part",
+      fused.ok === true && before !== null && after !== null && after >= before - slack,
+      fused.reason ?? { before, after },
+    );
+  }
 } catch (err) {
   console.error(err);
   process.exit(1);

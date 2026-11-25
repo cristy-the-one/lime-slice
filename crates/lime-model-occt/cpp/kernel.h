@@ -94,6 +94,9 @@ struct Held {
     TopoDS_Shape display_shape;
     std::vector<TopoDS_Face> display_faces;
     double display_meshed = 0;
+
+    /// Drops the surface_at face cache. Defined in kernel.cpp, where that cache lives.
+    ~Held();
 };
 
 /// One tessellation as the reply sends it, as binary arrays.

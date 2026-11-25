@@ -14,7 +14,9 @@
 #include <fstream>
 #include <limits>
 #include <locale>
+#include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -63,7 +65,7 @@
 #include <BRepClass3d.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
-#include <BRepIntCurveSurface_Inter.hxx>
+#include <IntCurvesFace_Intersector.hxx>
 #include <gp_Lin.hxx>
 #include <Precision.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
@@ -441,6 +443,42 @@ double chord_of(double chord) {
         return 2.0;
     }
     return chord;
+}
+
+namespace {
+
+/// One face's curve intersector. Built once: the solid's shape does not change, and building it is the
+/// sample of a B-spline face.
+struct FaceRays {
+    const void* tshape = nullptr;
+    std::vector<Handle(IntCurvesFace_Intersector)> faces;
+
+    explicit FaceRays(const TopoDS_Shape& shape) : tshape(shape.TShape().get()) {
+        for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+            try {
+                faces.push_back(new IntCurvesFace_Intersector(TopoDS::Face(explorer.Current()), 1e-7));
+            } catch (const Standard_Failure&) {
+            }
+        }
+    }
+};
+
+std::mutex g_face_rays_mu;
+std::unordered_map<const Held*, std::unique_ptr<FaceRays>> g_face_rays;
+
+FaceRays& face_rays_of(const Held& held) {
+    std::lock_guard<std::mutex> lock(g_face_rays_mu);
+    const void* tshape = held.shape.TShape().get();
+    std::unique_ptr<FaceRays>& slot = g_face_rays[&held];
+    if (!slot || slot->tshape != tshape) slot = std::make_unique<FaceRays>(held.shape);
+    return *slot;
+}
+
+}  // namespace
+
+Held::~Held() {
+    std::lock_guard<std::mutex> lock(g_face_rays_mu);
+    g_face_rays.erase(this);
 }
 
 Held hold_of(const TopoDS_Shape& shape, double volume) {
@@ -5450,23 +5488,41 @@ std::string surface_at_json(const Held& held, const double* rays, int count, std
             continue;
         }
         direction.Normalize();
-        BRepIntCurveSurface_Inter inter;
-        inter.Init(held.shape, gp_Lin(gp_Pnt(ray[0], ray[1], ray[2]), gp_Dir(direction)), 1e-7);
+        // A loft's parameter is not millimetres. The old intersector classified a hit with 1e-7 as a raw UV
+        // number, so a crossing on a section seam was dropped and the next one kept: the far wall. A tube
+        // through those points folds through the part, and the fuse comes back smaller. This intersector
+        // classifies with the face's own edge tolerance, turned into UV. It also samples each B-spline face
+        // once and keeps that sample: the old one rebuilt a 0.1 mm sample of every such face on every ray,
+        // which is the meshing that sat inside surface_at. A hit is kept only when the surface point lies
+        // on the ray, so a root that is not the crossing cannot move the point.
+        const gp_Pnt origin(ray[0], ray[1], ray[2]);
+        const gp_Lin line(origin, gp_Dir(direction));
         bool found = false;
         double best_w = 0;
         gp_Pnt best_point;
         TopoDS_Face best_face;
         double best_u = 0, best_v = 0;
-        for (; inter.More(); inter.Next()) {
-            const double w = inter.W();
-            if (w < -1e-6) continue;
-            if (!found || w < best_w) {
+        for (Handle(IntCurvesFace_Intersector)& one : face_rays_of(held).faces) {
+            one->Perform(line, -1.0, 1.0e7);
+            if (!one->IsDone()) continue;
+            for (int k = 1; k <= one->NbPnt(); ++k) {
+                const double w = one->WParameter(k);
+                if (w < -1e-6) continue;
+                if (found && w >= best_w) continue;
+                const gp_Pnt on_line = origin.Translated(gp_Vec(direction).Multiplied(w));
+                gp_Pnt on_face;
+                try {
+                    on_face = BRepAdaptor_Surface(one->Face()).Value(one->UParameter(k), one->VParameter(k));
+                } catch (const Standard_Failure&) {
+                    continue;
+                }
+                if (on_line.Distance(on_face) > 0.01) continue;
                 found = true;
                 best_w = w;
-                best_point = inter.Pnt();
-                best_face = inter.Face();
-                best_u = inter.U();
-                best_v = inter.V();
+                best_point = on_line;
+                best_face = one->Face();
+                best_u = one->UParameter(k);
+                best_v = one->VParameter(k);
             }
         }
         if (!found) {
