@@ -292,11 +292,16 @@ test("the shortcut sheet and tooltips come from the registry", async ({ page }) 
   await page.keyboard.press("Shift+Slash");
   const sheet = page.locator("#help");
   await expect(sheet).toBeVisible();
-  await expect(sheet.locator(".help-group h3")).toContainText(["Window", "Slice", "View", "Layers", "Strategy", "Plate", "Tools", "Edit", "Mouse"]);
+  await expect(sheet.locator(".help-group h3")).toHaveText(["App", "Model", "Sketch", "Pose", "Prepare", "Preview", "G-code"]);
   await expect(sheet.locator("li", { hasText: "Arrange plate" }).locator("kbd")).toHaveText(["A"]);
   await expect(sheet.locator("li", { hasText: "Remove object" }).locator("kbd")).toHaveText(["Del", "Backspace"]);
   await expect(sheet.locator("li", { hasText: "Paint seam" }).locator("kbd")).toHaveText(["K"]);
-  await expect(sheet.locator("li", { hasText: "Search settings" }).locator("kbd")).toHaveText(["/", "Ctrl+F"]);
+  const search = sheet.locator("li", { has: page.locator(".help-label", { hasText: /^Search settings$/ }) });
+  await expect(search).toHaveCount(4);
+  for (const group of ["Pose", "Prepare", "Preview", "G-code"]) {
+    const row = sheet.locator(".help-group", { has: page.locator("h3", { hasText: new RegExp(`^${group}$`) }) }).locator("li", { has: page.locator(".help-label", { hasText: /^Search settings$/ }) });
+    await expect(row.locator("kbd")).toHaveText(["/", "Ctrl+F"]);
+  }
   await page.keyboard.press("2");
   await expect(page.locator("#tabPrepare")).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("Escape");
