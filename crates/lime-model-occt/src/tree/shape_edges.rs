@@ -373,6 +373,12 @@ impl Shape {
                     ("triangles", fine.0.bytes(fine.1.triangles, fine.1.triangles_bytes)),
                 ]
             };
+            let display_size: usize = parts
+                .iter()
+                .map(|(name, bytes)| name.len() + bytes.len().div_ceil(3) * 4 + 6)
+                .sum::<usize>()
+                + 16;
+            out.reserve(display_size);
             out.push_str(",\"display\":{");
             for (at, (name, bytes)) in parts.iter().enumerate() {
                 let _ = write!(out, "{}\"{name}\":\"", if at == 0 { "" } else { "," });

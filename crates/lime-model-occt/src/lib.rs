@@ -141,10 +141,11 @@ pub fn set_tree_limits(shapes: usize, replies: usize) {
 /// The linked Open CASCADE `version`, and kernel work since the library loaded: `builds`
 /// (booleans, cuts, blends, splits), `volumes` (volume integrations), `tessellations` (replies
 /// built rather than reused), `meshes` (shapes meshed), `fullMeshes` (of those, meshed whole
-/// rather than only around the faces their step made), and `descriptions` (shapes whose faces
-/// and edges were measured for a reply). Then the microseconds spent in `booleanUs` (booleans),
-/// `volumeUs` (volume integrations), `meshUs` (meshing), `readoutUs` (reading a mesh out), and
-/// `describeUs` (measuring faces and edges). For tests and benches.
+/// rather than only around the faces their step made), `displayMeshes` and `fullDisplayMeshes`
+/// (the same for Model view display meshes), and `descriptions` (shapes whose faces and edges
+/// were measured for a reply). Then the microseconds spent in `booleanUs` (booleans), `volumeUs`
+/// (volume integrations), `meshUs` (meshing), `displayMeshUs` (display meshing), `readoutUs`
+/// (reading a mesh out), and `describeUs` (measuring faces and edges). For tests and benches.
 pub fn stats() -> String {
     #[cfg(lime_occt)]
     {

@@ -253,6 +253,7 @@ std::unique_ptr<LimeShape> adopt(
     std::unique_ptr<LimeShape> out = hold(solid, volume);
     if (from != nullptr) {
         inherit_about(out->held, from->held);
+        inherit_display(out->held, from->held);
         out->held.built_on = true;
         for (int index = 1; index <= out->held.faces.Extent(); ++index) {
             if (!from->held.faces.Contains(out->held.faces(index))) {
