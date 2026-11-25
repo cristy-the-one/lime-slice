@@ -567,6 +567,10 @@ function readOpBody(value: unknown): SavedOp | undefined {
         scale = parsed as [number, number][];
       }
       if (value.twistDeg !== undefined && !finite(value.twistDeg)) return undefined;
+      const capOf = (raw: unknown): "round" | "point" | undefined => raw === "round" || raw === "point" ? raw : undefined;
+      if (value.capStart !== undefined && value.capStart !== "flat" && !capOf(value.capStart)) return undefined;
+      if (value.capEnd !== undefined && value.capEnd !== "flat" && !capOf(value.capEnd)) return undefined;
+      if (value.capLength !== undefined && (typeof value.capLength !== "number" || !Number.isFinite(value.capLength) || !(value.capLength > 0) || value.capLength > 1000)) return undefined;
       const drawing = value.drawing === undefined ? undefined : readLoftDrawing(value.drawing);
       return {
         kind: "sweep",
@@ -577,6 +581,9 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(transition ? { transition } : {}),
         ...(scale ? { scale } : {}),
         ...(finite(value.twistDeg) ? { twistDeg: value.twistDeg } : {}),
+        ...(capOf(value.capStart) ? { capStart: capOf(value.capStart) } : {}),
+        ...(capOf(value.capEnd) ? { capEnd: capOf(value.capEnd) } : {}),
+        ...(typeof value.capLength === "number" ? { capLength: value.capLength } : {}),
         ...(drawing ? { drawing } : {}),
       };
     }

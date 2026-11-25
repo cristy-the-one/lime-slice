@@ -540,6 +540,15 @@ pub enum Curve3D {
     },
 }
 
+/// How a pipe-shell sweep closes one end. Absent on the op is flat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SweepCap {
+    Flat,
+    Round,
+    Point,
+}
+
 /// Corner handling when a sweep spine has a C0 sharp bend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -806,6 +815,15 @@ pub enum Op {
         /// Optional auxiliary guide spine overriding section orientation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         aux_spine: Option<Box<Curve3D>>,
+        /// Round dome or point tip on the spine's start. Absent is a flat end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cap_start: Option<SweepCap>,
+        /// Round dome or point tip on the spine's end. Absent is a flat end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cap_end: Option<SweepCap>,
+        /// How far the dome or tip reaches, in millimetres. Absent uses the round cap's depth.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cap_length: Option<f64>,
     },
     /// The solid hollowed inward to walls `thickness` thick, with `openFaces` removed. None open leaves a closed void.
     Shell {

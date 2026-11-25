@@ -227,7 +227,7 @@ export function organicFirstProblem(value: unknown, path: string): string | null
 }
 
 /** Fields of the path sweep, which a spine sweep does not read, and the other way round. */
-const PATH_ONLY = ["radius", "radiusV", "profile", "smooth", "corners", "up", "steps", "caps", "capStart", "capEnd"];
+const PATH_ONLY = ["radius", "radiusV", "profile", "smooth", "corners", "up", "steps"];
 const SPINE_ONLY = ["sections", "mode", "transition", "twistDeg"];
 
 function sweepProblem(op: Rec, path: string): string | null {

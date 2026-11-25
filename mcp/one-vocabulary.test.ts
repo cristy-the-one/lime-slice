@@ -131,7 +131,7 @@ function opOf(session: Session, object: unknown, node: unknown): R | undefined {
   );
 }
 
-// --- Item 4. A bending path and a profile use the pipe-shell. Round caps are refused with the spine form.
+// --- Item 4. A bending path and a profile use the pipe-shell. Round caps stay on that pipe.
 {
   const engine = fakeEngine();
   const session = new Session(engine);
@@ -143,11 +143,13 @@ function opOf(session: Session, object: unknown, node: unknown): R | undefined {
   const straight = await call("model_apply", { object: part.object, probe: true, op: { kind: "sweep", path: [[0, 0, 10], [20, 0, 10]], profile, steps: 1 } });
   const chord = opOf(session, part.object, straight.node);
   const capped = await call("model_apply", { object: part.object, probe: true, op: { kind: "sweep", path: [[0, 0, 10], [20, 0, 10], [20, 20, 10]], profile, caps: "round", steps: 1 } });
+  const cappedOp = opOf(session, part.object, capped.node);
   const spine = stored?.spine as { kind?: string; through?: unknown } | undefined;
+  const cappedSpine = cappedOp?.spine as { kind?: string } | undefined;
   check(
-    "item 4: a bending path and a profile are a pipe-shell, and round caps name the spine form",
-    bent.ok === true && stored?.kind === "sweep" && spine?.kind === "spline" && JSON.stringify(spine?.through) === "[[0,0,10],[20,0,10],[20,20,10]]" && straight.ok === true && chord?.kind === "loft" && capped.ok === false && String(capped.reason).includes("spine") && String(capped.reason).includes("sections"),
-    { bent: { ok: bent.ok, reason: bent.reason, kind: stored?.kind, spine }, straight: { ok: straight.ok, kind: chord?.kind }, capped },
+    "item 4: a bending path and a profile are a pipe-shell, and round caps stay on that pipe",
+    bent.ok === true && stored?.kind === "sweep" && spine?.kind === "spline" && JSON.stringify(spine?.through) === "[[0,0,10],[20,0,10],[20,20,10]]" && straight.ok === true && chord?.kind === "loft" && capped.ok === true && cappedOp?.kind === "sweep" && cappedSpine?.kind === "spline" && cappedOp?.capStart === "round" && cappedOp?.capEnd === "round" && !String(capped.reason ?? "").includes("cannot close"),
+    { bent: { ok: bent.ok, reason: bent.reason, kind: stored?.kind, spine }, straight: { ok: straight.ok, kind: chord?.kind }, capped, caps: { capStart: cappedOp?.capStart, capEnd: cappedOp?.capEnd } },
   );
 }
 

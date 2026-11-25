@@ -206,7 +206,7 @@ export function sweepOp(
   op: BooleanKind,
   sections: readonly LoftSection[],
   spine: Curve3D,
-  options: { mode?: SweepMode; transition?: SweepTransition; scale?: readonly [number, number][]; twistDeg?: number } = {},
+  options: { mode?: SweepMode; transition?: SweepTransition; scale?: readonly [number, number][]; twistDeg?: number; capStart?: "flat" | "round" | "point"; capEnd?: "flat" | "round" | "point"; capLength?: number } = {},
 ): SweepOp {
   const mode = options.mode
     ? options.mode.kind === "fixedBinormal"
@@ -229,6 +229,9 @@ export function sweepOp(
     ...(options.transition ? { transition: options.transition } : {}),
     ...(options.scale && options.scale.length >= 2 ? { scale: options.scale.map(([u, f]) => [u, f] as [number, number]) } : {}),
     ...(options.twistDeg !== undefined && options.twistDeg !== 0 ? { twistDeg: options.twistDeg } : {}),
+    ...(options.capStart && options.capStart !== "flat" ? { capStart: options.capStart } : {}),
+    ...(options.capEnd && options.capEnd !== "flat" ? { capEnd: options.capEnd } : {}),
+    ...(options.capLength !== undefined ? { capLength: options.capLength } : {}),
   };
 }
 
