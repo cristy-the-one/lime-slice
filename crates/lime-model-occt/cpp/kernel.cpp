@@ -1520,6 +1520,98 @@ bool accepted_result(const TopoDS_Shape& shape, double& volume, std::string& err
     return true;
 }
 
+/// The relative error a fuse's volume is measured to again when the quick measure says it lost the part. The quick
+/// measure (`volume_of`) is a fixed-order Gauss rule with no error bound; on a body of a few hundred lofted faces it can
+/// be off by more than the guard's slack, so a fuse that adds material reads as one that lost some.
+constexpr double kExactVolumeEps = 1.0e-6;
+
+/// A volume integrated adaptively until its relative error is under `kExactVolumeEps`.
+double exact_volume(const TopoDS_Shape& shape) {
+    GProp_GProps props;
+    g_stats.volumes += 1;
+    const Timed timed(g_stats.volume_us);
+    BRepGProp::VolumeProperties(shape, props, kExactVolumeEps);
+    return props.Mass();
+}
+
+/// What the last fuse measured, for the probe: the part's volume, the quick measure of the result, whether that
+/// tripped the guard, and the part and result measured again exactly. One engine builds one step at a time.
+struct FuseTrace {
+    bool set = false;
+    double before = 0;
+    double plain = 0;
+    bool guard = false;
+    bool measured = false;
+    double part_exact = 0;
+    double result_exact = 0;
+    bool accepted = false;
+};
+
+FuseTrace g_fuse_trace;
+
+/// The session's volume guard for a fuse (`lostVolume`): slack is the larger of a ten-thousandth of the part and
+/// 0.01 mm³. This does not replace that guard. It decides whether the quick measure is checked again.
+bool fuse_lost_volume(double before, double after) {
+    if (!(before > 0.0) || !std::isfinite(after)) {
+        return false;
+    }
+    const double slack = std::max(before * 1.0e-4, 0.01);
+    return after < before - slack;
+}
+
+std::string fuse_trace_json() {
+    if (!g_fuse_trace.set) {
+        return {};
+    }
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text.setf(std::ios::fixed);
+    text.precision(6);
+    text << "{\"before\":" << g_fuse_trace.before << ",\"plain\":" << g_fuse_trace.plain
+         << ",\"guard\":" << (g_fuse_trace.guard ? "true" : "false") << ",\"measured\":"
+         << (g_fuse_trace.measured ? "true" : "false");
+    if (g_fuse_trace.measured) {
+        text << ",\"partExact\":" << g_fuse_trace.part_exact << ",\"resultExact\":" << g_fuse_trace.result_exact
+             << ",\"accepted\":" << (g_fuse_trace.accepted ? "true" : "false");
+    }
+    text << "}";
+    return text.str();
+}
+
+/// A fuse of `current` with `tools`, `before` being the volume of `current` by the quick measure. When the result's
+/// quick measure is smaller than `before` by the guard's slack, the part and the result are both measured again to
+/// `kExactVolumeEps`. If the exact result is not smaller than the exact part by that slack, the fuse kept the part,
+/// and `volume` is `before` plus the exact change, so the guard sees what the fuse did. Otherwise `volume` stays the
+/// quick measure and the session's guard refuses the step as before. The boolean itself is built once.
+TopoDS_Shape boolean_fuse(
+    const TopoDS_Shape& current,
+    const TopTools_ListOfShape& tools,
+    double before,
+    double& volume,
+    std::string& error,
+    Handle(BRepTools_History)* history) {
+    g_fuse_trace = {};
+    const TopoDS_Shape plain = boolean_list("fuse", current, tools, error, history);
+    if (!error.empty() || plain.IsNull() || !accepted_result(plain, volume, error)) {
+        return {};
+    }
+    g_fuse_trace.set = true;
+    g_fuse_trace.before = before;
+    g_fuse_trace.plain = volume;
+    g_fuse_trace.guard = fuse_lost_volume(before, volume);
+    if (!g_fuse_trace.guard) {
+        return plain;
+    }
+    g_fuse_trace.measured = true;
+    g_fuse_trace.part_exact = exact_volume(current);
+    g_fuse_trace.result_exact = exact_volume(plain);
+    if (!fuse_lost_volume(g_fuse_trace.part_exact, g_fuse_trace.result_exact)) {
+        g_fuse_trace.accepted = true;
+        volume = before + (g_fuse_trace.result_exact - g_fuse_trace.part_exact);
+    }
+    return plain;
+}
+
 /// Outward unit normal at the face midpoint. A reversed face is flipped so the solid's outside stays positive.
 void append_face_normal(std::string& out, const TopoDS_Face& face) {
     try {
@@ -2076,7 +2168,19 @@ TopoDS_Shape combine(
     const TopoDS_Shape& tool,
     double& volume,
     std::string& error,
-    Handle(BRepTools_History)* history = nullptr) {
+    Handle(BRepTools_History)* history = nullptr,
+    double before = 0) {
+    // A fuse on a part we know the volume of can be built again when the plain result would lose the part.
+    // Cuts and commons stay one boolean. `before` of 0 is an internal fuse, counted as it was.
+    if (which == "fuse" && before > 0.0) {
+        TopTools_ListOfShape tools;
+        tools.Append(tool);
+        const TopoDS_Shape result = boolean_fuse(current, tools, before, volume, error, history);
+        if (!error.empty() || result.IsNull()) {
+            return {};
+        }
+        return result;
+    }
     const TopoDS_Shape result = boolean_op(which, current, tool, error, history);
     if (!error.empty()) {
         return {};
@@ -2097,12 +2201,13 @@ TopoDS_Shape build_boolean(
     const PrimitiveSpec& spec,
     double& volume,
     std::string& error,
-    Handle(BRepTools_History)* history) {
+    Handle(BRepTools_History)* history,
+    double before) {
     const TopoDS_Shape tool = make_solid(spec, error);
     if (tool.IsNull()) {
         return {};
     }
-    return combine(current, which, tool, volume, error, history);
+    return combine(current, which, tool, volume, error, history, before);
 }
 
 TopoDS_Shape build_wedges(
@@ -2560,13 +2665,14 @@ TopoDS_Shape build_join(
     const double* place,
     double& volume,
     std::string& error,
-    Handle(BRepTools_History)* history) {
+    Handle(BRepTools_History)* history,
+    double before) {
     gp_Quaternion turn(gp_Mat(place[0], place[1], place[2], place[3], place[4], place[5], place[6], place[7], place[8]));
     turn.Normalize();
     gp_Trsf trsf;
     trsf.SetRotation(turn);
     trsf.SetTranslationPart(gp_Vec(place[9], place[10], place[11]));
-    return combine(current, which, tool.Moved(TopLoc_Location(trsf)), volume, error, history);
+    return combine(current, which, tool.Moved(TopLoc_Location(trsf)), volume, error, history, before);
 }
 
 /// How far past the far side of the part's box a through hole runs, so its end never lies on a face.
@@ -5250,7 +5356,7 @@ TopoDS_Shape combine_profile(
         return {};
     }
     const int bodies = count_of(current, TopAbs_SOLID);
-    TopoDS_Shape result = combine(current, which, tool, volume, error);
+    TopoDS_Shape result = combine(current, which, tool, volume, error, nullptr, before);
     if (!error.empty()) {
         return {};
     }
@@ -5319,11 +5425,13 @@ TopoDS_Shape combine_profile_tools(
     for (const TopoDS_Shape& tool : tools) {
         list.Append(tool);
     }
-    const TopoDS_Shape result = boolean_list(which, current, list, error);
-    if (!error.empty()) {
+    const bool fuse_guard = which == "fuse" && before > 0.0;
+    const TopoDS_Shape result = fuse_guard ? boolean_fuse(current, list, before, volume, error, nullptr)
+                                           : boolean_list(which, current, list, error);
+    if (!error.empty() || result.IsNull()) {
         return {};
     }
-    if (!accepted_result(result, volume, error)) {
+    if (!fuse_guard && !accepted_result(result, volume, error)) {
         if (which == "common") {
             error = "The solids do not overlap";
         }
@@ -5364,11 +5472,13 @@ TopoDS_Shape combine_tools_checked(
         list.Append(tool);
     }
     Handle(BRepTools_History) history;
-    TopoDS_Shape result = boolean_list(which, current, list, error, &history);
-    if (!error.empty()) {
+    const bool fuse_guard = which == "fuse" && before > 0.0;
+    TopoDS_Shape result = fuse_guard ? boolean_fuse(current, list, before, volume, error, &history)
+                                     : boolean_list(which, current, list, error, &history);
+    if (!error.empty() || result.IsNull()) {
         return {};
     }
-    if (!accepted_result(result, volume, error)) {
+    if (!fuse_guard && !accepted_result(result, volume, error)) {
         return {};
     }
     if (std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
@@ -13262,6 +13372,18 @@ extern "C" char* lime_model_occt_stats() {
 }
 
 extern "C" void lime_model_occt_string_free(char* text) { std::free(text); }
+
+/// The last fuse's plain and retried volumes, as JSON, or null when this step did not record one.
+/// The caller frees the text with `lime_model_occt_string_free`.
+extern "C" char* lime_fuse_trace() {
+    const std::string text = fuse_trace_json();
+    if (text.empty()) {
+        return nullptr;
+    }
+    return alloc(text);
+}
+
+extern "C" void lime_fuse_trace_clear() { g_fuse_trace = {}; }
 
 /// Non-zero meshes every face of a solid, as before a step meshed only around the faces it made. For tests.
 extern "C" void lime_model_occt_whole_meshes(int on) { g_whole_meshes = on != 0; }

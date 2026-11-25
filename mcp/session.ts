@@ -136,6 +136,8 @@ export class Session {
   /** The last sliced study's cells, for `layer_image`'s stress and safety colours. */
   stressCells: StressCells | null = null;
   lastPreview: SolidView | null = null;
+  /** The last kernel fuse's plain and retried volumes. Tests read it. It is not a tool reply. */
+  lastFuseTrace: Record<string, unknown> | null = null;
   undoStack: PlateSnap[] = [];
   redoStack: PlateSnap[] = [];
   bridgeSeq = 0;

@@ -233,15 +233,19 @@ TopoDS_Shape make_solid(const PrimitiveSpec& spec, std::string& error);
 
 /// `history`, when set, receives the boolean's face history (`Modified` / `Generated`) so a later step can
 /// tell a face this boolean only trimmed from a face it created. Null leaves the history unfilled, as before.
+/// `before` is the volume of `current`. A fuse that comes back smaller than that volume is built once more;
+/// 0 skips that retry.
 TopoDS_Shape build_boolean(
     const TopoDS_Shape& current,
     const std::string& which,
     const PrimitiveSpec& tool,
     double& volume,
     std::string& error,
-    Handle(BRepTools_History)* history = nullptr);
+    Handle(BRepTools_History)* history = nullptr,
+    double before = 0);
 /// Another solid, placed by a rigid matrix, fused with, cut from, or intersected with `current`.
 /// `place` is the 3×3 turn row by row, then the move: twelve numbers.
+/// `before` is the volume of `current`, as for `build_boolean`.
 TopoDS_Shape build_join(
     const TopoDS_Shape& current,
     const TopoDS_Shape& tool,
@@ -249,7 +253,8 @@ TopoDS_Shape build_join(
     const double* place,
     double& volume,
     std::string& error,
-    Handle(BRepTools_History)* history = nullptr);
+    Handle(BRepTools_History)* history = nullptr,
+    double before = 0);
 /// A hole as its op stores it, in the solid's own frame.
 struct HoleSpec {
     double x = 0;
