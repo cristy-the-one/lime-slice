@@ -225,12 +225,16 @@ function catalogue(): Entry[] {
       exact: topic,
     });
     for (const row of sections ?? []) {
+      // The recipes api section is the whole crate's signatures. Indexing that text makes it match almost every
+      // query (it holds "rotate", "part", "turn" and "orient" as names) and it outranks the tool the task wants.
+      // The section is reached by guide {topic:"recipes", section:"api"}; search keeps its one-line about.
+      const indexed = topic === "recipes" && row.section === "api" ? row.about : row.text;
       rows.push({
         label: `topic ${topic} section ${row.section}`,
         read: `guide {topic:"${topic}", section:"${row.section}"}`,
         line: short(row.about || firstSentence(row.text)),
         name: new Set(words([row.section, ...row.also].join(" "))),
-        text: new Set(words(row.text)),
+        text: new Set(words(indexed)),
         fields: [],
         exact: "",
       });

@@ -167,6 +167,7 @@ mcp/beta-identity.test.ts
 mcp/recipe-followups.test.ts
 mcp/schema.test.ts
 mcp/guide-sections.test.ts
+mcp/recipe-api.test.ts
 mcp/lean.test.ts
 mcp/batch-forms.test.ts
 mcp/slice-wait.test.ts

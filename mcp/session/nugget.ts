@@ -83,7 +83,7 @@ async function nuggetTool(this: Session, input: Record<string, unknown>): Promis
       const lesson = addLesson(about, text, new Date().toISOString().slice(0, 10));
       return { ok: true, kind, id: `${lesson.about}/${lesson.n}`, ...(OP_KINDS.includes(lesson.about) ? { shown: `guide {kind:"${lesson.about}"} shows it under seenInPractice.` } : {}) };
     }
-    const n = Number(/\/(\d+)$/.exec(id)?.[1]);
+    const n = Number(/\/(-?\d+)$/.exec(id)?.[1]);
     if (!Number.isInteger(n)) return refuse("bad-name", "A lesson's id is <about>/<n>, as find lists it.");
     const shipped = SHIPPED_LESSONS.find((lesson) => lesson.n === n && id === `${lesson.about}/${lesson.n}`);
     const row = shipped ?? listLessons().find((lesson) => lesson.n === n);
