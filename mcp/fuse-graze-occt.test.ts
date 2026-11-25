@@ -1,7 +1,12 @@
 /**
  * A thin sweep fused onto a lofted skin that bends sharply, against real Open CASCADE.
- * Stand-in only: a ruled tub, not a customer part. The tube's end steps along the flare
- * where the barrel's side turns. Each row is printed before any check, including a failure.
+ * Stand-in only, not a customer part. Each row is printed before any check, including a failure.
+ *
+ * Attempt 1 was an analytic ruled loft (circles, flare from r=8 to r=12 over 2.2 mm) with the
+ * end 0.027–0.11 mm past the crease. Every plain fuse kept the part: the volume rose by about
+ * 4.8 mm³ and the guard never tripped. This attempt puts a NURBS section through a near-right-angle
+ * flare, so the cap extremity grazes that crease.
+ *
  * Skips without LIME_OCCT_BRIDGE; fails in CI when it is unset. Ends with process.exit.
  */
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -30,14 +35,17 @@ process.env.LIME_MCP_WORKSPACE = workspace;
 process.env.LIME_MCP_MODEL_TIMEOUT_S = process.env.LIME_MCP_MODEL_TIMEOUT_S ?? "60";
 
 const BARREL_R = 8;
-const FLARE_Z0 = 28;
-const FLARE_Z1 = 30.2;
-const FLARE_R1 = 12;
+const FLARE_Z0 = 24;
+/** 0.35 mm for an 8 mm radius jump: the wall turns nearly a right angle. */
+const FLARE_Z1 = 24.35;
+const FLARE_R1 = 16;
+const TAIL_Z = 36;
 const TUBE_R = 0.45;
-/** How far the tube's inner side sits inside the barrel. The end then walks up the flare. */
-const GRAZE = 0.05;
+/** How far the tube's inner side sits inside the barrel. The end then walks onto the flare. */
+const GRAZE = 0.03;
 const CENTER_X = BARREL_R + TUBE_R - GRAZE;
-const PATH_Z0 = 20;
+const PATH_Z0 = 16;
+const PROFILE_N = 12;
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -73,10 +81,20 @@ const loses = (before: number, after: number) => after < before - Math.max(befor
 
 /**
  * Where the cap extremity sits. `inset` is how far the tube's inner generator is under the skin
- * there: 0.05 mm on the barrel, then more as the flare opens. 0.10 lands 0.0275 mm past the crease.
+ * there. On this flare that is 0.003–0.010 mm past the crease, so the end grazes the bend.
  */
 function zTip(inset: number): number {
   return FLARE_Z0 + ((inset - GRAZE) * (FLARE_Z1 - FLARE_Z0)) / (FLARE_R1 - BARREL_R);
+}
+
+/** A closed smooth section through a circle. The +X point lies on the circle, so the ruled generator there is exact. */
+function circleSection(z: number, radius: number): Record<string, unknown> {
+  const profile: number[][] = [];
+  for (let i = 0; i < PROFILE_N; i += 1) {
+    const angle = (i / PROFILE_N) * Math.PI * 2;
+    profile.push([Math.cos(angle) * radius, Math.sin(angle) * radius]);
+  }
+  return { origin: [0, 0, z], profile, smooth: true };
 }
 
 function tube(cap: Cap, inset: number): Record<string, unknown> {
@@ -95,7 +113,8 @@ function tube(cap: Cap, inset: number): Record<string, unknown> {
   return op;
 }
 
-console.log("fuse-graze stand-in: ruled loft, circles r=8 from z=0 to z=28, flare to r=12 at z=30.2, then r=12 to z=40.");
+console.log("fuse-graze attempt 2: ruled loft of smooth 12-point sections. Barrel r=8 to z=24, flare to r=16 over 0.35 mm, then r=16 to z=36. The cap extremity is 0.003–0.010 mm past the crease.");
+console.log("fuse-graze attempt 1, for the record: analytic circles, flare r=8 to r=12 over 2.2 mm, end 0.027–0.11 mm past the crease. Plain fuse kept the part at all 48 steps (volume rose by about 4.8 mm³, guard never tripped).");
 console.log(`fuse-graze tube: radius ${TUBE_R}, centerline x=${CENTER_X.toFixed(2)} (${GRAZE.toFixed(2)} mm into the barrel). inset is the inner generator under the skin at the cap extremity, 0.10 to 0.25 mm by 0.01.`);
 console.log("fuse-graze retry: when the plain fuse (fuzzy 1e-7) is short of the part by the volume guard's own slack, a new boolean uses fuzzy 1e-5. The guard is unchanged. No mesh fallback.");
 
@@ -105,12 +124,7 @@ try {
     feature: {
       kind: "loft",
       ruled: true,
-      sections: [
-        { origin: [0, 0, 0], radius: BARREL_R },
-        { origin: [0, 0, FLARE_Z0], radius: BARREL_R },
-        { origin: [0, 0, FLARE_Z1], radius: FLARE_R1 },
-        { origin: [0, 0, 40], radius: FLARE_R1 },
-      ],
+      sections: [circleSection(0, BARREL_R), circleSection(FLARE_Z0, BARREL_R), circleSection(FLARE_Z1, FLARE_R1), circleSection(TAIL_Z, FLARE_R1)],
     },
   });
   const object = String(made.object ?? "");
@@ -146,7 +160,7 @@ try {
           }
         }
         const apply = reply.ok === true ? "ok" : `${String(reply.code ?? "refused")}: ${oneLine(reply.reason ?? reply.error)}`;
-        console.log(`fuse-graze ${label} part=${num(part)} plain=${num(plain)} guard=${guard} retry=${num(retry)} kept=${num(kept)} apply=${apply}`);
+        console.log(`fuse-graze ${label} z=${zTip(inset).toFixed(4)} part=${num(part)} plain=${num(plain)} guard=${guard} retry=${num(retry)} kept=${num(kept)} apply=${apply}`);
         rows += 1;
         const plainLost = typeof plain === "number" && Number.isFinite(before) && loses(before, plain);
         if (guard === "yes" || plainLost) {
