@@ -1,5 +1,6 @@
 /** Engine calls: the tree calls, the restore of a solid the engine dropped, and the held pieces. */
 import { ROOT, pathTo, reserveId, type ModelOp, type ModelTree, type NodeId } from "../../model-tree";
+import { unpackModelReply } from "../../model-reply";
 import { applyRequest, isBrep, openRequest, probeRequest, wholeTreeRequest } from "../../model-request";
 import { remapBlendFromNode } from "../../model-edge-step";
 import { authHeaders } from "../../ui/api-base";
@@ -496,7 +497,7 @@ export async function post(payload: Body): Promise<Body> {
   try {
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
-      return JSON.parse(await invoke<string>("model_tree", { payload: JSON.stringify(payload) })) as Body;
+      return unpackModelReply(await invoke<ArrayBuffer | string>("model_tree", { payload: JSON.stringify(payload) })) as Body;
     }
     const res = await fetch(`${apiBase()}/api/model/tree`, {
       method: "POST",

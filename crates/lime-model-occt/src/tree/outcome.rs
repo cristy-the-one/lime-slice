@@ -1,41 +1,305 @@
-//! What a call answers: `Answer`, the reply fields (`Part`) and the `Failure` refusals.
+//! What a call answers: `Answer`, the reply fields (`Part`), `BinObject` for raw mesh buffers,
+//! and the `Failure` refusals.
 
+use base64::Engine;
 use serde_json::json;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use super::NodeId;
 
+/// Binary frame magic: `[L, M, B, 1][u32 LE jsonLen][u32 LE flags=0][utf8 json][0..3 pad][aligned blobs]`.
+pub(super) const LMB1_MAGIC: &[u8; 4] = b"LMB1";
+
+/// A reply JSON object carrying metadata (`head`, without its closing `}`) plus optional raw
+/// little-endian binary arrays (`positions`, `triangles`, `edgePoints`, `edgeOffsets`, `display.*`,
+/// or `surfaceInspect` buffers). Rendered as base64 JSON for `lime_occt_tree` and as an aligned
+/// `LMB1` binary frame for `lime_occt_tree_bin`.
+pub(super) struct BinObject {
+    /// JSON object text up to, not including, the closing `}`.
+    pub(super) head: String,
+    /// Top-level raw binary fields in emission order.
+    pub(super) arrays: Vec<(&'static str, Vec<u8>)>,
+    /// Optional nested `"display":{...}` raw binary fields in emission order.
+    pub(super) display: Option<Vec<(&'static str, Vec<u8>)>>,
+}
+
+impl BinObject {
+    /// Wrap an already-formatted JSON object string with no binary buffers.
+    pub(super) fn plain(text: String) -> Self {
+        let head = text.strip_suffix('}').unwrap_or(&text).to_string();
+        Self {
+            head,
+            arrays: Vec::new(),
+            display: None,
+        }
+    }
+
+    /// Append a JSON field to `head` without copying any binary buffers.
+    pub(super) fn push_field(&mut self, name: &str, json_value: &str) {
+        self.head.push_str(",\"");
+        self.head.push_str(name);
+        self.head.push_str("\":");
+        self.head.push_str(json_value);
+    }
+
+    fn json_len(&self, extra: &[(&str, Part)]) -> usize {
+        let arrays_len: usize = self
+            .arrays
+            .iter()
+            .map(|(name, bytes)| name.len() + bytes.len().div_ceil(3) * 4 + 6)
+            .sum();
+        let display_len: usize = self.display.as_ref().map_or(0, |parts| {
+            16 + parts
+                .iter()
+                .map(|(name, bytes)| name.len() + bytes.len().div_ceil(3) * 4 + 6)
+                .sum::<usize>()
+        });
+        self.head.len() + arrays_len + display_len + fields_len_json(extra) + 2
+    }
+
+    fn write_json(&self, out: &mut String, extra: &[(&str, Part)]) {
+        out.push_str(&self.head);
+        for (name, bytes) in &self.arrays {
+            let _ = write!(out, ",\"{name}\":\"");
+            base64::engine::general_purpose::STANDARD.encode_string(bytes, out);
+            out.push('"');
+        }
+        if let Some(parts) = &self.display {
+            out.push_str(",\"display\":{");
+            for (at, (name, bytes)) in parts.iter().enumerate() {
+                let _ = write!(out, "{}\"{name}\":\"", if at == 0 { "" } else { "," });
+                base64::engine::general_purpose::STANDARD.encode_string(bytes, out);
+                out.push('"');
+            }
+            out.push('}');
+        }
+        write_fields_json(out, extra);
+        out.push('}');
+    }
+
+    fn write_bin(&self, out: &mut String, blobs: &mut Vec<u8>, used_bin: &mut bool, extra: &[(&str, Part)]) {
+        out.push_str(&self.head);
+        for (name, bytes) in &self.arrays {
+            let (off, len) = push_blob(blobs, bytes);
+            *used_bin = true;
+            let _ = write!(out, ",\"{name}\":{{\"$bin\":[{off},{len}]}}");
+        }
+        if let Some(parts) = &self.display {
+            out.push_str(",\"display\":{");
+            for (at, (name, bytes)) in parts.iter().enumerate() {
+                let (off, len) = push_blob(blobs, bytes);
+                *used_bin = true;
+                let _ = write!(
+                    out,
+                    "{}\"{name}\":{{\"$bin\":[{off},{len}]}}",
+                    if at == 0 { "" } else { "," }
+                );
+            }
+            out.push('}');
+        }
+        write_fields_bin(out, blobs, used_bin, extra);
+        out.push('}');
+    }
+}
+
+fn push_blob(blobs: &mut Vec<u8>, bytes: &[u8]) -> (usize, usize) {
+    while blobs.len() % 4 != 0 {
+        blobs.push(0);
+    }
+    let off = blobs.len();
+    blobs.extend_from_slice(bytes);
+    (off, bytes.len())
+}
+
+pub(super) fn pack_lmb1(json: &str, blobs: &[u8]) -> Vec<u8> {
+    let json_bytes = json.as_bytes();
+    let pad = (4 - (json_bytes.len() % 4)) % 4;
+    let mut out = Vec::with_capacity(12 + json_bytes.len() + pad + blobs.len());
+    out.extend_from_slice(LMB1_MAGIC);
+    out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(json_bytes);
+    out.resize(out.len() + pad, 0);
+    out.extend_from_slice(blobs);
+    out
+}
+
 pub(super) enum Answer {
     Plain(String),
-    /// `text` with `fields` added, and the list of which nodes of `key` hold a solid, read after
-    /// eviction. `text` and an `other` piece may be cached replies, so each is copied once, when
-    /// the answer is written.
+    /// One binary-capable object (e.g. `meshStep` or `surfaceInspect`).
+    Object(BinObject),
+    /// A JSON object wrapper whose `head` (without closing `}`) may have binary-capable `fields`
+    /// (e.g. `probe` with `preview`).
+    Fields {
+        head: String,
+        fields: Vec<(&'static str, Part)>,
+    },
+    /// `body` with `fields` added, and the list of which nodes of `key` hold a solid, read after
+    /// eviction. `body` and an `other`/`pieces`/`pins` entry may be cached replies.
     Held {
         key: String,
-        text: Arc<String>,
+        body: Arc<BinObject>,
         fields: Vec<(&'static str, Part)>,
     },
 }
 
-/// A field's value: JSON as it is, or a JSON object, such as a cached reply, with fields added.
-pub(super) enum Part {
-    Json(String),
-    Object(Arc<String>, Vec<(&'static str, Part)>),
-}
-
-impl Part {
-    fn len(&self) -> usize {
+impl Answer {
+    pub(super) fn into_json(self) -> String {
         match self {
-            Part::Json(text) => text.len(),
-            Part::Object(text, fields) => text.len() + fields_len(fields),
+            Answer::Plain(text) => text,
+            Answer::Object(obj) => {
+                let mut out = String::with_capacity(obj.json_len(&[]) + 1);
+                obj.write_json(&mut out, &[]);
+                out
+            }
+            Answer::Fields { head, fields } => {
+                let mut out = String::with_capacity(head.len() + fields_len_json(&fields) + 2);
+                out.push_str(&head);
+                write_fields_json(&mut out, &fields);
+                out.push('}');
+                out
+            }
+            Answer::Held { body, fields, .. } => {
+                let mut out = String::with_capacity(body.json_len(&fields) + 1);
+                body.write_json(&mut out, &fields);
+                out
+            }
         }
     }
 
-    fn write(&self, out: &mut String) {
+    pub(super) fn into_bin(self) -> Vec<u8> {
+        match self {
+            Answer::Plain(text) => text.into_bytes(),
+            Answer::Object(obj) => {
+                let mut json = String::with_capacity(obj.head.len() + 256);
+                let mut blobs = Vec::new();
+                let mut used_bin = false;
+                obj.write_bin(&mut json, &mut blobs, &mut used_bin, &[]);
+                if used_bin {
+                    pack_lmb1(&json, &blobs)
+                } else {
+                    json.into_bytes()
+                }
+            }
+            Answer::Fields { head, fields } => {
+                let mut json = String::with_capacity(head.len() + 256);
+                let mut blobs = Vec::new();
+                let mut used_bin = false;
+                json.push_str(&head);
+                write_fields_bin(&mut json, &mut blobs, &mut used_bin, &fields);
+                json.push('}');
+                if used_bin {
+                    pack_lmb1(&json, &blobs)
+                } else {
+                    json.into_bytes()
+                }
+            }
+            Answer::Held { body, fields, .. } => {
+                let mut json = String::with_capacity(body.head.len() + 256);
+                let mut blobs = Vec::new();
+                let mut used_bin = false;
+                body.write_bin(&mut json, &mut blobs, &mut used_bin, &fields);
+                if used_bin {
+                    pack_lmb1(&json, &blobs)
+                } else {
+                    json.into_bytes()
+                }
+            }
+        }
+    }
+}
+
+/// A field's value: raw JSON, a cached binary-capable object with extra fields, or a JSON array of
+/// optional parts (such as partition `pieces`).
+pub(super) enum Part {
+    Json(String),
+    Object(Arc<BinObject>, Vec<(&'static str, Part)>),
+    List(Vec<Option<Part>>),
+}
+
+impl Part {
+    fn json_len(&self) -> usize {
+        match self {
+            Part::Json(text) => text.len(),
+            Part::Object(body, fields) => body.json_len(fields),
+            Part::List(items) => {
+                2 + items
+                    .iter()
+                    .map(|item| item.as_ref().map_or(4, Part::json_len) + 1)
+                    .sum::<usize>()
+            }
+        }
+    }
+
+    fn write_json(&self, out: &mut String) {
         match self {
             Part::Json(text) => out.push_str(text),
-            Part::Object(text, fields) => write_object(out, text, fields),
+            Part::Object(body, fields) => body.write_json(out, fields),
+            Part::List(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    match item {
+                        Some(part) => part.write_json(out),
+                        None => out.push_str("null"),
+                    }
+                }
+                out.push(']');
+            }
         }
+    }
+
+    fn write_bin(&self, out: &mut String, blobs: &mut Vec<u8>, used_bin: &mut bool) {
+        match self {
+            Part::Json(text) => out.push_str(text),
+            Part::Object(body, fields) => body.write_bin(out, blobs, used_bin, fields),
+            Part::List(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    match item {
+                        Some(part) => part.write_bin(out, blobs, used_bin),
+                        None => out.push_str("null"),
+                    }
+                }
+                out.push(']');
+            }
+        }
+    }
+}
+
+fn fields_len_json(fields: &[(&str, Part)]) -> usize {
+    fields
+        .iter()
+        .map(|(name, value)| name.len() + value.json_len() + 4)
+        .sum()
+}
+
+fn write_fields_json(out: &mut String, fields: &[(&str, Part)]) {
+    for (name, value) in fields {
+        out.push_str(",\"");
+        out.push_str(name);
+        out.push_str("\":");
+        value.write_json(out);
+    }
+}
+
+fn write_fields_bin(
+    out: &mut String,
+    blobs: &mut Vec<u8>,
+    used_bin: &mut bool,
+    fields: &[(&str, Part)],
+) {
+    for (name, value) in fields {
+        out.push_str(",\"");
+        out.push_str(name);
+        out.push_str("\":");
+        value.write_bin(out, blobs, used_bin);
     }
 }
 
@@ -94,34 +358,4 @@ impl Failure {
             } => json!({ "error": message, "failedStep": failed_step }).to_string(),
         }
     }
-}
-
-/// `text` is a JSON object. Each field is added before its closing brace, in one allocation with
-/// room for the terminator the C string adds, since a solid reply is megabytes.
-pub(super) fn with_fields(text: &str, fields: &[(&str, Part)]) -> String {
-    let mut out = String::with_capacity(text.len() + fields_len(fields) + 2);
-    write_object(&mut out, text, fields);
-    out
-}
-
-fn fields_len(fields: &[(&str, Part)]) -> usize {
-    fields
-        .iter()
-        .map(|(name, value)| name.len() + value.len() + 4)
-        .sum()
-}
-
-pub(super) fn write_object(out: &mut String, text: &str, fields: &[(&str, Part)]) {
-    let Some(body) = text.strip_suffix('}') else {
-        out.push_str(text);
-        return;
-    };
-    out.push_str(body);
-    for (name, value) in fields {
-        out.push_str(",\"");
-        out.push_str(name);
-        out.push_str("\":");
-        value.write(out);
-    }
-    out.push('}');
 }

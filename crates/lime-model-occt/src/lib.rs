@@ -29,6 +29,20 @@ pub fn tree(request: &str) -> String {
     }
 }
 
+/// One call on the Model history tree, as JSON in and either an `LMB1` binary frame (when the reply carries
+/// bulk mesh or surface-inspection buffers) or plain UTF-8 JSON bytes out.
+pub fn tree_bin(request: &str) -> Vec<u8> {
+    #[cfg(lime_occt)]
+    {
+        tree::call_bin(request)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = request;
+        MISSING.as_bytes().to_vec()
+    }
+}
+
 /// One piece of a partition, as the kernel reports it. For tests.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PartitionPiece {
@@ -280,6 +294,39 @@ fn kernel_counts() -> std::collections::HashMap<String, u64> {
 pub unsafe extern "C" fn lime_occt_string_free(text: *mut c_char) {
     if !text.is_null() {
         drop(unsafe { CString::from_raw(text) });
+    }
+}
+
+/// # Safety
+/// `request` is null or a valid null-terminated string. `out_len` receives the byte length when non-null.
+/// The returned pointer must be freed with `lime_occt_bytes_free(ptr, len)`.
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_tree_bin(request: *const c_char, out_len: *mut usize) -> *mut u8 {
+    let request = cstr(request);
+    let bytes = std::panic::catch_unwind(|| {
+        if request.starts_with(TIMING_PREFIX) {
+            timed_tree(&request).into_bytes()
+        } else {
+            tree_bin(&request)
+        }
+    })
+    .unwrap_or_else(|_| b"{\"error\":\"The history tree failed inside the bridge\"}".to_vec());
+    let boxed = bytes.into_boxed_slice();
+    let len = boxed.len();
+    let ptr = Box::into_raw(boxed) as *mut u8;
+    if !out_len.is_null() {
+        unsafe { *out_len = len };
+    }
+    ptr
+}
+
+/// # Safety
+/// `ptr` and `len` must have been returned by `lime_occt_tree_bin`, and freed at most once.
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_bytes_free(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        let slice = std::ptr::slice_from_raw_parts_mut(ptr, len);
+        drop(unsafe { Box::from_raw(slice) });
     }
 }
 

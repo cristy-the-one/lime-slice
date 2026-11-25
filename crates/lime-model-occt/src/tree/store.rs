@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::{doc_in, seed_node, stamp_faces, Doc, NodeId, Reply, Store, ROOT};
 use super::build::{Built, ToolSolid};
 use super::ops::{EdgeFilter, EdgePick, EdgeStep, Op, ToolRef};
-use super::outcome::{with_fields, Answer, Failure, Part, CYCLE};
+use super::outcome::{Answer, BinObject, Failure, Part, CYCLE};
 use super::request::{chord_key, SavedNode, SeedSolid};
 use super::resolve::{blend_step_picks, picks_steps, resolve, Steps, NOT_ABOVE};
 use super::shape::Shape;
@@ -330,13 +330,13 @@ impl Store {
             (
                 Ok(Answer::Held {
                     key,
-                    text,
+                    body,
                     mut fields,
                 }),
                 Some(why),
             ) => {
                 fields.push(("seedRefused", Part::Json(json!(why).to_string())));
-                Ok(Answer::Held { key, text, fields })
+                Ok(Answer::Held { key, body, fields })
             }
             (Err(failure), Some(why)) => Err(Failure::SeedRefused(Box::new(failure), why)),
             (answer, _) => answer,
@@ -352,7 +352,7 @@ impl Store {
         let fingerprint = doc.node(id)?.fingerprint;
         Ok(Answer::Held {
             key,
-            text: Arc::new(json!({ "id": id, "fingerprint": fingerprint }).to_string()),
+            body: Arc::new(BinObject::plain(json!({ "id": id, "fingerprint": fingerprint }).to_string())),
             fields: vec![("replayed", Part::Json(replayed.to_string()))],
         })
     }
@@ -361,13 +361,13 @@ impl Store {
         let doc = doc_in(&mut self.docs, &key)?;
         doc.broken_above(id)?;
         doc.probe = None;
-        let (text, replayed) = match self.cached_reply(&key, id, chord) {
-            Some(text) => {
+        let (body, replayed) = match self.cached_reply(&key, id, chord) {
+            Some(body) => {
                 let doc = doc_in(&mut self.docs, &key)?;
                 if let Some(node) = doc.nodes.get_mut(&id) {
                     node.used = self.clock;
                 }
-                (text, 0)
+                (body, 0)
             }
             None => {
                 let replayed = self.ensure(&key, id)?;
@@ -377,12 +377,12 @@ impl Store {
         doc_in(&mut self.docs, &key)?.current = id;
         Ok(Answer::Held {
             key,
-            text,
+            body,
             fields: vec![("replayed", Part::Json(replayed.to_string()))],
         })
     }
 
-    fn cached_reply(&mut self, key: &str, id: NodeId, chord: f64) -> Option<Arc<String>> {
+    fn cached_reply(&mut self, key: &str, id: NodeId, chord: f64) -> Option<Arc<BinObject>> {
         let chord = chord_key(chord);
         let display = self.display;
         self.clock += 1;
@@ -391,13 +391,13 @@ impl Store {
             .iter_mut()
             .find(|reply| reply.key == key && reply.node == id && reply.chord == chord && reply.display == display)?;
         reply.used = self.clock;
-        Some(Arc::clone(&reply.text))
+        Some(Arc::clone(&reply.body))
     }
 
     /// The node's reply, built and cached on first use. The node must hold its solid.
-    pub(super) fn reply(&mut self, key: &str, id: NodeId, chord: f64) -> Result<Arc<String>, Failure> {
-        if let Some(text) = self.cached_reply(key, id, chord) {
-            return Ok(text);
+    pub(super) fn reply(&mut self, key: &str, id: NodeId, chord: f64) -> Result<Arc<BinObject>, Failure> {
+        if let Some(body) = self.cached_reply(key, id, chord) {
+            return Ok(body);
         }
         let display = self.display;
         let doc = doc_in(&mut self.docs, key)?;
@@ -407,24 +407,24 @@ impl Store {
             .get(&id)
             .map(|node| node.face_owners.clone())
             .unwrap_or_default();
-        let mut text = doc.shape(id).reply(id, chord, display)?;
+        let mut body = doc.shape(id).reply(id, chord, display)?;
         if !owners.is_empty() {
-            text = with_fields(&text, &[("stepFaces", Part::Json(json!(owners).to_string()))]);
+            body.push_field("stepFaces", &json!(owners).to_string());
         }
-        let text = Arc::new(text);
-        self.remember(key, id, chord, display, Arc::clone(&text));
-        Ok(text)
+        let body = Arc::new(body);
+        self.remember(key, id, chord, display, Arc::clone(&body));
+        Ok(body)
     }
 
-    /// `display`: the text is the Model view's display mesh. Pieces and pins that start trees of their own go to the
+    /// `display`: the body is the Model view's display mesh. Pieces and pins that start trees of their own go to the
     /// plate, so they are always remembered, and meshed, as the standard mesh.
-    pub(super) fn remember(&mut self, key: &str, id: NodeId, chord: f64, display: bool, text: Arc<String>) {
+    pub(super) fn remember(&mut self, key: &str, id: NodeId, chord: f64, display: bool, body: Arc<BinObject>) {
         self.replies.push(Reply {
             key: key.to_string(),
             node: id,
             chord: chord_key(chord),
             display,
-            text,
+            body,
             used: self.clock,
         });
     }
@@ -512,7 +512,7 @@ impl Store {
         dropped.sort_unstable();
         Ok(Answer::Held {
             key,
-            text: Arc::new(json!({ "dropped": dropped, "current": current }).to_string()),
+            body: Arc::new(BinObject::plain(json!({ "dropped": dropped, "current": current }).to_string())),
             fields: Vec::new(),
         })
     }

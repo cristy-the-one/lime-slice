@@ -22,7 +22,7 @@ use super::{
 use super::build::{build, BuildFail, Built};
 use super::group::{GroupBudget, NewGroup};
 use super::ops::Op;
-use super::outcome::{with_fields, write_object, Answer, Failure, Part};
+use super::outcome::{Answer, BinObject, Failure, Part};
 use super::partition::{
     partition_fields,
     partition_keys_cover,
@@ -145,24 +145,24 @@ impl Store {
         // drops it unseen.
         let rendered = if lite {
             Ok((
-                Arc::new(
+                Arc::new(BinObject::plain(
                     json!({ "id": id, "format": LITE_FORMAT, "fingerprint": fingerprint }).to_string(),
-                ),
+                )),
                 None,
                 Vec::new(),
             ))
         } else {
-            self.reply(&key, id, chord).and_then(|text| {
+            self.reply(&key, id, chord).and_then(|body| {
             let other = match (built.other.as_mut(), &other_key) {
                 (Some(other), Some(_)) => Some(other.reply(ROOT, chord, false)?),
                 _ => None,
             };
             // --- Split to print: each piece with a key, as the split's other piece.
             let pieces = piece_replies(&mut built.pieces, &piece_keys, chord)?;
-            Ok((text, other, pieces))
+            Ok((body, other, pieces))
             })
         };
-        let (text, other, pieces) = match rendered {
+        let (body, other, pieces) = match rendered {
             Ok(rendered) => rendered,
             Err(failure) => {
                 if let Some(doc) = self.docs.get_mut(&key) {
@@ -178,17 +178,15 @@ impl Store {
             ("op", Part::Json(json!(built.op).to_string())),
             ("replayed", Part::Json(replayed.to_string())),
         ];
-        if let (Some(piece), Some(other_key), Some(other)) = (built.other, other_key, other) {
+        if let (Some(piece), Some(other_key), Some(mut other)) = (built.other, other_key, other) {
             self.clock += 1;
             self.replies.retain(|reply| reply.key != other_key);
             // --- A10. The split piece starts its own tree, so every face it keeps belongs to that root.
             let owners = vec![ROOT; piece.fingerprint().faces.max(0) as usize];
             self.docs
                 .insert(other_key.clone(), Doc::new(piece, self.clock));
-            let other = Arc::new(with_fields(
-                &other,
-                &[("stepFaces", Part::Json(json!(owners).to_string()))],
-            ));
+            other.push_field("stepFaces", &json!(owners).to_string());
+            let other = Arc::new(other);
             self.remember(&other_key, ROOT, chord, false, Arc::clone(&other));
             let key_field = ("key", Part::Json(json!(other_key).to_string()));
             fields.push(("other", Part::Object(other, vec![key_field])));
@@ -203,37 +201,32 @@ impl Store {
         }
         if !piece_keys.is_empty() {
             let list = self.start_pieces(built.pieces, &piece_keys, pieces, chord);
-            fields.push(("pieces", Part::Json(list)));
+            fields.push(("pieces", list));
         }
         if let (Some(pins), Some(pins_key)) = (built.pins, pins_key) {
             let list = self.start_pins(pins, &pins_key, chord)?;
-            fields.push(("pins", Part::Json(list)));
+            fields.push(("pins", list));
         }
-        Ok(Answer::Held { key, text, fields })
+        Ok(Answer::Held { key, body, fields })
     }
 
     /// --- Split to print. The pins start their own tree under `pins_key`, as a piece does; the answer is their reply
     /// with that `key`, cached under it.
-    pub(super) fn start_pins(&mut self, mut pins: Shape, pins_key: &str, chord: f64) -> Result<String, Failure> {
+    pub(super) fn start_pins(&mut self, mut pins: Shape, pins_key: &str, chord: f64) -> Result<Part, Failure> {
         // Pins go to the plate: always the standard mesh.
-        let reply = pins.reply(ROOT, chord, false)?;
+        let mut reply = pins.reply(ROOT, chord, false)?;
         self.clock += 1;
         self.replies.retain(|cached| cached.key != pins_key);
         let owners = vec![ROOT; pins.fingerprint().faces.max(0) as usize];
         self.docs
             .insert(pins_key.to_string(), Doc::new(pins, self.clock));
-        let text = Arc::new(with_fields(
-            &reply,
-            &[("stepFaces", Part::Json(json!(owners).to_string()))],
-        ));
-        self.remember(pins_key, ROOT, chord, false, Arc::clone(&text));
-        let mut out = String::new();
-        write_object(
-            &mut out,
-            &text,
-            &[("key", Part::Json(json!(pins_key).to_string()))],
-        );
-        Ok(out)
+        reply.push_field("stepFaces", &json!(owners).to_string());
+        let body = Arc::new(reply);
+        self.remember(pins_key, ROOT, chord, false, Arc::clone(&body));
+        Ok(Part::Object(
+            body,
+            vec![("key", Part::Json(json!(pins_key).to_string()))],
+        ))
     }
 
     /// --- Split to print. Each keyed piece starts its own tree, as a split's other piece does, and its reply is cached
@@ -243,21 +236,18 @@ impl Store {
         &mut self,
         made: Vec<Shape>,
         piece_keys: &[Option<String>],
-        replies: Vec<Option<String>>,
+        replies: Vec<Option<BinObject>>,
         chord: f64,
-    ) -> String {
-        let mut list = String::from("[");
+    ) -> Part {
+        let mut list = Vec::with_capacity(made.len());
         for (index, ((piece, reply), wanted)) in made
             .into_iter()
             .zip(replies)
             .zip(piece_keys.iter().chain(std::iter::repeat(&None)))
             .enumerate()
         {
-            if index > 0 {
-                list.push(',');
-            }
-            let (Some(piece_key), Some(reply)) = (wanted, reply) else {
-                list.push_str("null");
+            let (Some(piece_key), Some(mut reply)) = (wanted, reply) else {
+                list.push(None);
                 continue;
             };
             self.clock += 1;
@@ -266,22 +256,18 @@ impl Store {
             let owners = vec![ROOT; piece.fingerprint().faces.max(0) as usize];
             self.docs
                 .insert(piece_key.clone(), Doc::new(piece, self.clock));
-            let text = Arc::new(with_fields(
-                &reply,
-                &[("stepFaces", Part::Json(json!(owners).to_string()))],
-            ));
-            self.remember(piece_key, ROOT, chord, false, Arc::clone(&text));
-            write_object(
-                &mut list,
-                &text,
-                &[
+            reply.push_field("stepFaces", &json!(owners).to_string());
+            let body = Arc::new(reply);
+            self.remember(piece_key, ROOT, chord, false, Arc::clone(&body));
+            list.push(Some(Part::Object(
+                body,
+                vec![
                     ("key", Part::Json(json!(piece_key).to_string())),
                     ("part", Part::Json((index + 2).to_string())),
                 ],
-            );
+            )));
         }
-        list.push(']');
-        list
+        Part::List(list)
     }
 
     /// --- 3.1 F1. A composite the MCP server applied piece by piece, each piece checked, becomes one group without
@@ -373,12 +359,12 @@ impl Store {
         doc.current = id;
         self.replies
             .retain(|reply| reply.key != key || !gone.contains(&reply.node));
-        let text = self.reply(&key, id, chord)?;
+        let body = self.reply(&key, id, chord)?;
         let fields = vec![
             ("op", Part::Json(json!(op).to_string())),
             ("replayed", Part::Json("0".into())),
         ];
-        Ok(Answer::Held { key, text, fields })
+        Ok(Answer::Held { key, body, fields })
     }
 
     /// --- docs/plan-native-recipes.md 7.1. A recipe's queued ops, built as the combined groups on the path from `from`
@@ -547,12 +533,12 @@ impl Store {
                 // The shape keeps what its reply measured and meshed, so an Apply that takes it meshes nothing again.
                 let shown = preview.and_then(|chord| {
                     let faces = preview_step_faces(&parent_owners, &built.kept.face_from());
-                    let mut text = built.kept.reply(id, chord, display).ok()?;
+                    let mut body = built.kept.reply(id, chord, display).ok()?;
                     // --- A10.
                     if let Some(faces) = faces {
-                        text = with_fields(&text, &[("stepFaces", Part::Json(faces))]);
+                        body.push_field("stepFaces", &faces);
                     }
-                    Some(text)
+                    Some(Arc::new(body))
                 });
                 // --- A1 group: the same measures as one op, plus how many steps missed the solid. ---
                 let skipped = matches!(built.op, Op::Group { .. }).then_some(built.skipped);
@@ -599,10 +585,13 @@ impl Store {
                     op: probed,
                     built,
                 });
-                Ok(Answer::Plain(match shown {
-                    Some(text) => format!("{{\"ok\":true,{metrics},\"preview\":{text}}}"),
-                    None => format!("{{\"ok\":true,{metrics}}}"),
-                }))
+                Ok(match shown {
+                    Some(body) => Answer::Fields {
+                        head: format!("{{\"ok\":true,{metrics}"),
+                        fields: vec![("preview", Part::Object(body, Vec::new()))],
+                    },
+                    None => Answer::Plain(format!("{{\"ok\":true,{metrics}}}")),
+                })
             }
             Err(fail) => {
                 let mut reply = json!({ "ok": false, "error": fail.message });
@@ -648,7 +637,7 @@ impl Store {
             let probe = match serde_json::from_value::<Op>(asked) {
                 Ok(op) => match self.probe(key, id, op, None)? {
                     Answer::Plain(text) => serde_json::from_str::<Value>(&text).unwrap_or(Value::Null),
-                    Answer::Held { .. } => Value::Null,
+                    _ => Value::Null,
                 },
                 Err(err) => json!({ "ok": false, "error": format!("The fix could not be read: {err}") }),
             };

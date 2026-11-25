@@ -135,16 +135,30 @@ pub fn set_limits(limits: Limits) {
 
 /// Answer one JSON request. See `docs/step-modeler.md` for the calls.
 pub fn call(request: &str) -> String {
+    match dispatch(request) {
+        Ok(answer) => answer.into_json(),
+        Err(failure) => failure.json(),
+    }
+}
+
+/// Answer one JSON request as an `LMB1` binary frame when it carries bulk mesh/inspection buffers,
+/// or as plain UTF-8 JSON bytes otherwise.
+pub fn call_bin(request: &str) -> Vec<u8> {
+    match dispatch(request) {
+        Ok(answer) => answer.into_bin(),
+        Err(failure) => failure.json().into_bytes(),
+    }
+}
+
+fn dispatch(request: &str) -> Result<Answer, Failure> {
     let request_text = request;
-    let request: Request = match serde_json::from_str(request) {
-        Ok(request) => request,
-        Err(err) => return Failure::Message(format!("Bad tree request: {err}")).json(),
-    };
+    let request: Request = serde_json::from_str(request)
+        .map_err(|err| Failure::Message(format!("Bad tree request: {err}")))?;
     // Read apart from the request, so every call takes it the same way: "display" or absent, anything else refused.
     let display = match serde_json::from_str::<MeshQualityField>(request_text).map(|field| field.mesh_quality) {
         Ok(None) => false,
         Ok(Some(quality)) if quality == "display" => true,
-        _ => return Failure::Message("meshQuality is 'display' or absent".into()).json(),
+        _ => return Err(Failure::Message("meshQuality is 'display' or absent".into())),
     };
     let mut store = lock();
     store.display = display;
@@ -161,23 +175,15 @@ pub fn call(request: &str) -> String {
             | Request::TextFontAdd { .. }
             | Request::TextFontPack { .. }
     );
-    let answer = store.handle(request);
+    let mut answer = store.handle(request)?;
     if !transient {
         store.evict();
     }
-    match answer {
-        Ok(Answer::Plain(text)) => text,
-        Ok(Answer::Held {
-            key,
-            text,
-            mut fields,
-        }) => {
-            let held = store.docs.get(&key).map(Doc::held).unwrap_or_default();
-            fields.push(("held", Part::Json(json!(held).to_string())));
-            with_fields(&text, &fields)
-        }
-        Err(failure) => failure.json(),
+    if let Answer::Held { key, fields, .. } = &mut answer {
+        let held = store.docs.get(key.as_str()).map(Doc::held).unwrap_or_default();
+        fields.push(("held", Part::Json(json!(held).to_string())));
     }
+    Ok(answer)
 }
 
 /// `meshQuality` of any call: "display" asks for the Model view's display mesh. Read apart from `Request`.
@@ -248,7 +254,7 @@ struct Reply {
     chord: u64,
     /// The Model view's display mesh, not the one committed, sliced and exported.
     display: bool,
-    text: Arc<String>,
+    body: Arc<BinObject>,
     used: u64,
 }
 
