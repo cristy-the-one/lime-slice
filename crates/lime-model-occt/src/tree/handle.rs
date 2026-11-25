@@ -293,6 +293,14 @@ impl Store {
                 node,
                 chord_mm,
             } => self.goto(key, node, chord_mm),
+            Request::ExactVolume { key, node } => {
+                self.ensure(&key, node)?;
+                let text = doc_in(&mut self.docs, &key)?
+                    .shape(node)
+                    .exact_volume_text()
+                    .map_err(Failure::Message)?;
+                Ok(Answer::Plain(format!(r#"{{"exactVolumeMm3":{text}}}"#)))
+            }
             Request::Drop { key, node } => self.drop_branch(key, node),
             Request::Close { key } => {
                 if self.names_tool(&key, None) {

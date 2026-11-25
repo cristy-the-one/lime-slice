@@ -924,6 +924,8 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       }
       // An exact ray is the Open CASCADE bridge. Falling through would replace the solid with a box.
       if (req.call === "surfaceAt") return JSON.stringify({ error: "exact surface_at needs the Open CASCADE bridge" });
+      // The exact volume is a real-kernel read. An empty reply leaves the quick volume in place.
+      if (req.call === "exactVolume") return JSON.stringify({});
       if (req.call === "probe") {
         engine.lastProbe = req.op ?? null;
         engine.lastProbeBody = req;
@@ -1172,6 +1174,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         const loop = { start: outer[0], segments: [...outer.slice(1), outer[0]].map((to) => ({ kind: "line", to })) };
         return JSON.stringify({ loops: [loop], regions: [{ outer, holes: [] }], areaMm2: r((u1 - u0) * (v1 - v0)) });
       }
+      if (req.call === "exactVolume") return JSON.stringify({});
       // --- A9. goto returns the solid that node held. A node with no snapshot keeps the current solid. ---
       if (req.call === "goto") {
         const id = typeof req.node === "number" ? req.node : 0;

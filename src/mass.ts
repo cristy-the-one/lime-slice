@@ -68,6 +68,12 @@ function scaled(row: Integrals, k: number): Integrals {
   return { volume: row.volume * k, first: row.first.map((value) => value * k) as Vec3, second: row.second.map((value) => value * k) as Mat3 };
 }
 
+/** The same mass distribution at `volumeMm3`. The centre stays; mass and inertia follow the volume. */
+export function integralsAtVolume(row: Integrals, volumeMm3: number): Integrals {
+  if (!(row.volume > 0) || !Number.isFinite(volumeMm3)) return row;
+  return scaled(row, volumeMm3 / row.volume);
+}
+
 /**
  * A closed mesh's integrals in its own frame, or why it has none. The mesh is checked as model_check checks it: cracks
  * a commit mends are mended first, and any edge still open refuses it. Inside out is weighed with its sign turned.

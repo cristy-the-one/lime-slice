@@ -634,6 +634,8 @@ extern "C" {
         faces: *mut c_int,
         edges: *mut c_int,
     );
+    /// The exact volume as six-decimal text, cached on the held solid. Writes a C string into `out`.
+    pub(super) fn lime_tree_exact_volume(shape: *mut RawShape, out: *mut c_char, cap: c_int) -> c_int;
     pub(super) fn lime_tree_edge(shape: *mut RawShape, index: c_int, mid: *mut f64, length: *mut f64)
         -> c_int;
     pub(super) fn lime_tree_mesh(

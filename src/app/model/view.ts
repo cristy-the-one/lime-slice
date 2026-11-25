@@ -12,7 +12,7 @@ import {
   type Affine,
 } from "../../model-space";
 import { unionBox } from "../../measure";
-import { decodeSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { decodeSurfaceInspect, exactFrom, shownVolumeMm3, type ParsedSolid } from "../../model-reply";
 import { cachedSurface, keepSurface, surfaceKey } from "./surface-cache";
 import { viewRequest } from "../../model-mesh-quality";
 import { isOpenSheet } from "../../model-sheet";
@@ -119,6 +119,52 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
 }
 
 let refreshingContext = false;
+let exactTicket = 0;
+
+/** The exact volume already read for a node's solid. A second showing of that card does not ask again. */
+const exactRead = new Map<string, number | null>();
+
+/** One node's solid, so a rebuild (a new fingerprint) is read again and a repaint is not. */
+function exactReadKey(key: string, node: number, parsed: ParsedSolid): string {
+  const fp = parsed.fingerprint;
+  return `${key}:${node}:${fp?.volumeMm3 ?? parsed.volumeMm3}:${fp?.faces ?? -1}:${fp?.edges ?? -1}`;
+}
+
+function paintExact(parsed: ParsedSolid, exact: number, quick: string) {
+  const phrase = `${mm(shownVolumeMm3({ volumeMm3: parsed.volumeMm3, exactVolumeMm3: exact }))} mm³`;
+  setInspectVolume(phrase);
+  parsed.exactVolumeMm3 = exact;
+  if (phrase !== quick && S.readoutText.includes(quick)) readout(S.readoutText.replace(quick, phrase));
+}
+
+/** The Part card's volume is the exact measure. The open itself stays on the quick reply. A ghost, a hover and a repaint do not come here. */
+async function showExactVolume(parsed: ParsedSolid) {
+  const open = S.open;
+  const tree = treeOf(open);
+  if (!open || !tree) return;
+  const key = S.lens?.key ?? open.key;
+  const node = S.lens?.node ?? parsed.id;
+  const id = exactReadKey(key, node, parsed);
+  const known = exactRead.get(id);
+  const quick = `${mm(shownVolumeMm3(parsed))} mm³`;
+  if (known !== undefined) {
+    if (known !== null) paintExact(parsed, known, quick);
+    return;
+  }
+  exactRead.set(id, null);
+  const mine = ++exactTicket;
+  let body: Record<string, unknown>;
+  try {
+    body = await treeCall(key, node, { call: "exactVolume", key, node });
+  } catch {
+    exactRead.delete(id);
+    return;
+  }
+  const exact = exactFrom(body);
+  exactRead.set(id, exact ?? null);
+  if (mine !== exactTicket || S.open !== open || exact === undefined) return;
+  paintExact(parsed, exact, quick);
+}
 
 /** What the tools say while a tool's step is looked at in History. */
 const PEEK_LOCK = "This is a step of a tool this part was joined with. Edit step changes it; pick a step of this part to work on it.";
@@ -141,7 +187,7 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   const marked = state.plate.objects.find((obj) => obj.id === S.open?.objectId)?.sheet === true;
   const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id, marked);
   fx.model?.setSolid(parsed, openPose(), isSheet);
-  setInspectVolume(parsed.editable ? `${mm(parsed.volumeMm3)} mm³` : "—");
+  setInspectVolume(parsed.editable ? `${mm(shownVolumeMm3(parsed))} mm³` : "—");
   if (S.open && S.framedFor !== S.open.objectId) {
     S.framedFor = S.open.objectId;
     frameModel(false);
@@ -173,6 +219,7 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   refreshModelGhost();
   syncUndo();
   readout(message);
+  if (parsed.editable) void showExactVolume(parsed);
   // P2. The solid or the tool changed: the edge knob follows.
   S.edgeDrag?.sync();
   // --- S2 sketch ---
