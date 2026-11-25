@@ -183,7 +183,69 @@ eq("a held ↑ repeats", press("↑", inPreview, true), "layer-up");
 
 const keyed = COMMANDS.filter((command) => command.keys && command.show !== "none");
 const listed = helpGroups().flatMap((group) => group.entries);
-eq("the sheet lists every keyed command once", listed.map((entry) => entry.label), keyed.map((command) => command.label));
+const SHEET_STAGES = ["App", "Model", "Sketch", "Pose", "Prepare", "Preview", "G-code"];
+eq("the shortcut sheet is grouped by stage", helpGroups().map((group) => group.group), SHEET_STAGES);
+
+/** A stage lists a command only when one of its keys runs there. App holds a key that runs in every stage, or only while slicing. */
+function firesIn(id: string, contexts: Partial<KeyContext>[]): boolean {
+  const keys = COMMANDS.find((command) => command.id === id)?.keys ?? [];
+  return keys.some((chord) => contexts.some((ctx) => press(chord, ctx) === id));
+}
+const STAGE_CONTEXTS: Record<string, Partial<KeyContext>[]> = {
+  Model: [{ stage: "model" }],
+  Sketch: [
+    { stage: "model", sketchOpen: true },
+    { stage: "model", sketchOpen: true, sketchFeature: true },
+    { stage: "model", sketchOpen: true, sketchLoft: true },
+    { stage: "model", sketchOpen: true, sketchFeature: true, sketchLoft: true },
+  ],
+  Pose: [{ stage: "pose" }],
+  Prepare: [{ stage: "prepare" }, { stage: "prepare", brushOn: true }],
+  Preview: [{ stage: "preview", hasResult: true }],
+  "G-code": [{ stage: "gcode" }, { stage: "gcode", hasResult: true }],
+};
+function stagesWhere(id: string): string[] {
+  const hit = SHEET_STAGES.filter((stage) => stage !== "App" && firesIn(id, STAGE_CONTEXTS[stage]!));
+  const across = (["Model", "Pose", "Prepare", "Preview", "G-code"] as const).every((stage) => hit.includes(stage));
+  if (across || hit.length === 0) return ["App"];
+  return hit;
+}
+const listedStages = new Map<string, string[]>();
+for (const group of helpGroups()) {
+  for (const entry of group.entries) {
+    const stages = listedStages.get(entry.id) ?? [];
+    if (!stages.includes(group.group)) stages.push(group.group);
+    listedStages.set(entry.id, stages);
+  }
+}
+const misplaced: string[] = [];
+for (const command of keyed) {
+  const got = listedStages.get(command.id) ?? [];
+  const want = stagesWhere(command.id);
+  if (JSON.stringify(got) !== JSON.stringify(want)) misplaced.push(`${command.id}: ${got.join("+") || "missing"} vs ${want.join("+")}`);
+}
+check("each keyed command is listed only where that key works", misplaced.length === 0, misplaced.slice(0, 8).join("; "));
+function rowsIn(stage: string) {
+  return helpGroups().find((group) => group.group === stage)?.entries ?? [];
+}
+eq(
+  "Model lists Scale solid on Shift+S",
+  rowsIn("Model").filter((entry) => entry.id === "model-scale").map((entry) => ({ label: entry.label, keys: entry.keys })),
+  [{ label: "Scale solid", keys: ["Shift+S"] }],
+);
+eq(
+  "Sketch lists Slot on Shift+S",
+  rowsIn("Sketch").filter((entry) => entry.id === "sketch-slot").map((entry) => ({ label: entry.label, keys: entry.keys })),
+  [{ label: "Slot", keys: ["Shift+S"] }],
+);
+check("Model does not list Slot", !rowsIn("Model").some((entry) => entry.id === "sketch-slot"));
+check("Sketch does not list Scale solid", !rowsIn("Sketch").some((entry) => entry.id === "model-scale"));
+eq(
+  "Pose lists Move on M",
+  rowsIn("Pose").filter((entry) => entry.id === "pose-move").map((entry) => ({ label: entry.label, keys: entry.keys })),
+  [{ label: "Move", keys: ["M"] }],
+);
+check("Model does not list Place", !rowsIn("Model").some((entry) => entry.id === "model-place" || entry.keys?.includes("Shift+P")));
 eq("the sheet shows all of a command's chords", listed.find((entry) => entry.label === "Remove object")?.keys, ["Del", "Backspace"]);
 eq("the sheet spells the keys the old prose left out", ["Search settings", "Smaller brush", "Paint seam", "Layer up", "Toggle results panel"].map((label) => listed.find((entry) => entry.label === label)?.keys), [["/", "Ctrl+F"], ["["], ["K"], ["↑", "]"], ["Ctrl+Alt+B"]]);
 eq("groups appear once each", helpGroups().map((group) => group.group), [...new Set(helpGroups().map((group) => group.group))]);
@@ -453,6 +515,14 @@ eq("Shift+M measures in Model", press("Shift+M", { stage: "model" }), "model-mea
 eq("T, Y and I move the Model camera", ["T", "Y", "I"].map((chord) => press(chord, { stage: "model" })), ["model-view-top", "model-view-front", "model-view-iso"]);
 eq("T in a sketch still trims", press("T", sketchCtx), "sketch-trim");
 eq("Model scale is labelled Scale solid", COMMANDS.find((command) => command.id === "model-scale")?.label, "Scale solid");
+eq("Shift+S in Model scales the solid", press("Shift+S", { stage: "model" }), "model-scale");
+eq("X in Model does nothing", press("X", { stage: "model" }), null);
+eq("Shift+S in a sketch stays Slot", press("Shift+S", sketchCtx), "sketch-slot");
+eq("X in a sketch is the helper line", press("X", sketchCtx), "sketch-construction");
+eq("S in Prepare stays Scale", press("S"), "tool-scale");
+eq("Shift+P does nothing in Model", press("Shift+P", { stage: "model" }), null);
+check("Place is not a Model command", !COMMANDS.some((command) => command.id === "model-place"));
+eq("M in Pose is Move", press("M", { stage: "pose" }), "pose-move");
 eq("export is labelled Export G-code", COMMANDS.find((command) => command.id === "export")?.label, "Export G-code");
 eq(
   "Shift+click names Model and Paint",
@@ -498,7 +568,9 @@ const lofted = filterHelp(groups, "smooth loft");
 check("searching finds Smooth loft first", lofted[0]?.entries[0]?.id === "sketch-smooth", JSON.stringify(lofted.map((group) => group.entries.map((entry) => entry.id))));
 check("searching drops groups with no hit", lofted.every((group) => group.entries.length > 0) && lofted.length < groups.length);
 eq("searching by chord finds the row", filterHelp(groups, "Ctrl+Shift+Z").flatMap((group) => group.entries.map((entry) => entry.id)).includes("redo"), true);
-eq("searching by group name finds all its rows", filterHelp(groups, "Layers").find((group) => group.group === "Layers")?.entries.length, groups.find((group) => group.group === "Layers")?.entries.length);
+const previewRows = groups.find((group) => group.group === "Preview")?.entries.length ?? 0;
+check("Preview lists keys", previewRows > 0);
+eq("searching by group name finds all its rows", filterHelp(groups, "Preview").find((group) => group.group === "Preview")?.entries.length, previewRows);
 eq("nonsense finds nothing", filterHelp(groups, "xyzqq"), []);
 // Every row on the sheet, help-only commands and mouse gestures included, is found by a word of its label.
 const sheet = sheetGroups();
@@ -511,19 +583,22 @@ for (const group of sheet) {
     check(`sheet search finds "${entry.label}" by "${word}"`, found);
   }
 }
-check("the sheet has mouse rows", sheet.some((group) => group.group === "Mouse" && group.entries.length === MOUSE_HINTS.length));
+check("every mouse hint is listed in a stage group", MOUSE_HINTS.every((hint) => sheet.some((group) => (SHEET_STAGES as readonly string[]).includes(group.group) && group.entries.some((entry) => entry.label === hint.label && entry.keys[0] === hint.gesture))));
+check("the sheet has no Mouse heading", sheet.every((group) => group.group !== "Mouse"));
+eq("the sheet's groups are the stages", sheet.map((group) => group.group), SHEET_STAGES);
 check("help-only commands are not in the palette", helpOnly.every((command) => !paletteCommands().includes(command)));
-eq("Prepare opens Plate and Tools", groupsForStage("prepare"), ["Plate", "Tools"]);
-eq("Preview opens Layers", groupsForStage("preview"), ["Layers"]);
-eq("G-code opens Slice", groupsForStage("gcode"), ["Slice"]);
-eq("Model opens Model, and Sketch inside a sketch", [groupsForStage("model"), groupsForStage("model", true)], [["Model"], ["Sketch"]]);
+eq("Prepare opens App and Prepare", groupsForStage("prepare"), ["App", "Prepare"]);
+eq("Preview opens App and Preview", groupsForStage("preview"), ["App", "Preview"]);
+eq("G-code opens App and G-code", groupsForStage("gcode"), ["App", "G-code"]);
+eq("Pose opens App and Pose", groupsForStage("pose"), ["App", "Pose"]);
+eq("Model opens App and Model, and App and Sketch inside a sketch", [groupsForStage("model"), groupsForStage("model", true)], [["App", "Model"], ["App", "Sketch"]]);
 for (const stage of ["prepare", "preview", "gcode", "model", "pose"] as const) {
   for (const name of groupsForStage(stage, stage === "model")) check(`${stage} opens a real group (${name})`, groups.some((group) => group.group === name));
 }
 
 // R3 and R4 (docs/plan-interaction-model.md). I3 owns key changes; I5 and X1 own moves. -----------------------
 
-/** One idea, one key, where that idea already has the same key in each stage. Pose's Move shares Prepare's M (I5). */
+/** One idea, one key, where that idea already has the same key in each stage. Pose's Move shares Prepare's M (I5). Scale is the only exception. */
 const SHARED_IDEAS: { idea: string; key: string; ids: string[] }[] = [
   { idea: "move", key: "M", ids: ["tool-move", "pose-move"] },
   { idea: "rotate", key: "R", ids: ["tool-rotate", "pose-turn"] },
@@ -536,6 +611,17 @@ const SHARED_IDEAS: { idea: string; key: string; ids: string[] }[] = [
 for (const row of SHARED_IDEAS) {
   const keys = row.ids.map((id) => COMMANDS.find((command) => command.id === id)?.keys?.[0] ?? "");
   check(`R4 ${row.idea} is ${row.key} in every listed command`, keys.every((key) => key === row.key) && new Set(keys).size === 1, keys.join(","));
+}
+
+/** The only approved R4 exception. Any other shared idea still has to be one key, and the screen-clash loop above still fails a real clash. */
+const R4_EXCEPTIONS: { note: string; keys: Record<string, string> }[] = [
+  { note: "Scale: S in Prepare, Shift+S in Model (D2)", keys: { "tool-scale": "S", "model-scale": "Shift+S" } },
+];
+eq("the only approved R4 exception", R4_EXCEPTIONS.map((row) => row.note), ["Scale: S in Prepare, Shift+S in Model (D2)"]);
+for (const row of R4_EXCEPTIONS) {
+  const actual = Object.keys(row.keys).map((id) => [id, COMMANDS.find((command) => command.id === id)?.keys?.[0] ?? ""] as const);
+  for (const [id, key] of actual) eq(`R4 ${row.note}: ${id}`, key, row.keys[id]);
+  check(`R4 ${row.note} records two keys`, new Set(Object.values(row.keys)).size > 1);
 }
 
 /**
