@@ -4,7 +4,7 @@
  * to. The computation is src/mass.ts, which the Pose panel shares.
  */
 import { assemblyOf, type Assembly } from "../../src/assembly.ts";
-import { aboutAxis, bodyOf, G_MM_S2, movingBody, partIntegrals, principal, swing, withMass, type BodyPart, type MassBody } from "../../src/mass.ts";
+import { aboutAxis, bodyOf, G_MM_S2, integralsAtVolume, movingBody, partIntegrals, principal, swing, withMass, type BodyPart, type MassBody } from "../../src/mass.ts";
 import { applyPose, IDENTITY_POSE, inversePose, seatLift, thenPose, turnDir, type Affine } from "../../src/model-space.ts";
 import { filamentGrams } from "../../src/estimate.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -81,7 +81,7 @@ function hingeOf(s: Session, assembly: Assembly | undefined, body: string): { po
   return { point: applyPose(part.modelPose, joint.pivot), axis: turnDir(part.modelPose, joint.axis) };
 }
 
-export function modelMass(s: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+export async function modelMass(s: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const density = input.density;
   if (density !== undefined && !(typeof density === "number" && density > 0 && density <= 25)) return refuse("bad-argument", "density is the material's density in g/cm³, above 0 and at most 25.");
   const about = input.about;
@@ -105,12 +105,17 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
   const densityGCm3 = typeof density === "number" ? density : filament.densityGCm3;
   const parts: BodyPart[] = [];
   const rows: Record<string, unknown>[] = [];
+  let anyExact = false;
   for (const id of ids) {
     const part = s.find(id);
     if (!part) continue;
     const mesh = meshOf(part);
-    const integrals = partIntegrals(mesh.positions, shownName(part.name));
-    if ("reason" in integrals) return refuse("open-mesh", integrals.reason, { object: part.id }, "Call model_check on that part for its open edges.");
+    const measured = partIntegrals(mesh.positions, shownName(part.name));
+    if ("reason" in measured) return refuse("open-mesh", measured.reason, { object: part.id }, "Call model_check on that part for its open edges.");
+    // The volume a person reads is the solid's exact measure. Mass and inertia follow it; the centre stays the mesh's.
+    const exact = part.tree ? await s.readExact(part) : undefined;
+    if (typeof exact === "number") anyExact = true;
+    const integrals = typeof exact === "number" ? integralsAtVolume(measured, exact) : measured;
     parts.push({ integrals, pose: mesh.pose, densityGCm3 });
     const one = bodyOf([{ integrals, pose: mesh.pose, densityGCm3 }]);
     rows.push({ object: part.id, name: shownName(part.name), volumeMm3: sig(one.volumeMm3), grams: sig(one.massG) });
@@ -127,7 +132,9 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
 
   const notes: string[] = [];
   const source = typeof density === "number" ? `density ${density} g/cm³ as given` : `the filament ${filament.name} (${filament.densityGCm3} g/cm³)`;
-  notes.push(`Mass of a solid body: its volume, from the closed mesh, at ${source}. A printed part with walls and infill weighs less.`);
+  notes.push(anyExact
+    ? `Mass of a solid body: its volume, the solid's exact measure, at ${source}. The centre of gravity is from the closed mesh. A printed part with walls and infill weighs less.`
+    : `Mass of a solid body: its volume, from the closed mesh, at ${source}. A printed part with walls and infill weighs less.`);
   if (ids.length > 1) notes.push(`The body is ${ids.length} parts that move together (${rows.map((row) => row.name).join(", ")}), at their assembled poses. part:true weighs ${shownName(obj.name)} alone.`);
   if (leftOut.length > 0) notes.push(`part:true: ${shownName(obj.name)} alone; ${leftOut.length === 1 ? "the other part that moves with it" : `the ${leftOut.length} other parts that move with it`} (${leftOut.map((id) => shownName(s.find(id)?.name ?? id)).join(", ")}) ${leftOut.length === 1 ? "is" : "are"} left out.`);
   const principalOf = (one: MassBody) => {

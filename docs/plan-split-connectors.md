@@ -471,7 +471,7 @@ One name per size:
 
 Width X, Depth Y, and Height Z are not reused for a connector. Depth on a connector is along the cut, and the field's full name in the accessible description says so ("Depth, along the cut, 4 millimetres").
 
-No new shortcut. Split's `D` stays. X, Y, Z, and F stay Scale, the front view, and Lay flat.
+No new shortcut. Split's `D` stays. Y, Z, and F stay the front view and Lay flat. Scale in Model is Shift+S.
 
 On a short window the card is the same drawer the other Model tools use. On the phone it is the same menu item in the top strip, opening the sheet. No separate layout.
 

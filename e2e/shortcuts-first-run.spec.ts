@@ -60,6 +60,10 @@ test.describe("returning launch", () => {
 test.describe("the shortcut sheet", () => {
   test.use({ storageState: RETURNING });
 
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
+  });
+
   test("opens on this workspace's group, searches, and closes with Esc", async ({ page }) => {
     await quiet(page);
     await page.setViewportSize({ width: 1440, height: 1000 });
@@ -72,7 +76,8 @@ test.describe("the shortcut sheet", () => {
 
     const open = sheet.locator("details.help-group[open]");
     await expect(open).toHaveCount(2);
-    await expect(open.locator("h3")).toHaveText(["Plate", "Tools"]);
+    await expect(open.locator("h3")).toHaveText(["App", "Prepare"]);
+    await shot(page, "sheet-prepare.png");
     await expect(sheet.locator("details.help-group:not([open])").first()).toBeVisible();
 
     // The first row is on screen: the card is inside the window and the list starts at its top.
@@ -89,8 +94,8 @@ test.describe("the shortcut sheet", () => {
     expect(first.rowTop).toBeGreaterThanOrEqual(first.bodyTop);
 
     // One click opens a closed group.
-    await sheet.locator("summary", { hasText: "Layers" }).click();
-    await expect(sheet.locator("details.help-group[open] h3")).toHaveText(["Layers", "Plate", "Tools"]);
+    await sheet.locator("summary", { hasText: "Preview" }).click();
+    await expect(sheet.locator("details.help-group[open] h3")).toHaveText(["App", "Prepare", "Preview"]);
 
     // Search: ? stays text, groups with a hit open, the context shows beside a shared key.
     await page.locator("#helpSearch").click();
@@ -113,7 +118,7 @@ test.describe("the shortcut sheet", () => {
     // Reopening starts clean.
     await page.keyboard.press("?");
     await expect(page.locator("#helpSearch")).toHaveValue("");
-    await expect(sheet.locator("details.help-group[open] h3")).toHaveText(["Plate", "Tools"]);
+    await expect(sheet.locator("details.help-group[open] h3")).toHaveText(["App", "Prepare"]);
   });
 
   test("Redo's second chord keeps its label, and a shared key says where it works", async ({ page }) => {

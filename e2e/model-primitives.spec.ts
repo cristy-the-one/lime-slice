@@ -88,7 +88,8 @@ test("on an empty plate, New solid makes a 20 mm box: listed, measured, and the 
   await expect(rows(page)).toHaveCount(1);
   await expect(rows(page).first()).toContainText("Box 20×20×20");
   await expect(page.locator("#modelPanel"), "Create closes the panel").toBeHidden();
-  expect(tree.calls.map((call) => call.call), "the ghost asked nothing; Create opened the primitive, and no file was read").toEqual(["open"]);
+  // The Part card reads the exact volume once.
+  expect(tree.calls.map((call) => call.call), "the ghost asked nothing; Create opened the primitive, and no file was read").toEqual(["open", "exactVolume"]);
   const opened = tree.of("open");
   expect(opened[0]).toMatchObject({ primitive: { primitive: "box", origin: [-10, -10, 0], size: [20, 20, 20], turn: [0, 0, 0] } });
   expect(opened[0]!.dataB64).toBeUndefined();

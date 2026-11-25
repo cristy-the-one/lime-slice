@@ -4,7 +4,7 @@
  * applied or probed op carries. The session (mcp/session.ts) and the app's recipe calls (src/recipe/app-calls.ts) use
  * these, so a recipe reads the same answers in both.
  */
-import { decodeSolid } from "../model-reply.ts";
+import { decodeSolid, shownFingerprint, shownVolumeMm3 } from "../model-reply.ts";
 import { isPrimitiveKind, type PrimitiveSpec } from "../model-primitive.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeNote, turnedAxis, type ProbedTool } from "../model-feasibility.ts";
 import { applyPose, IDENTITY_POSE, isIdentity, turnDir, type Affine } from "../model-space.ts";
@@ -33,6 +33,7 @@ export function solidView(body: Record<string, unknown>) {
   return {
     id: solid.id,
     volumeMm3: solid.volumeMm3,
+    ...(solid.exactVolumeMm3 !== undefined ? { exactVolumeMm3: solid.exactVolumeMm3 } : {}),
     editable: solid.editable,
     fingerprint: solid.fingerprint,
     positions: Float32Array.from(solid.positions),
@@ -190,9 +191,9 @@ export function describeReply(own: SolidView, input: Record<string, unknown>, fr
   return {
     ok: true,
     ...extra,
-    volumeMm3: solid.volumeMm3,
+    volumeMm3: shownVolumeMm3(solid),
     solid: solid.editable,
-    fingerprint: solid.fingerprint,
+    fingerprint: shownFingerprint(solid),
     bounds: solid.bounds,
     frame,
     faces: counts ? [] : faces.rows,

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type MockSolid } from "./model-tree-mock";
@@ -541,6 +543,63 @@ test("extrude waits for a profile, and loft says what to pick", async ({ page })
   await page.locator("[data-sketch-section=feature] [data-sketch-cancel]").click();
   await expect(prompt).toHaveCount(0);
   await expect(canvas).toHaveAttribute("data-loft", "off");
+});
+
+test("the shortcut sheet lists Shift+S under Model for Scale solid and under Sketch for Slot", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await openBox(page);
+  const canvas = page.locator("#model");
+  const scaleButton = page.locator("#modelToolScale");
+  await expect(scaleButton).toHaveAttribute("aria-keyshortcuts", "Shift+S");
+  await page.keyboard.press("x");
+  await expect(scaleButton).toHaveAttribute("aria-pressed", "false");
+  await page.keyboard.press("Shift+S");
+  await expect(scaleButton).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#modelFactor")).toBeVisible();
+
+  const blur = () => page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+  await blur();
+  await page.keyboard.press("?");
+  const sheet = page.locator("#help");
+  await expect(sheet).toBeVisible();
+  await expect(sheet.locator("details.help-group[open] h3")).toHaveText(["App", "Model"]);
+  const model = sheet.locator(".help-group", { has: page.locator("h3", { hasText: /^Model$/ }) });
+  const scale = model.locator("li", { has: page.locator(".help-label", { hasText: /^Scale solid$/ }) });
+  await expect(scale.locator("kbd")).toHaveText("Shift+S");
+  await expect(model.locator(".help-label", { hasText: /^Slot$/ })).toHaveCount(0);
+  const sketch = sheet.locator(".help-group", { has: page.locator("h3", { hasText: /^Sketch$/ }) });
+  await expect(sketch.locator(".help-label", { hasText: /^Scale solid$/ })).toHaveCount(0);
+  await scale.scrollIntoViewIfNeeded();
+  if (process.env.LIME_SHOTS) {
+    fs.mkdirSync(process.env.LIME_SHOTS, { recursive: true });
+    await page.screenshot({ path: path.join(process.env.LIME_SHOTS, "sheet-model.png") });
+  }
+
+  await page.keyboard.press("Escape");
+  await expect(sheet).toBeHidden();
+  await page.keyboard.press("Escape");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(scaleButton).not.toHaveAttribute("aria-keyshortcuts", "Shift+S");
+  await blur();
+  await page.keyboard.press("Shift+S");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "slot");
+  await page.keyboard.press("X");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "construction");
+  await blur();
+  await page.keyboard.press("?");
+  await expect(sheet).toBeVisible();
+  await expect(sheet.locator("details.help-group[open] h3")).toHaveText(["App", "Sketch"]);
+  const slot = sketch.locator("li", { has: page.locator(".help-label", { hasText: /^Slot$/ }) });
+  await expect(slot.locator("kbd")).toHaveText("Shift+S");
+  await expect(sketch.locator(".help-label", { hasText: /^Scale solid$/ })).toHaveCount(0);
+  await slot.scrollIntoViewIfNeeded();
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: path.join(process.env.LIME_SHOTS, "sheet-sketch.png") });
 });
 
 test("the shortcut sheet lists Loft beside Shift+L while a sketch is open", async ({ page }) => {
