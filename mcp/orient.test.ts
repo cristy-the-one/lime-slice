@@ -120,12 +120,19 @@ writeFileSync(file, Buffer.from(encodeStl(standIn, "stand-in")));
 const engine = fakeEngine();
 const session = new Session(engine);
 const call = (name: string, args: unknown = {}) => session.call(name, args);
+async function ask(name: string, args: unknown = {}): Promise<Record<string, unknown>> {
+  try {
+    return await call(name, args);
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 const imported = await call("mesh_import", { path: file });
 const id = String(imported.object);
 const plate = () => call("plate_list", {});
 const boxOf = async () => JSON.stringify(((await plate()).objects as { bboxMm: unknown }[])[0]?.bboxMm);
-const flat = await call("orient_compare", { object: id }).catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
+const flat = await ask("orient_compare", { object: id });
 const flatRows = (flat.rotations ?? []) as Row[];
 const flatKeys = flatRows.map((row) => `${row.rotX},${row.rotY},${row.rotZ}`).sort();
 check(
@@ -138,7 +145,7 @@ check(
 
 const selected = await call("machine_select", { printerId: "generic-belt-45", filamentId: "lime-pla" });
 const onBelt = await boxOf();
-const compared = await call("orient_compare", { object: id }).catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
+const compared = await ask("orient_compare", { object: id });
 const rows = (compared.rotations ?? []) as Row[];
 const yaws = rows.map((row) => row.rotZ);
 const best = rows.find((row) => row.best === true);
