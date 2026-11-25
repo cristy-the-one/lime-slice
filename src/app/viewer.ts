@@ -31,6 +31,7 @@ import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
 import { paintRailStage, syncSection } from "../ui/chrome";
 import { clampPartPercent } from "../gizmo-math";
+import { nudgePose } from "./pose-move";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
@@ -682,7 +683,8 @@ export function paintGizmoReadout() {
 function paintGizmoNudge(rotate: boolean, scale: boolean, toolOn: boolean) {
   const nudgeEl = document.querySelector<HTMLElement>("#gizmoNudge");
   if (!nudgeEl) return;
-  const show = state.stage === "prepare" && !!state.placed && toolOn;
+  const poseMove = state.stage === "pose" && document.querySelector<HTMLButtonElement>('#toolRail [data-pose-tool="move"]')?.getAttribute("aria-pressed") === "true" && !!state.plate.selectedId;
+  const show = poseMove || (state.stage === "prepare" && !!state.placed && toolOn);
   nudgeEl.hidden = !show;
   const unit = scale ? "1%" : rotate ? "1°" : "0.1 mm";
   for (const button of nudgeEl.querySelectorAll<HTMLButtonElement>("button")) {
@@ -712,6 +714,10 @@ function applyScaleDelta(deltaPercent: number): number {
 
 /** One fine gizmo step. Move is 0.1 mm; Rotate is 1°. Hit targets stay as they are. */
 export function stepGizmo(axis: "x" | "y" | "z", sign: number) {
+  if (state.stage === "pose") {
+    nudgePose(axis, sign);
+    return;
+  }
   if (!state.sourcePos || !state.placed) return;
   const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
   const nudge = gizmoNudge(tool, sign);

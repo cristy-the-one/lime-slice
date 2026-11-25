@@ -107,7 +107,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
   { id: "model-features", label: "Features", group: "Model", when: "model", target: '#modelToolFeatures, #modelFeatureMenu [data-tool="pocket"]', keywords: "pocket boss texture array ribs text" },
-  // --- A4 pattern and mirror. No shortcut: P is Push/Pull, H is Hole, Shift+P is Place. ---
+  // --- A4 pattern and mirror. No shortcut: P is Push/Pull, H is Hole. Shift+P is free (design-space move is Pose's M). ---
   { id: "model-pattern", label: "Pattern", group: "Model", when: "model", target: "#modelToolPattern", keywords: "repeat linear polar path copy steps" },
   { id: "model-mirror", label: "Mirror", group: "Model", when: "model", target: "#modelToolMirror", keywords: "reflect flip plane" },
   // --- A2 shell ---
@@ -115,7 +115,6 @@ export const COMMANDS: CommandSpec[] = [
   // --- Draft on picked faces. No key, as Shell: the free letters belong to no scheme a draft fits.
   { id: "model-draft", label: "Draft", group: "Model", when: "model", target: "#modelToolDraft", keywords: "taper tilt wall angle mould mold release pull" },
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },
-  { id: "model-place", label: "Place in model space", group: "Model", keys: ["Shift+P"], when: "model", target: "#modelToolPlace", keywords: "move turn position assembly align" },
   { id: "model-workplane", label: "Workplane", group: "Model", keys: ["Shift+U"], when: "model", target: "#modelToolWorkplane", keywords: "uvw local frame datum face bed origin sketch plane" },
   // --- A7 model check ---
   { id: "model-check", label: "Check the solid", group: "Model", keys: ["Shift+K"], when: "model", target: "#modelToolCheck", keywords: "overhang ceiling island thin wall fit printability" },
@@ -203,6 +202,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], when: "prepare", target: '#toolRail [data-tool="scale"]', keywords: "percent gizmo" },
   { id: "tool-pivot", label: "Pivot", group: "Tools", when: "prepare", target: '#toolRail [data-tool="pivot"]', keywords: "origin joint" },
   { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], when: "prepare", target: '#layflat, #toolRail [data-tool="layflat"]', keywords: "bed face" },
+  { id: "pose-move", label: "Move", group: "Tools", keys: ["M"], when: ["pose"], target: '#toolRail [data-pose-tool="move"]', layouts: ["desktop"], keywords: "pose move design space place snap align" },
   { id: "pose-select", label: "Select", group: "Tools", keys: ["V"], when: ["pose"], target: '#toolRail [data-pose-tool="select"]', layouts: ["desktop"], keywords: "pose pick orbit" },
   { id: "pose-turn", label: "Turn joint", group: "Tools", keys: ["R"], when: ["pose"], target: '#toolRail [data-pose-tool="turn"]', layouts: ["desktop"], keywords: "pose hinge ring forward kinematics angle" },
   { id: "pose-reach", label: "Reach", group: "Tools", keys: ["G"], when: ["pose"], target: '#toolRail [data-pose-tool="reach"]', layouts: ["desktop"], keywords: "pose ik inverse kinematics drag grab chain" },
@@ -246,8 +246,8 @@ export const MOUSE_HINTS: { gesture: string; label: string }[] = [
   // --- P1 ---
   { gesture: "Drag a face", label: "Push or pull. Alt adds or cuts on that face only." },
   { gesture: "Click empty", label: "Clear the Model selection" },
-  { gesture: "Ctrl + drag", label: "Move the object: on the bed in Prepare, in model space in Model. It snaps to the other objects; Alt turns that off. Ctrl+click on another object opens it." },
-  { gesture: "Ctrl + right-drag", label: "Turn the object about Z, in Prepare and in Model. X, Y or Z while dragging picks the axis; Esc cancels." },
+  { gesture: "Ctrl + drag", label: "Move the object on the bed in Prepare. It snaps to the other objects; Alt turns that off. Ctrl+click on another object opens it. In Pose, Move (M) drags a part in design space the same way." },
+  { gesture: "Ctrl + right-drag", label: "Turn the object about Z in Prepare. In Pose, Move's right-drag turns it in design space. X, Y or Z while dragging picks the axis; Esc cancels." },
   { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
   { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },
   { gesture: "Alt/Shift + wheel", label: "Resize the paint brush" },

@@ -78,6 +78,8 @@ export function actionReason(id: string): string | null {
   const modelTool = MODEL_TOOLS[id];
   if (modelTool) return state.stage === "model" ? null : `${modelTool} is in Model.`;
   switch (id) {
+    case "pose-move":
+      return state.stage === "pose" ? null : "Move is in Pose.";
     case "model-transition":
       if (state.stage !== "model") return "Print transition is in Model.";
       if (!printTransitionSolid()) return "Open a solid to add a print transition.";

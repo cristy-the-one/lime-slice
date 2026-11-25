@@ -241,30 +241,31 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   const calls = tree.calls.length;
 
-  // Clicking the row opens Place.
-  await positionRow(page).click();
-  await expect(page.locator("#modelToolPlace")).toHaveAttribute("aria-pressed", "true");
-  // A row's element is kept: a move repaints the Position row, never the tree.
+  // Clicking the row opens Move in Pose.
   await rows(page).first().evaluate((el) => ((el as HTMLElement & { kept?: boolean }).kept = true));
-  await page.locator("#modelPlaceX").fill("10");
-  await expect(positionText(page), "it follows Place as it types").toHaveText("X 10");
-  await page.locator("#modelPlaceRz").fill("30");
-  await page.locator("#modelPlaceRz").press("Tab");
+  await positionRow(page).click();
+  await expect(page.locator("#tabPose")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('#toolRail [data-pose-tool="move"]')).toHaveAttribute("aria-pressed", "true");
+  await page.locator("#poseMoveX").fill("10");
+  await page.locator("#poseMoveX").press("Tab");
+  await page.locator("#poseMoveRz").fill("30");
+  await page.locator("#poseMoveRz").press("Tab");
+  await page.locator("#tabModel").click();
   await expect(positionText(page)).toHaveText("X 10 · Turn Z 30°");
-  await expect(positionRow(page)).toHaveAttribute("aria-label", "Position: X 10 · Turn Z 30°. Opens Place.");
+  await expect(positionRow(page)).toHaveAttribute("aria-label", "Position: X 10 · Turn Z 30°. Opens Move.");
   expect(await rows(page).first().evaluate((el) => (el as HTMLElement & { kept?: boolean }).kept)).toBe(true);
 
-  // Reset while Place is open: the part is back where its file put it, and Undo takes it back as a Place step.
+  // Reset puts the part back where its file put it. Undo outside Model takes that step back.
   await expect(reset(page)).toBeVisible();
   await reset(page).click();
   await expect(positionText(page)).toHaveText("Placed as in the file");
   await expect(reset(page)).toBeHidden();
   await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,20.00,20.00,10.00");
-  await expect(page.locator("#modelPlaceX")).toHaveValue("0");
-  await page.locator("#modelUndo").click();
+  await page.locator("#tabPrepare").click();
+  await page.keyboard.press("Control+z");
+  await page.locator("#tabModel").click();
   await expect(positionText(page)).toHaveText("X 10 · Turn Z 30°");
-  await page.locator("#modelCancel").click();
-  expect(tree.calls.length, "the row asks the engine nothing").toBe(calls);
+  expect(tree.calls.length - tree.of("export").length, "the row asks the engine nothing").toBe(calls);
 
   // Leave Model with the part moved, come back, Reset, leave: Prepare undo takes the Reset back.
   await page.locator("#tabPrepare").click();
@@ -277,13 +278,14 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await page.locator("#tabModel").click();
   await expect(positionText(page), "Prepare undo puts the pose back").toHaveText("X 10 · Turn Z 30°");
 
-  // Reset with Hole open goes through Place, which closes Hole: its checked numbers were for the old pose.
+  // Reset with Hole open leaves Hole open. The pose still goes back, and Undo outside Model restores it.
   await openHole(page);
   await reset(page).click();
-  await expect(page.locator("#modelToolPlace")).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("#modelToolHole")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#modelToolHole")).toHaveAttribute("aria-pressed", "true");
   await expect(positionText(page)).toHaveText("Placed as in the file");
-  await page.locator("#modelUndo").click();
+  await page.locator("#tabPrepare").click();
+  await page.keyboard.press("Control+z");
+  await page.locator("#tabModel").click();
   await expect(positionText(page)).toHaveText("X 10 · Turn Z 30°");
 
   // The row is no step: no menu, no rename, and tree keys pass it by. Leaving Model wrote a STEP and Hole checked
@@ -294,7 +296,9 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await expect(page.locator("#modelHistoryMenu")).toBeHidden();
   await positionText(page).dblclick();
   await expect(page.locator(".mh-rename")).toHaveCount(0);
-  await page.locator("#modelCancel").click();
+  // A double-click still opens Move, which now lives in Pose. The row itself stays in Model.
+  await page.locator("#tabModel").click();
+  if (await page.locator("#modelPanel").isVisible()) await page.locator("#modelCancel").click();
   await positionRow(page).focus();
   await page.keyboard.press("Delete");
   await page.keyboard.press("F2");

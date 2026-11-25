@@ -150,6 +150,7 @@ function mountToolRail(hooks: ChromeHooks) {
   place.append(caption("Place"), move, rotate, scale, pivot, lay, sep(), caption("View"));
   const pose = railSet("pose", "Pose");
   for (const [id, icon, label, tip] of [
+    ["move", Move3d, "Move", "Move a part in design space, including a free part. It snaps to the other parts; Alt turns that off. Shift snaps to 1 mm and 15°. Right-drag turns it."],
     ["select", MousePointer2, "Select", "Select a part in the view. A drag here turns the camera."],
     ["turn", Rotate3d, "Turn", "Drag a joint ring. Hold Shift to snap to 5 degrees."],
     ["reach", Grab, "Reach", "Drag a point on a part to move its jointed chain (inverse kinematics)."],

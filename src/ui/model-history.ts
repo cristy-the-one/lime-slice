@@ -397,8 +397,8 @@ export function syncModelPosition(fields: PlaceFields | null, atFile: boolean, f
   if (label && open && (label.textContent !== text || (row?.dataset.frame ?? "") !== (frame ?? ""))) {
     label.textContent = text;
     const numbers = frame === "part" ? " Its Model numbers are in its own frame." : frame === "model" ? " Its Model numbers are in model space." : "";
-    open.setAttribute("aria-label", `Position: ${text}.${numbers} Opens Place.`);
-    open.dataset.tip = `Where this ${frame ? "part sits in its assembly, in model space" : "object sits in model space"}: ${text}.${numbers} Click to open Place.`;
+    open.setAttribute("aria-label", `Position: ${text}.${numbers} Opens Move.`);
+    open.dataset.tip = `Where this ${frame ? "part sits in its assembly, in model space" : "object sits in model space"}: ${text}.${numbers} Click to open Move.`;
   }
   if (row) row.dataset.frame = frame ?? "";
   row?.classList.toggle("is-file", atFile && !!fields);

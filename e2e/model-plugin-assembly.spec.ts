@@ -246,13 +246,10 @@ test("Gear train applied from the Plugins panel with nothing open: assembled, co
   expect(applied.spacing, "module 1: centre wheel to pinion is (50 + 9) / 2").toBeCloseTo(29.5, 9);
   const handles = applied.ids;
 
-  // One Undo takes it all back: the four parts and the assembly. Redo brings them again, still coupled.
-  // Prepare's Print layout / Assembly chip shows while the project has an assembly.
-  const chip = page.locator("#assemblyViewChip");
-  await expect(chip, "the project has an assembly").toHaveJSProperty("hidden", false);
+  // Prepare has no view chip. Pose shows the assembly; Model's Undo still takes the recipe back.
+  await expect(page.locator("#assemblyViewChip")).toHaveCount(0);
   await page.locator("#modelUndo").click();
   await expect(objects(page)).toHaveCount(0);
-  await expect(chip, "no assembly is left").toHaveJSProperty("hidden", true);
   await page.keyboard.press("Control+Shift+Z");
   await expect(objects(page)).toHaveCount(4);
   expectCoupled((await downloadProject(page)).doc, "redone");

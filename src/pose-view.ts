@@ -18,6 +18,8 @@ import { mountBedReference, mountStudioLights, mountViewHelper, renderViewHelper
 import { orbitGlide } from "./orbit-glide";
 import { IDLE_EDGE } from "./model-view/constants";
 import { lookOf, type PoseLook, type PoseLooks } from "./pose-look";
+import { grabDegrees } from "./viewport-grab";
+import type { Screen } from "./place-snap";
 
 export type PoseCamera = "top" | "front" | "iso";
 
@@ -39,6 +41,16 @@ export type ReachEvent =
 
 export type TurnEvent = { phase: "start"; axis: number } | { phase: "end"; axis: number } | { phase: "change"; axis: number; delta: number };
 
+export type MoveAxis = "x" | "y" | "z";
+
+/** A Move drag. The view reports it; Pose decides the pose. */
+export type MoveEvent =
+  | { phase: "start"; kind: "move" | "turn"; object: string }
+  | { phase: "change"; kind: "move"; delta: [number, number, number]; shift: boolean; alt: boolean; screen: Screen }
+  | { phase: "change"; kind: "turn"; axis: MoveAxis; degrees: number; shift: boolean }
+  | { phase: "end" }
+  | { phase: "cancel" };
+
 export interface PoseHit { point: [number, number, number]; ray: { origin: [number, number, number]; direction: [number, number, number] }; shift: boolean; triangle: [number, number, number][] }
 
 export interface PoseView {
@@ -57,6 +69,9 @@ export interface PoseView {
   setReach(on: boolean): void;
   onReach(cb: ((event: ReachEvent) => boolean | void) | null): void;
   cancelReach(): void;
+  setMove(on: boolean): void;
+  onMove(cb: ((event: MoveEvent) => void) | null): void;
+  cancelMove(): void;
 }
 
 /** Edges sharper than this crease are outlined. Model's ghost outlines a mesh tool at the same angle. */
@@ -121,6 +136,9 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   let turnCb: ((event: TurnEvent) => void) | null = null;
   let reachCb: ((event: ReachEvent) => boolean | void) | null = null;
   let reachEnabled = false;
+  let moveCb: ((event: MoveEvent) => void) | null = null;
+  let moveEnabled = false;
+  let sceneParts: ContextPart[] = [];
   const gizmos = new THREE.Group();
   const marks = new THREE.Group();
   scene.add(gizmos, marks);
@@ -233,6 +251,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     if (published.length) canvas.dataset.posed = published.join(" ");
     else delete canvas.dataset.posed;
     canvas.dataset.looks = looks.join(" ");
+    sceneParts = next.parts;
     if (next.colors?.size) canvas.dataset.animationColors = [...next.colors].map(([id, color]) => `${id}:${color}`).join(" ");
     else delete canvas.dataset.animationColors;
     canvas.dataset.opaque = String(Object.values(materials).every((material) => !material.transparent && material.opacity === 1 && material.depthWrite));
@@ -299,6 +318,23 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       const moved = glide(now);
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
+      if (moveEnabled && sceneParts.length) {
+        const rect = canvas.getBoundingClientRect();
+        const project = (point: THREE.Vector3) => {
+          const v = point.clone().project(camera);
+          return [(v.x * 0.5 + 0.5) * rect.width, (0.5 - v.y * 0.5) * rect.height] as const;
+        };
+        canvas.dataset.screen = sceneParts.map((part) => {
+          const bounds = posedBounds(part.positions, part.matrix);
+          if (!bounds) return "";
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (const x of [bounds.min[0], bounds.max[0]]) for (const y of [bounds.min[1], bounds.max[1]]) for (const z of [bounds.min[2], bounds.max[2]]) {
+            const [sx, sy] = project(new THREE.Vector3(x, y, z));
+            x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy);
+          }
+          return `${part.id}:${x0.toFixed(1)},${y0.toFixed(1)},${(x1 - x0).toFixed(1)},${(y1 - y0).toFixed(1)}`;
+        }).filter(Boolean).join(" ");
+      } else delete canvas.dataset.screen;
       if (reachEnabled) {
         const rect = canvas.getBoundingClientRect();
         canvas.dataset.reachPoints = group.children.filter((part) => part instanceof THREE.Mesh && typeof part.userData.id === "string").map((part) => {
@@ -345,6 +381,104 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     }
     kick();
   }
+
+  // Move: a drag on a part translates it on a horizontal plane; a right-drag turns it. A short press still picks.
+  type MovePending = { pointer: number; x: number; y: number; button: number; object: string; point: THREE.Vector3; axis: MoveAxis };
+  let movePending: MovePending | null = null;
+  let moveDrag: { pointer: number; kind: "move" | "turn"; object: string; point: THREE.Vector3; plane: THREE.Plane; axis: MoveAxis; x0: number } | null = null;
+  const screenBasis = (at: THREE.Vector3): Screen => {
+    const rect = canvas.getBoundingClientRect();
+    const project = (point: THREE.Vector3) => {
+      const v = point.clone().project(camera);
+      return [(v.x * 0.5 + 0.5) * rect.width, (0.5 - v.y * 0.5) * rect.height] as [number, number];
+    };
+    const origin = project(at);
+    const along = (x: number, y: number, z: number): [number, number] => {
+      const point = project(at.clone().add(new THREE.Vector3(x, y, z)));
+      return [point[0] - origin[0], point[1] - origin[1]];
+    };
+    return { x: along(1, 0, 0), y: along(0, 1, 0), z: along(0, 0, 1) };
+  };
+  function finishMove(cancel: boolean): void {
+    const pending = movePending;
+    const active = moveDrag;
+    movePending = null;
+    moveDrag = null;
+    controls.enabled = true;
+    const pointer = active?.pointer ?? pending?.pointer;
+    if (pointer !== undefined && canvas.hasPointerCapture(pointer)) canvas.releasePointerCapture(pointer);
+    if (active) moveCb?.({ phase: cancel ? "cancel" : "end" });
+    else if (pending && pending.button === 0 && !cancel) {
+      canvas.dataset.picked = pending.object;
+      pickCb?.(pending.object);
+    }
+  }
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (!moveEnabled || moveDrag || movePending || (ev.button !== 0 && ev.button !== 2)) return;
+    if (viewHelperHit(viewHelper, canvas, ev)) return;
+    rayAt(ev.clientX, ev.clientY);
+    const hit = raycaster.intersectObjects(group.children, false).find((row) => typeof row.object.userData.id === "string");
+    if (!hit) return;
+    movePending = { pointer: ev.pointerId, x: ev.clientX, y: ev.clientY, button: ev.button, object: hit.object.userData.id as string, point: hit.point.clone(), axis: "z" };
+    controls.enabled = false;
+    canvas.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
+  canvas.addEventListener("pointermove", (ev) => {
+    if (movePending && movePending.pointer === ev.pointerId && Math.hypot(ev.clientX - movePending.x, ev.clientY - movePending.y) > CLICK_PX) {
+      const pending = movePending;
+      movePending = null;
+      const kind = pending.button === 2 ? "turn" : "move";
+      moveDrag = { pointer: pending.pointer, kind, object: pending.object, point: pending.point, plane: new THREE.Plane(new THREE.Vector3(0, 0, 1), -pending.point.z), axis: pending.axis, x0: pending.x };
+      moveCb?.({ phase: "start", kind, object: pending.object });
+    }
+    if (!moveDrag || moveDrag.pointer !== ev.pointerId) return;
+    if (moveDrag.kind === "turn") moveCb?.({ phase: "change", kind: "turn", axis: moveDrag.axis, degrees: grabDegrees(ev.clientX - moveDrag.x0), shift: ev.shiftKey });
+    else {
+      rayAt(ev.clientX, ev.clientY);
+      const point = raycaster.ray.intersectPlane(moveDrag.plane, new THREE.Vector3());
+      if (point) {
+        moveCb?.({
+          phase: "change",
+          kind: "move",
+          delta: [point.x - moveDrag.point.x, point.y - moveDrag.point.y, point.z - moveDrag.point.z],
+          shift: ev.shiftKey,
+          alt: ev.altKey,
+          screen: screenBasis(moveDrag.point),
+        });
+      }
+    }
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
+  const endMovePointer = (ev: PointerEvent) => {
+    if (moveDrag?.pointer === ev.pointerId || movePending?.pointer === ev.pointerId) {
+      finishMove(false);
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+    }
+  };
+  canvas.addEventListener("pointerup", endMovePointer, true);
+  canvas.addEventListener("pointercancel", (ev) => {
+    if (moveDrag?.pointer === ev.pointerId || movePending?.pointer === ev.pointerId) finishMove(true);
+  }, true);
+  canvas.addEventListener("contextmenu", (ev) => { if (moveEnabled) ev.preventDefault(); });
+  window.addEventListener("keydown", (ev) => {
+    if (!moveDrag && !movePending) return;
+    if (ev.key === "Escape") {
+      finishMove(true);
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      return;
+    }
+    const axis = ev.key.toLowerCase();
+    if (axis !== "x" && axis !== "y" && axis !== "z") return;
+    if (movePending) movePending.axis = axis;
+    if (moveDrag?.kind === "turn") moveDrag.axis = axis;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
 
   // A click picks; a drag orbits. The press position tells them apart.
   const raycaster = new THREE.Raycaster();
@@ -540,5 +674,19 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     setReach(on) { reachEnabled = on; canvas.style.cursor = on ? "crosshair" : ""; kick(); },
     onReach(cb) { reachCb = cb; },
     cancelReach() { finishReach(true); },
+    setMove(on) {
+      moveEnabled = on;
+      if (!on) {
+        finishMove(true);
+        delete canvas.dataset.snap;
+        delete canvas.dataset.snapTarget;
+      } else {
+        canvas.dataset.snap = "";
+        canvas.dataset.snapTarget = "";
+      }
+      kick();
+    },
+    onMove(cb) { moveCb = cb; },
+    cancelMove() { finishMove(true); },
   };
 }

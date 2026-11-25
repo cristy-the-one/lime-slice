@@ -81,20 +81,20 @@ test("the rail keeps every Model tool at 1440 × 900, and a short window folds t
   await expect.poll(() => folded(page)).toEqual(["inspect", "frame"]);
   expect(await railFits(page), "the rest fits").toBe(true);
   const fold = page.locator('.rail-group[data-group="frame"] .rail-fold');
-  await expect(page.locator("#modelToolPlace")).toBeHidden();
+  await expect(page.locator("#modelToolWorkplane")).toBeHidden();
   await fold.click();
   await expect(fold).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator("#modelToolPlace")).toBeVisible();
-  const row = (await page.locator("#modelToolPlace").boundingBox())!;
+  await expect(page.locator("#modelToolWorkplane")).toBeVisible();
+  const row = (await page.locator("#modelToolWorkplane").boundingBox())!;
   const rail = (await page.locator("#toolRail").boundingBox())!;
   expect(row.x, "the group opens beside the rail").toBeGreaterThanOrEqual(rail.x + rail.width);
-  await page.locator("#modelToolPlace").click();
-  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "place");
+  await page.locator("#modelToolWorkplane").click();
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "workplane");
   await expect(fold, "a tool picked from the group closes it").toHaveAttribute("aria-expanded", "false");
   await page.keyboard.press("Escape");
   await fold.focus();
   await page.keyboard.press("Enter");
-  await expect(page.locator("#modelToolPlace")).toBeFocused();
+  await expect(page.locator("#modelToolWorkplane")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(fold, "Esc gives the focus back to the group's button").toBeFocused();
 

@@ -100,14 +100,58 @@ async function settled(page: Page) {
 
 /** The top view, pulled back until both boxes are on screen, with the camera at rest. */
 async function topView(page: Page) {
-  // Ctrl-drag grabs only while Place is open; idle, a Ctrl press is the face push's (it rounds the distance).
-  if ((await page.locator("#modelToolPlace").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolPlace").click();
   const box = (await page.locator("#model").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.keyboard.press("t");
   await settled(page);
   for (let i = 0; i < 9; i += 1) await page.mouse.wheel(0, 400);
   await settled(page);
+}
+
+/** Pose's Move, in the top view, pulled back until the parts are on screen. */
+async function armPose(page: Page) {
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await expect(page.locator("#poseMoveX")).toBeVisible();
+  const canvas = page.locator("#pose");
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.keyboard.press("t");
+  await poseSettled(page);
+  for (let i = 0; i < 6; i += 1) await page.mouse.wheel(0, 400);
+  await poseSettled(page);
+}
+
+async function poseSettled(page: Page) {
+  let last = "";
+  await expect.poll(async () => {
+    const now = (await page.locator("#pose").getAttribute("data-screen")) ?? "";
+    const same = now !== "" && now === last;
+    last = now;
+    return same;
+  }).toBe(true);
+}
+
+async function selectedId(page: Page): Promise<string> {
+  return (await page.locator("#posePanel [data-object][aria-pressed='true']").getAttribute("data-object")) ?? "";
+}
+
+async function poseRect(page: Page, id: string) {
+  const canvas = page.locator("#pose");
+  const box = (await canvas.boundingBox())!;
+  const read = async () => {
+    const item = ((await canvas.getAttribute("data-screen")) ?? "").split(" ").find((entry) => entry.startsWith(`${id}:`));
+    return item ? item.slice(id.length + 1).split(",").map(Number) : null;
+  };
+  await expect.poll(read).not.toBeNull();
+  const [x, y, w, h] = (await read())!;
+  return { x: box.x + x!, y: box.y + y!, w: w!, h: h!, cx: box.x + x! + w! / 2, cy: box.y + y! + h! / 2 };
+}
+
+async function posedHeight(page: Page, id: string): Promise<number> {
+  const item = ((await page.locator("#pose").getAttribute("data-posed")) ?? "").split(" ").find((entry) => entry.startsWith(`${id}:`));
+  const nums = item ? item.slice(id.length + 1).split(",").map(Number) : [];
+  return nums[5]! - nums[2]!;
 }
 
 /** Pixels one millimetre of the open 20 mm box draws at, in the top view. */
@@ -122,7 +166,14 @@ async function rect(page: Page, attr: "data-solid-screen" | "data-context-screen
 }
 
 const field = async (page: Page, id: string) => Number(await page.locator(id).inputValue());
-const placeXYZ = async (page: Page) => [await field(page, "#modelPlaceX"), await field(page, "#modelPlaceY"), await field(page, "#modelPlaceZ")];
+const placeXYZ = async (page: Page) => [await field(page, "#poseMoveX"), await field(page, "#poseMoveY"), await field(page, "#poseMoveZ")];
+
+async function dragPart(page: Page, from: { x: number; y: number }, by: { dx: number; dy: number }, button: "left" | "right" = "left", steps = 8) {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down({ button });
+  await page.mouse.move(from.x + by.dx, from.y + by.dy, { steps });
+  await page.mouse.up({ button });
+}
 
 async function dragWith(page: Page, from: { x: number; y: number }, by: { dx: number; dy: number }, button: "left" | "right" = "left", steps = 8) {
   await page.keyboard.down("Control");
@@ -149,97 +200,91 @@ test("Ctrl-click on a grey object opens that object in Model; a plain click does
   expect(ids).toHaveLength(1);
 });
 
-test("Ctrl-drag, with Place open, moves the object in model space, and one Undo takes the whole move back", async ({ page }) => {
+test("Move in Pose drags a part in design space, and one Undo takes the whole move back", async ({ page }) => {
   await openSmall(page);
-  await topView(page);
-  const solid = await rect(page, "data-solid-screen");
+  await armPose(page);
+  const id = await selectedId(page);
+  const solid = await poseRect(page, id);
   expect(await placeXYZ(page)).toEqual([0, 0, 0]);
-  const k = await pxPerMm(page);
-  await dragWith(page, { x: solid.cx, y: solid.cy }, { dx: 12 * k, dy: -6 * k });
-  await expect(page.locator("#modelToolPlace")).toHaveAttribute("aria-pressed", "true");
+  const k = solid.w / 20;
+  await dragPart(page, { x: solid.cx, y: solid.cy }, { dx: 12 * k, dy: -6 * k });
+  await expect(page.locator('#toolRail [data-pose-tool="move"]')).toHaveAttribute("aria-pressed", "true");
   const [x, y, z] = await placeXYZ(page);
   expect(x).toBeGreaterThan(5);
   expect(y).toBeGreaterThan(1);
   expect(z).toBe(0);
-  await expect(page.locator("#modelUndo")).toBeEnabled();
-  await page.locator("#modelUndo").click();
+  await page.keyboard.press("Control+z");
   expect(await placeXYZ(page)).toEqual([0, 0, 0]);
+  await page.locator("#tabModel").click();
   await expect(page.locator("#modelUndo")).toBeDisabled();
 });
 
-test("a slow Ctrl-drag, with the pointer resting mid-way, is still one step", async ({ page }) => {
+test("a slow Move drag, with the pointer resting mid-way, is still one step", async ({ page }) => {
   await openSmall(page);
-  await topView(page);
-  const solid = await rect(page, "data-solid-screen");
-  await page.keyboard.down("Control");
+  await armPose(page);
+  const id = await selectedId(page);
+  const solid = await poseRect(page, id);
   await page.mouse.move(solid.cx, solid.cy);
   await page.mouse.down();
-  const k = await pxPerMm(page);
+  const k = solid.w / 20;
   await page.mouse.move(solid.cx + 6 * k, solid.cy, { steps: 4 });
   await page.waitForTimeout(500);
   await page.mouse.move(solid.cx + 12 * k, solid.cy - 3 * k, { steps: 4 });
   await page.mouse.up();
-  await page.keyboard.up("Control");
   expect((await placeXYZ(page))[0]).toBeGreaterThan(5);
-  await page.locator("#modelUndo").click();
+  await page.keyboard.press("Control+z");
   expect(await placeXYZ(page)).toEqual([0, 0, 0]);
-  await expect(page.locator("#modelUndo")).toBeDisabled();
+  await page.keyboard.press("Control+z");
+  expect(await placeXYZ(page)).toEqual([0, 0, 0]);
 });
 
-test("Esc during a Ctrl-drag puts the object back and leaves no step", async ({ page }) => {
+test("Esc during a Move drag puts the object back and leaves no step", async ({ page }) => {
   await openSmall(page);
-  await topView(page);
-  const solid = await rect(page, "data-solid-screen");
-  await page.keyboard.down("Control");
+  await armPose(page);
+  const id = await selectedId(page);
+  const solid = await poseRect(page, id);
   await page.mouse.move(solid.cx, solid.cy);
   await page.mouse.down();
-  const k = await pxPerMm(page);
+  const k = solid.w / 20;
   await page.mouse.move(solid.cx + 12 * k, solid.cy, { steps: 6 });
   expect((await placeXYZ(page))[0]).toBeGreaterThan(5);
   await page.keyboard.press("Escape");
   expect(await placeXYZ(page)).toEqual([0, 0, 0]);
   await page.mouse.move(solid.cx + 16 * k, solid.cy, { steps: 3 });
   await page.mouse.up();
-  await page.keyboard.up("Control");
   expect(await placeXYZ(page)).toEqual([0, 0, 0]);
-  await expect(page.locator("#modelUndo")).toBeDisabled();
+  await page.keyboard.press("Control+z");
+  expect(await placeXYZ(page)).toEqual([0, 0, 0]);
 });
 
-test("a Ctrl-right-drag turns the object about Z, X picks another axis, and one Undo takes each turn back", async ({ page }) => {
+test("a right-drag in Move turns the object about Z, X picks another axis, and one Undo takes each turn back", async ({ page }) => {
   await openSmall(page);
-  await topView(page);
-  const height = async () => {
-    const [, , z0, , , z1] = ((await page.locator("#model").getAttribute("data-solid")) ?? "").split(",").map(Number);
-    return z1! - z0!;
-  };
-  const solid = await rect(page, "data-solid-screen");
-  await page.keyboard.down("Control");
+  await armPose(page);
+  const id = await selectedId(page);
+  const solid = await poseRect(page, id);
   await page.mouse.move(solid.cx, solid.cy);
   await page.mouse.down({ button: "right" });
   await page.mouse.move(solid.cx + 180, solid.cy, { steps: 12 });
   await page.mouse.up({ button: "right" });
-  await page.keyboard.up("Control");
-  expect(await field(page, "#modelPlaceRz")).toBeCloseTo(90, 0);
+  expect(await field(page, "#poseMoveRz")).toBeCloseTo(90, 0);
 
-  const turned = await rect(page, "data-solid-screen");
-  await page.keyboard.down("Control");
+  const turned = await poseRect(page, id);
   await page.mouse.move(turned.cx, turned.cy);
   await page.mouse.down({ button: "right" });
   await page.keyboard.press("x");
   await page.mouse.move(turned.cx + 90, turned.cy, { steps: 8 });
   await page.mouse.up({ button: "right" });
-  await page.keyboard.up("Control");
   // Turned about X by 45 degrees, the 10 mm tall box now stands about 21 mm tall.
-  expect(await height()).toBeGreaterThan(20);
+  expect(await posedHeight(page, id)).toBeGreaterThan(20);
 
-  await page.locator("#modelUndo").click();
-  expect(await height()).toBeCloseTo(10, 1);
-  expect(await field(page, "#modelPlaceRz")).toBeCloseTo(90, 0);
-  await page.locator("#modelUndo").click();
-  expect(await field(page, "#modelPlaceRz")).toBeCloseTo(0, 1);
+  await page.keyboard.press("Control+z");
+  expect(await posedHeight(page, id)).toBeCloseTo(10, 1);
+  expect(await field(page, "#poseMoveRz")).toBeCloseTo(90, 0);
+  await page.keyboard.press("Control+z");
+  expect(await field(page, "#poseMoveRz")).toBeCloseTo(0, 1);
 });
 
-test("a plain drag still orbits, and moves nothing", async ({ page }) => {
+test("a plain drag in Model still orbits, and moves nothing", async ({ page }) => {
   await openSmall(page);
   const box = (await page.locator("#model").boundingBox())!;
   const cam = () => page.locator("#model").getAttribute("data-camera");
@@ -249,24 +294,24 @@ test("a plain drag still orbits, and moves nothing", async ({ page }) => {
   await page.mouse.move(box.x + 150, box.y + box.height - 100, { steps: 8 });
   await page.mouse.up();
   await expect.poll(cam).not.toBe(before);
-  expect(await placeXYZ(page)).toEqual([0, 0, 0]);
+  await expect(page.locator("#model")).toHaveAttribute("data-solid", "0.00,0.00,0.00,20.00,20.00,10.00");
   await expect(page.locator("#modelUndo")).toBeDisabled();
-  await expect(page.locator("#modelToolPlace")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#modelToolPlace")).toHaveCount(0);
 });
 
-test("dragging an object near another snaps it flush, shows what it met, and tints that object", async ({ page }) => {
+test("dragging a part near another snaps it flush, shows what it met, and names that part", async ({ page }) => {
   const grey = await openSmall(page);
-  await topView(page);
-  const canvas = page.locator("#model");
+  await armPose(page);
+  const id = await selectedId(page);
+  const canvas = page.locator("#pose");
   await expect(canvas).toHaveAttribute("data-snap-target", "");
-  const solid = await rect(page, "data-solid-screen");
-  await page.keyboard.down("Control");
+  const solid = await poseRect(page, id);
   await page.mouse.move(solid.cx, solid.cy);
   await page.mouse.down();
   let x = solid.cx;
   let snapped = false;
-  for (let i = 0; i < 160 && !snapped; i += 1) {
-    x += 2;
+  for (let i = 0; i < 240 && !snapped; i += 1) {
+    x += 3;
     await page.mouse.move(x, solid.cy);
     snapped = ((await canvas.getAttribute("data-snap")) ?? "").includes("Touching");
   }
@@ -274,119 +319,103 @@ test("dragging an object near another snaps it flush, shows what it met, and tin
   expect(await canvas.getAttribute("data-snap")).toMatch(/Touching .* · X/);
   await expect(canvas).toHaveAttribute("data-snap-target", grey);
   // Touching along X: the open object's far side meets the other's near side, 60 - 20 mm along.
-  expect(Math.abs((await field(page, "#modelPlaceX")) - 40)).toBeLessThan(0.06);
+  expect(Math.abs((await field(page, "#poseMoveX")) - 40)).toBeLessThan(0.06);
   await page.screenshot({ path: path.join(shots, "model-snap-during-drag.png") });
   await page.mouse.up();
-  await page.keyboard.up("Control");
   await expect(canvas).toHaveAttribute("data-snap-target", "");
-  expect(await field(page, "#modelPlaceX")).toBeCloseTo(40, 1);
+  expect(await field(page, "#poseMoveX")).toBeCloseTo(40, 1);
 });
 
 test("holding Alt turns the snap off for that drag", async ({ page }) => {
   await openSmall(page);
-  await topView(page);
-  const canvas = page.locator("#model");
-  const solid = await rect(page, "data-solid-screen");
-  await page.keyboard.down("Control");
+  await armPose(page);
+  const id = await selectedId(page);
+  const canvas = page.locator("#pose");
+  const solid = await poseRect(page, id);
   await page.keyboard.down("Alt");
   await page.mouse.move(solid.cx, solid.cy);
   await page.mouse.down();
   let x = solid.cx;
   let sawSnap = false;
   let passed = false;
-  for (let i = 0; i < 160 && !passed; i += 1) {
-    x += 2;
+  for (let i = 0; i < 240 && !passed; i += 1) {
+    x += 3;
     await page.mouse.move(x, solid.cy);
     sawSnap ||= ((await canvas.getAttribute("data-snap")) ?? "") !== "";
-    passed = (await field(page, "#modelPlaceX")) > 44;
+    passed = (await field(page, "#poseMoveX")) > 44;
   }
   await page.mouse.up();
   await page.keyboard.up("Alt");
-  await page.keyboard.up("Control");
-  // Ctrl and Alt together are not a grab: the object stayed, and the drag was the camera's.
-  expect(passed).toBe(false);
+  expect(passed, "Alt lets the part pass the snap").toBe(true);
   expect(sawSnap).toBe(false);
 });
 
-test("the Place arrows snap too, and Alt holds it off", async ({ page }) => {
+test("dragging the part itself snaps it flush along X", async ({ page }) => {
   await openSmall(page);
-  await page.locator("#modelToolPlace").click();
-  await topView(page);
-  const canvas = page.locator("#model");
-  const grip = async (id: string) => {
-    const read = async () => {
-      const text = (await canvas.getAttribute("data-handles")) ?? "";
-      const found = text.split(" ").find((item) => item.startsWith(`${id}:`));
-      return found ? found.split(":")[1]!.split(",").map(Number) : null;
-    };
-    await expect.poll(read).not.toBeNull();
-    const [gx, gy] = (await read())!;
-    const box = (await canvas.boundingBox())!;
-    return { x: box.x + gx!, y: box.y + gy! };
-  };
-  const from = await grip("place-x");
-  await page.mouse.move(from.x, from.y);
+  await armPose(page);
+  const id = await selectedId(page);
+  const canvas = page.locator("#pose");
+  const solid = await poseRect(page, id);
+  await page.mouse.move(solid.cx, solid.cy);
   await page.mouse.down();
-  let x = from.x;
+  let x = solid.cx;
   let snapped = false;
-  for (let i = 0; i < 200 && !snapped; i += 1) {
-    x += 2;
-    await page.mouse.move(x, from.y);
+  for (let i = 0; i < 240 && !snapped; i += 1) {
+    x += 3;
+    await page.mouse.move(x, solid.cy);
     snapped = ((await canvas.getAttribute("data-snap")) ?? "").includes("Touching");
   }
-  expect(snapped, "the arrow reached a snap").toBe(true);
-  expect(Math.abs((await field(page, "#modelPlaceX")) - 40)).toBeLessThan(0.06);
+  expect(snapped, "the drag reached a snap").toBe(true);
+  expect(Math.abs((await field(page, "#poseMoveX")) - 40)).toBeLessThan(0.06);
   await page.mouse.up();
   await expect(canvas).toHaveAttribute("data-snap-target", "");
 });
 
-test("Align to... in the Place card lines the object up with another, tints it, and one Undo puts it back", async ({ page }) => {
+test("Align to... in the Move card lines the part up with another, names it, and one Undo puts it back", async ({ page }) => {
   const grey = await openSmall(page);
-  await page.locator("#modelToolPlace").click();
-  const row = page.locator("#modelAlign");
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  const row = page.locator("#poseAlign");
   await expect(row).toBeVisible();
-  await expect(row.locator("#modelAlignTo option")).toHaveCount(1);
-  const canvas = page.locator("#model");
-  await row.locator("#modelAlignTo").focus();
+  await expect(row.locator("#poseAlignTo option")).toHaveCount(1);
+  const canvas = page.locator("#pose");
+  await row.locator("#poseAlignTo").focus();
   await expect(canvas).toHaveAttribute("data-snap-target", grey);
-  await row.locator("#modelAlignHow").selectOption("flush-right");
+  await row.locator("#poseAlignHow").selectOption("flush-right");
   await page.screenshot({ path: path.join(shots, "model-align-to.png") });
-  await row.locator("#modelAlignGo").click();
+  await row.locator("#poseAlignGo").click();
   // The open box ends at X 20 and the other at 100: flush right moves it 80 mm.
-  await expect.poll(() => field(page, "#modelPlaceX")).toBeCloseTo(80, 2);
+  await expect.poll(() => field(page, "#poseMoveX")).toBeCloseTo(80, 2);
   await expect(canvas).toHaveAttribute("data-snap-target", "");
-  await page.locator("#modelUndo").click();
-  expect(await field(page, "#modelPlaceX")).toBeCloseTo(0, 2);
+  await page.keyboard.press("Control+z");
+  expect(await field(page, "#poseMoveX")).toBeCloseTo(0, 2);
 });
 
-test("Align to... on top stacks the object on the other", async ({ page }) => {
+test("Align to... on top stacks the part on the other", async ({ page }) => {
   await openSmall(page);
-  await page.locator("#modelToolPlace").click();
-  const row = page.locator("#modelAlign");
-  await row.locator("#modelAlignHow").selectOption("on-top");
-  await row.locator("#modelAlignGo").click();
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  const row = page.locator("#poseAlign");
+  await row.locator("#poseAlignHow").selectOption("on-top");
+  await row.locator("#poseAlignGo").click();
   // The open box's floor is 0 and the other's top is 20.
-  await expect.poll(() => field(page, "#modelPlaceZ")).toBeCloseTo(20, 2);
+  await expect.poll(() => field(page, "#poseMoveZ")).toBeCloseTo(20, 2);
 });
 
-test("the first Ctrl over the open object says what a drag does, and only the first time", async ({ page }) => {
+test("Ctrl in Model no longer moves the part in design space", async ({ page }) => {
   await openSmall(page);
   await topView(page);
   const solid = await rect(page, "data-solid-screen");
   const hint = page.locator("#grabHint");
   await page.mouse.move(solid.cx, solid.cy);
-  await expect(hint).toBeHidden();
   await page.keyboard.down("Control");
-  await page.mouse.move(solid.cx + 3, solid.cy + 2);
-  await expect(hint).toBeVisible();
-  await expect(hint).toContainText("Drag to move");
+  await page.mouse.move(solid.cx + 40, solid.cy, { steps: 6 });
+  await page.mouse.down();
+  await page.mouse.move(solid.cx + 80, solid.cy, { steps: 6 });
+  await page.mouse.up();
   await page.keyboard.up("Control");
   await expect(hint).toBeHidden();
-  await page.keyboard.down("Control");
-  await page.mouse.move(solid.cx, solid.cy);
-  await page.waitForTimeout(150);
-  await expect(hint).toBeHidden();
-  await page.keyboard.up("Control");
+  await expect(page.locator("#model")).toHaveAttribute("data-solid", "0.00,0.00,0.00,20.00,20.00,10.00");
 });
 
 test("a Ctrl-drag with another tool open is left to that tool", async ({ page }) => {
@@ -395,8 +424,7 @@ test("a Ctrl-drag with another tool open is left to that tool", async ({ page })
   await page.locator("#modelToolMeasure").click();
   const solid = await rect(page, "data-solid-screen");
   await dragWith(page, { x: solid.cx, y: solid.cy }, { dx: 12 * (await pxPerMm(page)), dy: 0 });
-  await page.locator("#modelToolPlace").click();
-  expect(await placeXYZ(page)).toEqual([0, 0, 0]);
+  await expect(page.locator("#model")).toHaveAttribute("data-solid", "0.00,0.00,0.00,20.00,20.00,10.00");
 });
 
 test("Measure reaches a second object: B snaps to the other object's corner, and the readout names both ends", async ({ page }) => {
@@ -505,13 +533,13 @@ test("Measure snaps to the middle of a circular edge when the pointer is on its 
 
 test("with the object removed from the plate, Align to... has nothing to align to", async ({ page }) => {
   await openSmall(page);
-  await page.locator("#modelToolPlace").click();
-  await expect(page.locator("#modelAlignGo")).toBeEnabled();
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await expect(page.locator("#poseAlignGo")).toBeEnabled();
   await page.locator("#tabPrepare").click();
   await page.locator("[data-plate-select]").nth(0).click();
   await plateClick(page, "remove", 0);
-  await page.locator("#tabModel").click();
-  await expect(page.locator("#modelReadout")).toContainText("Volume");
-  await page.locator("#modelToolPlace").click();
-  await expect(page.locator("#modelAlignGo")).toBeDisabled();
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await expect(page.locator("#poseAlignGo")).toBeDisabled();
 });

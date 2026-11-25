@@ -91,8 +91,7 @@ const RAIL = `
           <div class="rail-sep"></div>
           <span class="rail-caption" aria-hidden="true" title="Frame">Frame</span>
           <div class="rail-tools">
-            <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Place: move and turn this object among the others. The plate stays as it is">Place</button>
-            <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Workplane: the U, V, W frame Hole, Boolean, and Split are typed in">Workplane</button>
+            <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Workplane: the U, V, W frame Hole, Boolean, and Split are typed in. Move in design space is Pose's Move.">Workplane</button>
           </div>
         </div>
         <!-- The phone's History sheet. The desktop shows History in the Model dock. -->
@@ -597,7 +596,7 @@ const DOCK = `
           <section class="model-history" id="modelHistory" aria-label="History" hidden>
             <button class="model-history-toggle" id="modelHistoryToggle" type="button" data-pane-head aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
             <div class="mh-position" id="modelPosition" role="group" aria-label="Position">
-              <button class="mh-position-open" id="modelPositionOpen" type="button" data-tip="Where this object sits in model space. Click to open Place."><span class="mh-position-name">Position</span><span class="mh-position-text" id="modelPositionText"></span></button>
+              <button class="mh-position-open" id="modelPositionOpen" type="button" data-tip="Where this object sits in model space. Click to open Move."><span class="mh-position-name">Position</span><span class="mh-position-text" id="modelPositionText"></span></button>
               <button class="mh-position-reset" id="modelPositionReset" type="button" aria-label="Reset position" data-tip="Back to where its file put it" hidden></button>
             </div>
             <div class="model-history-tree" id="modelHistoryTree" role="tree" aria-label="Model history"></div>

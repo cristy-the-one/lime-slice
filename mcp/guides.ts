@@ -440,7 +440,7 @@ export const KIND_GUIDES: Record<string, string> = {
     "object_remove on a member seats its children on its parent where they stand.",
   ].join("\n"),
   place: [
-    "Two poses: model_place sets where a part sits in the assembly (model space); object_place sets where it prints on the bed.",
+    "Two poses: model_place sets design space (model space), which is Move in Pose; object_place sets where the part prints on the bed (Prepare's Move).",
     "model_place {object, x, y, z, turnX, turnY, turnZ}: mm and degrees, turned X, then Y, then Z. A missing number keeps its value.",
     "Each number may be an expression over model_params names. A member's offset keeps the text and follows it; any other pose reads it once.",
     "to: the numbers are an offset in that part's own frame, and this part joins its assembly (guide {kind:\"assembly\"}).",
