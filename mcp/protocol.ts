@@ -1,6 +1,8 @@
 /**
  * MCP over stdio. One JSON-RPC message per line. Logs stay off stdout.
  */
+import { randomUUID } from "node:crypto";
+
 import { AREA_NAMES, AREAS } from "./catalog.ts";
 import { GROUP_NAMES } from "./groups.ts";
 import { GUIDES } from "./guides.ts";
@@ -30,6 +32,24 @@ const INITIALIZE_NEWEST = "2025-11-25";
  * modelcontextprotocol/modelcontextprotocol#3092).
  */
 const UNSUPPORTED_PROTOCOL_VERSION = -32022;
+/**
+ * MissingRequiredClientCapability. schema.ts line 442 at
+ * 2bbace557bbf2cb5d03d6f9b48905415cd7607b0 (`MISSING_REQUIRED_CLIENT_CAPABILITY = -32021`).
+ * SEP-2663 lines 797-799 require it when a client that did not declare
+ * `io.modelcontextprotocol/tasks` calls `tasks/get`, `tasks/update`, or `tasks/cancel`.
+ */
+const MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
+/**
+ * The tasks extension. Advertised as an empty settings object: schema.ts
+ * ServerCapabilities.extensions lines 872-883, and
+ * schema/2026-07-28/examples/ServerCapabilities/extensions-tasks.json.
+ * The task shapes themselves are not in schema.ts. They are SEP-2663
+ * (same commit): Task lines 137-176, CreateTaskResult lines 260-262,
+ * tasks/get lines 316-340, tasks/update lines 356-383, tasks/cancel lines 385-412.
+ */
+const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
+/** Suggested poll interval. SEP-2663 Task.pollIntervalMs, lines 170-175. */
+const TASK_POLL_MS = 250;
 const META_PROTOCOL = "io.modelcontextprotocol/protocolVersion";
 const META_CLIENT = "io.modelcontextprotocol/clientInfo";
 const META_CAPS = "io.modelcontextprotocol/clientCapabilities";
@@ -175,12 +195,211 @@ function noteClient(version: string, info: unknown, capabilities: unknown): void
   process.stderr.write(`lime-slice mcp: protocolVersion=${shown} clientInfo=${JSON.stringify(info ?? null)} clientCapabilities=${JSON.stringify(capabilities ?? null)}\n`);
 }
 
-function capabilitiesFor(session: Session, modern: boolean): { tools: { listChanged?: boolean }; resources: Record<string, never>; prompts: Record<string, never> } {
-  return {
+function capabilitiesFor(session: Session, modern: boolean, tasks: boolean): Record<string, unknown> {
+  const capabilities: Record<string, unknown> = {
     tools: !modern && session.toolGroups ? { listChanged: true } : {},
     resources: {},
     prompts: {},
   };
+  if (tasks) capabilities.extensions = { [TASKS_EXTENSION]: {} };
+  return capabilities;
+}
+
+function declaresTasks(metaFields: Record<string, unknown> | null, modern: boolean): boolean {
+  // SEP-2663 lines 946-948: this extension does not exist on 2025-11-25.
+  // Lines 85-87: the declaration has to be on this request, not an earlier one.
+  if (!modern || !metaFields) return false;
+  const caps = metaFields[META_CAPS];
+  if (!caps || typeof caps !== "object" || Array.isArray(caps)) return false;
+  const extensions = (caps as { extensions?: unknown }).extensions;
+  if (!extensions || typeof extensions !== "object" || Array.isArray(extensions)) return false;
+  const tasks = (extensions as Record<string, unknown>)[TASKS_EXTENSION];
+  return tasks !== null && typeof tasks === "object" && !Array.isArray(tasks);
+}
+
+interface TrackedTask {
+  taskId: string;
+  job: string;
+  createdAt: string;
+  lastUpdatedAt: string;
+  seen: string;
+}
+
+const tasksOf = new WeakMap<Session, Map<string, TrackedTask>>();
+
+function taskMap(session: Session): Map<string, TrackedTask> {
+  let map = tasksOf.get(session);
+  if (!map) {
+    map = new Map();
+    tasksOf.set(session, map);
+  }
+  return map;
+}
+
+function rememberTask(session: Session, job: string): TrackedTask {
+  const now = new Date().toISOString();
+  const task: TrackedTask = { taskId: randomUUID(), job, createdAt: now, lastUpdatedAt: now, seen: "" };
+  taskMap(session).set(task.taskId, task);
+  return task;
+}
+
+function taskSeed(task: TrackedTask): Record<string, unknown> {
+  return {
+    taskId: task.taskId,
+    status: "working",
+    createdAt: task.createdAt,
+    lastUpdatedAt: task.lastUpdatedAt,
+    ttlMs: null,
+    pollIntervalMs: TASK_POLL_MS,
+  };
+}
+
+/** The tool a `call {tool}` wrapper runs. slice_wait and slice_cancel stay polls, not new tasks. */
+function namedTool(name: string, args: unknown): string {
+  if (name !== "call" || !args || typeof args !== "object" || Array.isArray(args)) return name;
+  const inner = (args as { tool?: unknown }).tool;
+  return typeof inner === "string" ? inner : name;
+}
+
+/**
+ * A reply that today is a job handle: a detachable call that outran the reply time, a call cancelled mid-run,
+ * one that starts as a job, or slice_start. The handle has to be a job this session holds.
+ */
+function jobAnswer(session: Session, name: string, args: unknown, value: unknown): string | null {
+  const tool = namedTool(name, args);
+  if (tool === "slice_wait" || tool === "slice_cancel") return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as { ok?: unknown; status?: unknown; job?: unknown };
+  if (row.ok !== true || row.status !== "running" || typeof row.job !== "string") return null;
+  if (session.workJobs.some((job) => job.handle === row.job)) return row.job;
+  if (session.jobs.some((job) => job.handle === row.job)) return row.job;
+  return null;
+}
+
+function missingTasks(id: number | string | null): Record<string, unknown> {
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: {
+      code: MISSING_REQUIRED_CLIENT_CAPABILITY,
+      message: "Missing required client capability",
+      data: { requiredCapabilities: { extensions: { [TASKS_EXTENSION]: {} } } },
+    },
+  };
+}
+
+function requireTask(session: Session, id: number | string | null, params: Record<string, unknown>, metaFields: Record<string, unknown> | null, modern: boolean): { error: Record<string, unknown> } | { task: TrackedTask } {
+  if (!declaresTasks(metaFields, modern)) return { error: missingTasks(id) };
+  const taskId = params.taskId;
+  if (typeof taskId !== "string" || taskId === "") return { error: error(id, -32602, "Invalid params") };
+  const task = taskMap(session).get(taskId);
+  if (!task) return { error: error(id, -32602, "Failed to retrieve task: Task not found") };
+  return { task };
+}
+
+/** A finished background job that handed its wait on to a slice: follow that slice. */
+function followHandoff(session: Session, task: TrackedTask): void {
+  const work = session.workJobs.find((row) => row.handle === task.job);
+  const handed = work?.done && work.result && typeof work.result.job === "string" ? work.result.job : "";
+  if (handed !== "" && handed !== task.job) task.job = handed;
+}
+
+async function taskSnapshot(session: Session, task: TrackedTask): Promise<Record<string, unknown>> {
+  followHandoff(session, task);
+  let body = await session.call("slice_wait", { job: task.job, timeoutS: 0.05 });
+  if (body.status === "running" && typeof body.workJob === "string" && typeof body.job === "string" && body.job !== task.job) {
+    task.job = body.job;
+    body = await session.call("slice_wait", { job: task.job, timeoutS: 0.05 });
+  }
+  return body;
+}
+
+function stillWorking(body: Record<string, unknown>): boolean {
+  return body.status === "running" || body.status === "cancelling";
+}
+
+/** The work was cancelled before it completed. SEP-2663 line 187, and CancelledTask lines 243-245. */
+function cancelTookIt(body: Record<string, unknown>): boolean {
+  return body.cancelled === true || body.status === "cancelled" || body.code === "cancelled";
+}
+
+/** The same CallToolResult tools/call builds: content, then isError. No structuredContent; this server does not set one. */
+function toolReply(value: unknown): Record<string, unknown> {
+  const pictures = imagesOf(value).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
+  return { content: [{ type: "text", text: JSON.stringify(value) }, ...pictures], isError: false };
+}
+
+function touch(task: TrackedTask, signature: string): void {
+  if (task.seen === signature) return;
+  task.seen = signature;
+  task.lastUpdatedAt = new Date().toISOString();
+}
+
+async function taskMethod(session: Session, id: number | string | null, method: string, params: Record<string, unknown>, metaFields: Record<string, unknown> | null, modern: boolean): Promise<Record<string, unknown>> {
+  const found = requireTask(session, id, params, metaFields, modern);
+  if ("error" in found) return found.error;
+  const task = found.task;
+  if (method === "tasks/cancel") {
+    followHandoff(session, task);
+    await session.call("slice_cancel", { job: task.job });
+    // SEP-2663 lines 402-412: an empty acknowledgement. The outcome is on the next tasks/get.
+    return result(id, {});
+  }
+  if (method === "tasks/update") {
+    const responses = params.inputResponses;
+    if (!responses || typeof responses !== "object" || Array.isArray(responses)) return error(id, -32602, "Invalid params");
+    // No task asks for input. SEP-2663 lines 381-382: ignore responses that are not outstanding.
+    return result(id, {});
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = await taskSnapshot(session, task);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "The request failed.";
+    touch(task, `failed:${message}`);
+    return result(id, {
+      taskId: task.taskId,
+      status: "failed",
+      statusMessage: message,
+      createdAt: task.createdAt,
+      lastUpdatedAt: task.lastUpdatedAt,
+      ttlMs: null,
+      pollIntervalMs: TASK_POLL_MS,
+      error: { code: -32603, message },
+    });
+  }
+  const working = stillWorking(body);
+  const fraction = typeof body.fraction === "number" ? body.fraction : undefined;
+  const stage = typeof body.stage === "string" && body.stage !== "" ? body.stage : undefined;
+  touch(task, working ? `working:${body.status}:${fraction ?? ""}:${stage ?? ""}` : `done:${JSON.stringify(body)}`);
+  const common = {
+    taskId: task.taskId,
+    createdAt: task.createdAt,
+    lastUpdatedAt: task.lastUpdatedAt,
+    ttlMs: null,
+    pollIntervalMs: TASK_POLL_MS,
+  };
+  if (working) {
+    // fraction and stage are the same fields slice_wait reports. Result's index signature
+    // (schema.ts line 235) allows them beside the Task fields (SEP-2663 lines 137-176).
+    return result(id, {
+      ...common,
+      status: "working",
+      ...(fraction !== undefined ? { fraction } : {}),
+      ...(stage ? { stage, statusMessage: stage } : {}),
+    });
+  }
+  if (cancelTookIt(body)) {
+    // SEP-2663 line 187: cancelled means the request was cancelled before completion.
+    // Lines 243-245: that task has no result field. statusMessage (lines 144-155) says what happened.
+    // Line 406: a call that finished before the cancel took effect stays completed, below.
+    const statusMessage = typeof body.reason === "string" && body.reason !== "" ? body.reason : "Cancelled; the edits were taken back.";
+    return result(id, { ...common, status: "cancelled", statusMessage });
+  }
+  // SEP-2663 lines 217-224 and 887-890: the completed result matches the original request.
+  // For tools/call that is this server's CallToolResult (content and isError), lines 769-778.
+  const wrapped = result(id, toolReply(body)).result as Record<string, unknown>;
+  return result(id, { ...common, status: "completed", result: wrapped });
 }
 
 function unsupportedVersion(id: number | string | null, requested: string): Record<string, unknown> {
@@ -229,16 +448,19 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
       const modernInit = protocolVersion === MODERN_VERSION;
       return result(id, {
         protocolVersion,
-        capabilities: capabilitiesFor(session, modernInit),
+        capabilities: capabilitiesFor(session, modernInit, modernInit),
         serverInfo: serverInfo(),
         instructions: modernInit ? DISCOVERY_INSTRUCTIONS : instructionsFor(session.toolGroups),
       });
     }
     if (method === "ping") return result(id, {});
+    if (method === "tasks/get" || method === "tasks/update" || method === "tasks/cancel") {
+      return await taskMethod(session, id, method, params, metaFields, modern);
+    }
     if (method === "server/discover") {
       return result(id, {
         supportedVersions: [...SUPPORTED_VERSIONS],
-        capabilities: capabilitiesFor(session, modern),
+        capabilities: capabilitiesFor(session, modern, true),
         serverInfo: serverInfo(),
         instructions: modern ? DISCOVERY_INSTRUCTIONS : instructionsFor(session.toolGroups),
       }, "list");
@@ -260,8 +482,11 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
       const args = params.arguments ?? {};
       try {
         const value = await session.call(name, args, meta);
-        const pictures = imagesOf(value).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
-        return result(id, { content: [{ type: "text", text: JSON.stringify(value) }, ...pictures], isError: false });
+        if (declaresTasks(metaFields, modern)) {
+          const job = jobAnswer(session, name, args, value);
+          if (job) return result(id, taskSeed(rememberTask(session, job)), undefined, "task");
+        }
+        return result(id, toolReply(value));
       } catch (err) {
         const text = err instanceof Error ? err.message : "The tool failed.";
         return result(id, { content: [{ type: "text", text }], isError: true });
@@ -311,10 +536,10 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
   }
 }
 
-function result(id: number | string | null, value: Record<string, unknown>, cache?: "list" | "read"): Record<string, unknown> {
+function result(id: number | string | null, value: Record<string, unknown>, cache?: "list" | "read", resultType: "complete" | "task" = "complete"): Record<string, unknown> {
   const body: Record<string, unknown> = {
     ...value,
-    resultType: "complete",
+    resultType,
     _meta: { [META_SERVER]: serverInfo() },
   };
   if (cache === "list") {
