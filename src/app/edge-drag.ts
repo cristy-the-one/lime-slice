@@ -514,7 +514,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     openHud(lastAt ?? { x: 48, y: 48 }, 0);
     paint();
     // The first character is written into the box. A second keydown would also be the shortcut for a
-    // workspace tab (2 is Preview), and that shortcut would leave Model.
+    // workspace tab (4 is Preview), and that shortcut would leave Model.
     const input = hud?.element.querySelector("input");
     if (input instanceof HTMLInputElement) {
       input.value = key;

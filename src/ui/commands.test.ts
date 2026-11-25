@@ -107,10 +107,22 @@ eq("Ctrl+Alt+P still opens Parameters", press("Ctrl+Alt+P", { stage: "model", ty
 
 // Bindings ---------------------------------------------------------------------------------------------------
 
-eq("1 is Prepare", press("1"), "tab-prepare");
-eq("2 is Preview", press("2"), "tab-preview");
-eq("3 is G-code", press("3"), "tab-gcode");
-eq("4 is Model", press("4"), "tab-model");
+eq("1 is Model", press("1"), "tab-model");
+eq("2 is Pose", press("2"), "tab-pose");
+eq("3 is Prepare", press("3"), "tab-prepare");
+eq("4 is Preview", press("4"), "tab-preview");
+eq("5 is G-code", press("5"), "tab-gcode");
+eq(
+  "stage tabs are design, then print, and still outside a sketch",
+  COMMANDS.filter((command) => command.id.startsWith("tab-")).map((command) => [command.id, command.keys?.[0], contextOf(command)]),
+  [
+    ["tab-model", "1", "Outside a sketch"],
+    ["tab-pose", "2", "Outside a sketch"],
+    ["tab-prepare", "3", "Outside a sketch"],
+    ["tab-preview", "4", "Outside a sketch"],
+    ["tab-gcode", "5", "Outside a sketch"],
+  ],
+);
 eq("V cycles the preview mode only in preview", [press("V"), press("V", { stage: "preview", hasResult: true })], [null, "view-cycle"]);
 eq("Shift+1..5 pick strategies", ["Shift+1", "Shift+2", "Shift+3", "Shift+4", "Shift+5"].map((chord) => press(chord)), ["strategy-speed", "strategy-efficiency", "strategy-toughness", "strategy-layer", "strategy-region"]);
 eq("A arranges in Prepare only", [press("A"), press("A", { stage: "preview" })], ["plate-arrange", null]);
@@ -447,7 +459,7 @@ eq("Esc cancels the sketch", press("Esc", sketchCtx), "sketch-escape");
 eq("Esc still cancels a running slice while sketching", press("Esc", { ...sketchCtx, running: true }), "cancel-slice");
 eq("2 types a size while sketching", press("2", sketchCtx), "sketch-size");
 eq("2 in a sketch field stays text", press("2", { ...sketchCtx, typing: true }), null);
-eq("2 still opens Preview outside a sketch", press("2"), "tab-preview");
+eq("4 still opens Preview outside a sketch", press("4"), "tab-preview");
 eq("a sketch digit does not switch stage", press("1", sketchCtx), "sketch-size");
 eq("Shift+M measures in Model", press("Shift+M", { stage: "model" }), "model-measure");
 eq("T, Y and I move the Model camera", ["T", "Y", "I"].map((chord) => press(chord, { stage: "model" })), ["model-view-top", "model-view-front", "model-view-iso"]);

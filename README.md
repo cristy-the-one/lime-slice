@@ -59,7 +59,7 @@ A recipe is a short Rust program that builds a part or a whole assembly. The des
 
 ### Slice
 
-**Prepare** puts parts on the plate. Move, turn and scale them, lay a face flat, snap one part against another, and choose a strategy: speed, efficiency, toughness, or a blend of them by weight, by layer, or by region. Each strategy is a real set of walls, infill, speeds, acceleration, seam and retraction. **Preview** draws the toolpaths in 2D, 3D, or both, with the time and filament by feature, and the G-code tab shows the file.
+**Prepare** puts parts on the plate. Move, turn and scale them, lay a face flat, snap one part against another, and choose a strategy: speed, efficiency, toughness, or a blend of them by weight, by layer, or by region. Each strategy is a real set of walls, infill, speeds, acceleration, seam and retraction. **Preview** draws the toolpaths in 2D, 3D, or both, with the time and filament by feature, and the G-code tab shows the file. The stage tabs follow the work: Model is 1, Pose is 2, then Prepare is 3, Preview is 4 and G-code is 5.
 
 <img alt="Prepare. The overhang sample on the Lime 220, with the strategy list and the Objects card in the settings dock." src="docs/screenshots/prepare.png" width="720">
 

@@ -23,7 +23,7 @@ export function onSketchKey(id: string, ev: KeyboardEvent): boolean {
     if (outside && !outside.closest(".interact-hud, #sketchCards, .sketch-dims")) return false;
     return true;
   }
-  // A digit with no size box is swallowed, so 2 cannot switch to Preview. The box itself writes the character.
+  // A digit with no size box is swallowed, so 4 cannot switch to Preview. The box itself writes the character.
   if (id === "sketch-size") return !S.hud.shown;
   if (S.editor.phase === "choosing") {
     if (id !== "sketch-escape") return true;

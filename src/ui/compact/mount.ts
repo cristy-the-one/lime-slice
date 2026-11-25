@@ -85,7 +85,7 @@ export function mountCompact() {
   stage?.append(isoButton(), progressLine());
   const preview = document.querySelector("#previewBody");
   preview?.append(layerTip());
-  // A stage key (1 to 4) clicks the stage's own tab: the nav and the sheet follow it, so Model never keeps Prepare's sheet.
+  // A stage key clicks the stage's own tab: the nav and the sheet follow it, so Model never keeps Prepare's sheet.
   const follow = new MutationObserver(followStage);
   for (const id of ["#tabPrepare", "#tabPreview", "#tabGcode", "#tabModel"]) {
     const node = document.querySelector(id);
