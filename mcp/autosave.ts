@@ -13,11 +13,11 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { rename, writeFile } from "node:fs/promises";
+import { access, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { markPhase } from "./loop-delay.ts";
-import { workspaceRoot } from "./workspace.ts";
+import { workspaceRoot, workspaceRootAsync } from "./workspace.ts";
 import { checkpointRecords, type RecipeCheckpoint } from "./recipe-checkpoint.ts";
 
 export const PREVIOUS_NAME = "autosave-previous.lime";
@@ -122,18 +122,28 @@ function alive(pid: number): boolean {
  * session's own saves never replace it. Older ended ones go. Files of servers still running are left alone. Null when
  * there is none.
  */
-export function takePreviousAutosave(): PreviousAutosave | null {
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function takePreviousAutosave(): Promise<PreviousAutosave | null> {
   const rootAt = performance.now();
-  const root = workspaceRoot();
+  const root = await workspaceRootAsync();
   markPhase("workspaceRoot", performance.now() - rootAt);
   if (!root) return null;
   const previous = join(root, PREVIOUS_NAME);
   try {
     const shelvedAt = performance.now();
-    moveRootShelved(root);
+    const names = await readdir(root);
+    if (names.some((name) => SHELVED.test(name))) moveRootShelved(root);
     markPhase("moveRootShelved", performance.now() - shelvedAt);
     const readAt = performance.now();
-    const ended = readdirSync(root)
+    const ended = names
       .map((name) => ({ name, pid: Number(OWN.exec(name)?.[1] ?? NaN) }))
       .filter((row) => Number.isInteger(row.pid) && row.pid !== process.pid && !alive(row.pid))
       .map((row) => ({ ...row, mtime: statSync(join(root, row.name)).mtimeMs }))
@@ -158,9 +168,9 @@ export function takePreviousAutosave(): PreviousAutosave | null {
       if (shelved && existsSync(shelved) && statSync(shelved).mtimeMs <= ended[0]!.mtime) unlinkSync(shelved);
     }
     const tidyAt = performance.now();
-    tidyShelf(root);
+    if (await pathExists(join(root, SHELF_DIR))) tidyShelf(root);
     markPhase("tidyShelf", performance.now() - tidyAt);
-    if (!existsSync(previous)) return null;
+    if (!(await pathExists(previous))) return null;
     const savedAt = statSync(previous).mtime.toISOString();
     let objects = 0;
     let plan: PlanRecovery | undefined;

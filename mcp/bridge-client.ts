@@ -5,6 +5,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,9 +62,32 @@ const STABLE_ID = "com.limeslice.slicer";
  * release's (`stable.identity`, .github/workflows/release.yml) at the stable app's. Each reads only its own app's file
  * (the beta answers on its own port), and a checkout or a test never mirrors into a running app by itself.
  */
+let identityCache: "beta" | "stable" | "none" | undefined;
+
+/** Which bundled identity file is beside the server, read on the thread pool once. */
+export async function warmBridgeIdentity(): Promise<void> {
+  if (process.env.LIME_MCP_BRIDGE_FILE || identityCache !== undefined) return;
+  try {
+    await access(join(HERE, "tandem-beta.identity"));
+    identityCache = "beta";
+    return;
+  } catch {
+    // Not the beta build.
+  }
+  try {
+    await access(join(HERE, "stable.identity"));
+    identityCache = "stable";
+  } catch {
+    identityCache = "none";
+  }
+}
+
 export function bridgeTokenFile(): string | null {
   if (process.env.LIME_MCP_BRIDGE_FILE) return process.env.LIME_MCP_BRIDGE_FILE;
-  const id = existsSync(join(HERE, "tandem-beta.identity")) ? BETA_ID : existsSync(join(HERE, "stable.identity")) ? STABLE_ID : null;
+  if (identityCache === undefined) {
+    identityCache = existsSync(join(HERE, "tandem-beta.identity")) ? "beta" : existsSync(join(HERE, "stable.identity")) ? "stable" : "none";
+  }
+  const id = identityCache === "beta" ? BETA_ID : identityCache === "stable" ? STABLE_ID : null;
   if (!id) return null;
   if (process.platform === "win32") return process.env.APPDATA ? join(process.env.APPDATA, id, "tandem-bridge.json") : null;
   if (process.platform === "darwin") return join(homedir(), "Library", "Application Support", id, "tandem-bridge.json");

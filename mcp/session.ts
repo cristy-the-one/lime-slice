@@ -22,7 +22,7 @@ import type { PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { builtinLibrary, type MachineLibrary } from "../src/ui/machine-library.ts";
 import { systemOpener, type AppOpener } from "./app-open.ts";
-import { bridgeTarget, mirror, type BridgeLink } from "./bridge-client.ts";
+import { bridgeTarget, mirror, warmBridgeIdentity, type BridgeLink } from "./bridge-client.ts";
 import { RECEIPT_WAIT_MS, tandemEarlier, tandemOutcome } from "./tandem-receipts.ts";
 import { ProtocolError, type Engine } from "./engine.ts";
 import { imagesOf, withImages } from "./inline.ts";
@@ -34,7 +34,7 @@ import { GROUP_NAMES, groupOf, SCHEMAS_REPLY_CAP, startingGroups } from "./group
 import { groupTools, nearestTools } from "./catalog.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, toolByName, validateTool } from "./schema.ts";
 import { autosavePath, readIdentity, sameProject, shelveAutosave, takePreviousAutosave, writeAutosave, type AutosaveIdentity, type PlanRecovery, type PreviousAutosave } from "./autosave.ts";
-import { timePhase } from "./loop-delay.ts";
+import { markPhase, pausePreamble, resumePreamble, timePhase } from "./loop-delay.ts";
 import { withBoxAnchor, isComposite } from "../src/modeling/compose.ts";
 import { expressionMentions, isPlainNumber } from "../src/modeling/params.ts";
 import type { Assembly } from "../src/assembly.ts";
@@ -261,6 +261,8 @@ export class Session {
   /** The autosave a previous server left in the workspace, offered until this session has a plate of its own. */
   previousAutosave: PreviousAutosave | null = null;
   startupChecked = false;
+  /** The first call's autosave scan and bridge identity check. Later calls wait for the same one. */
+  startupScan: Promise<void> | null = null;
   autosaveDirty = false;
   autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   autosaveWriting: Promise<void> = Promise.resolve();
@@ -292,10 +294,23 @@ export class Session {
     this.isolated = options.isolated === true;
   }
 
-  call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
-    if (!this.startupChecked) {
+  async call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
+    if (!this.startupScan) {
       this.startupChecked = true;
-      this.previousAutosave = timePhase("autosave", () => takePreviousAutosave());
+      const start = performance.now();
+      this.startupScan = Promise.all([takePreviousAutosave(), warmBridgeIdentity()]).then(([found]) => {
+        markPhase("autosave", performance.now() - start);
+        this.previousAutosave = found;
+      }).catch(() => {
+        this.previousAutosave = null;
+      });
+    }
+    // The scan's disk work is on the thread pool. Keep that wait out of the sync preamble clock.
+    pausePreamble();
+    try {
+      await this.startupScan;
+    } finally {
+      resumePreamble();
     }
     if (name === "call") {
       // call {tool, args}: any tool, for a client that only calls the tools in its list (docs/plan-mcp-discovery.md D3).

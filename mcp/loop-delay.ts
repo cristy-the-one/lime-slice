@@ -29,9 +29,26 @@ export function timePhase<T>(name: string, fn: () => T): T {
   }
 }
 
-/** The first line of a tools/call, before synchronous startup. */
+let pausedAt = 0;
+
+/** The first line of a tools/call, before synchronous startup. The histogram then covers this call, not process start. */
 export function beginPreamble(): void {
-  if (loopDelayOn) preambleAt = performance.now();
+  if (!loopDelayOn) return;
+  preambleAt = performance.now();
+  pausedAt = 0;
+  histogram?.reset();
+}
+
+/** Leave an await out of the preamble clock. The histogram still records a stall on either side of it. */
+export function pausePreamble(): void {
+  if (!loopDelayOn || preambleAt === 0 || pausedAt !== 0) return;
+  pausedAt = performance.now();
+}
+
+export function resumePreamble(): void {
+  if (!loopDelayOn || pausedAt === 0) return;
+  preambleAt += performance.now() - pausedAt;
+  pausedAt = 0;
 }
 
 /**
