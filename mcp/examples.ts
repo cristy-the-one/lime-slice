@@ -17,6 +17,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   plate_redo: [{}],
   object_select: [{ object: "obj_1" }, { object: "obj_1", name: "bracket" }],
   object_place: [{ object: "obj_1", centreOnBed: true, layFlat: true }, { object: "obj_2", align: { to: "obj_1", how: "flush-left" }, scalePercent: 150 }],
+  orient_compare: [{ object: "obj_1" }, { object: "obj_1", rotations: [{ rotZ: 0 }, { rotZ: -90 }], slice: true }, { object: "obj_1", slice: "all" }],
   object_remove: [{ object: "obj_1" }, { objects: ["obj_2", "obj_3"] }],
   machine_list: [{ limit: 20 }],
   machine_select: [{ printerId: "lime-220", filamentId: "lime-pla", nozzleMm: 0.4 }],

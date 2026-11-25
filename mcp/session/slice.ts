@@ -25,6 +25,7 @@ import { openSheetRefusal } from "./sheet.ts";
 import { type CallMeta, type Job, type PlateObject, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, STALE_SLICE, type SliceSummary, type ToolHandler, UNKNOWN_OBJECT, roundTo, shownName, standsOnNothing } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { orientCompare } from "./orient.ts";
 
 function selectedObject(this: Session): PlateObject | null {
   return this.find(this.selected) ?? this.objects[0] ?? null;
@@ -214,6 +215,7 @@ async function sliceStart(
     plateScope: built.plate,
     slicedIds: built.plate ? this.objects.map((row) => row.id) : [obj.id],
     others: this.objects.length > 1,
+    scopeOmitted: scope === undefined,
     stamp: this.sliceStamp(),
     status: "running",
   };
@@ -253,6 +255,8 @@ function sliceIdentity(this: Session, job: Job): Record<string, unknown> {
   if (job.plateScope) return { scope: "plate", sliced: job.slicedIds, note: "Sliced the whole plate." };
   const named = this.find(job.objectId);
   const one = named ? { object: named.id, name: shownName(named.name) } : { object: job.objectId };
+  // The ids name what was sliced. The sentence stays short: the finished summary is kept under 300 bytes.
+  if (job.scopeOmitted) return { ...one, scope: "object", sliced: job.slicedIds, note: 'scope:"plate" slices them all.' };
   if (job.others) return { ...one, scope: "object", sliced: job.slicedIds };
   return one;
 }
@@ -709,4 +713,5 @@ export const sliceHandlers: Record<string, ToolHandler> = {
   export_3mf: (s, input) => input.pieces === true ? s.exportPieceMeshes(input) : s.export3mf(String(input.name), typeof input.object === "string" ? input.object : undefined),
   mesh_stats: (s, input) => s.meshStats(String(input.object)),
   layer_summary: (s, input) => s.layerSummary(typeof input.job === "string" ? input.job : undefined),
+  orient_compare: (s, input) => orientCompare(s, input),
 };
