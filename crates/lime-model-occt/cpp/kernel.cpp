@@ -153,6 +153,8 @@
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <GeomAbs_Shape.hxx>
 #include <GProp_GProps.hxx>
+#include <Poly_Polygon3D.hxx>
+#include <Poly_PolygonOnTriangulation.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Poly_TriangulationParameters.hxx>
 #include <ShapeFix_Shape.hxx>
@@ -367,10 +369,14 @@ struct Stats {
     std::atomic<long> descriptions{0};
     /// Meshes of the whole shape; the rest meshed only around the faces a step made.
     std::atomic<long> full_meshes{0};
+    /// Display meshes built, and how many of those copied and meshed the whole shape instead of around `made`.
+    std::atomic<long> display_meshes{0};
+    std::atomic<long> full_display_meshes{0};
     /// Microseconds spent in each kind of work, for timing tests and benches.
     std::atomic<long long> boolean_us{0};
     std::atomic<long long> volume_us{0};
     std::atomic<long long> mesh_us{0};
+    std::atomic<long long> display_mesh_us{0};
     std::atomic<long long> readout_us{0};
     std::atomic<long long> describe_us{0};
 };
@@ -673,14 +679,17 @@ std::atomic<bool> g_whole_meshes{false};
 /// (`BRepMesh_ModelPreProcessor`), and records the chord asked with the mesh (`BRepMesh_ModelPostProcessor`). A mesh made
 /// at another chord, even a finer one that would be kept too, answers no: its edges could be cut finer than a mesh of the
 /// whole solid at `chord` would take them from the faces beside it.
-bool mesh_kept(const TopoDS_Face& face, double chord) {
+bool mesh_kept(const TopoDS_Face& face, double chord, double angle = 0.5) {
     TopLoc_Location location;
     const Handle(Poly_Triangulation)& mesh = BRep_Tool::Triangulation(face, location);
     if (mesh.IsNull() || mesh->NbTriangles() == 0) {
         return false;
     }
     const Handle(Poly_TriangulationParameters)& made = mesh->Parameters();
-    return !made.IsNull() && made->HasDeflection() && made->Deflection() == chord;
+    if (made.IsNull() || !made->HasDeflection() || made->Deflection() != chord) {
+        return false;
+    }
+    return !made->HasAngle() || made->Angle() == angle;
 }
 
 /// Mesh with Open CASCADE's Watson triangulation, as the bridge did before Delabella: set by a test, or for one run by
@@ -777,6 +786,149 @@ bool mesh_around_made(Held& held, double chord) {
     return true;
 }
 
+/// Build `held.display_faces` and `held.display_edges` incrementally by copying and meshing only `made` and the
+/// faces beside `made`, seeding each beside face's copy with the parent's display triangulation and edge polygons
+/// so Open CASCADE keeps the beside faces untouched and stitches `made` to their exact edge nodes. Every other face
+/// and edge reuses the parent's ref-counted display handle directly. Returns false (leaving nothing half-built) when
+/// preconditions do not hold, so `display_faces()` falls back to a full copy and mesh.
+bool display_faces_around_made(Held& held, double chord, double angle) {
+    const int faces = held.faces.Extent();
+    const int edges = held.edges.Extent();
+    if (!held.built_on || held.made.empty() || 2 * held.made.size() > static_cast<size_t>(faces)) {
+        return false;
+    }
+    if (held.display_inherited_chord != chord ||
+        static_cast<int>(held.display_inherited_faces.size()) != faces ||
+        static_cast<int>(held.display_inherited_edges.size()) != edges) {
+        return false;
+    }
+    std::vector<char> is_made(static_cast<size_t>(faces) + 1, 0);
+    for (const int index : held.made) {
+        if (index < 1 || index > faces) {
+            return false;
+        }
+        is_made[static_cast<size_t>(index)] = 1;
+    }
+    for (int index = 1; index <= faces; ++index) {
+        if (is_made[static_cast<size_t>(index)]) {
+            continue;
+        }
+        const TopoDS_Face& inh = held.display_inherited_faces[static_cast<size_t>(index - 1)];
+        if (inh.IsNull() || !mesh_kept(inh, chord, angle)) {
+            return false;
+        }
+    }
+    TopTools_IndexedMapOfShape made_edges;
+    for (const int index : held.made) {
+        TopExp::MapShapes(held.faces(index), TopAbs_EDGE, made_edges);
+    }
+    std::vector<char> is_beside(static_cast<size_t>(faces) + 1, 0);
+    TopoDS_Compound around;
+    BRep_Builder builder;
+    builder.MakeCompound(around);
+    for (int index = 1; index <= faces; ++index) {
+        bool beside = false;
+        if (!is_made[static_cast<size_t>(index)]) {
+            for (TopExp_Explorer explorer(held.faces(index), TopAbs_EDGE); !beside && explorer.More(); explorer.Next()) {
+                beside = made_edges.Contains(explorer.Current());
+            }
+            if (beside) {
+                is_beside[static_cast<size_t>(index)] = 1;
+            }
+        }
+        if (is_made[static_cast<size_t>(index)] || beside) {
+            builder.Add(around, held.faces(index));
+        }
+    }
+    BRepBuilderAPI_Copy copy(around, Standard_False, Standard_False);
+    if (!copy.IsDone()) {
+        return false;
+    }
+    // Seed every beside face's copy with its inherited display triangulation and edge polygons.
+    for (int index = 1; index <= faces; ++index) {
+        if (!is_beside[static_cast<size_t>(index)]) {
+            continue;
+        }
+        const TopoDS_Face orig_face = TopoDS::Face(held.faces(index));
+        const TopoDS_Face& inh_face = held.display_inherited_faces[static_cast<size_t>(index - 1)];
+        const TopoDS_Face copy_face = TopoDS::Face(copy.ModifiedShape(orig_face).Oriented(orig_face.Orientation()));
+        TopLoc_Location inh_loc;
+        const Handle(Poly_Triangulation)& tri = BRep_Tool::Triangulation(inh_face, inh_loc);
+        if (tri.IsNull() || !(copy_face.Location() == inh_loc)) {
+            return false;
+        }
+        builder.UpdateFace(copy_face, tri);
+        TopTools_IndexedMapOfShape face_edges;
+        TopExp::MapShapes(orig_face, TopAbs_EDGE, face_edges);
+        for (int e = 1; e <= face_edges.Extent(); ++e) {
+            const TopoDS_Edge orig_edge = TopoDS::Edge(face_edges(e));
+            const int edge_idx = held.edges.FindIndex(orig_edge);
+            if (edge_idx <= 0) {
+                continue;
+            }
+            const TopoDS_Edge& inh_edge = held.display_inherited_edges[static_cast<size_t>(edge_idx - 1)];
+            if (inh_edge.IsNull()) {
+                continue;
+            }
+            const TopoDS_Edge copy_edge = TopoDS::Edge(copy.ModifiedShape(orig_edge).Oriented(TopAbs_FORWARD));
+            if (!(copy_edge.Location() == inh_edge.Location())) {
+                return false;
+            }
+            if (BRep_Tool::IsClosed(inh_edge, tri, inh_loc)) {
+                const TopoDS_Edge inh_fwd = TopoDS::Edge(inh_edge.Oriented(TopAbs_FORWARD));
+                const TopoDS_Edge inh_rev = TopoDS::Edge(inh_edge.Oriented(TopAbs_REVERSED));
+                const Handle(Poly_PolygonOnTriangulation)& p1 = BRep_Tool::PolygonOnTriangulation(inh_fwd, tri, inh_loc);
+                const Handle(Poly_PolygonOnTriangulation)& p2 = BRep_Tool::PolygonOnTriangulation(inh_rev, tri, inh_loc);
+                if (!p1.IsNull() && !p2.IsNull()) {
+                    builder.UpdateEdge(copy_edge, p1, p2, tri, inh_loc);
+                }
+            } else {
+                const Handle(Poly_PolygonOnTriangulation)& p = BRep_Tool::PolygonOnTriangulation(inh_edge, tri, inh_loc);
+                if (!p.IsNull()) {
+                    builder.UpdateEdge(copy_edge, p, tri, inh_loc);
+                }
+            }
+            TopLoc_Location poly3d_loc;
+            const Handle(Poly_Polygon3D)& poly3d = BRep_Tool::Polygon3D(inh_edge, poly3d_loc);
+            if (!poly3d.IsNull()) {
+                builder.UpdateEdge(copy_edge, poly3d, poly3d_loc);
+            }
+        }
+    }
+    mesh_faces(copy.Shape(), chord, angle);
+
+    TopTools_IndexedMapOfShape around_edges;
+    TopExp::MapShapes(around, TopAbs_EDGE, around_edges);
+    std::vector<TopoDS_Face> out_faces;
+    out_faces.reserve(static_cast<size_t>(faces));
+    for (int index = 1; index <= faces; ++index) {
+        if (is_made[static_cast<size_t>(index)] || is_beside[static_cast<size_t>(index)]) {
+            const TopoDS_Shape& face = held.faces(index);
+            out_faces.push_back(TopoDS::Face(copy.ModifiedShape(face).Oriented(face.Orientation())));
+        } else {
+            out_faces.push_back(held.display_inherited_faces[static_cast<size_t>(index - 1)]);
+        }
+    }
+    std::vector<TopoDS_Edge> out_edges;
+    out_edges.reserve(static_cast<size_t>(edges));
+    for (int index = 1; index <= edges; ++index) {
+        const TopoDS_Shape& edge = held.edges(index);
+        if (around_edges.Contains(edge)) {
+            out_edges.push_back(TopoDS::Edge(copy.ModifiedShape(edge).Oriented(edge.Orientation())));
+        } else {
+            out_edges.push_back(held.display_inherited_edges[static_cast<size_t>(index - 1)]);
+        }
+    }
+    held.display_shape = copy.Shape();
+    held.display_faces = std::move(out_faces);
+    held.display_edges = std::move(out_edges);
+    held.display_meshed = chord;
+    held.display_inherited_chord = 0;
+    held.display_inherited_faces.clear();
+    held.display_inherited_edges.clear();
+    return true;
+}
+
 /// The faces of a copy of `held.shape`, meshed for the Model view at `chord` with mesh_angle_of(chord), in the order
 /// and with the orientation of `held.faces`. Open CASCADE keeps a finer mesh a face already has, so the display mesh
 /// never touches the held faces: their mesh stays the one every commit, slice and export reads. A new chord copies
@@ -786,6 +938,13 @@ const std::vector<TopoDS_Face>& display_faces(Held& held, double chord) {
     if (held.display_meshed == chord && static_cast<int>(held.display_faces.size()) == faces) {
         return held.display_faces;
     }
+    g_stats.display_meshes += 1;
+    const Timed timed(g_stats.display_mesh_us);
+    const double angle = mesh_angle_of(chord);
+    if (!g_whole_meshes.load() && display_faces_around_made(held, chord, angle)) {
+        return held.display_faces;
+    }
+    g_stats.full_display_meshes += 1;
     BRepBuilderAPI_Copy copy(held.shape, Standard_False, Standard_False);
     std::vector<TopoDS_Face> copied;
     copied.reserve(static_cast<size_t>(faces));
@@ -793,10 +952,21 @@ const std::vector<TopoDS_Face>& display_faces(Held& held, double chord) {
         const TopoDS_Shape& face = held.faces(index);
         copied.push_back(TopoDS::Face(copy.ModifiedShape(face).Oriented(face.Orientation())));
     }
-    mesh_faces(copy.Shape(), chord, mesh_angle_of(chord));
+    const int edges = held.edges.Extent();
+    std::vector<TopoDS_Edge> copied_edges;
+    copied_edges.reserve(static_cast<size_t>(edges));
+    for (int index = 1; index <= edges; ++index) {
+        const TopoDS_Shape& edge = held.edges(index);
+        copied_edges.push_back(TopoDS::Edge(copy.ModifiedShape(edge).Oriented(edge.Orientation())));
+    }
+    mesh_faces(copy.Shape(), chord, angle);
     held.display_shape = copy.Shape();
     held.display_faces = std::move(copied);
+    held.display_edges = std::move(copied_edges);
     held.display_meshed = chord;
+    held.display_inherited_chord = 0;
+    held.display_inherited_faces.clear();
+    held.display_inherited_edges.clear();
     return held.display_faces;
 }
 
@@ -979,20 +1149,37 @@ Mesh tessellate(Held& held, double chord, bool display) {
         }
     }
 
-    out.edge_offsets.reserve(static_cast<size_t>(held.edges.Extent()) + 1);
-    out.edge_offsets.push_back(0);
-    for (int edge_index = 1; edge_index <= held.edges.Extent(); ++edge_index) {
-        BRepAdaptor_Curve curve(TopoDS::Edge(held.edges(edge_index)));
-        GCPnts_QuasiUniformDeflection sampler(curve, chord);
-        if (sampler.IsDone() && sampler.NbPoints() >= 2) {
-            for (int point_index = 1; point_index <= sampler.NbPoints(); ++point_index) {
-                push_point(out.edge_points, sampler.Value(point_index));
+    // Edges are the same B-rep curves in both meshes, so `reply()` sends them once from the standard pass
+    // and never reads `edge_points`/`edge_offsets` from the display pass.
+    if (!display) {
+        const int n_edges = held.edges.Extent();
+        std::vector<std::vector<float>> sampled(static_cast<size_t>(n_edges));
+        OSD_Parallel::For(0, n_edges, [&held, chord, &sampled](int i) {
+            std::vector<float>& pts = sampled[static_cast<size_t>(i)];
+            BRepAdaptor_Curve curve(TopoDS::Edge(held.edges(i + 1)));
+            GCPnts_QuasiUniformDeflection sampler(curve, chord);
+            if (sampler.IsDone() && sampler.NbPoints() >= 2) {
+                pts.reserve(static_cast<size_t>(sampler.NbPoints()) * 3);
+                for (int point_index = 1; point_index <= sampler.NbPoints(); ++point_index) {
+                    push_point(pts, sampler.Value(point_index));
+                }
+            } else {
+                pts.reserve(6);
+                push_point(pts, curve.Value(curve.FirstParameter()));
+                push_point(pts, curve.Value(curve.LastParameter()));
             }
-        } else {
-            push_point(out.edge_points, curve.Value(curve.FirstParameter()));
-            push_point(out.edge_points, curve.Value(curve.LastParameter()));
+        });
+        size_t total_floats = 0;
+        for (const auto& pts : sampled) {
+            total_floats += pts.size();
         }
-        out.edge_offsets.push_back(static_cast<uint32_t>(out.edge_points.size() / 3));
+        out.edge_points.reserve(total_floats);
+        out.edge_offsets.reserve(static_cast<size_t>(n_edges) + 1);
+        out.edge_offsets.push_back(0);
+        for (const auto& pts : sampled) {
+            out.edge_points.insert(out.edge_points.end(), pts.begin(), pts.end());
+            out.edge_offsets.push_back(static_cast<uint32_t>(out.edge_points.size() / 3));
+        }
     }
     return out;
 }
@@ -1106,6 +1293,33 @@ void inherit_about(Held& held, const Held& from) {
             held.edge_about[static_cast<size_t>(i - 1)] = from.edge_about[static_cast<size_t>(at - 1)];
         }
     }
+}
+
+void inherit_display(Held& held, const Held& from) {
+    if (from.display_meshed <= 0.0 ||
+        static_cast<int>(from.display_faces.size()) != from.faces.Extent() ||
+        static_cast<int>(from.display_edges.size()) != from.edges.Extent()) {
+        return;
+    }
+    const int n_faces = held.faces.Extent();
+    const int n_edges = held.edges.Extent();
+    held.display_inherited_faces.assign(static_cast<size_t>(n_faces), TopoDS_Face());
+    held.display_inherited_edges.assign(static_cast<size_t>(n_edges), TopoDS_Edge());
+    for (int i = 1; i <= n_faces; ++i) {
+        const int at = from.faces.FindIndex(held.faces(i));
+        if (at > 0) {
+            held.display_inherited_faces[static_cast<size_t>(i - 1)] =
+                TopoDS::Face(from.display_faces[static_cast<size_t>(at - 1)].Oriented(held.faces(i).Orientation()));
+        }
+    }
+    for (int i = 1; i <= n_edges; ++i) {
+        const int at = from.edges.FindIndex(held.edges(i));
+        if (at > 0) {
+            held.display_inherited_edges[static_cast<size_t>(i - 1)] =
+                TopoDS::Edge(from.display_edges[static_cast<size_t>(at - 1)].Oriented(held.edges(i).Orientation()));
+        }
+    }
+    held.display_inherited_chord = from.display_meshed;
 }
 
 bool pick(const Held& held, const char* kind, int index, TopoDS_Shape& out) {
@@ -1528,6 +1742,7 @@ TopoDS_Shape boolean_list(
     algo.SetFuzzyValue(1.0e-7);
     algo.SetNonDestructive(Standard_True);
     algo.SetRunParallel(Standard_True);
+    algo.SetUseOBB(Standard_True);
     algo.SetToFillHistory(history != nullptr ? Standard_True : Standard_False);
     Handle(Message_ProgressIndicator) watch;
     algo.Build(deadline_range(watch));
@@ -2332,13 +2547,37 @@ TopoDS_Shape build_lip_gusset(
         error = failed;
         return {};
     }
-    BRepAlgoAPI_Common clipped(sweep.Shape(), side.Shape());
-    if (!clipped.IsDone()) {
+    BRepAlgoAPI_Common clipped;
+    {
+        TopTools_ListOfShape args, tools;
+        args.Append(sweep.Shape());
+        tools.Append(side.Shape());
+        clipped.SetArguments(args);
+        clipped.SetTools(tools);
+        clipped.SetNonDestructive(Standard_True);
+        clipped.SetRunParallel(Standard_True);
+        clipped.SetUseOBB(Standard_True);
+        clipped.SetToFillHistory(Standard_False);
+        clipped.Build();
+    }
+    if (!clipped.IsDone() || clipped.HasErrors() || clipped.Shape().IsNull()) {
         error = failed;
         return {};
     }
-    BRepAlgoAPI_Cut left(clipped.Shape(), current);
-    if (!left.IsDone()) {
+    BRepAlgoAPI_Cut left;
+    {
+        TopTools_ListOfShape args, tools;
+        args.Append(clipped.Shape());
+        tools.Append(current);
+        left.SetArguments(args);
+        left.SetTools(tools);
+        left.SetNonDestructive(Standard_True);
+        left.SetRunParallel(Standard_True);
+        left.SetUseOBB(Standard_True);
+        left.SetToFillHistory(Standard_False);
+        left.Build();
+    }
+    if (!left.IsDone() || left.HasErrors() || left.Shape().IsNull()) {
         error = failed;
         return {};
     }
@@ -3619,6 +3858,8 @@ bool build_split(
     splitter.SetArguments(arguments);
     splitter.SetTools(tools);
     splitter.SetNonDestructive(Standard_True);
+    splitter.SetRunParallel(Standard_True);
+    splitter.SetUseOBB(Standard_True);
     g_stats.builds += 1;
     splitter.Build();
     if (!splitter.IsDone() || splitter.HasErrors() || splitter.Shape().IsNull()) {
@@ -3658,6 +3899,8 @@ bool build_split(
             fuse.SetArguments(objects);
             fuse.SetTools(tools);
             fuse.SetNonDestructive(Standard_True);
+            fuse.SetRunParallel(Standard_True);
+            fuse.SetUseOBB(Standard_True);
             fuse.SetToFillHistory(Standard_False);
             fuse.Build();
             if (!fuse.IsDone() || fuse.HasErrors() || fuse.Shape().IsNull()) {
@@ -4092,6 +4335,8 @@ bool build_partition(
     splitter.SetArguments(arguments);
     splitter.SetTools(tools);
     splitter.SetNonDestructive(Standard_True);
+    splitter.SetRunParallel(Standard_True);
+    splitter.SetUseOBB(Standard_True);
     g_stats.builds += 1;
     Handle(Message_ProgressIndicator) watch;
     splitter.Build(deadline_range(watch));
@@ -4437,6 +4682,8 @@ void engrave_numbers(
         cut.SetArguments(arguments);
         cut.SetTools(tools);
         cut.SetNonDestructive(Standard_True);
+        cut.SetRunParallel(Standard_True);
+        cut.SetUseOBB(Standard_True);
         cut.SetToFillHistory(Standard_False);
         g_stats.builds += 1;
         Handle(Message_ProgressIndicator) watch;
@@ -4483,6 +4730,8 @@ TopoDS_Shape joint_boolean(const TopoDS_Shape& piece, const TopoDS_Shape& tool, 
         op.SetArguments(arguments);
         op.SetTools(tools);
         op.SetNonDestructive(Standard_True);
+        op.SetRunParallel(Standard_True);
+        op.SetUseOBB(Standard_True);
         op.SetToFillHistory(Standard_False);
         op.Build(deadline_range(watch));
         return op.IsDone() && !op.HasErrors() ? whole_solid(op.Shape()) : TopoDS_Shape();
@@ -4491,6 +4740,8 @@ TopoDS_Shape joint_boolean(const TopoDS_Shape& piece, const TopoDS_Shape& tool, 
     op.SetArguments(arguments);
     op.SetTools(tools);
     op.SetNonDestructive(Standard_True);
+    op.SetRunParallel(Standard_True);
+    op.SetUseOBB(Standard_True);
     op.SetToFillHistory(Standard_False);
     op.Build(deadline_range(watch));
     return op.IsDone() && !op.HasErrors() ? whole_solid(op.Shape()) : TopoDS_Shape();
@@ -5022,6 +5273,8 @@ bool build_fit_coupon(const FitCoupon& coupon, FitCouponResult& made, std::strin
         cut.SetArguments(arguments);
         cut.SetTools(tools);
         cut.SetNonDestructive(Standard_True);
+        cut.SetRunParallel(Standard_True);
+        cut.SetUseOBB(Standard_True);
         cut.SetToFillHistory(Standard_False);
         g_stats.builds += 1;
         Handle(Message_ProgressIndicator) watch;
@@ -7858,6 +8111,9 @@ TopoDS_Shape build_extrude_cells(
                 common.SetTools(region_list);
                 common.SetFuzzyValue(1.0e-7);
                 common.SetNonDestructive(Standard_True);
+                common.SetRunParallel(Standard_True);
+                common.SetUseOBB(Standard_True);
+                common.SetToFillHistory(Standard_False);
                 common.Build();
                 if (common.IsDone() && !common.HasErrors()) {
                     for (TopExp_Explorer it(common.Shape(), TopAbs_FACE); it.More(); it.Next()) {
@@ -9322,6 +9578,8 @@ std::string section_json(const TopoDS_Shape& shape, const double* plane, const d
         common.SetFuzzyValue(1.0e-7);
         common.SetNonDestructive(Standard_True);
         common.SetRunParallel(Standard_True);
+        common.SetUseOBB(Standard_True);
+        common.SetToFillHistory(Standard_False);
         // A damaged solid (faces that meet only along a line, walls a few hundredths thin) could keep this cut
         // working for many minutes. The caller's deadline stops it with a sentence wherever Open CASCADE looks at it;
         // on the damaged part that sent us here it never did, so the MCP session also caps the whole call.
@@ -10432,6 +10690,9 @@ bool sweep_damaged(const TopoDS_Shape& solid) {
         BOPAlgo_ArgumentAnalyzer analyzer;
         analyzer.SetShape1(solid);
         analyzer.SelfInterMode() = Standard_True;
+        analyzer.StopOnFirstFaulty() = Standard_True;
+        analyzer.SetRunParallel(Standard_True);
+        analyzer.SetUseOBB(Standard_True);
         analyzer.Perform();
         if (analyzer.HasFaulty()) return true;
     } catch (const Standard_Failure&) {
@@ -11055,10 +11316,19 @@ TopoDS_Shape keep_side(const TopoDS_Shape& tool, const gp_Pln& plane, const gp_P
     if (!face.IsDone()) return {};
     BRepPrimAPI_MakePrism slab(face.Face(), normal * size);
     if (!slab.IsDone()) return {};
-    BRepAlgoAPI_Common common(tool, slab.Shape());
+    BRepAlgoAPI_Common common;
+    TopTools_ListOfShape args, tools;
+    args.Append(tool);
+    tools.Append(slab.Shape());
+    common.SetArguments(args);
+    common.SetTools(tools);
     common.SetFuzzyValue(1e-7);
+    common.SetNonDestructive(Standard_True);
+    common.SetRunParallel(Standard_True);
+    common.SetUseOBB(Standard_True);
+    common.SetToFillHistory(Standard_False);
     common.Build();
-    if (!common.IsDone() || common.Shape().IsNull()) return {};
+    if (!common.IsDone() || common.HasErrors() || common.Shape().IsNull()) return {};
     return common.Shape();
 }
 
@@ -11257,11 +11527,20 @@ bool try_exact_edge_surface_fillet(
         const TopoDS_Shape cutter = trimmed(along(true));
         const TopoDS_Shape region = trimmed(along(false));
         if (cutter.IsNull() || region.IsNull()) return false;
-        BRepAlgoAPI_Cut cut(shape, cutter);
+        BRepAlgoAPI_Cut cut;
+        TopTools_ListOfShape args, tools;
+        args.Append(shape);
+        tools.Append(cutter);
+        cut.SetArguments(args);
+        cut.SetTools(tools);
         cut.SetFuzzyValue(1e-5);
+        cut.SetNonDestructive(Standard_True);
+        cut.SetRunParallel(Standard_True);
+        cut.SetUseOBB(Standard_True);
+        cut.SetToFillHistory(Standard_False);
         Handle(Message_ProgressIndicator) watch;
         cut.Build(deadline_range(watch));
-        if (!cut.IsDone() || cut.Shape().IsNull()) return false;
+        if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()) return false;
         const TopoDS_Shape solid = as_solid(cut.Shape());
         if (solid.IsNull() || !has_solid(solid)) return false;
         const double vol = volume_of(solid);
@@ -12390,6 +12669,8 @@ TopoDS_Shape build_trim_split(
         splitter.SetArguments(args);
         splitter.SetTools(tools);
         splitter.SetNonDestructive(Standard_True);
+        splitter.SetRunParallel(Standard_True);
+        splitter.SetUseOBB(Standard_True);
         splitter.Build();
         if (!splitter.IsDone() || splitter.Shape().IsNull()) {
             error = "Open CASCADE could not split this shape with the cutting surface.";
@@ -12528,6 +12809,8 @@ TopoDS_Shape build_replace_face(
         splitter.SetArguments(args);
         splitter.SetTools(tools);
         splitter.SetNonDestructive(Standard_True);
+        splitter.SetRunParallel(Standard_True);
+        splitter.SetUseOBB(Standard_True);
         splitter.Build();
         if (!splitter.IsDone() || splitter.Shape().IsNull()) {
             error = "Open CASCADE could not replace this face with the given surface.";
@@ -12656,6 +12939,8 @@ TopoDS_Shape build_split_face(
         splitter.SetArguments(args);
         splitter.SetTools(projected_tools);
         splitter.SetNonDestructive(Standard_True);
+        splitter.SetRunParallel(Standard_True);
+        splitter.SetUseOBB(Standard_True);
         splitter.Build();
         if (!splitter.IsDone() || splitter.Shape().IsNull()) {
             error = "Open CASCADE could not split the face along the projected curve.";
@@ -13483,10 +13768,15 @@ extern "C" char* lime_model_occt_stats() {
     out += std::to_string(g_stats.descriptions.load());
     out += ",\"fullMeshes\":";
     out += std::to_string(g_stats.full_meshes.load());
+    out += ",\"displayMeshes\":";
+    out += std::to_string(g_stats.display_meshes.load());
+    out += ",\"fullDisplayMeshes\":";
+    out += std::to_string(g_stats.full_display_meshes.load());
     const std::pair<const char*, const std::atomic<long long>*> timings[] = {
         {"booleanUs", &g_stats.boolean_us},
         {"volumeUs", &g_stats.volume_us},
         {"meshUs", &g_stats.mesh_us},
+        {"displayMeshUs", &g_stats.display_mesh_us},
         {"readoutUs", &g_stats.readout_us},
         {"describeUs", &g_stats.describe_us},
     };
