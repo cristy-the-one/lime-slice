@@ -9,8 +9,36 @@ import { annotationsFor, listedTools } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
 import { appVersion } from "./version.ts";
 
-const VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18"];
+/**
+ * Revisions this server speaks. Legacy clients negotiate one at initialize.
+ * 2026-07-28 is also read from each request's `_meta`.
+ */
+export const SUPPORTED_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"] as const;
+const MODERN_VERSION = "2026-07-28";
+/**
+ * Cache hint for a list that stays put until this process is replaced.
+ * resources/read is uncacheable (ttlMs 0).
+ */
+export const LIST_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * UnsupportedProtocolVersion. The 2026-07-28 schema defines
+ * `UNSUPPORTED_PROTOCOL_VERSION = -32022` (schema.ts line 450 at
+ * 2bbace557bbf2cb5d03d6f9b48905415cd7607b0; SEP-2575 aligned in
+ * modelcontextprotocol/modelcontextprotocol#3092).
+ */
+const UNSUPPORTED_PROTOCOL_VERSION = -32022;
+const META_PROTOCOL = "io.modelcontextprotocol/protocolVersion";
+const META_CLIENT = "io.modelcontextprotocol/clientInfo";
+const META_CAPS = "io.modelcontextprotocol/clientCapabilities";
+const META_SERVER = "io.modelcontextprotocol/serverInfo";
 const MAX_LINE = 8 * 1024 * 1024;
+
+/** The version `initialize` agreed, when this client sent one. */
+const negotiatedVersion = new WeakMap<Session, string>();
+/** A client that has spoken 2026-07-28. It does not get `notifications/tools/list_changed`. */
+const modernClients = new WeakSet<Session>();
+/** One line per process, the first version and clientInfo we see. */
+let clientLogged = false;
 
 const INSTRUCTIONS = [
   "Import a mesh with mesh_import, choose a printer and filament with machine_select, then slice_start and slice_wait, then gcode_export.",
@@ -116,34 +144,112 @@ function shown(value: unknown): string {
   return typeof value === "string" && value.trim() !== "" ? JSON.stringify(value) : "(pass the argument)";
 }
 
+function supportedVersion(value: string): boolean {
+  return (SUPPORTED_VERSIONS as readonly string[]).includes(value);
+}
+
+function serverInfo(): { name: string; version: string } {
+  return { name: "lime-slice", version: appVersion() };
+}
+
+function metaRecord(params: Record<string, unknown>): Record<string, unknown> | null {
+  const meta = params._meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  return meta as Record<string, unknown>;
+}
+
+function rememberClientName(session: Session, info: unknown): void {
+  if (!info || typeof info !== "object" || Array.isArray(info)) return;
+  const name = (info as { name?: unknown }).name;
+  if (typeof name === "string") session.clientName = name;
+}
+
+/** stderr only. stdout is the protocol. The first version and clientInfo this process sees. */
+function noteClient(version: string, info: unknown, capabilities: unknown): void {
+  if (clientLogged) return;
+  clientLogged = true;
+  const shown = version === "" ? "(none)" : version;
+  process.stderr.write(`lime-slice mcp: protocolVersion=${shown} clientInfo=${JSON.stringify(info ?? null)} clientCapabilities=${JSON.stringify(capabilities ?? null)}\n`);
+}
+
+function capabilitiesFor(session: Session, modern: boolean): { tools: { listChanged?: boolean }; resources: Record<string, never>; prompts: Record<string, never> } {
+  return {
+    tools: !modern && session.toolGroups ? { listChanged: true } : {},
+    resources: {},
+    prompts: {},
+  };
+}
+
+function unsupportedVersion(id: number | string | null, requested: string): Record<string, unknown> {
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: {
+      code: UNSUPPORTED_PROTOCOL_VERSION,
+      message: "Unsupported protocol version",
+      data: { supported: [...SUPPORTED_VERSIONS], requested },
+    },
+  };
+}
+
+function missingResource(err: unknown): err is Error {
+  return err instanceof Error && err.name === "ProtocolError" && err.message === "That resource is not on this server.";
+}
+
 export async function handleRpc(session: Session, message: RpcMessage, meta?: CallMeta): Promise<Record<string, unknown> | null> {
   const id = message.id ?? null;
   const method = message.method ?? "";
   const params = message.params ?? {};
   if (method.startsWith("notifications/")) return null;
+  const metaFields = metaRecord(params);
+  const metaVersion = typeof metaFields?.[META_PROTOCOL] === "string" ? metaFields[META_PROTOCOL] : undefined;
+  if (method === "initialize") {
+    const asked = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
+    noteClient(asked, params.clientInfo ?? null, params.capabilities ?? null);
+    rememberClientName(session, params.clientInfo);
+  } else if (metaVersion !== undefined || metaFields?.[META_CLIENT] !== undefined) {
+    noteClient(metaVersion ?? "", metaFields?.[META_CLIENT] ?? null, metaFields?.[META_CAPS] ?? null);
+    rememberClientName(session, metaFields?.[META_CLIENT]);
+  }
+  if (metaVersion !== undefined && !supportedVersion(metaVersion)) return unsupportedVersion(id, metaVersion);
+  if (metaVersion === MODERN_VERSION) modernClients.add(session);
+  const modern = (metaVersion ?? negotiatedVersion.get(session)) === MODERN_VERSION;
   try {
     if (method === "initialize") {
       const asked = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
-      const protocolVersion = VERSIONS.includes(asked) ? asked : "2024-11-05";
-      const client = params.clientInfo as { name?: unknown } | undefined;
-      if (typeof client?.name === "string") session.clientName = client.name;
+      if (asked !== "" && !supportedVersion(asked)) return unsupportedVersion(id, asked);
+      const protocolVersion = asked === "" ? "2024-11-05" : asked;
+      negotiatedVersion.set(session, protocolVersion);
+      if (protocolVersion === MODERN_VERSION) modernClients.add(session);
+      else modernClients.delete(session);
+      const modernInit = protocolVersion === MODERN_VERSION;
       return result(id, {
         protocolVersion,
-        capabilities: { tools: session.toolGroups ? { listChanged: true } : {}, resources: {}, prompts: {} },
-        serverInfo: { name: "lime-slice", version: appVersion() },
-        instructions: instructionsFor(session.toolGroups),
+        capabilities: capabilitiesFor(session, modernInit),
+        serverInfo: serverInfo(),
+        instructions: modernInit ? DISCOVERY_INSTRUCTIONS : instructionsFor(session.toolGroups),
       });
     }
     if (method === "ping") return result(id, {});
-    if (method === "tools/list") {
+    if (method === "server/discover") {
       return result(id, {
-        tools: listedTools(session.toolGroups).map((tool) => ({
+        supportedVersions: [...SUPPORTED_VERSIONS],
+        capabilities: capabilitiesFor(session, modern),
+        serverInfo: serverInfo(),
+        instructions: modern ? DISCOVERY_INSTRUCTIONS : instructionsFor(session.toolGroups),
+      }, "list");
+    }
+    if (method === "tools/list") {
+      // 2026 lists the discovery tools only, in TOOLS order, and that order does not change for the connection.
+      const groups = modern ? new Set<string>() : session.toolGroups;
+      return result(id, {
+        tools: listedTools(groups).map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
           annotations: annotationsFor(tool.name),
         })),
-      });
+      }, "list");
     }
     if (method === "tools/call") {
       const name = String(params.name ?? "");
@@ -168,17 +274,23 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
           ...GUIDES.map((guide) => guide.uri),
           ...session.objects.map((obj) => `lime://object/${obj.id}/history`),
         ].map((uri) => ({ uri, name: uri, mimeType: "application/json" })),
-      });
+      }, "list");
     }
     if (method === "resources/read") {
       const uri = String(params.uri ?? "");
-      const body = await session.resource(uri);
-      return result(id, { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(body) }] });
+      try {
+        const body = await session.resource(uri);
+        return result(id, { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(body) }] }, "read");
+      } catch (err) {
+        // 2025-11-25's -32002 (resource not found) is -32602 in 2026-07-28 (INVALID_PARAMS, schema.ts line 315).
+        if (missingResource(err)) return error(id, -32602, err.message);
+        throw err;
+      }
     }
     if (method === "prompts/list") {
       return result(id, {
         prompts: PROMPTS.map((prompt) => ({ name: prompt.name, description: prompt.description, arguments: prompt.arguments })),
-      });
+      }, "list");
     }
     if (method === "prompts/get") {
       const name = String(params.name ?? "");
@@ -195,8 +307,20 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
   }
 }
 
-function result(id: number | string | null, value: unknown): Record<string, unknown> {
-  return { jsonrpc: "2.0", id, result: value };
+function result(id: number | string | null, value: Record<string, unknown>, cache?: "list" | "read"): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    ...value,
+    resultType: "complete",
+    _meta: { [META_SERVER]: serverInfo() },
+  };
+  if (cache === "list") {
+    body.ttlMs = LIST_TTL_MS;
+    body.cacheScope = "public";
+  } else if (cache === "read") {
+    body.ttlMs = 0;
+    body.cacheScope = "private";
+  }
+  return { jsonrpc: "2.0", id, result: body };
 }
 
 function error(id: number | string | null, code: number, message: string): Record<string, unknown> {
@@ -250,7 +374,10 @@ export function serve(session: Session, input: NodeJS.ReadableStream = process.s
     });
   };
 
-  session.onToolsChanged = () => send({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+  session.onToolsChanged = () => {
+    if (modernClients.has(session)) return;
+    send({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+  };
 
   session.onProgress = (_job, fraction, stage, token) => {
     if (token === undefined || !sent.has(token)) return;
