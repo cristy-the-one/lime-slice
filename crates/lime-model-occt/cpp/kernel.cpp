@@ -1459,12 +1459,14 @@ Message_ProgressRange deadline_range(Handle(Message_ProgressIndicator)& watch) {
 /// default options, so setting options on one and calling `Build` again ran every boolean twice, the first time
 /// destructively, which could change the input's tolerances. History stays unfilled unless `history` is set: a hole's
 /// tool fuse and a split's piece fuse never ask, so their shapes stay as they were.
+/// `fuzzy` is the boolean's tolerance in millimetres. The plain fuse uses confusion, 1e-7.
 TopoDS_Shape boolean_list(
     const std::string& op,
     const TopoDS_Shape& solid,
     const TopTools_ListOfShape& tools,
     std::string& error,
-    Handle(BRepTools_History)* history = nullptr) {
+    Handle(BRepTools_History)* history = nullptr,
+    double fuzzy = 1.0e-7) {
     BOPAlgo_Operation operation = BOPAlgo_UNKNOWN;
     if (op == "fuse") {
         operation = BOPAlgo_FUSE;
@@ -1484,7 +1486,7 @@ TopoDS_Shape boolean_list(
     algo.SetArguments(objects);
     algo.SetTools(tools);
     algo.SetOperation(operation);
-    algo.SetFuzzyValue(1.0e-7);
+    algo.SetFuzzyValue(fuzzy > 0.0 ? fuzzy : 1.0e-7);
     algo.SetNonDestructive(Standard_True);
     algo.SetRunParallel(Standard_True);
     algo.SetToFillHistory(history != nullptr ? Standard_True : Standard_False);
@@ -1518,6 +1520,116 @@ bool accepted_result(const TopoDS_Shape& shape, double& volume, std::string& err
         return false;
     }
     return true;
+}
+
+/// The plain boolean's tolerance, confusion. A retry at this same value would repeat the boolean.
+constexpr double kBooleanFuzzyMm = 1.0e-7;
+/// A second fuse when the first hands back less than the part had. 1e-5 is the fuzzy a tight boolean in this
+/// kernel already uses (the G2 fillet cut). It is a hundred times confusion, and far below the volume guard's
+/// 0.01 mm³ floor, so the retry does not loosen that guard and does not glue a real gap.
+constexpr double kFuseRetryFuzzyMm = 1.0e-5;
+
+/// What the last fuse built, for the probe: the part's volume, the plain fuse, whether that lost the part, and
+/// the retry. One engine builds one step at a time, so a single record is the step's.
+struct FuseTrace {
+    bool set = false;
+    double before = 0;
+    double plain = 0;
+    bool guard = false;
+    bool retried = false;
+    double retry = 0;
+    bool retry_set = false;
+};
+
+FuseTrace g_fuse_trace;
+
+/// The same line as the session's volume guard for a fuse (`lostVolume`): slack is the larger of a ten-thousandth
+/// of the part and 0.01 mm³. This does not replace that guard. It only decides whether to build the fuse again.
+bool fuse_lost_volume(double before, double after) {
+    if (!(before > 0.0) || !std::isfinite(after)) {
+        return false;
+    }
+    const double slack = std::max(before * 1.0e-4, 0.01);
+    return after < before - slack;
+}
+
+std::string fuse_trace_json() {
+    if (!g_fuse_trace.set) {
+        return {};
+    }
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text.setf(std::ios::fixed);
+    text.precision(6);
+    text << "{\"before\":" << g_fuse_trace.before << ",\"plain\":" << g_fuse_trace.plain
+         << ",\"guard\":" << (g_fuse_trace.guard ? "true" : "false") << ",\"retried\":"
+         << (g_fuse_trace.retried ? "true" : "false") << ",\"retry\":";
+    if (g_fuse_trace.retry_set) {
+        text << g_fuse_trace.retry;
+    } else {
+        text << "null";
+    }
+    text << ",\"fuzzyMm\":" << kFuseRetryFuzzyMm << "}";
+    return text.str();
+}
+
+/// A fuse of `current` with `tools`. The first boolean is the plain one, at confusion. When that result is a
+/// solid smaller than `before` by the volume guard's slack, a new boolean is built at `kFuseRetryFuzzyMm`.
+/// Calling `Build` again on the first algorithm is destructive, so the retry is a second algorithm. When the
+/// retry is still short of the part, or builds nothing, the plain shape is returned and the session's guard
+/// still refuses it. `before` of 0 is not a fuse this records.
+TopoDS_Shape boolean_fuse(
+    const TopoDS_Shape& current,
+    const TopTools_ListOfShape& tools,
+    double before,
+    double& volume,
+    std::string& error,
+    Handle(BRepTools_History)* history) {
+    g_fuse_trace = {};
+    Handle(BRepTools_History) plain_history;
+    Handle(BRepTools_History)* plain_slot = history != nullptr ? &plain_history : nullptr;
+    const TopoDS_Shape plain = boolean_list("fuse", current, tools, error, plain_slot, kBooleanFuzzyMm);
+    if (!error.empty() || plain.IsNull() || !accepted_result(plain, volume, error)) {
+        g_fuse_trace = {};
+        return {};
+    }
+    const double plain_vol = volume;
+    g_fuse_trace.set = true;
+    g_fuse_trace.before = before;
+    g_fuse_trace.plain = plain_vol;
+    g_fuse_trace.guard = fuse_lost_volume(before, plain_vol);
+    if (!g_fuse_trace.guard) {
+        if (history != nullptr) {
+            *history = plain_history;
+        }
+        return plain;
+    }
+    error.clear();
+    Handle(BRepTools_History) retry_history;
+    Handle(BRepTools_History)* retry_slot = history != nullptr ? &retry_history : nullptr;
+    std::string retry_error;
+    const TopoDS_Shape retry = boolean_list("fuse", current, tools, retry_error, retry_slot, kFuseRetryFuzzyMm);
+    g_fuse_trace.retried = true;
+    if (retry_error.empty() && !retry.IsNull()) {
+        double retry_vol = 0.0;
+        const bool solid = accepted_result(retry, retry_vol, retry_error);
+        g_fuse_trace.retry_set = true;
+        g_fuse_trace.retry = retry_vol;
+        if (solid && !fuse_lost_volume(before, retry_vol)) {
+            volume = retry_vol;
+            error.clear();
+            if (history != nullptr) {
+                *history = retry_history;
+            }
+            return retry;
+        }
+    }
+    volume = plain_vol;
+    error.clear();
+    if (history != nullptr) {
+        *history = plain_history;
+    }
+    return plain;
 }
 
 /// Outward unit normal at the face midpoint. A reversed face is flipped so the solid's outside stays positive.
@@ -2076,7 +2188,19 @@ TopoDS_Shape combine(
     const TopoDS_Shape& tool,
     double& volume,
     std::string& error,
-    Handle(BRepTools_History)* history = nullptr) {
+    Handle(BRepTools_History)* history = nullptr,
+    double before = 0) {
+    // A fuse on a part we know the volume of can be built again when the plain result would lose the part.
+    // Cuts and commons stay one boolean. `before` of 0 is an internal fuse, counted as it was.
+    if (which == "fuse" && before > 0.0) {
+        TopTools_ListOfShape tools;
+        tools.Append(tool);
+        const TopoDS_Shape result = boolean_fuse(current, tools, before, volume, error, history);
+        if (!error.empty() || result.IsNull()) {
+            return {};
+        }
+        return result;
+    }
     const TopoDS_Shape result = boolean_op(which, current, tool, error, history);
     if (!error.empty()) {
         return {};
@@ -2097,12 +2221,13 @@ TopoDS_Shape build_boolean(
     const PrimitiveSpec& spec,
     double& volume,
     std::string& error,
-    Handle(BRepTools_History)* history) {
+    Handle(BRepTools_History)* history,
+    double before) {
     const TopoDS_Shape tool = make_solid(spec, error);
     if (tool.IsNull()) {
         return {};
     }
-    return combine(current, which, tool, volume, error, history);
+    return combine(current, which, tool, volume, error, history, before);
 }
 
 TopoDS_Shape build_wedges(
@@ -2560,13 +2685,14 @@ TopoDS_Shape build_join(
     const double* place,
     double& volume,
     std::string& error,
-    Handle(BRepTools_History)* history) {
+    Handle(BRepTools_History)* history,
+    double before) {
     gp_Quaternion turn(gp_Mat(place[0], place[1], place[2], place[3], place[4], place[5], place[6], place[7], place[8]));
     turn.Normalize();
     gp_Trsf trsf;
     trsf.SetRotation(turn);
     trsf.SetTranslationPart(gp_Vec(place[9], place[10], place[11]));
-    return combine(current, which, tool.Moved(TopLoc_Location(trsf)), volume, error, history);
+    return combine(current, which, tool.Moved(TopLoc_Location(trsf)), volume, error, history, before);
 }
 
 /// How far past the far side of the part's box a through hole runs, so its end never lies on a face.
@@ -5250,7 +5376,7 @@ TopoDS_Shape combine_profile(
         return {};
     }
     const int bodies = count_of(current, TopAbs_SOLID);
-    TopoDS_Shape result = combine(current, which, tool, volume, error);
+    TopoDS_Shape result = combine(current, which, tool, volume, error, nullptr, before);
     if (!error.empty()) {
         return {};
     }
@@ -5319,11 +5445,13 @@ TopoDS_Shape combine_profile_tools(
     for (const TopoDS_Shape& tool : tools) {
         list.Append(tool);
     }
-    const TopoDS_Shape result = boolean_list(which, current, list, error);
-    if (!error.empty()) {
+    const bool fuse_guard = which == "fuse" && before > 0.0;
+    const TopoDS_Shape result = fuse_guard ? boolean_fuse(current, list, before, volume, error, nullptr)
+                                           : boolean_list(which, current, list, error);
+    if (!error.empty() || result.IsNull()) {
         return {};
     }
-    if (!accepted_result(result, volume, error)) {
+    if (!fuse_guard && !accepted_result(result, volume, error)) {
         if (which == "common") {
             error = "The solids do not overlap";
         }
@@ -5364,11 +5492,13 @@ TopoDS_Shape combine_tools_checked(
         list.Append(tool);
     }
     Handle(BRepTools_History) history;
-    TopoDS_Shape result = boolean_list(which, current, list, error, &history);
-    if (!error.empty()) {
+    const bool fuse_guard = which == "fuse" && before > 0.0;
+    TopoDS_Shape result = fuse_guard ? boolean_fuse(current, list, before, volume, error, &history)
+                                     : boolean_list(which, current, list, error, &history);
+    if (!error.empty() || result.IsNull()) {
         return {};
     }
-    if (!accepted_result(result, volume, error)) {
+    if (!fuse_guard && !accepted_result(result, volume, error)) {
         return {};
     }
     if (std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
@@ -13262,6 +13392,18 @@ extern "C" char* lime_model_occt_stats() {
 }
 
 extern "C" void lime_model_occt_string_free(char* text) { std::free(text); }
+
+/// The last fuse's plain and retried volumes, as JSON, or null when this step did not record one.
+/// The caller frees the text with `lime_model_occt_string_free`.
+extern "C" char* lime_fuse_trace() {
+    const std::string text = fuse_trace_json();
+    if (text.empty()) {
+        return nullptr;
+    }
+    return alloc(text);
+}
+
+extern "C" void lime_fuse_trace_clear() { g_fuse_trace = {}; }
 
 /// Non-zero meshes every face of a solid, as before a step meshed only around the faces it made. For tests.
 extern "C" void lime_model_occt_whole_meshes(int on) { g_whole_meshes = on != 0; }

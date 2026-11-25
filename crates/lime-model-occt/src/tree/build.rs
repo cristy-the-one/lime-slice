@@ -23,6 +23,7 @@ use super::ffi::{
     lime_tree_shell,
     lime_tree_split,
     lime_tree_unify,
+    lime_fuse_trace_clear,
     RawShape,
 };
 use super::group::{build_combined, build_group};
@@ -111,6 +112,8 @@ pub(super) fn build(
     tool: Option<ToolSolid>,
     edge_steps: &Steps,
 ) -> Result<Built, BuildFail> {
+    // A fuse records its plain and retried volumes for this step's probe. Drop the previous step's first.
+    unsafe { lime_fuse_trace_clear() };
     // K1: loops build on their own path. An empty `loops` stays on the arms below, unchanged.
     if k1_has_loops(&resolved.op) {
         return build_k1_loops(from, resolved);

@@ -8,6 +8,7 @@ use super::{
     doc_in,
     preview_step_faces,
     probe_metrics,
+    take_fuse_trace,
     root_placement,
     stamp_faces,
     transition_find,
@@ -605,6 +606,9 @@ impl Store {
             }
             Err(fail) => {
                 let mut reply = json!({ "ok": false, "error": fail.message });
+                if let Some(trace) = take_fuse_trace() {
+                    reply["fuseTrace"] = trace;
+                }
                 if let Some(max_mm) = fail.max_mm.filter(|max| max + 1e-6 >= 0.05) {
                     reply["maxMm"] = json!(max_mm);
                 }

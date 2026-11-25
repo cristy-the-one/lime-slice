@@ -469,6 +469,8 @@ jobs:
           node --experimental-strip-types mcp/one-vocabulary-occt.test.ts
           # Round and point caps on both pipe-shell forms, against the kernel. Fails here when the bridge is missing.
           node --experimental-strip-types mcp/pipe-caps-occt.test.ts
+          # A thin sweep fused onto a lofted skin that bends sharply, at 0.01 mm end steps. Prints the plain fuse even when the guard trips.
+          node --experimental-strip-types mcp/fuse-graze-occt.test.ts
 
   # Auto ribs plans that solve many times (load cases, and later the frequency goal and resin vents), on their own
   # so neither the shared Open CASCADE job nor the folded-shell job runs near its 25 minutes. Same setup as those jobs.

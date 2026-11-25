@@ -469,6 +469,15 @@ fn temp_step(tag: &str) -> std::path::PathBuf {
     ))
 }
 
+/// The plain fuse and its retry, when the step's boolean recorded one. Empty when it did not.
+fn take_fuse_trace() -> Option<serde_json::Value> {
+    let text = take_text(unsafe { lime_fuse_trace() })?;
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) if value.is_object() => Some(value),
+        _ => None,
+    }
+}
+
 /// The probe's measures of what it built, and of the solid it was built on, as JSON fields without braces.
 /// `skipped` is set for a group: how many of its steps missed the solid and were left out.
 fn probe_metrics(from: &Shape, built: &Shape, skipped: Option<u32>) -> String {
@@ -498,6 +507,9 @@ fn probe_metrics(from: &Shape, built: &Shape, skipped: Option<u32>) -> String {
                 body[key] = value;
             }
         }
+    }
+    if let Some(trace) = take_fuse_trace() {
+        body["fuseTrace"] = trace;
     }
     let text = body.to_string();
     text[1..text.len() - 1].to_string()
