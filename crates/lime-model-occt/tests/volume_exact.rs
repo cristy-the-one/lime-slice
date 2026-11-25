@@ -35,10 +35,17 @@ fn within_bar(name: &str, actual: f64, reference: f64) {
     );
 }
 
-fn exact_volume(reply: &Value) -> f64 {
+/// The exact volume is its own read. A step's reply keeps the quick measure.
+fn exact_volume(key: &str, node: u32) -> f64 {
+    let reply = call(json!({ "call": "exactVolume", "key": key, "node": node }));
     reply["exactVolumeMm3"]
         .as_f64()
         .unwrap_or_else(|| panic!("exactVolumeMm3 is missing: {reply}"))
+}
+
+fn keeps_quick_volume(reply: &Value) {
+    assert!(reply.get("exactVolumeMm3").is_none(), "a step reply carries the exact volume: {reply}");
+    assert!(reply.get("volumeMm3").is_some(), "a step reply has no quick volume: {reply}");
 }
 
 fn sign(value: f64) -> f64 {
@@ -122,11 +129,13 @@ fn the_study_solids_match_its_exact_volumes() {
         "primitive": { "primitive": "cylinder", "origin": [0.0, 0.0, 0.0], "radius": 12.5, "height": 40.0 }
     }));
     assert!(cylinder.get("error").is_none(), "{cylinder}");
-    within_bar("cylinder", exact_volume(&cylinder), PI * 12.5 * 12.5 * 40.0);
+    keeps_quick_volume(&cylinder);
+    within_bar("cylinder", exact_volume("exact-cylinder", 0), PI * 12.5 * 12.5 * 40.0);
 
     // VolumeProperties at 1e-12, settled against 1e-11 in the study.
     let loft = open_feature("exact-loft", loft_feature());
-    within_bar("loft", exact_volume(&loft), 224_215.246_200_349_82);
+    keeps_quick_volume(&loft);
+    within_bar("loft", exact_volume("exact-loft", 0), 224_215.246_200_349_82);
 
     let _tub = open_feature("exact-tub", loft_feature());
     // The cockpit box, centre [-30, 0, 46], 50×40×20: origin is that centre minus half the size.
@@ -152,7 +161,8 @@ fn the_study_solids_match_its_exact_volumes() {
             }),
         );
     }
-    within_bar("tub", exact_volume(&tub_reply), 204_762.145_722_839_57);
+    keeps_quick_volume(&tub_reply);
+    within_bar("tub", exact_volume("exact-tub", 5), 204_762.145_722_839_57);
 
     // The sheet's VolumeProperties sequence did not settle. The reference is the study's
     // Gauss-Kronrod span result at 1e-8, which agreed with 1e-6 inside this bar.
@@ -167,7 +177,8 @@ fn the_study_solids_match_its_exact_volumes() {
         1,
         json!({ "kind": "thicken", "thickness": 3.0, "direction": "normal" }),
     );
-    within_bar("sheet", exact_volume(&thick), 15_637.988_626_950_415);
+    keeps_quick_volume(&thick);
+    within_bar("sheet", exact_volume("exact-sheet", 1), 15_637.988_626_950_415);
 }
 
 /// Wall time of one hundred cuts on a box. `LIME_VOLUME_TIME=1` runs it and prints the milliseconds;

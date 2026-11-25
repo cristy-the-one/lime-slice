@@ -12,7 +12,7 @@ import {
   type Affine,
 } from "../../model-space";
 import { unionBox } from "../../measure";
-import { decodeSurfaceInspect, shownVolumeMm3, type ParsedSolid } from "../../model-reply";
+import { decodeSurfaceInspect, exactFrom, shownVolumeMm3, type ParsedSolid } from "../../model-reply";
 import { cachedSurface, keepSurface, surfaceKey } from "./surface-cache";
 import { viewRequest } from "../../model-mesh-quality";
 import { isOpenSheet } from "../../model-sheet";
@@ -119,6 +119,31 @@ async function ensureSurfaceInspect(need: { curvature: boolean; isoparms: boolea
 }
 
 let refreshingContext = false;
+let exactTicket = 0;
+
+/** The Part card's volume is the exact measure. The open itself stays on the quick reply. */
+async function showExactVolume(parsed: ParsedSolid) {
+  const open = S.open;
+  const tree = treeOf(open);
+  if (!open || !tree) return;
+  const key = S.lens?.key ?? open.key;
+  const node = S.lens?.node ?? parsed.id;
+  const mine = ++exactTicket;
+  const quick = `${mm(shownVolumeMm3(parsed))} mm³`;
+  let body: Record<string, unknown>;
+  try {
+    body = await treeCall(key, node, { call: "exactVolume", key, node });
+  } catch {
+    return;
+  }
+  if (mine !== exactTicket || S.open !== open) return;
+  const exact = exactFrom(body);
+  if (exact === undefined) return;
+  const phrase = `${mm(shownVolumeMm3({ volumeMm3: parsed.volumeMm3, exactVolumeMm3: exact }))} mm³`;
+  setInspectVolume(phrase);
+  parsed.exactVolumeMm3 = exact;
+  if (phrase !== quick && S.readoutText.includes(quick)) readout(S.readoutText.replace(quick, phrase));
+}
 
 /** What the tools say while a tool's step is looked at in History. */
 const PEEK_LOCK = "This is a step of a tool this part was joined with. Edit step changes it; pick a step of this part to work on it.";
@@ -173,6 +198,7 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   refreshModelGhost();
   syncUndo();
   readout(message);
+  if (parsed.editable) void showExactVolume(parsed);
   // P2. The solid or the tool changed: the edge knob follows.
   S.edgeDrag?.sync();
   // --- S2 sketch ---

@@ -10,10 +10,10 @@ import type { DisplayMesh } from "./model-view/types.ts";
  * The bulk arrays are base64 of little-endian words: `positions` (f32, nine per triangle),
  * `triangles` (u32, the face of each triangle), `edgePoints` (f32, every edge's polyline in turn),
  * and `edgeOffsets` (u32, edge `i` is points `edgeOffsets[i]` up to `edgeOffsets[i + 1]`). The
- * rest is JSON: `volumeMm3` (the quick measure the step guard reads), `exactVolumeMm3` (Gauss-Kronrod
- * with spans at 1e-6, the number a person or an agent reads), `solid`, `faces` (`areaMm2`, an optional
+ * rest is JSON: `volumeMm3` (the quick measure the step guard reads), `solid`, `faces` (`areaMm2`, an optional
  * outward `normal`, and, for a cylinder, cone, or sphere, optional `surface`, `radiusMm`, `axisPoint`,
- * and `axis`, by face index), `edgeLengths` (by edge index), and the node's `fingerprint`.
+ * and `axis`, by face index), `edgeLengths` (by edge index), and the node's `fingerprint`. The exact
+ * volume is a separate tree call, `exactVolume`, read when a person or an agent asks for the number.
  */
 export const SOLID_FORMAT = "lime-solid-2";
 
@@ -139,6 +139,13 @@ export interface DecodedSurfaceInspect {
  * The solid in a reply, or why there is none: the engine's error, a format this app does not
  * read, or arrays that do not fit together. The typed arrays view the decoded bytes in place.
  */
+/** The exact volume from an `exactVolume` reply. The kernel already wrote it to six decimals. */
+export function exactFrom(body: { exactVolumeMm3?: unknown; error?: unknown }): number | undefined {
+  if (typeof body.error === "string" && body.error) return undefined;
+  const exact = body.exactVolumeMm3;
+  return typeof exact === "number" && Number.isFinite(exact) ? exact : undefined;
+}
+
 /** The volume a person or an agent reads. The step guard keeps `volumeMm3`. */
 export function shownVolumeMm3(solid: { volumeMm3: number; exactVolumeMm3?: number }): number {
   const exact = solid.exactVolumeMm3;

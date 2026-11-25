@@ -19,7 +19,7 @@ import { bakeOp, bakeTransition, onFaceIndex, profilePlane as profilePlaneOf, ty
 import { bakeCells, isCellArray, runCombined, runComposite, runsAsComposite, storeGroup, wantsCombine, type CompositePort, type GroupPort } from "../modeling/composite-apply.ts";
 import { cleanOp, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, type Piece } from "../modeling/compose.ts";
 import { surfaceAt } from "../modeling/inspect.ts";
-import { shownFingerprint } from "../model-reply.ts";
+import { exactFrom } from "../model-reply.ts";
 import { appliedReply, boundsOf, describeReply, disjointRefusal, edgesReply, facesReply, nodeHandle, parseNode, partExpandContext, probeEcho, probeVerdict, solidSections, solidView, stepGuard, storedOp, typedPlaneOf, typedPointIn, type SolidView } from "../modeling/model-calls.ts";
 import { clampPieces } from "../modeling/partition.ts";
 import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck, splitKeep, type StepGroup } from "../modeling/part-reads.ts";
@@ -484,7 +484,11 @@ export class AppRecipeCalls {
   private async partCall(p: RunPart, tool: string, args: Body): Promise<Body> {
     switch (tool) {
       // --- API 1.4. Reads answer in the frame ops are typed in, as the MCP session's do: a point read is where a cut at it lands.
-      case "model_describe": return describeReply(this.need(p), args, p.frame ?? "model", {}, this.typed(p));
+      case "model_describe": {
+        const solid = this.need(p);
+        const exact = await this.exactOf(p);
+        return describeReply(exact === undefined ? solid : { ...solid, exactVolumeMm3: exact }, args, p.frame ?? "model", {}, this.typed(p));
+      }
       case "faces_find": return facesReply(this.need(p), args, this.expand(p), this.typed(p), p.frame ?? "model");
       case "edges_find": return edgesReply(this.need(p), args, (filter) => onFaceIndex(filter, this.bakeContext(p)), this.typed(p), p.frame ?? "model");
       case "surface_at": return { ...surfaceAt(typedView(this.need(p), this.typed(p)), args), frame: p.frame ?? "model" };
@@ -544,7 +548,7 @@ export class AppRecipeCalls {
       consumed: false,
     });
     this.selected = named.id;
-    return { ok: true, object: named.id, fingerprint: solid ? shownFingerprint(solid) : null, bounds: solid?.bounds ?? null, frame: "part" };
+    return { ok: true, object: named.id, fingerprint: solid?.fingerprint ?? null, bounds: solid?.bounds ?? null, frame: "part" };
   }
 
   /**
@@ -609,14 +613,20 @@ export class AppRecipeCalls {
 
   // --- Reading a part. ---
 
-  private check(p: RunPart, input: Body): Body {
+  /** The exact volume, read only when a reply quotes it as a number. */
+  private async exactOf(p: RunPart): Promise<number | undefined> {
+    const body = await this.engine.tree(p.tree.key, p.tree.current, { call: "exactVolume", key: p.tree.key, node: p.tree.current });
+    return exactFrom(body);
+  }
+
+  private async check(p: RunPart, input: Body): Promise<Body> {
     if (input.interference === true) return { ok: false, reason: "An interference check reads every part on the plate, which a plugin run in the app does not see. Run it over MCP." };
     const printer = this.env.printer;
     if (!printer) return { ok: false, reason: "model_check needs the plate's printer." };
     if (!p.solid || p.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
     const checked = checkReply(p.solid.positions, p.place.orient, p.place.scale, { name: printer.name, bedMm: printer.bedMm, nozzleMm: printer.nozzleMm, belt: printer.belt }, input, p.solid.triangles);
-    const exact = p.solid.exactVolumeMm3;
-    return typeof exact === "number" && Number.isFinite(exact) ? { ...checked, volumeMm3: exact } : checked;
+    const exact = await this.exactOf(p);
+    return typeof exact === "number" ? { ...checked, volumeMm3: exact } : checked;
   }
 
   private measure(p: RunPart, input: Body): Promise<Body> {
@@ -1192,7 +1202,7 @@ export class AppRecipeCalls {
       ...(nodes.length ? { first: nodeHandle(nodes[0]!), node: nodeHandle(nodes[nodes.length - 1]!) } : {}),
       ...(cellReports.length ? { cells: cellReports.length === 1 ? cellReports[0] : cellReports } : {}),
       ...(options.label ? { label: options.label } : {}),
-      fingerprint: p.solid ? shownFingerprint(p.solid) : null,
+      fingerprint: p.solid?.fingerprint ?? null,
       bounds: p.solid?.bounds ?? null,
     });
   }
@@ -1246,7 +1256,7 @@ export class AppRecipeCalls {
       applied: steps.length - (report.failed?.length ?? 0),
       combined: steps.length,
       ...(failures.length ? { failures, note: `${failures.length} op${failures.length === 1 ? " was" : "s were"} left out; the rest applied in one step.` } : {}),
-      fingerprint: p.solid ? shownFingerprint(p.solid) : null,
+      fingerprint: p.solid?.fingerprint ?? null,
       bounds: p.solid?.bounds ?? null,
     };
   }

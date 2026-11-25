@@ -81,7 +81,7 @@ function hingeOf(s: Session, assembly: Assembly | undefined, body: string): { po
   return { point: applyPose(part.modelPose, joint.pivot), axis: turnDir(part.modelPose, joint.axis) };
 }
 
-export function modelMass(s: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+export async function modelMass(s: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const density = input.density;
   if (density !== undefined && !(typeof density === "number" && density > 0 && density <= 25)) return refuse("bad-argument", "density is the material's density in g/cm³, above 0 and at most 25.");
   const about = input.about;
@@ -105,6 +105,7 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
   const densityGCm3 = typeof density === "number" ? density : filament.densityGCm3;
   const parts: BodyPart[] = [];
   const rows: Record<string, unknown>[] = [];
+  let anyExact = false;
   for (const id of ids) {
     const part = s.find(id);
     if (!part) continue;
@@ -112,7 +113,9 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
     const measured = partIntegrals(mesh.positions, shownName(part.name));
     if ("reason" in measured) return refuse("open-mesh", measured.reason, { object: part.id }, "Call model_check on that part for its open edges.");
     // The volume a person reads is the solid's exact measure. Mass and inertia follow it; the centre stays the mesh's.
-    const integrals = typeof part.solid?.exactVolumeMm3 === "number" ? integralsAtVolume(measured, part.solid.exactVolumeMm3) : measured;
+    const exact = part.tree ? await s.readExact(part) : undefined;
+    if (typeof exact === "number") anyExact = true;
+    const integrals = typeof exact === "number" ? integralsAtVolume(measured, exact) : measured;
     parts.push({ integrals, pose: mesh.pose, densityGCm3 });
     const one = bodyOf([{ integrals, pose: mesh.pose, densityGCm3 }]);
     rows.push({ object: part.id, name: shownName(part.name), volumeMm3: sig(one.volumeMm3), grams: sig(one.massG) });
@@ -129,8 +132,7 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
 
   const notes: string[] = [];
   const source = typeof density === "number" ? `density ${density} g/cm³ as given` : `the filament ${filament.name} (${filament.densityGCm3} g/cm³)`;
-  const exact = ids.some((id) => typeof s.find(id)?.solid?.exactVolumeMm3 === "number");
-  notes.push(exact
+  notes.push(anyExact
     ? `Mass of a solid body: its volume, the solid's exact measure, at ${source}. The centre of gravity is from the closed mesh. A printed part with walls and infill weighs less.`
     : `Mass of a solid body: its volume, from the closed mesh, at ${source}. A printed part with walls and infill weighs less.`);
   if (ids.length > 1) notes.push(`The body is ${ids.length} parts that move together (${rows.map((row) => row.name).join(", ")}), at their assembled poses. part:true weighs ${shownName(obj.name)} alone.`);

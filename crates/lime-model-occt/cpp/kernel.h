@@ -152,6 +152,8 @@ std::string section_overran();
 double volume_of(const TopoDS_Shape& shape);
 /// The volume a person or an agent reads: `BRepGProp::VolumePropertiesGK` at 1e-6 with spans, cached on `held`.
 double exact_volume_gk(const Held& held);
+/// That volume as six-decimal text (`append_num`). The one rounding of the exact volume.
+std::string exact_volume_text(const Held& held);
 /// Each face integrated about `about` (in parallel), added in order: a part's volume is the sum over its faces, so a swap of faces moves it by the
 /// difference of those faces' volumes about one point.
 double faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& about);
@@ -164,8 +166,8 @@ std::string last_fill_report();
 /// --- Organic surfaces S1: lazy curvature buffers, UV isoparms, shared-edge G0/G1/G2 continuity, and NURBS health.
 SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bool want_isoparms, int iso_count, bool display = false);
 /// What a reply says of the shape whatever the chord, as a JSON object: `volumeMm3` (the quick measure the
-/// step guard reads), `exactVolumeMm3` (Gauss-Kronrod with spans at 1e-6), `solid`, `faces` (area and outward
-/// normal), and `edgeLengths`.
+/// step guard reads), `solid`, `faces` (area and outward normal), and `edgeLengths`. The exact volume is a
+/// separate read (`exact_volume_text`), not part of this reply.
 std::string describe(Held& held);
 /// Give `held` the face and edge measures `from` has worked out for the faces and edges the two share.
 void inherit_about(Held& held, const Held& from);

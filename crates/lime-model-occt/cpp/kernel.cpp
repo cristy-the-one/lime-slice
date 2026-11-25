@@ -1032,8 +1032,6 @@ std::string describe(Held& held) {
     });
     std::string out = "{\"volumeMm3\":";
     append_num(out, held.volume);
-    out += ",\"exactVolumeMm3\":";
-    append_num(out, exact_volume_gk(held));
     out += has_solid(held.shape) ? ",\"solid\":true" : ",\"solid\":false";
     out += ",\"faces\":[";
     for (int i = 0; i < faces; ++i) {
@@ -1594,6 +1592,13 @@ double exact_volume_gk(const Held& held) {
     held.exact_gk = (err < 0.0 || !std::isfinite(mass)) ? held.volume : mass;
     held.exact_gk_set = true;
     return held.exact_gk;
+}
+
+/// The exact volume written once, to six decimals, the way every other kernel number is written.
+std::string exact_volume_text(const Held& held) {
+    std::string text;
+    append_num(text, exact_volume_gk(held));
+    return text;
 }
 
 /// What the last fuse measured, for the probe: the part's volume, the quick measure of the result, whether that
