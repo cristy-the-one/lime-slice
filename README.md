@@ -1,6 +1,6 @@
 # Lime Slice
 
-Lime Slice 7.2.0 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+Lime Slice 7.3.0 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
 
 You can draw a part, put parts together into a mechanism and check that it moves, slice for a flat bed or a 45° belt printer, and let an AI agent do any of it for you over MCP.
 
@@ -214,7 +214,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (7.2.0). Publishing that draft is a separate step. Releases through v7.1.1 are on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (7.3.0). Publishing that draft is a separate step. Releases through v7.2.0 are on the repository.
 
 ## Samples
 
