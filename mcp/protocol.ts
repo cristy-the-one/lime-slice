@@ -17,9 +17,12 @@ export const SUPPORTED_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "20
 const MODERN_VERSION = "2026-07-28";
 /**
  * Cache hint for a list that stays put until this process is replaced.
- * resources/read is uncacheable (ttlMs 0).
+ * resources/list names each object's history, and resources/read returns the
+ * plate, so both are uncacheable (ttlMs 0, private).
  */
 export const LIST_TTL_MS = 24 * 60 * 60 * 1000;
+/** Newest revision an initialize-era client can be answered with. */
+const INITIALIZE_NEWEST = "2025-11-25";
 /**
  * UnsupportedProtocolVersion. The 2026-07-28 schema defines
  * `UNSUPPORTED_PROTOCOL_VERSION = -32022` (schema.ts line 450 at
@@ -217,8 +220,9 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
   try {
     if (method === "initialize") {
       const asked = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
-      if (asked !== "" && !supportedVersion(asked)) return unsupportedVersion(id, asked);
-      const protocolVersion = asked === "" ? "2024-11-05" : asked;
+      // initialize answers a version this server speaks. An unknown one gets the newest
+      // initialize-era revision. A missing field stays 2024-11-05. -32022 is only for _meta.
+      const protocolVersion = asked === "" ? "2024-11-05" : supportedVersion(asked) ? asked : INITIALIZE_NEWEST;
       negotiatedVersion.set(session, protocolVersion);
       if (protocolVersion === MODERN_VERSION) modernClients.add(session);
       else modernClients.delete(session);
@@ -274,7 +278,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
           ...GUIDES.map((guide) => guide.uri),
           ...session.objects.map((obj) => `lime://object/${obj.id}/history`),
         ].map((uri) => ({ uri, name: uri, mimeType: "application/json" })),
-      }, "list");
+      }, "read");
     }
     if (method === "resources/read") {
       const uri = String(params.uri ?? "");

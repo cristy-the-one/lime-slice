@@ -158,6 +158,19 @@ function hasListCache(result: Row["result"]): boolean {
   return result?.ttlMs === LIST_TTL_MS && result.cacheScope === "public" && result.resultType === "complete";
 }
 
+function isPrivate(result: Row["result"]): boolean {
+  return result?.resultType === "complete" && result.ttlMs === 0 && result.cacheScope === "private";
+}
+
+function resourceUris(result: Row["result"]): string[] {
+  if (!Array.isArray(result?.resources)) return [];
+  return result.resources.flatMap((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return [];
+    const uri = (row as { uri?: unknown }).uri;
+    return typeof uri === "string" ? [uri] : [];
+  });
+}
+
 const dual = startRaw({ LIME_MCP_TOOLS: "core" });
 try {
   dual.send(rpc(1, "initialize", {
@@ -306,11 +319,29 @@ try {
 
   dual.send(rpc(12, "resources/list", { _meta: modern }));
   const resources = (await untilId(dual, 12)).row;
-  check("resources/list carries resultType and a long public ttl", hasListCache(resources.result) && (resources.result?.resources?.length ?? 0) > 0, JSON.stringify({
+  const beforeUris = resourceUris(resources.result);
+  check("resources/list carries resultType, ttlMs 0 and cacheScope private", isPrivate(resources.result) && beforeUris.length > 0, JSON.stringify({
     resultType: resources.result?.resultType,
     ttlMs: resources.result?.ttlMs,
-    n: resources.result?.resources?.length,
+    cacheScope: resources.result?.cacheScope,
+    n: beforeUris.length,
   }));
+
+  const cube = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
+  dual.send(rpc(41, "tools/call", { name: "mesh_import", arguments: { path: cube }, _meta: modern }));
+  const imported = (await untilId(dual, 41)).row;
+  const importedBody = JSON.parse(imported.result?.content?.[0]?.text ?? "{}") as { ok?: boolean; object?: string };
+  const objectId = typeof importedBody.object === "string" ? importedBody.object : "";
+  check("mesh_import adds an object the plate can list", importedBody.ok === true && objectId !== "", JSON.stringify(imported.error ?? imported.result?.content?.[0]?.text ?? "").slice(0, 300));
+  dual.send(rpc(42, "resources/list", { _meta: modern }));
+  const afterObjects = (await untilId(dual, 42)).row;
+  const history = `lime://object/${objectId}/history`;
+  const afterUris = resourceUris(afterObjects.result);
+  check(
+    "resources/list after adding an object returns the new URI and ttlMs 0",
+    objectId !== "" && afterUris.includes(history) && !beforeUris.includes(history) && afterObjects.result?.ttlMs === 0 && afterObjects.result.cacheScope === "private",
+    JSON.stringify({ ttlMs: afterObjects.result?.ttlMs, cacheScope: afterObjects.result?.cacheScope, history, added: afterUris.filter((uri) => !beforeUris.includes(uri)) }),
+  );
 
   dual.send(rpc(13, "resources/read", { uri: "lime://session", _meta: modern }));
   const read = (await untilId(dual, 13)).row;
@@ -349,9 +380,9 @@ try {
   dual.send(rpc(17, "initialize", { protocolVersion: "1900-01-01", capabilities: {}, clientInfo: { name: "nope", version: "0" } }));
   const badInit = (await untilId(dual, 17)).row;
   check(
-    "an unknown initialize version answers -32022 instead of 2024-11-05",
-    badInit.error?.code === -32022 && badInit.error.message === "Unsupported protocol version" && badInit.result?.protocolVersion !== "2024-11-05",
-    JSON.stringify(badInit.error ?? badInit.result),
+    "initialize asked an unknown version answers 2025-11-25",
+    badInit.error === undefined && badInit.result?.protocolVersion === "2025-11-25",
+    JSON.stringify(badInit.error ?? badInit.result?.protocolVersion),
   );
 
   for (const version of ["2024-11-05", "2025-03-26", "2025-06-18", "2026-07-28"]) {
