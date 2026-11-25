@@ -1412,6 +1412,7 @@ const READ_ONLY = new Set([
   "layer_summary",
   "measure",
   "model_mass",
+  "orient_compare",
   "surface_at",
   "section",
   "model_check",
@@ -1581,6 +1582,37 @@ export const TOOLS: ToolSpec[] = [
           additionalProperties: false,
           required: ["axis", "degrees"],
           properties: { axis: { enum: ["x", "y", "z"] }, degrees: { type: "number" } },
+        },
+      },
+    },
+  },
+  {
+    name: "orient_compare",
+    description: "Score a part's print turns and mark the best, without moving it. A belt tries yaw 0, 90, 180 and −90; a flat bed tries the six faces down. Each row gives unheld length and area, overhang area, and estimated seconds and grams. slice true slices the two best for those numbers; slice \"all\" slices every turn. A row's from is estimate or sliced. object_place {object, rotX, rotY, rotZ} applies the marked turn. Nothing on the plate changes.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["object"],
+      properties: {
+        object: handle,
+        rotations: {
+          type: "array",
+          minItems: 1,
+          maxItems: 24,
+          description: "Turns to score. Each is rotX, rotY, rotZ in degrees; a missing axis is 0. The default is every 90° of yaw on a belt, or the six faces down.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              rotX: { type: "number", description: "Absolute turn about X, degrees. A missing axis is 0." },
+              rotY: { type: "number", description: "Absolute turn about Y, degrees. A missing axis is 0." },
+              rotZ: { type: "number", description: "Absolute turn about Z, degrees. A missing axis is 0." },
+            },
+          },
+        },
+        slice: {
+          description: "true slices the two best turns; \"all\" slices every turn. Left out, every row is an estimate.",
+          oneOf: [{ type: "boolean" }, { const: "all" }],
         },
       },
     },
@@ -1821,7 +1853,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_start",
-    description: "Start slicing the selected object, or the whole plate when scope is plate, once it is placed and set; pass wait: true to wait for the result in one call, or follow with slice_wait. A second slice needs cancelRunning.",
+    description: "Start slicing the selected object, or the whole plate when scope is plate, once it is placed and set; pass wait: true to wait for the result in one call, or follow with slice_wait. A second slice needs cancelRunning. With no scope, the reply names the objects it sliced and that scope:\"plate\" slices them all.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

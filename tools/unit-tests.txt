@@ -212,6 +212,7 @@ mcp/batch2.test.ts
 mcp/mesh-close-holes.test.ts
 mcp/shell-solids.test.ts
 mcp/slice-scope.test.ts
+mcp/orient.test.ts
 src/paint-region.test.ts
 mcp/batch3.test.ts
 mcp/session-review.test.ts
