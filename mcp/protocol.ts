@@ -318,6 +318,17 @@ function stillWorking(body: Record<string, unknown>): boolean {
   return body.status === "running" || body.status === "cancelling";
 }
 
+/** The work was cancelled before it completed. SEP-2663 line 187, and CancelledTask lines 243-245. */
+function cancelTookIt(body: Record<string, unknown>): boolean {
+  return body.cancelled === true || body.status === "cancelled" || body.code === "cancelled";
+}
+
+/** The same CallToolResult tools/call builds: content, then isError. No structuredContent; this server does not set one. */
+function toolReply(value: unknown): Record<string, unknown> {
+  const pictures = imagesOf(value).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
+  return { content: [{ type: "text", text: JSON.stringify(value) }, ...pictures], isError: false };
+}
+
 function touch(task: TrackedTask, signature: string): void {
   if (task.seen === signature) return;
   task.seen = signature;
@@ -378,9 +389,17 @@ async function taskMethod(session: Session, id: number | string | null, method: 
       ...(stage ? { stage, statusMessage: stage } : {}),
     });
   }
-  // Completed carries the slice_wait object. SEP-2663's example (lines 769-778, 887-890) nests a
-  // CallToolResult; this server's call result is the tool JSON slice_wait returns.
-  return result(id, { ...common, status: "completed", result: body });
+  if (cancelTookIt(body)) {
+    // SEP-2663 line 187: cancelled means the request was cancelled before completion.
+    // Lines 243-245: that task has no result field. statusMessage (lines 144-155) says what happened.
+    // Line 406: a call that finished before the cancel took effect stays completed, below.
+    const statusMessage = typeof body.reason === "string" && body.reason !== "" ? body.reason : "Cancelled; the edits were taken back.";
+    return result(id, { ...common, status: "cancelled", statusMessage });
+  }
+  // SEP-2663 lines 217-224 and 887-890: the completed result matches the original request.
+  // For tools/call that is this server's CallToolResult (content and isError), lines 769-778.
+  const wrapped = result(id, toolReply(body)).result as Record<string, unknown>;
+  return result(id, { ...common, status: "completed", result: wrapped });
 }
 
 function unsupportedVersion(id: number | string | null, requested: string): Record<string, unknown> {
@@ -467,8 +486,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
           const job = jobAnswer(session, name, args, value);
           if (job) return result(id, taskSeed(rememberTask(session, job)), undefined, "task");
         }
-        const pictures = imagesOf(value).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
-        return result(id, { content: [{ type: "text", text: JSON.stringify(value) }, ...pictures], isError: false });
+        return result(id, toolReply(value));
       } catch (err) {
         const text = err instanceof Error ? err.message : "The tool failed.";
         return result(id, { content: [{ type: "text", text }], isError: true });

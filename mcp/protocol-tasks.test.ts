@@ -102,6 +102,7 @@ interface TaskBody {
   pollIntervalMs?: number;
   createdAt?: string;
   lastUpdatedAt?: string;
+  statusMessage?: string;
   result?: Record<string, unknown>;
   capabilities?: { tools?: { listChanged?: boolean }; extensions?: Record<string, unknown> };
   content?: { type?: string; text?: string }[];
@@ -171,18 +172,19 @@ function canon(value: unknown): string {
   return JSON.stringify(value ?? null).replace(/job_\d+/g, "job_N").replace(/"seconds":\d+/g, `"seconds":0`);
 }
 
-/** What a taken-back batch reports, without the handle or the history node it rolled back to. */
-function takenBack(row: Record<string, unknown> | undefined) {
-  return {
-    ok: row?.ok ?? null,
-    code: row?.code ?? null,
-    cancelled: row?.cancelled ?? null,
-    rolledBack: row?.rolledBack ?? null,
-    applied: row?.applied ?? null,
-    status: row?.status ?? null,
-    tool: row?.tool ?? null,
-    reason: row?.reason ?? null,
-  };
+/** The job handle inside a completed task, whether the result is still the bare tool JSON or a CallToolResult. */
+function nestedJob(row: Row): string {
+  const nested = row.result?.result as { job?: unknown; content?: { text?: string }[] } | undefined;
+  if (!nested) return "";
+  if (typeof nested.job === "string") return nested.job;
+  const text = nested.content?.[0]?.text;
+  if (typeof text !== "string") return "";
+  try {
+    const body = JSON.parse(text) as { job?: unknown };
+    return typeof body.job === "string" ? body.job : "";
+  } catch {
+    return "";
+  }
 }
 
 async function pollTask(io: Raw, taskId: string, requestMeta: Record<string, unknown>): Promise<Row> {
@@ -252,13 +254,12 @@ try {
   );
   const planTask = planned.result?.taskId ?? "";
   const planDone = planTask ? await pollTask(tasks, planTask, taskMeta) : {};
-  const planWait = planDone.result?.result && typeof planDone.result.result.job === "string"
-    ? await tool(tasks, "slice_wait", { job: String(planDone.result.result.job), timeoutS: 2 }, taskMeta)
-    : {};
+  const planJob = nestedJob(planDone);
+  const planWait = planJob ? await callRaw(tasks, "slice_wait", { job: planJob, timeoutS: 2 }, taskMeta) : {};
   check(
-    "tasks/get of a ribs_plan task equals slice_wait",
-    planDone.result?.status === "completed" && planDone.result.resultType === "complete" && JSON.stringify(planDone.result.result) === JSON.stringify(planWait),
-    JSON.stringify({ task: planDone.result, wait: planWait }).slice(0, 800),
+    "tasks/get of a ribs_plan task equals the tools/call slice_wait result",
+    planDone.result?.status === "completed" && planDone.result.resultType === "complete" && JSON.stringify(planDone.result.result) === JSON.stringify(planWait.result),
+    JSON.stringify({ task: planDone.result?.result, wait: planWait.result }).slice(0, 800),
   );
 
   const made = await tool(tasks, "solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 }, taskMeta);
@@ -301,13 +302,13 @@ try {
   );
 
   const done = await pollTask(tasks, batch.result?.taskId ?? "", taskMeta);
-  const waited = done.result?.result && typeof done.result.result.job === "string"
-    ? await tool(tasks, "slice_wait", { job: String(done.result.result.job), timeoutS: 5 }, taskMeta)
-    : {};
+  const doneJob = nestedJob(done);
+  const waited = doneJob ? await callRaw(tasks, "slice_wait", { job: doneJob, timeoutS: 5 }, taskMeta) : {};
+  const waitedBody = toolBody(waited);
   check(
-    "tasks/get when done equals slice_wait for the same call",
-    done.result?.status === "completed" && JSON.stringify(done.result.result) === JSON.stringify(waited) && waited.status === "done" && waited.applied === 4,
-    JSON.stringify({ task: done.result, wait: waited }).slice(0, 800),
+    "tasks/get when done equals the tools/call slice_wait result",
+    done.result?.status === "completed" && JSON.stringify(done.result.result) === JSON.stringify(waited.result) && waitedBody.status === "done" && waitedBody.applied === 4,
+    JSON.stringify({ task: done.result?.result, wait: waited.result }).slice(0, 800),
   );
 
   const before = await tool(tasks, "model_history", { object, limit: 100 }, taskMeta);
@@ -331,12 +332,38 @@ try {
   const after = await tool(tasks, "model_history", { object, limit: 100 }, taskMeta);
   const afterNodes = Array.isArray(after.nodes) ? after.nodes.length : -1;
   check(
-    "tasks/cancel takes the batch back",
-    cancelDone.result?.status === "completed"
-      && cancelDone.result.result?.cancelled === true
-      && cancelDone.result.result?.rolledBack === true
+    "a stoppable batch cancelled mid-run is cancelled",
+    cancelDone.result?.resultType === "complete"
+      && cancelDone.result.status === "cancelled"
+      && !("result" in (cancelDone.result ?? {}))
+      && typeof cancelDone.result.statusMessage === "string"
+      && cancelDone.result.statusMessage.includes("taken back")
       && afterNodes === beforeNodes,
-    JSON.stringify({ result: cancelDone.result?.result, beforeNodes, afterNodes }).slice(0, 500),
+    JSON.stringify({ task: cancelDone.result, beforeNodes, afterNodes }).slice(0, 600),
+  );
+
+  const finishBefore = await tool(tasks, "model_history", { object, limit: 100 }, taskMeta);
+  const finishNodes = Array.isArray(finishBefore.nodes) ? finishBefore.nodes.length : -1;
+  const finishing = await callRaw(tasks, "model_apply", { object, probe: true, op: bosses(1)[0] }, taskMeta);
+  const finishCancel = tasks.id();
+  tasks.send(rpc(finishCancel, "tasks/cancel", { taskId: finishing.result?.taskId, _meta: taskMeta }));
+  const finishAck = await untilId(tasks, finishCancel);
+  const finishDone = finishing.result?.taskId ? await pollTask(tasks, finishing.result.taskId, taskMeta) : {};
+  const finishJob = nestedJob(finishDone);
+  const finishWait = finishJob ? await callRaw(tasks, "slice_wait", { job: finishJob, timeoutS: 5 }, taskMeta) : {};
+  const finishAfter = await tool(tasks, "model_history", { object, limit: 100 }, taskMeta);
+  const finishAfterNodes = Array.isArray(finishAfter.nodes) ? finishAfter.nodes.length : -1;
+  check(
+    "a call that finishes anyway is completed",
+    finishing.result?.resultType === "task"
+      && finishAck.error === undefined
+      && finishAck.result?.resultType === "complete"
+      && finishAck.result.status === undefined
+      && finishDone.result?.status === "completed"
+      && JSON.stringify(finishDone.result.result) === JSON.stringify(finishWait.result)
+      && toolBody(finishWait).status === "done"
+      && finishAfterNodes === finishNodes + 1,
+    JSON.stringify({ ack: finishAck.result ?? finishAck.error, task: finishDone.result, wait: finishWait.result, finishNodes, finishAfterNodes }).slice(0, 900),
   );
 
   const sliced = await callRaw(tasks, "slice_start", {}, taskMeta);
@@ -346,13 +373,12 @@ try {
     JSON.stringify(sliced.result ?? sliced.error).slice(0, 400),
   );
   const sliceDone = await pollTask(tasks, sliced.result?.taskId ?? "", taskMeta);
-  const sliceWait = sliceDone.result?.result && typeof sliceDone.result.result.job === "string"
-    ? await tool(tasks, "slice_wait", { job: String(sliceDone.result.result.job), timeoutS: 5 }, taskMeta)
-    : {};
+  const sliceJob = nestedJob(sliceDone);
+  const sliceWait = sliceJob ? await callRaw(tasks, "slice_wait", { job: sliceJob, timeoutS: 5 }, taskMeta) : {};
   check(
-    "tasks/get of a slice equals slice_wait",
-    sliceDone.result?.status === "completed" && JSON.stringify(sliceDone.result.result) === JSON.stringify(sliceWait) && sliceWait.status === "done",
-    JSON.stringify({ task: sliceDone.result, wait: sliceWait }).slice(0, 600),
+    "tasks/get of a slice equals the tools/call slice_wait result",
+    sliceDone.result?.status === "completed" && JSON.stringify(sliceDone.result.result) === JSON.stringify(sliceWait.result) && toolBody(sliceWait).status === "done",
+    JSON.stringify({ task: sliceDone.result?.result, wait: sliceWait.result }).slice(0, 600),
   );
 
   const missingId = tasks.id();
@@ -438,9 +464,9 @@ try {
     JSON.stringify(legacyOutcome).slice(0, 400),
   );
   check(
-    "the task cancel result equals slice_cancel's outcome",
-    JSON.stringify(takenBack(cancelDone.result?.result)) === JSON.stringify(takenBack(legacyOutcome)),
-    JSON.stringify({ task: takenBack(cancelDone.result?.result), legacy: takenBack(legacyOutcome) }),
+    "the cancelled task's message is what slice_cancel reports",
+    cancelDone.result?.status === "cancelled" && cancelDone.result.statusMessage === legacyOutcome.reason,
+    JSON.stringify({ message: cancelDone.result?.statusMessage, reason: legacyOutcome.reason }),
   );
 
   // Spec: the extension does not exist on 2025-11-25, even if the client lists it.
