@@ -368,6 +368,7 @@ impl Shape {
             head,
             arrays,
             display: display_parts,
+            tail: Vec::new(),
         })
     }
 
@@ -457,6 +458,7 @@ impl Shape {
             head,
             arrays,
             display: None,
+            tail: Vec::new(),
         })
     }
 

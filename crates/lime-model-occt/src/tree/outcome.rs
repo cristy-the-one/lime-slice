@@ -22,6 +22,12 @@ pub(super) struct BinObject {
     pub(super) arrays: Vec<(&'static str, Vec<u8>)>,
     /// Optional nested `"display":{...}` raw binary fields in emission order.
     pub(super) display: Option<Vec<(&'static str, Vec<u8>)>>,
+    /// JSON fields written after `arrays` and `display`, before any extra fields
+    /// the caller adds (`op`, `replayed`, `key`). `stepFaces` is stored here so
+    /// `lime_occt_tree` keeps the pre-binary order: after `edgeOffsets` (and
+    /// after `display` when that object is present), not immediately after
+    /// `fingerprint`.
+    pub(super) tail: Vec<(String, String)>,
 }
 
 impl BinObject {
@@ -32,15 +38,15 @@ impl BinObject {
             head,
             arrays: Vec::new(),
             display: None,
+            tail: Vec::new(),
         }
     }
 
-    /// Append a JSON field to `head` without copying any binary buffers.
+    /// Append a JSON field after the binary arrays and `display`, without copying
+    /// those buffers. This is the old `with_fields` position: `stepFaces` follows
+    /// `edgeOffsets`, rather than sitting in `head` right after `fingerprint`.
     pub(super) fn push_field(&mut self, name: &str, json_value: &str) {
-        self.head.push_str(",\"");
-        self.head.push_str(name);
-        self.head.push_str("\":");
-        self.head.push_str(json_value);
+        self.tail.push((name.to_string(), json_value.to_string()));
     }
 
     fn json_len(&self, extra: &[(&str, Part)]) -> usize {
@@ -55,7 +61,21 @@ impl BinObject {
                 .map(|(name, bytes)| name.len() + bytes.len().div_ceil(3) * 4 + 6)
                 .sum::<usize>()
         });
-        self.head.len() + arrays_len + display_len + fields_len_json(extra) + 2
+        let tail_len: usize = self
+            .tail
+            .iter()
+            .map(|(name, value)| name.len() + value.len() + 4)
+            .sum();
+        self.head.len() + arrays_len + display_len + tail_len + fields_len_json(extra) + 2
+    }
+
+    fn write_tail(&self, out: &mut String) {
+        for (name, value) in &self.tail {
+            out.push_str(",\"");
+            out.push_str(name);
+            out.push_str("\":");
+            out.push_str(value);
+        }
     }
 
     fn write_json(&self, out: &mut String, extra: &[(&str, Part)]) {
@@ -74,6 +94,7 @@ impl BinObject {
             }
             out.push('}');
         }
+        self.write_tail(out);
         write_fields_json(out, extra);
         out.push('}');
     }
@@ -98,6 +119,7 @@ impl BinObject {
             }
             out.push('}');
         }
+        self.write_tail(out);
         write_fields_bin(out, blobs, used_bin, extra);
         out.push('}');
     }
