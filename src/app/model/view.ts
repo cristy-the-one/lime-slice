@@ -12,7 +12,7 @@ import {
   type Affine,
 } from "../../model-space";
 import { unionBox } from "../../measure";
-import { decodeSurfaceInspect, type ParsedSolid } from "../../model-reply";
+import { decodeSurfaceInspect, shownVolumeMm3, type ParsedSolid } from "../../model-reply";
 import { cachedSurface, keepSurface, surfaceKey } from "./surface-cache";
 import { viewRequest } from "../../model-mesh-quality";
 import { isOpenSheet } from "../../model-sheet";
@@ -141,7 +141,7 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   const marked = state.plate.objects.find((obj) => obj.id === S.open?.objectId)?.sheet === true;
   const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id, marked);
   fx.model?.setSolid(parsed, openPose(), isSheet);
-  setInspectVolume(parsed.editable ? `${mm(parsed.volumeMm3)} mm³` : "—");
+  setInspectVolume(parsed.editable ? `${mm(shownVolumeMm3(parsed))} mm³` : "—");
   if (S.open && S.framedFor !== S.open.objectId) {
     S.framedFor = S.open.objectId;
     frameModel(false);

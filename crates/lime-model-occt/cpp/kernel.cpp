@@ -1032,6 +1032,8 @@ std::string describe(Held& held) {
     });
     std::string out = "{\"volumeMm3\":";
     append_num(out, held.volume);
+    out += ",\"exactVolumeMm3\":";
+    append_num(out, exact_volume_gk(held));
     out += has_solid(held.shape) ? ",\"solid\":true" : ",\"solid\":false";
     out += ",\"faces\":[";
     for (int i = 0; i < faces; ++i) {
@@ -1573,6 +1575,25 @@ double exact_volume(const TopoDS_Shape& shape) {
     const Timed timed(g_stats.volume_us);
     BRepGProp::VolumeProperties(shape, props, kExactVolumeEps);
     return props.Mass();
+}
+
+/// The readout volume. Spans matter on a B-spline face: without them the same tolerance does not settle on a
+/// thickened sheet (docs/studies/volume-accuracy.md). Cached on the held shape. Not the fuse guard's re-measure.
+double exact_volume_gk(const Held& held) {
+    if (held.exact_gk_set) {
+        return held.exact_gk;
+    }
+    if (held.shape.IsNull() || !has_solid(held.shape)) {
+        held.exact_gk = 0.0;
+        held.exact_gk_set = true;
+        return 0.0;
+    }
+    GProp_GProps props;
+    const double err = BRepGProp::VolumePropertiesGK(held.shape, props, 1.0e-6, Standard_False, Standard_True);
+    const double mass = props.Mass();
+    held.exact_gk = (err < 0.0 || !std::isfinite(mass)) ? held.volume : mass;
+    held.exact_gk_set = true;
+    return held.exact_gk;
 }
 
 /// What the last fuse measured, for the probe: the part's volume, the quick measure of the result, whether that

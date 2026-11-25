@@ -2729,6 +2729,8 @@ int lime_tree_editable(const LimeShape* shape, char** error) {
 }
 
 void lime_tree_fingerprint(const LimeShape* shape, double* volume, int* faces, int* edges) {
+    // The quick measure, not exact_volume_gk. An apply that has not meshed answers with this, and the step guard
+    // reads that answer. The exact volume rides beside it, as exactVolumeMm3.
     *volume = shape->held.volume;
     *faces = shape->held.faces.Extent();
     *edges = shape->held.edges.Extent();

@@ -4,7 +4,7 @@
  * to. The computation is src/mass.ts, which the Pose panel shares.
  */
 import { assemblyOf, type Assembly } from "../../src/assembly.ts";
-import { aboutAxis, bodyOf, G_MM_S2, movingBody, partIntegrals, principal, swing, withMass, type BodyPart, type MassBody } from "../../src/mass.ts";
+import { aboutAxis, bodyOf, G_MM_S2, integralsAtVolume, movingBody, partIntegrals, principal, swing, withMass, type BodyPart, type MassBody } from "../../src/mass.ts";
 import { applyPose, IDENTITY_POSE, inversePose, seatLift, thenPose, turnDir, type Affine } from "../../src/model-space.ts";
 import { filamentGrams } from "../../src/estimate.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -109,8 +109,10 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
     const part = s.find(id);
     if (!part) continue;
     const mesh = meshOf(part);
-    const integrals = partIntegrals(mesh.positions, shownName(part.name));
-    if ("reason" in integrals) return refuse("open-mesh", integrals.reason, { object: part.id }, "Call model_check on that part for its open edges.");
+    const measured = partIntegrals(mesh.positions, shownName(part.name));
+    if ("reason" in measured) return refuse("open-mesh", measured.reason, { object: part.id }, "Call model_check on that part for its open edges.");
+    // The volume a person reads is the solid's exact measure. Mass and inertia follow it; the centre stays the mesh's.
+    const integrals = typeof part.solid?.exactVolumeMm3 === "number" ? integralsAtVolume(measured, part.solid.exactVolumeMm3) : measured;
     parts.push({ integrals, pose: mesh.pose, densityGCm3 });
     const one = bodyOf([{ integrals, pose: mesh.pose, densityGCm3 }]);
     rows.push({ object: part.id, name: shownName(part.name), volumeMm3: sig(one.volumeMm3), grams: sig(one.massG) });
@@ -127,7 +129,10 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
 
   const notes: string[] = [];
   const source = typeof density === "number" ? `density ${density} g/cm³ as given` : `the filament ${filament.name} (${filament.densityGCm3} g/cm³)`;
-  notes.push(`Mass of a solid body: its volume, from the closed mesh, at ${source}. A printed part with walls and infill weighs less.`);
+  const exact = ids.some((id) => typeof s.find(id)?.solid?.exactVolumeMm3 === "number");
+  notes.push(exact
+    ? `Mass of a solid body: its volume, the solid's exact measure, at ${source}. The centre of gravity is from the closed mesh. A printed part with walls and infill weighs less.`
+    : `Mass of a solid body: its volume, from the closed mesh, at ${source}. A printed part with walls and infill weighs less.`);
   if (ids.length > 1) notes.push(`The body is ${ids.length} parts that move together (${rows.map((row) => row.name).join(", ")}), at their assembled poses. part:true weighs ${shownName(obj.name)} alone.`);
   if (leftOut.length > 0) notes.push(`part:true: ${shownName(obj.name)} alone; ${leftOut.length === 1 ? "the other part that moves with it" : `the ${leftOut.length} other parts that move with it`} (${leftOut.map((id) => shownName(s.find(id)?.name ?? id)).join(", ")}) ${leftOut.length === 1 ? "is" : "are"} left out.`);
   const principalOf = (one: MassBody) => {

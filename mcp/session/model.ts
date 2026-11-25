@@ -9,7 +9,7 @@ import { disjointBoolean } from "../../src/model-feasibility.ts";
 import { facePlane, formatMm } from "../../src/model-plane.ts";
 import { gearOf, placedRoot, type PrimitiveSpec } from "../../src/model-primitive.ts";
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
-import { decodeSurfaceInspect } from "../../src/model-reply.ts";
+import { decodeSurfaceInspect, shownFingerprint } from "../../src/model-reply.ts";
 import { listedContinuity, organicFirstProblem, organicProblem } from "../organic-checks.ts";
 import { boundsOf, planeAxes, planeAxesEcho, solidSections, describeReply, edgesReply, facesReply, nodeHandle, stepGuard } from "../../src/modeling/model-calls.ts";
 import { solidView } from "./sheet.ts";
@@ -768,7 +768,9 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid || obj.solid.positions.length < 9) return refuse("solid-unreadable", "This solid could not be read.");
   const printer = this.printer();
-  const base = checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm, belt: printer.kind === "belt" ? printer.belt : null }, input, obj.solid.triangles);
+  const checked = checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm, belt: printer.kind === "belt" ? printer.belt : null }, input, obj.solid.triangles);
+  const exact = obj.solid.exactVolumeMm3;
+  const base = typeof exact === "number" && Number.isFinite(exact) ? { ...checked, volumeMm3: exact } : checked;
   if (input.surfaces !== true || base.ok !== true) return base;
   // surfaces was asked: when it cannot be given, the reply says why instead of answering as a plain check.
   const notInspected = (why: string) => ({ ...base, surfaces: `Not inspected: ${why}` });
@@ -1131,7 +1133,7 @@ async function featureSolidNew(this: Session, input: Record<string, unknown>): P
   return {
     ok: true,
     object: obj.id,
-    fingerprint: obj.solid?.fingerprint ?? null,
+    fingerprint: obj.solid ? shownFingerprint(obj.solid) : null,
     bounds: obj.solid?.bounds ?? null,
     frame: "part",
     root: baked.op.kind,
@@ -1191,7 +1193,7 @@ async function solidNew(this: Session, input: Record<string, unknown>): Promise<
   };
   this.objects.push(obj);
   this.selected = obj.id;
-  return { ok: true, object: obj.id, fingerprint: obj.solid?.fingerprint ?? null, bounds: obj.solid?.bounds ?? null, frame: "part" };
+  return { ok: true, object: obj.id, fingerprint: obj.solid ? shownFingerprint(obj.solid) : null, bounds: obj.solid?.bounds ?? null, frame: "part" };
 }
 
 /** A mesh has no solid to edit. A STEP file and a new solid do. */

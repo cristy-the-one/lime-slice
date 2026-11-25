@@ -6,6 +6,7 @@ import { plainModelError } from "../../src/app/model-error.ts";
 import { probeKey } from "../../src/model-feasibility.ts";
 import { rootSpec } from "../../src/model-primitive.ts";
 import { applyRequest, gotoRequest } from "../../src/model-request.ts";
+import { shownFingerprint } from "../../src/model-reply.ts";
 import { appliedReply, partExpandContext, typedPlaneOf, typedPointIn, stepGuard, storedOp, nodeHandle, parseNode, type SolidView } from "../../src/modeling/model-calls.ts";
 import { solidView } from "./sheet.ts";
 import { profilePlane } from "../../src/modeling/bake.ts";
@@ -529,7 +530,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
     ...(cellReports.length ? { cells: cellReports.length === 1 ? cellReports[0] : cellReports } : {}),
     ...(ribReports.length ? { ribNet: ribReports.length === 1 ? ribReports[0] : ribReports } : {}),
     ...(options.label ? { label: options.label } : {}),
-    fingerprint: obj.solid?.fingerprint ?? null,
+    fingerprint: obj.solid ? shownFingerprint(obj.solid) : null,
     bounds: obj.solid?.bounds ?? null,
   });
 }
@@ -652,7 +653,7 @@ async function applyCombined(this: Session, obj: PlateObject, raws: Record<strin
     applied: steps.length - (report.failed?.length ?? 0),
     combined: steps.length,
     ...(failures.length ? { failures, note: `${failures.length} op${failures.length === 1 ? " was" : "s were"} left out; the rest applied in one step.` } : {}),
-    fingerprint: obj.solid?.fingerprint ?? null,
+    fingerprint: obj.solid ? shownFingerprint(obj.solid) : null,
     bounds: obj.solid?.bounds ?? null,
   };
 }

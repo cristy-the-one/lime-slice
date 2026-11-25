@@ -22,7 +22,10 @@ export interface ModelPick {
 
 export interface ModelSolid {
   id: number;
+  /** The quick measure. The step guard reads this. */
   volumeMm3: number;
+  /** Gauss-Kronrod with spans at 1e-6, cached on the held solid. Absent on a mesh that was not measured that way. */
+  exactVolumeMm3?: number;
   positions: Float32Array;
   /** --- Organic surfaces S1: exact OCCT outward unit normals (nine per triangle), when provided by the kernel. */
   normals?: Float32Array;

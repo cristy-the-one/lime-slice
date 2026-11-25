@@ -19,6 +19,7 @@ import { bakeOp, bakeTransition, onFaceIndex, profilePlane as profilePlaneOf, ty
 import { bakeCells, isCellArray, runCombined, runComposite, runsAsComposite, storeGroup, wantsCombine, type CompositePort, type GroupPort } from "../modeling/composite-apply.ts";
 import { cleanOp, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, type Piece } from "../modeling/compose.ts";
 import { surfaceAt } from "../modeling/inspect.ts";
+import { shownFingerprint } from "../model-reply.ts";
 import { appliedReply, boundsOf, describeReply, disjointRefusal, edgesReply, facesReply, nodeHandle, parseNode, partExpandContext, probeEcho, probeVerdict, solidSections, solidView, stepGuard, storedOp, typedPlaneOf, typedPointIn, type SolidView } from "../modeling/model-calls.ts";
 import { clampPieces } from "../modeling/partition.ts";
 import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck, splitKeep, type StepGroup } from "../modeling/part-reads.ts";
@@ -543,7 +544,7 @@ export class AppRecipeCalls {
       consumed: false,
     });
     this.selected = named.id;
-    return { ok: true, object: named.id, fingerprint: solid?.fingerprint ?? null, bounds: solid?.bounds ?? null, frame: "part" };
+    return { ok: true, object: named.id, fingerprint: solid ? shownFingerprint(solid) : null, bounds: solid?.bounds ?? null, frame: "part" };
   }
 
   /**
@@ -613,7 +614,9 @@ export class AppRecipeCalls {
     const printer = this.env.printer;
     if (!printer) return { ok: false, reason: "model_check needs the plate's printer." };
     if (!p.solid || p.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
-    return checkReply(p.solid.positions, p.place.orient, p.place.scale, { name: printer.name, bedMm: printer.bedMm, nozzleMm: printer.nozzleMm, belt: printer.belt }, input, p.solid.triangles);
+    const checked = checkReply(p.solid.positions, p.place.orient, p.place.scale, { name: printer.name, bedMm: printer.bedMm, nozzleMm: printer.nozzleMm, belt: printer.belt }, input, p.solid.triangles);
+    const exact = p.solid.exactVolumeMm3;
+    return typeof exact === "number" && Number.isFinite(exact) ? { ...checked, volumeMm3: exact } : checked;
   }
 
   private measure(p: RunPart, input: Body): Promise<Body> {
@@ -1189,7 +1192,7 @@ export class AppRecipeCalls {
       ...(nodes.length ? { first: nodeHandle(nodes[0]!), node: nodeHandle(nodes[nodes.length - 1]!) } : {}),
       ...(cellReports.length ? { cells: cellReports.length === 1 ? cellReports[0] : cellReports } : {}),
       ...(options.label ? { label: options.label } : {}),
-      fingerprint: p.solid?.fingerprint ?? null,
+      fingerprint: p.solid ? shownFingerprint(p.solid) : null,
       bounds: p.solid?.bounds ?? null,
     });
   }
@@ -1243,7 +1246,7 @@ export class AppRecipeCalls {
       applied: steps.length - (report.failed?.length ?? 0),
       combined: steps.length,
       ...(failures.length ? { failures, note: `${failures.length} op${failures.length === 1 ? " was" : "s were"} left out; the rest applied in one step.` } : {}),
-      fingerprint: p.solid?.fingerprint ?? null,
+      fingerprint: p.solid ? shownFingerprint(p.solid) : null,
       bounds: p.solid?.bounds ?? null,
     };
   }
