@@ -3382,6 +3382,18 @@ function chooseFeature(next: MenuTool) {
   toggleTool(next);
 }
 
+/** A Features menu entry, including the ones that stay off the rail. Pocket stays on the Features button. */
+export function openNamedModelTool(next: string): void {
+  if (isFeatureTool(next)) {
+    chooseFeature(next);
+    return;
+  }
+  if (next === "patch" || next === "blend" || next === "sculpt") {
+    closeFeatureMenu();
+    toggleTool(next);
+  }
+}
+
 function featureMenuOpen(): boolean {
   const menu = document.querySelector<HTMLElement>("#modelFeatureMenu");
   return !!menu && !menu.hidden;

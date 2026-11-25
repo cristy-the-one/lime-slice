@@ -46,10 +46,11 @@ export { closeStress, revealStress } from "../ui/stress";
 export { loadLibrary, openPluginsPanel, pluginLibrary, togglePluginsPanel } from "../ui/plugins-panel";
 export { importPluginFiles, projectPluginsOffer } from "../ui/plugin-import";
 export { libraryIo, projectCopies, stampedShas } from "../plugins/library";
-export { escapeModel, openJoinTool } from "../ui/model-chrome";
+export { escapeModel, openJoinTool, openNamedModelTool } from "../ui/model-chrome";
 export { editModelStep, toggleModelHistoryFocus } from "../ui/model-history";
 export { toggleParameters } from "../ui/parameters";
 export { openSplitPrint } from "../ui/split-print";
+export { openTransitionCard } from "../ui/transition-card";
 export { openAutoRibsCard } from "../ui/auto-ribs-card";
 export { toggleCurvature, toggleIsoparms, toggleZebra } from "../ui/model-look";
 

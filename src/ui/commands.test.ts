@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { COMMANDS, sheetGroups, contextOf, filterHelp, fires, fuzzyScore, groupsForStage, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, resolveKey, screensOf, shortcutOf, tipWithShortcut, type KeyContext, type KeyEventLike } from "./commands.ts";
 
 let failed = 0;
@@ -273,6 +274,34 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   "#modelToolChamfer": ["model"],
   "#modelToolHole": ["model"],
   "#modelToolFeatures": ["model"],
+  '#modelFeatureMenu [data-tool="pocket"]': ["model"],
+  '#modelFeatureMenu [data-tool="boss"]': ["model"],
+  '#modelFeatureMenu [data-tool="texture"]': ["model"],
+  '#modelFeatureMenu [data-tool="array"]': ["model"],
+  '#modelFeatureMenu [data-tool="ribs"]': ["model"],
+  '#modelFeatureMenu [data-tool="text"]': ["model"],
+  '#modelFeatureMenu [data-tool="patch"]': ["model"],
+  '#modelFeatureMenu [data-tool="blend"]': ["model"],
+  '#modelFeatureMenu [data-tool="sculpt"]': ["model"],
+  "#modelToolPatch": ["model"],
+  "#modelToolBlend": ["model"],
+  "#modelToolNurbs": ["model"],
+  "#modelMenuTransition": ["model"],
+  "#modelLookOpen": ["model"],
+  "#measurePoints": ["prepare"],
+  '[data-fly="flyColor"]': ["preview"],
+  '[data-fly="flyFeatures"]': ["preview"],
+  '[data-fly="flyBed"]': ["prepare", "preview"],
+  '[data-pose-action="animation-play"]': ["pose"],
+  '[data-pose-action="animation-stop"]': ["pose"],
+  '[data-pose-action="animation-keep"]': ["pose"],
+  '[data-pose-action="animation-save"]': ["pose"],
+  '[data-pose-action="animation-library"]': ["pose"],
+  "#heightAdd": ["prepare", "preview", "gcode"],
+  "#volumeBox": ["prepare", "preview", "gcode"],
+  "#volumeCylinder": ["prepare", "preview", "gcode"],
+  "#volumeSphere": ["prepare", "preview", "gcode"],
+  "#objInfill": ["prepare", "preview", "gcode"],
   "#modelToolPattern": ["model"],
   "#modelToolMirror": ["model"],
   "#modelToolShell": ["model"],
@@ -492,8 +521,180 @@ for (const stage of ["prepare", "preview", "gcode", "model", "pose"] as const) {
   for (const name of groupsForStage(stage, stage === "model")) check(`${stage} opens a real group (${name})`, groups.some((group) => group.group === name));
 }
 
+// R3 and R4 (docs/plan-interaction-model.md). I3 owns key changes; I5 and X1 own moves. -----------------------
+
+/** One idea, one key, where that idea already has the same key in each stage. Scale (X / S) and Move (Shift+P / M) are I3. */
+const SHARED_IDEAS: { idea: string; key: string; ids: string[] }[] = [
+  { idea: "rotate", key: "R", ids: ["tool-rotate", "pose-turn"] },
+  { idea: "measure", key: "Shift+M", ids: ["measure", "model-measure"] },
+  { idea: "top view", key: "T", ids: ["view-top", "model-view-top", "pose-view-top"] },
+  { idea: "front view", key: "Y", ids: ["view-front", "model-view-front", "pose-view-front"] },
+  { idea: "iso view", key: "I", ids: ["view-iso", "model-view-iso", "pose-view-iso"] },
+  { idea: "section", key: "C", ids: ["tool-section"] },
+];
+for (const row of SHARED_IDEAS) {
+  const keys = row.ids.map((id) => COMMANDS.find((command) => command.id === id)?.keys?.[0] ?? "");
+  check(`R4 ${row.idea} is ${row.key} in every listed command`, keys.every((key) => key === row.key) && new Set(keys).size === 1, keys.join(","));
+}
+
+/**
+ * Actions I2 adds to the palette. No key: I3 owns keys. Each one is listed (show defaults to both).
+ * Animation, height ranges, modifiers and object settings are not rail buttons; the markup scan still
+ * requires a command target for the buttons that do exist.
+ */
+const I2_COMMANDS = [
+  "model-transition",
+  "pose-animation-play",
+  "pose-animation-stop",
+  "pose-animation-keep",
+  "pose-animation-save",
+  "pose-animation-library",
+  "add-height-range",
+  "add-modifier-box",
+  "add-modifier-cylinder",
+  "add-modifier-sphere",
+  "object-settings",
+  "preview-color-by",
+  "preview-features",
+  "preview-bed",
+];
+for (const id of I2_COMMANDS) {
+  const command = COMMANDS.find((row) => row.id === id);
+  check(`I2 ${id} is a palette command`, !!command && paletteCommands().includes(command));
+  check(`I2 ${id} has no key`, !!command && !command.keys?.length);
+}
+
+interface Control {
+  where: string;
+  id: string;
+  tool: string;
+  pose: string;
+  mode: string;
+  fly: string;
+  file: string;
+  label: string;
+}
+
+function attr(tag: string, name: string): string {
+  const match = tag.match(new RegExp(`\\b${name}="([^"]*)"`));
+  return match?.[1] ?? "";
+}
+
+/** A command target names this control: its id, or the data attribute the rail sets. */
+function targetCovers(control: Control): boolean {
+  return COMMANDS.some((command) => (command.target ?? "").split(",").some((part) => {
+    const selector = part.trim();
+    if (control.id && new RegExp(`#${control.id}(?![\\w-])`).test(selector)) return true;
+    if (control.tool && selector.includes(`[data-tool="${control.tool}"]`)) return true;
+    if (control.pose && selector.includes(`[data-pose-tool="${control.pose}"]`)) return true;
+    if (control.mode && selector.includes(`[data-mode="${control.mode}"]`)) return true;
+    if (control.fly && selector.includes(`[data-fly="${control.fly}"]`)) return true;
+    return false;
+  }));
+}
+
+/** Commands reached by a runCommand case rather than a target click. */
+const BY_ID: Record<string, string> = {
+  exportModel: "export-model",
+  calibrateOpen: "calibrate",
+  machineOpen: "printer-edit",
+  force: "force-slice",
+  modelMenuParameters: "model-parameters",
+  modelMenuPlugins: "model-plugins",
+  modelMenuAutoRibs: "model-auto-ribs",
+  modelMenuStress: "model-stress",
+  modelMenuSplitPrint: "model-split-print",
+};
+const BY_FILE: Record<string, string> = {
+  new: "new-project",
+  open: "open",
+  add: "add-to-plate",
+  save: "save-project",
+};
+
+/**
+ * Not an I2 gap. The STEP button is a second home for Export (X1). The Features caret only opens that menu.
+ * Sample files are choices of the Samples command. Tandem is the bridge menu, outside this milestone.
+ */
+const LATER = new Set(["modelStep", "modelFeatureMore"]);
+
+function covered(control: Control): boolean {
+  if (LATER.has(control.id)) return true;
+  const linked = BY_ID[control.id] || BY_FILE[control.file];
+  if (linked && COMMANDS.some((command) => command.id === linked)) return true;
+  return targetCovers(control);
+}
+
+function buttonTag(tag: string, label: string, where: string): Control {
+  return {
+    where,
+    id: attr(tag, "id"),
+    tool: attr(tag, "data-tool"),
+    pose: attr(tag, "data-pose-tool"),
+    mode: attr(tag, "data-mode"),
+    fly: attr(tag, "data-fly"),
+    file: attr(tag, "data-file-action"),
+    label: label.trim(),
+  };
+}
+
+const modelMarkup = readFileSync(new URL("../app/model/markup.ts", import.meta.url), "utf8");
+const appMarkup = readFileSync(new URL("../app/markup.ts", import.meta.url), "utf8");
+const chromeSource = readFileSync(new URL("./chrome.ts", import.meta.url), "utf8");
+const poseSource = readFileSync(new URL("../app/pose.ts", import.meta.url), "utf8");
+const overridesSource = readFileSync(new URL("./overrides-panel.ts", import.meta.url), "utf8");
+
+const controls: Control[] = [];
+for (const match of modelMarkup.matchAll(/<button\b([^>]*)>([^<]*)<\/button>/g)) {
+  const tag = match[1] ?? "";
+  const control = buttonTag(tag, match[2] ?? "", "model rail");
+  const rail = /\bclass="[^"]*\bmodel-tool\b/.test(tag) || control.id === "modelLookOpen" || /\brole="menuitem"/.test(tag);
+  if (rail) controls.push(control);
+}
+for (const match of appMarkup.matchAll(/<button\b([^>]*)>([^<]*)<\/button>/g)) {
+  const tag = match[1] ?? "";
+  if (/\bdata-sample=/.test(tag)) continue;
+  const control = buttonTag(tag, match[2] ?? "", "file menu");
+  if (control.file || control.id === "exportModel" || control.id === "calibrateOpen" || control.id === "machineOpen" || control.id === "force") controls.push(control);
+}
+for (const match of chromeSource.matchAll(/toolButton\(\s*"([^"]+)"/g)) {
+  const tool = match[1]!;
+  const id = tool === "rulers" ? "measureField" : tool === "measure-points" ? "measurePoints" : tool === "dock" ? "leftToggle" : "";
+  controls.push({ where: "prepare rail", id, tool, pose: "", mode: "", fly: "", file: "", label: tool });
+}
+for (const match of chromeSource.matchAll(/flyButton\(\s*"([^"]+)"/g)) {
+  const fly = match[1]!;
+  controls.push({ where: "preview flyout", id: "", tool: `fly-${fly}`, pose: "", mode: "", fly, file: "", label: fly });
+}
+check("the preview rail still builds 2D, split and 3D", /\["flat", "split", "solid"\] as const/.test(chromeSource));
+for (const mode of ["flat", "split", "solid"]) {
+  controls.push({ where: "preview rail", id: "", tool: `view-${mode}`, pose: "", mode, fly: "", file: "", label: mode });
+}
+check("the pose rail still builds its five tools", /\["select", MousePointer2/.test(chromeSource) && /\["link", Waypoints/.test(chromeSource));
+for (const pose of ["select", "turn", "reach", "joint", "link"]) {
+  controls.push({ where: "pose rail", id: "", tool: `pose-${pose}`, pose, mode: "", fly: "", file: "", label: pose });
+}
+
+const missing = controls.filter((control) => !covered(control));
+check(
+  "R3 every rail tool and menu entry has a command",
+  missing.length === 0,
+  missing.map((control) => `${control.where} ${control.label || control.tool || control.id}`).join("; "),
+);
+
+const animationActions = ["animation-play", "animation-stop", "animation-keep", "animation-save", "animation-library"];
+for (const action of animationActions) {
+  check(`pose still builds ${action}`, poseSource.includes(`"${action}"`));
+  check(`R3 ${action} has a command`, targetCovers({ where: "pose", id: "", tool: "", pose: "", mode: "", fly: "", file: "", label: action }) || COMMANDS.some((command) => (command.target ?? "").includes(`[data-pose-action="${action}"]`)));
+}
+for (const id of ["heightAdd", "volumeBox", "volumeCylinder", "volumeSphere"]) {
+  check(`overrides still build #${id}`, overridesSource.includes(`"${id}"`));
+  check(`R3 #${id} has a command`, COMMANDS.some((command) => (command.target ?? "").split(",").some((part) => new RegExp(`#${id}(?![\\w-])`).test(part))));
+}
+check("Samples is one command for the sample files", COMMANDS.some((command) => command.id === "samples"));
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
 }
-console.log("commands: registry, key map and fuzzy ok");
+console.log("commands: registry, key map, fuzzy, R3 and R4 ok");
