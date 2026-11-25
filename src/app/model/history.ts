@@ -25,10 +25,10 @@ import { editRefusal, toolEditRefusal } from "../../model-edit";
 import { rowKey } from "../../model-history";
 import { isRepeatTool, repeatSourceIds, toggleRepeatSource } from "../../model-repeat";
 import { recipesUnavailable } from "../../recipe/runtime";
-import { openModelTool, openPlaceTool, syncModelChrome } from "../../ui/model-chrome";
+import { fx } from "../fx";
+import { openModelTool, syncModelChrome } from "../../ui/model-chrome";
 import { mountModelHistory, paintRepeatSources } from "../../ui/model-history";
 import { pluginAuthor } from "../../ui/plugins-panel";
-import { fx } from "../fx";
 import { takeEdgeStep } from "./edges";
 import { startEdit } from "./edit";
 import { exportPieceFiles, exportsRow } from "./export";
@@ -227,7 +227,10 @@ export function bindHistory() {
     },
     exportable: exportsRow,
     exportPieces: (row) => void exportPieceFiles(row),
-    openPlace: openPlaceTool,
+    openPlace: () => {
+      fx.setStage("pose");
+      void import("../pose").then(({ pickPoseTool }) => pickPoseTool("move"));
+    },
     resetPosition: resetPose,
     // --- A10. Hovering or focusing a row tints the faces that step made.
     highlight(id) {

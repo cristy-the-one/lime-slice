@@ -19,7 +19,12 @@ async function commit(page: Page, id: "#placeX" | "#placeY", value: number) {
 }
 
 async function assembledBoxes(page: Page): Promise<string> {
-  return (await page.locator("#prepare").getAttribute("data-assembled")) ?? "";
+  const onPose = (await page.locator("#tabPose").getAttribute("aria-pressed")) === "true";
+  if (!onPose) await page.locator("#tabPose").click();
+  await expect.poll(async () => (await page.locator("#pose").getAttribute("data-posed")) ?? "").not.toBe("");
+  const raw = (await page.locator("#pose").getAttribute("data-posed")) ?? "";
+  if (!onPose) await page.locator("#tabPrepare").click();
+  return raw;
 }
 
 async function start(page: Page) {
@@ -56,9 +61,7 @@ test("Lay out lays out one assembly's parts for print, around the others, and ke
   await linkInPose(page, ledge, "part");
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
   await expect(page.locator("#plateOverlap"), "the cube and the ledge share a spot of the bed").toBeVisible();
-  await page.locator("[data-assembly-view='assembly']").click();
   const assembled = await assembledBoxes(page);
-  await page.locator("[data-assembly-view='print']").click();
   await page.evaluate(() => document.querySelector("#toasts")?.replaceChildren());
   await page.screenshot({ path: path.join(shots, "layout-before.png") });
 
@@ -67,9 +70,7 @@ test("Lay out lays out one assembly's parts for print, around the others, and ke
   await page.locator(`[data-plate-select='${free}']`).click();
   await expect(page.locator("#placeX"), "the object outside the assembly stays where it was").toHaveValue(/^40(\.0+)?$/);
   await expect(page.locator("#placeY")).toHaveValue(/^40(\.0+)?$/);
-  await page.locator("[data-assembly-view='assembly']").click();
   expect(await assembledBoxes(page), "the assembled poses do not move").toBe(assembled);
-  await page.locator("[data-assembly-view='print']").click();
   await page.evaluate(() => document.querySelector("#toasts")?.replaceChildren());
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(shots, "layout-after.png") });
@@ -129,10 +130,10 @@ test("STEP saves the assembly as named solids at their assembled poses", async (
 
   // The hook sits 0.5 mm higher than the body in the assembly.
   await page.locator(`[data-plate-select='${ids[1]}']`).click();
-  await page.locator("[data-assembly-view='assembly']").click();
-  await page.locator('#toolRail [data-tool="move"]').click();
+  await page.locator("#tabPose").click();
+  await page.locator(`#posePanel [data-object='${ids[1]}']`).click();
+  await page.keyboard.press("M");
   for (let i = 0; i < 5; i += 1) await page.getByRole("button", { name: "Nudge Z +0.1 mm" }).click();
-  await page.locator("[data-assembly-view='print']").click();
 
   await exportAssemblyFromPose(page);
   const exportDialog = page.locator("[data-export-dialog]");
@@ -182,9 +183,7 @@ test("Lay out lays a flat part on its wide face and keeps the parts off the bed'
   await page.locator("[data-plate-select='part']").click();
   await linkInPose(page, disc, "part");
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
-  await page.locator("[data-assembly-view='assembly']").click();
   const assembled = await assembledBoxes(page);
-  await page.locator("[data-assembly-view='print']").click();
 
   await page.locator("[data-assembly-layout]").click();
   await expect(row, "laid out for print, the disc lies on its wide face").toContainText("24 × 24 × 6 mm");
@@ -195,6 +194,5 @@ test("Lay out lays a flat part on its wide face and keeps the parts off the bed'
     expect(Number(await page.locator("#placeX").inputValue()), `${id} stays off the side`).toBeGreaterThanOrEqual(10 + half - 0.01);
     expect(Number(await page.locator("#placeY").inputValue()), `${id} stays off the front`).toBeGreaterThanOrEqual(10 + half - 0.01);
   }
-  await page.locator("[data-assembly-view='assembly']").click();
   expect(await assembledBoxes(page), "the assembly stays as it is").toBe(assembled);
 });

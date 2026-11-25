@@ -43,7 +43,7 @@ async function commit(page: Page, id: string, value: number) {
 }
 
 const canvas = (page: Page) => page.locator("#model");
-const turns = async (page: Page) => Promise.all(["#modelPlaceRx", "#modelPlaceRy", "#modelPlaceRz"].map(async (id) => page.locator(id).inputValue()));
+const turns = async (page: Page) => Promise.all(["#poseMoveRx", "#poseMoveRy", "#poseMoveRz"].map(async (id) => page.locator(id).inputValue()));
 const solidBox = async (page: Page) => ((await canvas(page).getAttribute("data-solid")) ?? "").split(",").map(Number);
 
 /** One slab on the plate, open in Model. `settle` is the remembered switch. */
@@ -65,9 +65,10 @@ async function openSlab(page: Page, settle: boolean) {
   await expect(page.locator("#modelReadout")).toContainText("Volume 24000");
 }
 
-async function openPlace(page: Page) {
-  if ((await page.locator("#modelToolPlace").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolPlace").click();
-  await expect(page.locator("#modelPlaceX")).toBeVisible();
+async function openMove(page: Page) {
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await expect(page.locator("#poseMoveX")).toBeVisible();
 }
 
 /** The camera at rest: the same reading twice in a row. */
@@ -82,109 +83,109 @@ async function still(page: Page, read: () => Promise<string | null>) {
   return last ?? "";
 }
 
-/** Drag the Turn Y ring round its centre by `degrees` on screen, from the front view where it faces the camera. */
-async function turnRingY(page: Page, degrees: number) {
-  const box = (await canvas(page).boundingBox())!;
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.keyboard.press("y");
-  await still(page, () => canvas(page).getAttribute("data-camera"));
-  const at = (name: string) => {
-    const text = name.split(" ").find((item) => item.startsWith("turn-modelPlaceRy:"));
-    const [x, y] = (text ?? ":0,0").split(":")[1]!.split(",").map(Number);
-    return { x: box.x + x!, y: box.y + y! };
-  };
-  await expect.poll(async () => (await canvas(page).getAttribute("data-handles")) ?? "").toContain("turn-modelPlaceRy:");
-  const grip = at((await canvas(page).getAttribute("data-handles"))!);
-  const [cx, cy] = ((await canvas(page).getAttribute("data-gizmo-at")) ?? "0,0").split(",").map(Number);
-  const centre = { x: box.x + cx!, y: box.y + cy! };
-  const r = Math.hypot(grip.x - centre.x, grip.y - centre.y);
-  const a0 = Math.atan2(grip.y - centre.y, grip.x - centre.x);
-  await page.mouse.move(grip.x, grip.y);
-  await page.mouse.down();
-  const steps = 24;
-  for (let i = 1; i <= steps; i += 1) {
-    const a = a0 + ((degrees * Math.PI) / 180) * (i / steps);
-    await page.mouse.move(centre.x + r * Math.cos(a), centre.y + r * Math.sin(a));
-  }
-  await page.mouse.up();
+/** Right-drag in Move, with Y held, by `pixels` across the part. 160 px is about 80°. */
+async function turnAboutY(page: Page, pixels: number) {
+  await openMove(page);
+  const canvas = page.locator("#pose");
+  const box = (await canvas.boundingBox())!;
+  await expect.poll(async () => (await canvas.getAttribute("data-screen")) ?? "").not.toBe("");
+  const item = ((await canvas.getAttribute("data-screen")) ?? "").split(" ").find((entry) => entry.includes(":"))!;
+  const [x, y, w, h] = item.split(":")[1]!.split(",").map(Number);
+  const cx = box.x + x! + w! / 2;
+  const cy = box.y + y! + h! / 2;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down({ button: "right" });
+  await page.keyboard.down("y");
+  await page.mouse.move(cx + pixels, cy, { steps: 12 });
+  await page.mouse.up({ button: "right" });
+  await page.keyboard.up("y");
 }
 
-test("Settle on the bed: a ring turn near a face rests on it, on the floor the part stood on; off keeps the angle", async ({ page }) => {
+test("Settle on the bed: a turn near a face rests on it, on the floor the part stood on; off keeps the angle", async ({ page }) => {
   fs.mkdirSync(shots, { recursive: true });
   await openSlab(page, true);
-  await openPlace(page);
-  await expect(page.locator("#modelSettleOn")).toBeChecked();
+  await openMove(page);
+  await expect(page.locator("#poseSettleOn")).toBeChecked();
+  await page.locator("#tabModel").click();
   expect(await solidBox(page)).toEqual([0, 0, 0, 40, 30, 20]);
 
-  // A ring turn of about 80 degrees ends near the side face: it lands on it, at 90, resting on Z 0 where the slab stood.
-  await turnRingY(page, 80);
+  // A turn of about 80 degrees ends near the side face: it lands on it, at 90, resting on Z 0 where the slab stood.
+  await turnAboutY(page, 160);
   await expect.poll(async () => Math.abs(Number((await turns(page))[1]))).toBe(90);
   const [rx, , rz] = await turns(page);
   expect([rx, rz]).toEqual(["0", "0"]);
+  await page.locator("#tabModel").click();
   await expect.poll(async () => (await solidBox(page))[2]).toBeCloseTo(0, 2);
   const settled = await solidBox(page);
   expect(settled[5]! - settled[2]!, "standing on its 30 x 20 side, it is 40 high").toBeCloseTo(40, 2);
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(shots, "settled.png") });
 
-  // One Place Undo takes the settled turn back.
-  await page.locator("#modelUndo").click();
+  // One Undo takes the settled turn back.
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("Control+z");
+  await page.locator("#tabModel").click();
   await expect.poll(() => solidBox(page)).toEqual([0, 0, 0, 40, 30, 20]);
 
   // Typed angles stay exact with Settle on.
-  await commit(page, "#modelPlaceRy", 80);
+  await openMove(page);
+  await commit(page, "#poseMoveRy", 80);
   await expect.poll(async () => (await turns(page))[1]).toBe("80");
   await page.waitForTimeout(500);
 
-  // The switch is Prepare's: off here is off there, and a ring turn then keeps its angle, turning about the centre.
-  await page.locator("#modelSettleOn").uncheck();
+  // The switch is Prepare's: off here is off there, and a turn then keeps its angle, turning about the centre.
+  await page.locator("#poseSettleOn").uncheck();
   expect(await page.evaluate(() => localStorage.getItem("lime-slice-settle"))).toBe("0");
-  await page.locator("#modelUndo").click();
+  await page.keyboard.press("Control+z");
+  await page.locator("#tabModel").click();
   await expect.poll(() => solidBox(page)).toEqual([0, 0, 0, 40, 30, 20]);
-  await turnRingY(page, 80);
+  await turnAboutY(page, 160);
   await expect.poll(async () => Math.abs(Number((await turns(page))[1]))).toBeGreaterThan(60);
   const free = Math.abs(Number((await turns(page))[1]));
-  expect(free, "off, the ring keeps the angle it was turned to").toBeLessThan(89);
+  expect(free, "off, the turn keeps the angle it was turned to").toBeLessThan(89);
+  await page.locator("#tabModel").click();
   expect((await solidBox(page))[2], "turned about its centre, a corner goes under the floor").toBeLessThan(-1);
   await page.locator("#tabPrepare").click();
   await expect(page.locator("#settleOn")).not.toBeChecked();
 });
 
-test("Place angles read back as typed, and a turn past 90 degrees keeps its own reading", async ({ page }) => {
+test("Move angles read back as typed, and a turn past 90 degrees keeps its own reading", async ({ page }) => {
   fs.mkdirSync(shots, { recursive: true });
   await openSlab(page, false);
-  await openPlace(page);
+  await openMove(page);
   // On main, Rz 30 then Ry 120 read back as 180 / 60 / -150, and Ry 90 moved Rz 30 into Rx.
-  await commit(page, "#modelPlaceRz", 30);
-  await commit(page, "#modelPlaceRy", 120);
+  await commit(page, "#poseMoveRz", 30);
+  await commit(page, "#poseMoveRy", 120);
   await page.waitForTimeout(500);
-  await page.locator("#modelCancel").click();
-  await openPlace(page);
+  await page.locator("#tabModel").click();
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
   expect(await turns(page)).toEqual(["0", "120", "30"]);
+  await page.locator("#tabModel").click();
   await expect(page.locator("#modelPositionText")).toHaveText("Turn Y 120° · Turn Z 30°");
   await page.screenshot({ path: path.join(shots, "angles.png") });
 
-  await commit(page, "#modelPlaceRy", 90);
+  await openMove(page);
+  await commit(page, "#poseMoveRy", 90);
   await page.waitForTimeout(500);
-  await page.locator("#modelCancel").click();
-  await openPlace(page);
+  await page.locator("#tabModel").click();
+  await openMove(page);
   expect(await turns(page), "at Ry 90 Rz keeps its 30").toEqual(["0", "90", "30"]);
-  await commit(page, "#modelPlaceRx", -45);
+  await commit(page, "#poseMoveRx", -45);
   await page.waitForTimeout(500);
-  await page.locator("#modelCancel").click();
-  await openPlace(page);
+  await page.locator("#tabModel").click();
+  await openMove(page);
   expect(await turns(page)).toEqual(["-45", "90", "30"]);
 
-  // Every typed angle reads back, and Place Undo walks back through the same readings.
-  for (const [id, value] of [["#modelPlaceRx", 170], ["#modelPlaceRy", -135], ["#modelPlaceRz", -90]] as const) {
+  // Every typed angle reads back, and Undo walks back through the same readings.
+  for (const [id, value] of [["#poseMoveRx", 170], ["#poseMoveRy", -135], ["#poseMoveRz", -90]] as const) {
     await commit(page, id, value);
     await page.waitForTimeout(450);
   }
-  await page.locator("#modelCancel").click();
-  await openPlace(page);
+  await page.locator("#tabModel").click();
+  await openMove(page);
   expect(await turns(page)).toEqual(["170", "-135", "-90"]);
-  await page.locator("#modelUndo").click();
+  await page.keyboard.press("Control+z");
   await expect.poll(() => turns(page)).toEqual(["170", "-135", "30"]);
 });
 

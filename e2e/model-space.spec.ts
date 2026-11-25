@@ -118,9 +118,15 @@ async function zoomAndOrbit(page: Page) {
 }
 
 async function place(page: Page, field: string, value: number) {
-  if ((await page.locator("#modelToolPlace").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolPlace").click();
-  await page.locator(`#${field}`).fill(String(value));
-  await page.locator(`#${field}`).press("Tab");
+  const key = field.replace(/^modelPlace/, "");
+  const id = key === "X" ? "#poseMoveX" : key === "Y" ? "#poseMoveY" : key === "Z" ? "#poseMoveZ" : key === "Rx" ? "#poseMoveRx" : key === "Ry" ? "#poseMoveRy" : "#poseMoveRz";
+  const inModel = (await page.locator("#tabModel").getAttribute("aria-pressed")) === "true";
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await expect(page.locator(id)).toBeVisible();
+  await page.locator(id).fill(String(value));
+  await page.locator(id).press("Tab");
+  if (inModel) await page.locator("#tabModel").click();
 }
 
 test("a split piece opens with its parent grey directly under it, where it was cut", async ({ page }) => {
@@ -219,12 +225,14 @@ test("Place moves the open object in model space and leaves the plate and its me
   expect(tree.calls.length, "a move asks the engine nothing").toBe(calls);
   expect([await page.locator("#placeX").inputValue(), await page.locator("#placeY").inputValue()]).toEqual([plateX, plateY]);
 
-  // While Place is open, Undo and Redo step the move.
-  await expect(page.locator("#modelUndo")).toBeEnabled();
-  await page.locator("#modelUndo").click();
+  // One Undo in Pose takes the move back. Model's own Undo stays for solid edits.
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("Control+z");
+  await page.locator("#tabModel").click();
   await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,40.00,30.00,20.00");
-  await expect(page.locator("#modelPlaceX")).toHaveValue("0");
-  await page.locator("#modelRedo").click();
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("Control+y");
+  await page.locator("#tabModel").click();
   await expect(canvas(page)).toHaveAttribute("data-solid", "10.00,0.00,0.00,50.00,30.00,20.00");
 
   // The other object, opened, sees the moved one where it now is.
@@ -359,7 +367,7 @@ test.describe("phone", () => {
       await expect(page.locator("#objectList .obj").first()).toBeVisible();
       await page.locator("#compactTabs [data-tab=model]").click();
       await expect(page.locator("#modelReadout")).toContainText("Volume");
-      for (const tool of ["New", "Boolean", "Split", "Hole", "Scale", "Measure", "Place"]) {
+      for (const tool of ["New", "Boolean", "Split", "Hole", "Scale", "Measure", "Workplane"]) {
         await page.locator(`#modelTool${tool}`).click();
         const sheet = (await page.locator("#modelPanel").boundingBox())!;
         const bar = (await page.locator("#modelPanel .model-actions").boundingBox())!;
@@ -377,7 +385,7 @@ test.describe("phone", () => {
       }
     });
 
-    test(`Place's Done stays inside the sheet and on screen, and closes it, at ${width}×${height}`, async ({ page }) => {
+    test(`Workplane's Done stays inside the sheet and on screen, and closes it, at ${width}×${height}`, async ({ page }) => {
       const solid = boxSolid([40, 30, 20]);
       await page.setViewportSize({ width, height });
       await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
@@ -390,7 +398,7 @@ test.describe("phone", () => {
       await expect(page.locator("#objectList .obj").first()).toBeVisible();
       await page.locator("#compactTabs [data-tab=model]").click();
       await expect(page.locator("#modelReadout")).toContainText("Volume");
-      await page.locator("#modelToolPlace").click();
+      await page.locator("#modelToolWorkplane").click();
       const done = page.locator("#modelCancel");
       await expect(done).toHaveText("Done");
       const button = (await done.boundingBox())!;

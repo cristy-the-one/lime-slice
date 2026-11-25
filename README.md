@@ -40,7 +40,7 @@ The desktop release includes the Open CASCADE libraries. A build without them st
 
 ### Assemble, animate and run
 
-Link two parts in **Pose** to make an assembly, then give them joints: fixed, hinge, slide, ball, or held. **Pose** moves them without changing where they print. Turn a part by its ring or type an angle, and **Until contact** turns or slides it until it meets another part and stops there.
+Link two parts in **Pose** to make an assembly, then give them joints: fixed, hinge, slide, ball, or held. **Move** (M) moves a part in design space, a free part included, and snaps it to the other parts. **Pose** is the assembled view: Prepare shows only the print layout, and Edit in Pose or the Pose tab opens the assembly. Turn a part by its ring or type an angle, and **Until contact** turns or slides it until it meets another part and stops there.
 
 - **Couplings.** **Couple gears** finds every pair of gears that mesh, gives each a hinge about its own axis, and couples them, so turning one turns the whole train at the tooth ratios. Ring gears, planetary stages and rack and pinion couple the same way. The Couplings form couples any two parts by a ratio, a winch (a drum that winds a cord), a ratchet with its click, or a friction clutch.
 - **Animations** are plugins that set joint angles over time. Pose prepares the frames in the background and plays them. You can keep a frame, save the animation as a GIF or PNG frames, or keep it in the plugin library to play on another assembly.

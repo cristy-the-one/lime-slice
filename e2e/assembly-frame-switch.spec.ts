@@ -50,14 +50,15 @@ async function commit(page: Page, id: string, value: number) {
 
 const canvas = (page: Page) => page.locator("#model");
 const field = async (page: Page, id: string) => Number(await page.locator(id).inputValue());
-const placed = async (page: Page) => Promise.all(["#modelPlaceX", "#modelPlaceY", "#modelPlaceZ", "#modelPlaceRz"].map((id) => field(page, id)));
+const placed = async (page: Page) => Promise.all(["#poseMoveX", "#poseMoveY", "#poseMoveZ", "#poseMoveRz"].map((id) => field(page, id)));
 const solidBox = async (page: Page) => (await canvas(page).getAttribute("data-solid")) ?? "";
 const contextBox = async (page: Page) => (((await canvas(page).getAttribute("data-context")) ?? "").split(" ")[0] ?? "").split(":")[1] ?? "";
-const pressed = (page: Page, frame: "part" | "model") => page.locator(`#modelPlaceFrame [data-place-frame='${frame}']`);
+const pressed = (page: Page, frame: "part" | "model") => page.locator(`#poseMoveFrame [data-place-frame='${frame}']`);
 
-async function openPlace(page: Page) {
-  if ((await page.locator("#modelToolPlace").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolPlace").click();
-  await expect(page.locator("#modelPlaceX")).toBeVisible();
+async function openMove(page: Page) {
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await expect(page.locator("#poseMoveX")).toBeVisible();
 }
 
 /** The body and the hook on the bed, the hook open in Model before it is attached. Returns the hook's id. */
@@ -92,11 +93,8 @@ test("the Place tool's frame switch: members only, one Undo step, and Model draw
   const hook = await twoParts(page);
 
   // A part in no assembly has no frame to switch.
-  await page.locator("#tabModel").click();
-  await expect(page.locator("#modelReadout")).toContainText("Volume 4000");
-  await openPlace(page);
-  await expect(page.locator("#modelPlaceFrame")).toBeHidden();
-  await page.locator("#modelCancel").click();
+  await openMove(page);
+  await expect(page.locator("#poseMoveFrame")).toHaveCount(0);
 
   // Attached, the hook is a member in the part frame (D2): the switch shows, on Part frame.
   await page.locator("#tabPrepare").click();
@@ -105,31 +103,33 @@ test("the Place tool's frame switch: members only, one Undo step, and Model draw
   await linkInPose(page, hook, body);
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
   await page.locator(`[data-plate-select='${hook}']`).click();
-  await page.locator("#tabModel").click();
-  await expect(page.locator("#modelReadout")).toContainText("Volume 4000");
-  await openPlace(page);
-  await expect(page.locator("#modelPlaceFrame")).toBeVisible();
+  await openMove(page);
+  await expect(page.locator("#poseMoveFrame")).toBeVisible();
   await expect(pressed(page, "part")).toHaveAttribute("aria-pressed", "true");
   await expect(pressed(page, "model")).toHaveAttribute("aria-pressed", "false");
 
   // Turned a quarter and moved, the hook stands in its own frame (M10): drawn unturned, the body turned around it.
-  await commit(page, "#modelPlaceRz", 90);
-  await commit(page, "#modelPlaceX", 30);
+  await commit(page, "#poseMoveRz", 90);
+  await commit(page, "#poseMoveX", 30);
+  expect(await placed(page)).toEqual([30, 0, 0, 90]);
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 4000");
   await expect.poll(() => contextBox(page)).toBe("0.00,-50.00,0.00,30.00,-10.00,20.00");
   expect(await solidBox(page)).toBe("0.00,0.00,0.00,20.00,20.00,10.00");
-  await expect(page.locator("#modelPositionOpen")).toHaveAttribute("aria-label", "Position: X 30 · Turn Z 90°. Its Model numbers are in its own frame. Opens Place.");
+  await expect(page.locator("#modelPositionOpen")).toHaveAttribute("aria-label", "Position: X 30 · Turn Z 90°. Its Model numbers are in its own frame. Opens Move.");
   await page.waitForTimeout(500);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: path.join(shots, "frame-switch-part.png") });
 
-  // Model frame: the hook is drawn where the assembly puts it, beside the body as it stands in model space, and the
-  // Place numbers, which are the assembly pose, stay.
+  // Model frame: the hook is drawn where the assembly puts it, and the Move numbers stay.
+  await openMove(page);
   await pressed(page, "model").click();
   await expect(pressed(page, "model")).toHaveAttribute("aria-pressed", "true");
+  expect(await placed(page)).toEqual([30, 0, 0, 90]);
+  await page.locator("#tabModel").click();
   await expect.poll(() => solidBox(page)).toBe("30.00,0.00,0.00,50.00,20.00,10.00");
   expect(await contextBox(page)).toBe("60.00,0.00,0.00,100.00,30.00,20.00");
-  expect(await placed(page)).toEqual([30, 0, 0, 90]);
-  await expect(page.locator("#modelPositionOpen")).toHaveAttribute("aria-label", "Position: X 30 · Turn Z 90°. Its Model numbers are in model space. Opens Place.");
+  await expect(page.locator("#modelPositionOpen")).toHaveAttribute("aria-label", "Position: X 30 · Turn Z 90°. Its Model numbers are in model space. Opens Move.");
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(shots, "frame-switch-model.png") });
 
@@ -141,36 +141,43 @@ test("the Place tool's frame switch: members only, one Undo step, and Model draw
   };
   expect("frame" in (await saved())).toBe(false);
 
-  // One Place Undo takes the switch back, with the drawing; Redo makes it again. The pose never moved.
-  await page.locator("#modelUndo").click();
+  // One Move Undo takes the switch back, with the drawing; Redo makes it again. The pose never moved.
+  await openMove(page);
+  await page.keyboard.press("Control+z");
   await expect(pressed(page, "part")).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(() => solidBox(page)).toBe("0.00,0.00,0.00,20.00,20.00,10.00");
   expect(await placed(page)).toEqual([30, 0, 0, 90]);
   expect((await saved()).frame).toBe("part");
-  await page.locator("#modelRedo").click();
+  await page.locator("#tabModel").click();
+  await expect.poll(() => solidBox(page)).toBe("0.00,0.00,0.00,20.00,20.00,10.00");
+  await openMove(page);
+  await page.keyboard.press("Control+y");
   await expect(pressed(page, "model")).toHaveAttribute("aria-pressed", "true");
+  await page.locator("#tabModel").click();
   await expect.poll(() => solidBox(page)).toBe("30.00,0.00,0.00,50.00,20.00,10.00");
 
   // A move after the switch is its own step: Undo takes the move back, and the frame stays model.
-  await commit(page, "#modelPlaceZ", 4);
+  await openMove(page);
+  await commit(page, "#poseMoveZ", 4);
+  await page.locator("#tabModel").click();
   await expect.poll(() => solidBox(page)).toBe("30.00,0.00,4.00,50.00,20.00,14.00");
   await page.waitForTimeout(500);
-  await page.locator("#modelUndo").click();
-  await expect.poll(() => solidBox(page)).toBe("30.00,0.00,0.00,50.00,20.00,10.00");
+  await openMove(page);
+  await page.keyboard.press("Control+z");
   await expect(pressed(page, "model")).toHaveAttribute("aria-pressed", "true");
+  await page.locator("#tabModel").click();
+  await expect.poll(() => solidBox(page)).toBe("30.00,0.00,0.00,50.00,20.00,10.00");
 
   // Back to Part frame by the switch: the hook stands in its own frame again.
+  await openMove(page);
   await pressed(page, "part").click();
-  await expect.poll(() => solidBox(page)).toBe("0.00,0.00,0.00,20.00,20.00,10.00");
   expect((await saved()).frame).toBe("part");
+  await page.locator("#tabModel").click();
+  await expect.poll(() => solidBox(page)).toBe("0.00,0.00,0.00,20.00,20.00,10.00");
 
   // The root has a frame too, and is a member: the switch shows for it, on Model frame.
-  await page.locator("#modelCancel").click();
   await page.locator("#tabPrepare").click();
   await page.locator(`[data-plate-select='${body}']`).click();
-  await page.locator("#tabModel").click();
-  await expect(page.locator("#modelReadout")).toContainText("Volume 24000");
-  await openPlace(page);
-  await expect(page.locator("#modelPlaceFrame")).toBeVisible();
+  await openMove(page);
+  await expect(page.locator("#poseMoveFrame")).toBeVisible();
   await expect(pressed(page, "model")).toHaveAttribute("aria-pressed", "true");
 });

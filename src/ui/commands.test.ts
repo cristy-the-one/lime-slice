@@ -240,6 +240,12 @@ eq(
 );
 check("Model does not list Slot", !rowsIn("Model").some((entry) => entry.id === "sketch-slot"));
 check("Sketch does not list Scale solid", !rowsIn("Sketch").some((entry) => entry.id === "model-scale"));
+eq(
+  "Pose lists Move on M",
+  rowsIn("Pose").filter((entry) => entry.id === "pose-move").map((entry) => ({ label: entry.label, keys: entry.keys })),
+  [{ label: "Move", keys: ["M"] }],
+);
+check("Model does not list Place", !rowsIn("Model").some((entry) => entry.id === "model-place" || entry.keys?.includes("Shift+P")));
 eq("the sheet shows all of a command's chords", listed.find((entry) => entry.label === "Remove object")?.keys, ["Del", "Backspace"]);
 eq("the sheet spells the keys the old prose left out", ["Search settings", "Smaller brush", "Paint seam", "Layer up", "Toggle results panel"].map((label) => listed.find((entry) => entry.label === label)?.keys), [["/", "Ctrl+F"], ["["], ["K"], ["↑", "]"], ["Ctrl+Alt+B"]]);
 eq("groups appear once each", helpGroups().map((group) => group.group), [...new Set(helpGroups().map((group) => group.group))]);
@@ -256,7 +262,7 @@ eq("a real shortcut is kept", tipWithShortcut("Arrange (A)", "A"), "Arrange (A)"
 
 // R3-01. A Prepare key is null wherever its button is not on screen, and the same command where it is.
 const STAGE_KEYS: Record<string, Partial<Record<"prepare" | "preview" | "gcode" | "model" | "pose", string>>> = {
-  M: { prepare: "tool-move" },
+  M: { prepare: "tool-move", pose: "pose-move" },
   R: { prepare: "tool-rotate", pose: "pose-turn" },
   V: { preview: "view-cycle", pose: "pose-select" },
   G: { model: "model-boolean", pose: "pose-reach" },
@@ -312,6 +318,7 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   "#poseViewPresets button:nth-child(1)": ["pose"],
   "#poseViewPresets button:nth-child(2)": ["pose"],
   "#poseViewPresets button:nth-child(3)": ["pose"],
+  '#toolRail [data-pose-tool="move"]': ["pose"],
   '#toolRail [data-pose-tool="select"]': ["pose"],
   '#toolRail [data-pose-tool="turn"]': ["pose"],
   '#toolRail [data-pose-tool="reach"]': ["pose"],
@@ -363,7 +370,6 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   "#modelToolShell": ["model"],
   "#modelToolDraft": ["model"],
   "#modelToolScale": ["model"],
-  "#modelToolPlace": ["model"],
   "#modelToolWorkplane": ["model"],
   "#modelToolCheck": ["model"],
   "#modelResetView": ["model"],
@@ -514,8 +520,9 @@ eq("X in Model does nothing", press("X", { stage: "model" }), null);
 eq("Shift+S in a sketch stays Slot", press("Shift+S", sketchCtx), "sketch-slot");
 eq("X in a sketch is the helper line", press("X", sketchCtx), "sketch-construction");
 eq("S in Prepare stays Scale", press("S"), "tool-scale");
-eq("Shift+P still places in Model", press("Shift+P", { stage: "model" }), "model-place");
-eq("Place keeps Shift+P", COMMANDS.find((command) => command.id === "model-place")?.keys, ["Shift+P"]);
+eq("Shift+P does nothing in Model", press("Shift+P", { stage: "model" }), null);
+check("Place is not a Model command", !COMMANDS.some((command) => command.id === "model-place"));
+eq("M in Pose is Move", press("M", { stage: "pose" }), "pose-move");
 eq("export is labelled Export G-code", COMMANDS.find((command) => command.id === "export")?.label, "Export G-code");
 eq(
   "Shift+click names Model and Paint",
@@ -591,8 +598,9 @@ for (const stage of ["prepare", "preview", "gcode", "model", "pose"] as const) {
 
 // R3 and R4 (docs/plan-interaction-model.md). I3 owns key changes; I5 and X1 own moves. -----------------------
 
-/** One idea, one key, where that idea already has the same key in each stage. Move (Shift+P / M) is I5. */
+/** One idea, one key, where that idea already has the same key in each stage. Pose's Move shares Prepare's M (I5). Scale is the only exception. */
 const SHARED_IDEAS: { idea: string; key: string; ids: string[] }[] = [
+  { idea: "move", key: "M", ids: ["tool-move", "pose-move"] },
   { idea: "rotate", key: "R", ids: ["tool-rotate", "pose-turn"] },
   { idea: "measure", key: "Shift+M", ids: ["measure", "model-measure"] },
   { idea: "top view", key: "T", ids: ["view-top", "model-view-top", "pose-view-top"] },
@@ -749,8 +757,8 @@ check("the preview rail still builds 2D, split and 3D", /\["flat", "split", "sol
 for (const mode of ["flat", "split", "solid"]) {
   controls.push({ where: "preview rail", id: "", tool: `view-${mode}`, pose: "", mode, fly: "", file: "", label: mode });
 }
-check("the pose rail still builds its five tools", /\["select", MousePointer2/.test(chromeSource) && /\["link", Waypoints/.test(chromeSource));
-for (const pose of ["select", "turn", "reach", "joint", "link"]) {
+check("the pose rail still builds its six tools", /\["move", Move3d/.test(chromeSource) && /\["link", Waypoints/.test(chromeSource));
+for (const pose of ["move", "select", "turn", "reach", "joint", "link"]) {
   controls.push({ where: "pose rail", id: "", tool: `pose-${pose}`, pose, mode: "", fly: "", file: "", label: pose });
 }
 

@@ -5,10 +5,10 @@ import { autoSliceOff } from "./auto-slice";
 import { linkInPose, ungroupInPose } from "./link-in-pose";
 
 /**
- * Assemblies M5 (docs/plan-assemblies.md, the owner's gaps item 20). Two objects grouped in the object list; the view
- * chip draws them where they sit in the assembly; a hook lifted above the body in the assembly is not flagged as an
- * overlap there, though the bed's XY check still flags it in the print layout; a parameter moves it; a move in the
- * assembly view carries what sits on the moved part.
+ * Assemblies M5 (docs/plan-assemblies.md, the owner's gaps item 20). Two objects grouped in the object list; Pose
+ * draws them where they sit in the assembly; a hook lifted above the body in the assembly is not flagged as a
+ * crossing there, though the bed's XY check still flags it in the print layout; a parameter moves it; a move in
+ * Pose carries what sits on the moved part. Prepare has no assembly view chip.
  */
 
 const shots = process.env.LIME_SHOTS ?? path.join("test-results", "assembly");
@@ -21,11 +21,16 @@ async function commit(page: Page, id: "#placeX" | "#placeY", value: number) {
 }
 
 async function assembledBoxes(page: Page): Promise<Record<string, Box>> {
-  const raw = (await page.locator("#prepare").getAttribute("data-assembled")) ?? "";
-  return Object.fromEntries(raw.split(" ").filter(Boolean).map((entry) => {
+  const onPose = (await page.locator("#tabPose").getAttribute("aria-pressed")) === "true";
+  if (!onPose) await page.locator("#tabPose").click();
+  await expect.poll(async () => (await page.locator("#pose").getAttribute("data-posed")) ?? "").not.toBe("");
+  const raw = (await page.locator("#pose").getAttribute("data-posed")) ?? "";
+  const boxes = Object.fromEntries(raw.split(" ").filter(Boolean).map((entry) => {
     const [id, numbers] = entry.split(":");
     return [id!, numbers!.split(",").map(Number)];
   }));
+  if (!onPose) await page.locator("#tabPrepare").click();
+  return boxes;
 }
 
 /** The cube ("part") and the ledge on one spot of the bed, the ledge selected. Returns the ledge's id. */
@@ -57,24 +62,27 @@ test("group two objects, see them assembled, and a lifted part is no overlap the
   const ledge = await twoOnOneSpot(page);
   await page.locator("[data-plate-select='part']").click();
   await expect(page.locator("#plateOverlap"), "on one spot of the bed, the print layout flags them").toBeVisible();
-  await expect(page.locator("#assemblyViewChip")).toBeHidden();
+  await expect(page.locator("#assemblyViewChip")).toHaveCount(0);
 
   // Link the ledge to the cube in Pose: one group, the cube its root.
   await linkInPose(page, ledge, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
   await expect(page.locator(".obj-member")).toHaveCount(2);
-  await expect(page.locator("#assemblyViewChip")).toBeVisible();
+  await expect(page.locator("#assemblyViewChip")).toHaveCount(0);
+  await expect(page.locator("[data-assembly-view]")).toHaveCount(0);
   await expect(page.locator("[data-plate-attach]")).toHaveCount(0);
 
-  // M6: both files sit at the origin of model space, so assembled they cross. The mesh pass tints both and says so.
-  await page.locator("[data-assembly-view='assembly']").click();
-  await expect(page.locator("#prepare")).toHaveAttribute("data-clashing", [ledge, "part"].sort().join(" "));
-  await expect(page.locator("#assemblyInterference")).toContainText("crosses");
+  // M6: both files sit at the origin of model space, so assembled they cross. Pose tints both and says so.
+  await page.locator("#tabPose").click();
+  await expect(page.locator("#pose")).toHaveAttribute("data-looks", new RegExp(`${ledge}:clash`));
+  await expect(page.locator("#pose")).toHaveAttribute("data-looks", /part:clash/);
+  await expect(page.locator("#posePanel #assemblyInterference")).toContainText("crosses");
+  await expect(page.locator("#left #assemblyInterference")).toHaveCount(0);
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(shots, "assembly-crossing.png") });
-  await page.locator("[data-assembly-view='print']").click();
-  await expect(page.locator("#assemblyInterference")).toHaveCount(0);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#left #assemblyInterference")).toHaveCount(0);
 
   // Lift the ledge 20 mm above the cube in the assembly, driven by a parameter: the file is where an MCP client or a
   // later Place would have put it.
@@ -98,15 +106,12 @@ test("group two objects, see them assembled, and a lifted part is no overlap the
   await page.evaluate(() => document.querySelector("#toasts")?.replaceChildren());
   await page.screenshot({ path: path.join(shots, "print-layout.png") });
 
-  await page.locator("[data-assembly-view='assembly']").click();
-  await expect(page.locator("#prepare")).toHaveAttribute("data-view", "assembly");
-  await expect(page.locator("[data-assembly-view='assembly']")).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("#plateOverlap"), "a lifted part is not an overlap in the assembly view").toHaveCount(0);
+  await page.locator("#tabPose").click();
   const lifted = await assembledBoxes(page);
   expect(Object.keys(lifted).sort()).toEqual([ledge, "part"].sort());
   expect(lifted[ledge]![2]! - lifted.part![2]!, "the ledge sits 20 mm higher").toBeCloseTo(20, 1);
-  await expect(page.locator("#prepare"), "resting on the cube's top is a touch, not a crossing").toHaveAttribute("data-clashing", "");
-  await expect(page.locator("#assemblyInterference")).toHaveCount(0);
+  await expect(page.locator("#pose"), "resting on the cube's top is a touch, not a crossing").not.toHaveAttribute("data-looks", /clash/);
+  await expect(page.locator("#posePanel #assemblyInterference")).toHaveCount(0);
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(shots, "assembly-view.png") });
 
@@ -123,9 +128,10 @@ test("group two objects, see them assembled, and a lifted part is no overlap the
     return Math.round((boxes[ledge]![2]! - boxes.part![2]!) * 10) / 10;
   }, { message: "lift 35 puts the ledge 35 mm higher" }).toBe(35);
 
-  // A move in the assembly view: the ledge, a member, moves alone; the cube, the root, carries it.
-  await page.locator(`[data-plate-select='${ledge}']`).click();
-  await page.locator('#toolRail [data-tool="move"]').click();
+  // A move in Pose: the ledge, a member, moves alone; the cube, the root, carries it.
+  await page.locator("#tabPose").click();
+  await page.locator(`#posePanel [data-object='${ledge}']`).click();
+  await page.keyboard.press("M");
   await expect(page.locator("#gizmoNudge")).toBeVisible();
   const before = await assembledBoxes(page);
   for (let i = 0; i < 5; i += 1) await page.getByRole("button", { name: "Nudge Z +0.1 mm" }).click();
@@ -133,20 +139,19 @@ test("group two objects, see them assembled, and a lifted part is no overlap the
     const boxes = await assembledBoxes(page);
     return Math.round((boxes[ledge]![2]! - boxes.part![2]! - (before[ledge]![2]! - before.part![2]!)) * 10) / 10;
   }).toBe(0.5);
-  await page.locator("[data-plate-select='part']").click();
+  await page.locator("#posePanel [data-object='part']").click();
   const grouped = await assembledBoxes(page);
   for (let i = 0; i < 3; i += 1) await page.getByRole("button", { name: "Nudge Z +0.1 mm" }).click();
   await page.waitForTimeout(200);
   const after = await assembledBoxes(page);
   expect(after[ledge]![2]! - after.part![2]!, "moving the root keeps the ledge where it sits on it").toBeCloseTo(grouped[ledge]![2]! - grouped.part![2]!, 2);
 
-  // Back to the print layout: the bed flags the spot again. Ungroup leaves both where they are.
-  await page.locator("[data-assembly-view='print']").click();
-  await expect(page.locator("#prepare")).toHaveAttribute("data-view", "print");
+  // The print layout still flags the spot. Ungroup leaves both where they are.
+  await page.locator("#tabPrepare").click();
   await expect(page.locator("#plateOverlap")).toBeVisible();
   await ungroupInPose(page);
   await expect(page.locator("[data-assembly-head]")).toHaveCount(0);
-  await expect(page.locator("#assemblyViewChip")).toBeHidden();
+  await expect(page.locator("#assemblyViewChip")).toHaveCount(0);
   await page.keyboard.press("Control+z");
   await expect(page.locator("[data-assembly-head]"), "Undo brings the group back").toHaveCount(1);
 });
