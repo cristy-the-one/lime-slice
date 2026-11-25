@@ -22,6 +22,7 @@ use super::ffi::{
     lime_tree_mesh,
     lime_tree_section,
     lime_tree_set_face_from,
+    lime_tree_surface_at,
     lime_tree_surface_inspect,
     MeshView,
     SurfaceInspectView,
@@ -143,6 +144,25 @@ impl Shape {
         let text = take_text(ptr)
             .ok_or_else(|| message.unwrap_or_else(|| "Open CASCADE could not read this face's outline.".into()))?;
         serde_json::from_str(&text).map_err(|_| "Open CASCADE could not read this face's outline.".to_string())
+    }
+
+    /// Exact hits of `rays` (origin and direction, six numbers each) on this solid. JSON `{"hits":[...]}`.
+    pub(super) fn surface_at(&self, rays: &[[f64; 6]]) -> Result<String, String> {
+        let mut flat = Vec::with_capacity(rays.len() * 6);
+        for ray in rays {
+            flat.extend_from_slice(ray);
+        }
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let ptr = unsafe {
+            lime_tree_surface_at(
+                self.raw(),
+                if flat.is_empty() { std::ptr::null() } else { flat.as_ptr() },
+                rays.len() as c_int,
+                &mut error,
+            )
+        };
+        let message = take_text(error);
+        take_text(ptr).ok_or_else(|| message.unwrap_or_else(|| "Open CASCADE could not cast this ray.".into()))
     }
 
     /// I6. The solid cut by the plane through `origin` along `normal`, in `frame` (origin, U, V on that plane).

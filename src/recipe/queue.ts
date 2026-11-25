@@ -18,6 +18,7 @@
  * taken back and run again with silent queuing off (`replay`), which is exact because a run is deterministic. An
  * explicit queue's refusals come back from `s.flush` instead, each built one by one to say which.
  */
+import { recipeTimeoutReason } from "./host.ts";
 import { hasAnchor, unionBox, type Box } from "../modeling/anchors.ts";
 import { primitiveBox } from "../model-feasibility.ts";
 import type { PrimitiveSpec } from "../model-primitive.ts";
@@ -269,7 +270,7 @@ export class RecipeQueue {
    */
   stopped(): string | null {
     if (this.signal?.aborted) return "The recipe was cancelled.";
-    if (Date.now() - this.started > this.timeLimitMs) return `The recipe ran past its ${this.timeLimitMs / 1000} s limit and was stopped.`;
+    if (Date.now() - this.started > this.timeLimitMs) return recipeTimeoutReason(this.timeLimitMs / 1000);
     return null;
   }
 

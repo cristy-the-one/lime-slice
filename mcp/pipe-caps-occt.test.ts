@@ -162,7 +162,7 @@ try {
     { at: path[path.length - 1]!, out: unit(sub(path[path.length - 1]!, path[path.length - 2]!)) },
   ];
   const frames = (flatSolid ? endFrames(flatSolid, path[0]!, path[path.length - 1]!) : undefined) ?? chordFrames;
-  const checked = round.ok === true ? await call("model_check", { object: round.object, surfaces: true }) : { ok: false };
+  const checked = round.ok === true ? await call("model_check", { object: round.object, surfaces: true, detail: true }) : { ok: false };
   const edges = (checked.continuity?.edges ?? []) as ContinuityEdge[];
   const seams = frames ? frames.map((frame) => seamEdges(edges, frame)) : [];
   const g1 = seams.length === 2 && seams.every((rows) => rows.length >= 3 && rows.every((row) => row.kind === "G1" || row.kind === "G2"));
@@ -194,7 +194,7 @@ try {
   const bothReach = frames && roundSolid ? frames.map((frame) => reach(roundSolid, frame)) : [];
   const startReach = frames && startSolid ? frames.map((frame) => reach(startSolid, frame)) : [];
   const flatReach = frames && flatSolid ? frames.map((frame) => reach(flatSolid, frame)) : [];
-  const startChecked = startOnly.ok === true ? await call("model_check", { object: startOnly.object, surfaces: true }) : { ok: false };
+  const startChecked = startOnly.ok === true ? await call("model_check", { object: startOnly.object, surfaces: true, detail: true }) : { ok: false };
   if (!startSolid) console.log(`pipe-caps-occt capStart worst seam: (no solid) ${why(startOnly)}`);
   else reportSeams("capStart", (startChecked.continuity?.edges ?? []) as ContinuityEdge[], frames);
   check(
@@ -213,7 +213,7 @@ try {
   const elbowRound = await call("solid_new", { feature: { kind: "sweep", sections: elbowSection, spine: elbowSpine, transition: "round", caps: "round" } });
   const elbowFlatSolid = elbowFlat.ok === true ? solidOf(String(elbowFlat.object)) : undefined;
   const elbowRoundSolid = elbowRound.ok === true ? solidOf(String(elbowRound.object)) : undefined;
-  const elbowChecked = elbowRound.ok === true ? await call("model_check", { object: elbowRound.object, surfaces: true }) : { ok: false };
+  const elbowChecked = elbowRound.ok === true ? await call("model_check", { object: elbowRound.object, surfaces: true, detail: true }) : { ok: false };
   const elbowFrames = elbowFlatSolid
     ? endFrames(elbowFlatSolid, [0, 0, 0], [40, 40, 40])
     : [{ at: [0, 0, 0] as V3, out: [-1, 0, 0] as V3 }, { at: [40, 40, 40] as V3, out: [0, 0, 1] as V3 }];

@@ -91,7 +91,10 @@ pub struct RunExit {
 
 /// The same sentences the host (src/recipe/host.ts) writes, so a stop reads the same whichever side made it.
 pub fn timeout_sentence(timeout: Duration) -> String {
-    format!("The recipe ran past its {} s limit and was stopped.", timeout.as_secs_f64())
+    format!(
+        "The recipe ran past its {} s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe.",
+        timeout.as_secs_f64()
+    )
 }
 
 pub fn calls_sentence(max_calls: u32) -> String {
@@ -695,12 +698,12 @@ mod tests {
     #[test]
     fn sentences_match_the_host() {
         // src/recipe/host.ts writes these words; a stop reads the same from either side.
-        assert_eq!(timeout_sentence(Duration::from_secs(30)), "The recipe ran past its 30 s limit and was stopped.");
-        assert_eq!(timeout_sentence(Duration::from_millis(500)), "The recipe ran past its 0.5 s limit and was stopped.");
+        assert_eq!(timeout_sentence(Duration::from_secs(30)), "The recipe ran past its 30 s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe.");
+        assert_eq!(timeout_sentence(Duration::from_millis(500)), "The recipe ran past its 0.5 s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe.");
         assert_eq!(calls_sentence(2000), "The recipe made more than 2000 calls and was stopped.");
         assert_eq!(line_bytes_sentence(1 << 20), "A recipe line passed 1048576 bytes.");
         let host = include_str!("../../../src/recipe/host.ts");
-        assert!(host.contains("The recipe ran past its ${limits.timeoutS} s limit and was stopped."));
+        assert!(host.contains("The recipe ran past its ${timeoutS} s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe."));
         assert!(host.contains("The recipe made more than ${limits.maxCalls} calls and was stopped."));
         assert!(host.contains("A recipe line passed ${limits.maxLineBytes} bytes."));
         assert_eq!(memory_sentence(MEMORY_BYTES), "The recipe used more than 1024 MB of memory and was stopped.");

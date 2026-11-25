@@ -27,6 +27,7 @@ import { presetProblem, readPreset } from "../nuggets.ts";
 import { queueSummary, RecipeQueue, type QueuedOp } from "../../src/recipe/queue.ts";
 import type { Resolved } from "../../src/recipe/ingredients.ts";
 import { builtText, unreadKeys } from "../../src/recipe/host.ts";
+import { budgetOf } from "./plugin.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "../recipe.ts";
 import type { RecipeLimits } from "../../src/recipe/host.ts";
 import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
@@ -135,6 +136,16 @@ function refusedAt(guess: number, reason: string, refused: { line: number; reaso
   if (same.some((row) => row.line === guess)) return guess;
   if (refused.length === 1) return refused[0]!.line;
   return guess;
+}
+
+export { budgetOf } from "./plugin.ts";
+
+/** The run's seconds: an explicit timeoutS, else a valid `//! budget:` line, else 30. */
+export function timeoutSOf(source: string, asked: unknown): number {
+  if (typeof asked === "number") return asked;
+  const budget = budgetOf(source);
+  if (budget && "seconds" in budget) return budget.seconds;
+  return DEFAULT_LIMITS.timeoutS;
 }
 
 async function recipeRun(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
@@ -417,7 +428,9 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     }
     // A call that reads a part meshes it first; a plain model_apply carries on without (mesh-end.ts).
     const deferring = meshAtEnd && skipsMesh(site.tool, site.args);
-    if (meshAtEnd && !deferring && this.meshPending.size > 0 && site.tool !== "native_geometry" && site.tool !== "log" && site.tool !== "data" && site.tool !== "text_outline") {
+    // surface_at on a solid reads the B-rep. Meshing it first is the flush an agent pays for on every ray.
+    const exactRay = site.tool === "surface_at";
+    if (meshAtEnd && !deferring && !exactRay && this.meshPending.size > 0 && site.tool !== "native_geometry" && site.tool !== "log" && site.tool !== "data" && site.tool !== "text_outline") {
       const why = await ensureMeshes(this);
       if (why) return { ok: false, error: why };
     }
@@ -607,7 +620,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   };
   const printer = this.printer();
   // --- API 1.16. One budget of calls for a recipe and the plugins it runs (`src/recipe/nested.ts`).
-  const limits: RecipeLimits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}), spent: nested?.spent ?? { calls: 0 } };
+  const limits: RecipeLimits = { ...DEFAULT_LIMITS, timeoutS: timeoutSOf(built.source, input.timeoutS), spent: nested?.spent ?? { calls: 0 } };
   // --- docs/plan-native-recipes.md 7.1. Queued booleans: lines whose apply reply the recipe does not read are held and
   // built together; `replay` (set by an earlier attempt) runs the recipe one by one, as it was before queuing.
   const replaying = input[QUEUE_REPLAY] as { line: number; reason: string } | undefined;

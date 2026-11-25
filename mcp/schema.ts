@@ -2107,7 +2107,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "surface_at",
-    description: "First hit of a ray on the solid, model space, mm: point, normal, distanceMm, faceIndex. Give point and direction, or x and y for a ray down from above. Mesh, 0.05 mm.",
+    description: "First hit of a ray on the solid, model space, mm: point, normal, distanceMm, faceIndex. Give point and direction, or x and y for a ray down from above. Exact on a solid; a mesh is its triangles.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -2131,7 +2131,8 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical; on a belt, from the build direction. Default 45." },
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
-        surfaces: { type: "boolean", description: "Also inspect shared-edge continuity (G0/G1/G2, gaps) and NURBS surface health (degrees, poles, tightest bend radius). continuity.edges lists up to 256 sampled edges, the worst first chosen; edgesTotal and note say when there were more. When surfaces cannot be read, surfaces says why." },
+        surfaces: { type: "boolean", description: "Also continuity counts (g0, g1, g2, gaps), surface health, and sharp vertices. detail: true lists every sampled edge, the worst first, up to 256. When surfaces cannot be read, surfaces says why." },
+        detail: { type: "boolean", description: "With surfaces: list every sampled edge. Without it, only the counts." },
         interference: { type: "boolean", description: "Instead: every pair of the assembly's parts at their assembled poses, clear, touch or crossing, by the mesh pass. Meshes that overlap no deeper than toleranceMm (0.05 mm, the kernel's mesh chord) touch: faces that touch in the solids, an axle in a hole of its size, overlap that much in their meshes." },
         exact: { type: "boolean", description: "With interference: each pair the mesh pass did not clear, touches included, measured by the kernel's common volume; under 0.01 mm³ is a touch." },
         crossingsOnly: { type: "boolean", description: "With interference: omit touches; unmeasured pairs stay." },
@@ -2235,7 +2236,7 @@ export const TOOLS: ToolSpec[] = [
         profile: { type: "boolean", description: "Time the run by line and by kernel, meshing and host." },
         meshAtEnd: { type: "boolean", description: "Mesh once, at the end, not after every apply. guide {topic:\"recipes\", section:\"speed\"}." },
         discardCheckpoint: { type: "boolean", description: "New run; keep saved parts." },
-        timeoutS: { type: "number", minimum: 1, maximum: 600, description: "Default 30." },
+        timeoutS: { type: "number", minimum: 1, maximum: 600, description: "Seconds. Default 30, or the recipe's //! budget: line." },
         plugin: { type: "string", minLength: 1, maxLength: 60, description: "A library plugin id to run instead of source." },
         preset: { type: "string", maxLength: 100, description: "With plugin: kept values." },
         keep: { type: "object", description: "{title, description}: on success, save the recipe as a plugin." },
@@ -2265,7 +2266,7 @@ export const TOOLS: ToolSpec[] = [
         title: { type: "string", maxLength: 60, description: "Save." },
         description: { type: "string", maxLength: 280, description: "Save." },
         params: { type: "object", description: "Preset." },
-        text: { type: "string", maxLength: 400, description: "Lesson." },
+        text: { type: "string", maxLength: 200, description: "Lesson, one sentence, at most 200 characters." },
       },
     },
   },
@@ -3429,7 +3430,7 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
   if (type === "string") {
     if (typeof value !== "string") return `${path} must be text.`;
     if (typeof schema.minLength === "number" && value.length < schema.minLength) return `${path} is empty.`;
-    if (typeof schema.maxLength === "number" && value.length > schema.maxLength) return `${path} is too long.`;
+    if (typeof schema.maxLength === "number" && value.length > schema.maxLength) return `${path} is too long: at most ${schema.maxLength} characters, got ${value.length}.`;
     return null;
   }
   if (type === "number" || type === "integer") {

@@ -163,7 +163,7 @@ function ring(r: number, z: number) {
 }
 
 async function surfacesOf(object: string): Promise<Reply> {
-  return call("model_check", { object, surfaces: true });
+  return call("model_check", { object, surfaces: true, detail: true });
 }
 
 try {

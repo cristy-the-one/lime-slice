@@ -48,6 +48,16 @@ async function animationCheck(this: Session, body: string, keep: AnimationKeep):
   return { params: described.params, target: "object", memberParams, memberNames: run.memberNames.filter((name) => !given.has(name)), memberOptional: run.optionalNames.filter((name) => !given.has(name)) };
 }
 
+/** Seconds from a `//! budget: 90s` line. Null when the recipe has none. `{bad:true}` when the line is there but not 1–600 s. */
+export function budgetOf(source: string): { seconds: number } | { bad: true } | null {
+  const line = /^\s*\/\/!\s*budget:\s*(.*?)\s*$/m.exec(source);
+  if (!line) return null;
+  const amount = /^(\d+(?:\.\d+)?)s$/.exec(line[1] ?? "");
+  const seconds = amount ? Number(amount[1]) : NaN;
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 600) return { bad: true };
+  return { seconds };
+}
+
 /**
  * --- D3. Saving checks the plugin once more: a describe run for its parameters, then a dry run with its defaults
  * (on `objectHint`, or on a test block when it needs a part and none is given). Late parameters are refused. A run
@@ -58,11 +68,10 @@ async function animationCheck(this: Session, body: string, keep: AnimationKeep):
 async function pluginCheck(this: Session, body: string, objectHint: string | undefined, objectFrom: number | null = null, limitMs?: number, proof?: RunProof): Promise<{ params: PluginParam[]; target: PluginTarget; built?: string; warning?: string } | { reason: string }> {
   const described = await this.recipeDescribe(body, limitMs);
   if ("reason" in described) return { reason: `This plugin does not build with its own defaults: ${described.reason} Change the defaults or the code, then keep it.` };
-  const budgetLine = /^\s*\/\/!\s*budget:\s*(.*?)\s*$/m.exec(body);
-  const budgetMatch = budgetLine ? /^(\d+(?:\.\d+)?)s$/.exec(budgetLine[1]!) : null;
-  const budget = budgetMatch ? Number(budgetMatch[1]) : undefined;
-  if (budgetLine && (!budget || budget < 1 || budget > 600)) return { reason: "The plugin budget must be 1–600 seconds, for example //! budget: 90s." };
-  const timeoutS = limitMs === undefined ? budget ?? 30 : 30;
+  const budget = budgetOf(body);
+  if (budget && "bad" in budget) return { reason: "The plugin budget must be 1–600 seconds, for example //! budget: 90s." };
+  const budgetS = budget && "seconds" in budget ? budget.seconds : undefined;
+  const timeoutS = limitMs === undefined ? budgetS ?? 30 : 30;
   let object = described.target === "new" ? undefined : objectHint && this.find(objectHint) ? objectHint : undefined;
   // --- recipe_run {keep}. The run just kept was this dry run when it built the same text with the defaults on the same
   // part at the same step, with the same printer and settings (run-proof.ts): then the part is not built a second time,
@@ -117,7 +126,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
   const slow = ((dry.profile as { lines?: { line: number; tool: string; ms: number }[] } | undefined)?.lines ?? []).slice(0, 5);
   const slowText = slow.length ? ` Slowest calls: ${slow.map((row) => `${row.tool === "done" ? "the queued applies built at done" : `${row.tool} line ${row.line}`} (${row.ms} ms)`).join(", ")}.` : "";
   const timedOut = dry.ok !== true && String(dry.reason ?? "").startsWith(`The recipe ran past its ${timeoutS} s limit`);
-  if (timedOut && budget === undefined && limitMs === undefined) return { ...described, built: `over ${timeoutS} s, ${where}`, warning: `The defaults check ran past ${timeoutS} s and did not finish. The plugin was kept, but its defaults were not verified. Declare //! budget: 90s (up to 600s) to check a longer build.${slowText}` };
+  if (timedOut && budgetS === undefined && limitMs === undefined) return { ...described, built: `over ${timeoutS} s, ${where}`, warning: `The defaults check ran past ${timeoutS} s and did not finish. The plugin was kept, but its defaults were not verified. Declare //! budget: 90s (up to 600s) to check a longer build.${slowText}` };
   if (dry.ok !== true) return { reason: `This plugin does not build with its own defaults: ${String(dry.reason ?? "the run failed.")} Change the defaults or the code, then keep it.${slowText}` };
   const late = (dry.lateParams as { name: string; line: number }[] | undefined)?.[0];
   if (late) return { reason: `Declare ${late.name} before the first call (line ${late.line}), so the form can show it.` };

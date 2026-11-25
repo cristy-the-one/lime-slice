@@ -922,6 +922,8 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       } else if (engine.lost.has(key)) {
         return JSON.stringify({ error: "unknown", missing: [0] });
       }
+      // An exact ray is the Open CASCADE bridge. Falling through would replace the solid with a box.
+      if (req.call === "surfaceAt") return JSON.stringify({ error: "exact surface_at needs the Open CASCADE bridge" });
       if (req.call === "probe") {
         engine.lastProbe = req.op ?? null;
         engine.lastProbeBody = req;

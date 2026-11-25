@@ -467,6 +467,8 @@ jobs:
           node --experimental-strip-types mcp/nurbs-surface-occt.test.ts
           # E2: a part that opens from an extrude, a revolve, a loft or a sweep, and a bending path built as the pipe-shell.
           node --experimental-strip-types mcp/one-vocabulary-occt.test.ts
+          # E3: an exact ray on a solid, a loft that follows uneven stations, and model_check's summary size.
+          node --experimental-strip-types mcp/e3-speed-occt.test.ts
           # Round and point caps on both pipe-shell forms, against the kernel. Fails here when the bridge is missing.
           node --experimental-strip-types mcp/pipe-caps-occt.test.ts
           # A thin tube fused along a trimmed loft: the quick volume measure must not refuse a fuse that adds material.

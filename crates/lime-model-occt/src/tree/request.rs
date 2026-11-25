@@ -206,6 +206,12 @@ pub(super) enum Request {
         #[serde(default = "default_iso_count")]
         iso_count: i32,
     },
+    /// Exact hits of rays on the solid the node already holds. Each ray is origin and direction, six numbers.
+    SurfaceAt {
+        key: String,
+        node: NodeId,
+        rays: Vec<[f64; 6]>,
+    },
     // --- Recipe reads (docs/plan-recipe-ingredients.md I5–I7). Keep these together. ---
     /// I5: a flat face's outline inset `insetMm`, in `frame` (origin, U, V: nine numbers) or the face's own: the frame,
     /// the extrude `origin` and `turn` that draw in it, `loops`, `regions` sampled to `chordMm`, and `areaMm2`.

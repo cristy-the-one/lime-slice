@@ -96,9 +96,13 @@ const lesson = await a.call("nugget", { action: "save", kind: "lesson", id: "fil
 check("a lesson is kept about an op kind", lesson.ok === true && lesson.id === "fillet/1" && String(lesson.shown).includes("guide {kind:\"fillet\"}"), lesson);
 const guide = await a.call("guide", { kind: "fillet" });
 check("guide {kind} ends with what was seen in practice, as data", JSON.stringify((guide.data as Row | undefined)?.seenInPractice) === JSON.stringify(["select.onFace with nearPoint over a pocket picks the pocket floor; aim at material, such as a rib node."]), guide.data);
-const tooLong = await a.call("nugget", { action: "save", kind: "lesson", id: "fillet", text: "x".repeat(300) });
-check("a lesson is one line of at most 200 characters", tooLong.ok === true && ((await a.call("nugget", { action: "get", kind: "lesson", id: String(tooLong.id) })).data as Row).text === "x".repeat(200), tooLong);
-await a.call("nugget", { action: "remove", kind: "lesson", id: String(tooLong.id) });
+let tooLong: Row = { ok: true };
+try {
+  tooLong = await a.call("nugget", { action: "save", kind: "lesson", id: "fillet", text: "x".repeat(300) });
+} catch (err) {
+  tooLong = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+}
+check("a lesson over 200 characters is refused with the limit and the length", tooLong.ok === false && /at most 200 characters, got 300/.test(String(tooLong.reason)), tooLong);
 
 // --- Done when (section 13, adapted): a fresh session finds the ingredient first, and a recipe imports it.
 const b = new Session(fakeEngine());

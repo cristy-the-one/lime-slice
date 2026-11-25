@@ -94,6 +94,9 @@ struct Held {
     TopoDS_Shape display_shape;
     std::vector<TopoDS_Face> display_faces;
     double display_meshed = 0;
+
+    /// Drops the surface_at face cache. Defined in kernel.cpp, where that cache lives.
+    ~Held();
 };
 
 /// One tessellation as the reply sends it, as binary arrays.
@@ -641,6 +644,10 @@ TopoDS_Shape build_revolve(
     double angle_deg,
     double& volume,
     std::string& error);
+/// Exact hits of rays on `held`, as JSON `{"hits":[...]}`. Each ray is origin x, y, z and direction x, y, z.
+/// `error` is set when the call itself is refused; a ray that misses is a hit row.
+std::string surface_at_json(const Held& held, const double* rays, int count, std::string& error);
+
 /// A solid through the sections in order, smooth or `ruled` (flat between sections), combined with `current` by
 /// `which`. `before` is the volume of `current`; `volume` gets the result's.
 TopoDS_Shape build_loft(

@@ -190,7 +190,7 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
   const late = new RecipeQueue(port, marks(10), { silent: true, timeLimitS: 0.2 });
   await late.call(cut(10, 0), inner(seen));
   await new Promise((resolve) => setTimeout(resolve, 260));
-  eq("so does the time limit", (await late.flushAll() as { error?: string })?.error, "The recipe ran past its 0.2 s limit and was stopped.");
+  eq("so does the time limit", (await late.flushAll() as { error?: string })?.error, "The recipe ran past its 0.2 s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe.");
 }
 
 // --- A flush meshes only what is read: every group but the last skips its mesh unless it holds a primitive boolean.

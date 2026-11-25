@@ -49,6 +49,11 @@ export interface RecipeLimits {
 
 export const DEFAULT_LIMITS: RecipeLimits = { timeoutS: 30, maxCalls: 2000, maxLineBytes: 1 << 20 };
 
+/** Why a run was stopped for time, including how to give it longer. The runner crate says the same words. */
+export function recipeTimeoutReason(timeoutS: number): string {
+  return `The recipe ran past its ${timeoutS} s limit and was stopped. Raise it with timeoutS (at most 600) or a //! budget: line in the recipe.`;
+}
+
 /**
  * An animation script: 30 s of its own time, as any recipe, and the host's sampling on top of it. The script only
  * names keys; the host then poses every frame and checks it for parts that cross, which for a long animation of a
@@ -364,7 +369,7 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
     const arm = () => {
       if (settled) return;
       armedAt = Date.now();
-      timer = setTimeout(() => stop(`The recipe ran past its ${limits.timeoutS} s limit and was stopped.`), Math.max(0, leftMs));
+      timer = setTimeout(() => stop(recipeTimeoutReason(limits.timeoutS)), Math.max(0, leftMs));
     };
     const hold = () => {
       clearTimeout(timer);
