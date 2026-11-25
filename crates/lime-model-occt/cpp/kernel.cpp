@@ -1459,14 +1459,12 @@ Message_ProgressRange deadline_range(Handle(Message_ProgressIndicator)& watch) {
 /// default options, so setting options on one and calling `Build` again ran every boolean twice, the first time
 /// destructively, which could change the input's tolerances. History stays unfilled unless `history` is set: a hole's
 /// tool fuse and a split's piece fuse never ask, so their shapes stay as they were.
-/// `fuzzy` is the boolean's tolerance in millimetres. The plain fuse uses confusion, 1e-7.
 TopoDS_Shape boolean_list(
     const std::string& op,
     const TopoDS_Shape& solid,
     const TopTools_ListOfShape& tools,
     std::string& error,
-    Handle(BRepTools_History)* history = nullptr,
-    double fuzzy = 1.0e-7) {
+    Handle(BRepTools_History)* history = nullptr) {
     BOPAlgo_Operation operation = BOPAlgo_UNKNOWN;
     if (op == "fuse") {
         operation = BOPAlgo_FUSE;
@@ -1486,7 +1484,7 @@ TopoDS_Shape boolean_list(
     algo.SetArguments(objects);
     algo.SetTools(tools);
     algo.SetOperation(operation);
-    algo.SetFuzzyValue(fuzzy > 0.0 ? fuzzy : 1.0e-7);
+    algo.SetFuzzyValue(1.0e-7);
     algo.SetNonDestructive(Standard_True);
     algo.SetRunParallel(Standard_True);
     algo.SetToFillHistory(history != nullptr ? Standard_True : Standard_False);
@@ -1522,29 +1520,37 @@ bool accepted_result(const TopoDS_Shape& shape, double& volume, std::string& err
     return true;
 }
 
-/// The plain boolean's tolerance, confusion. A retry at this same value would repeat the boolean.
-constexpr double kBooleanFuzzyMm = 1.0e-7;
-/// A second fuse when the first hands back less than the part had. 1e-5 is the fuzzy a tight boolean in this
-/// kernel already uses (the G2 fillet cut). It is a hundred times confusion, and far below the volume guard's
-/// 0.01 mm³ floor, so the retry does not loosen that guard and does not glue a real gap.
-constexpr double kFuseRetryFuzzyMm = 1.0e-5;
+/// The relative error a fuse's volume is measured to again when the quick measure says it lost the part. The quick
+/// measure (`volume_of`) is a fixed-order Gauss rule with no error bound; on a body of a few hundred lofted faces it can
+/// be off by more than the guard's slack, so a fuse that adds material reads as one that lost some.
+constexpr double kExactVolumeEps = 1.0e-6;
 
-/// What the last fuse built, for the probe: the part's volume, the plain fuse, whether that lost the part, and
-/// the retry. One engine builds one step at a time, so a single record is the step's.
+/// A volume integrated adaptively until its relative error is under `kExactVolumeEps`.
+double exact_volume(const TopoDS_Shape& shape) {
+    GProp_GProps props;
+    g_stats.volumes += 1;
+    const Timed timed(g_stats.volume_us);
+    BRepGProp::VolumeProperties(shape, props, kExactVolumeEps);
+    return props.Mass();
+}
+
+/// What the last fuse measured, for the probe: the part's volume, the quick measure of the result, whether that
+/// tripped the guard, and the part and result measured again exactly. One engine builds one step at a time.
 struct FuseTrace {
     bool set = false;
     double before = 0;
     double plain = 0;
     bool guard = false;
-    bool retried = false;
-    double retry = 0;
-    bool retry_set = false;
+    bool measured = false;
+    double part_exact = 0;
+    double result_exact = 0;
+    bool accepted = false;
 };
 
 FuseTrace g_fuse_trace;
 
-/// The same line as the session's volume guard for a fuse (`lostVolume`): slack is the larger of a ten-thousandth
-/// of the part and 0.01 mm³. This does not replace that guard. It only decides whether to build the fuse again.
+/// The session's volume guard for a fuse (`lostVolume`): slack is the larger of a ten-thousandth of the part and
+/// 0.01 mm³. This does not replace that guard. It decides whether the quick measure is checked again.
 bool fuse_lost_volume(double before, double after) {
     if (!(before > 0.0) || !std::isfinite(after)) {
         return false;
@@ -1562,22 +1568,21 @@ std::string fuse_trace_json() {
     text.setf(std::ios::fixed);
     text.precision(6);
     text << "{\"before\":" << g_fuse_trace.before << ",\"plain\":" << g_fuse_trace.plain
-         << ",\"guard\":" << (g_fuse_trace.guard ? "true" : "false") << ",\"retried\":"
-         << (g_fuse_trace.retried ? "true" : "false") << ",\"retry\":";
-    if (g_fuse_trace.retry_set) {
-        text << g_fuse_trace.retry;
-    } else {
-        text << "null";
+         << ",\"guard\":" << (g_fuse_trace.guard ? "true" : "false") << ",\"measured\":"
+         << (g_fuse_trace.measured ? "true" : "false");
+    if (g_fuse_trace.measured) {
+        text << ",\"partExact\":" << g_fuse_trace.part_exact << ",\"resultExact\":" << g_fuse_trace.result_exact
+             << ",\"accepted\":" << (g_fuse_trace.accepted ? "true" : "false");
     }
-    text << ",\"fuzzyMm\":" << kFuseRetryFuzzyMm << "}";
+    text << "}";
     return text.str();
 }
 
-/// A fuse of `current` with `tools`. The first boolean is the plain one, at confusion. When that result is a
-/// solid smaller than `before` by the volume guard's slack, a new boolean is built at `kFuseRetryFuzzyMm`.
-/// Calling `Build` again on the first algorithm is destructive, so the retry is a second algorithm. When the
-/// retry is still short of the part, or builds nothing, the plain shape is returned and the session's guard
-/// still refuses it. `before` of 0 is not a fuse this records.
+/// A fuse of `current` with `tools`, `before` being the volume of `current` by the quick measure. When the result's
+/// quick measure is smaller than `before` by the guard's slack, the part and the result are both measured again to
+/// `kExactVolumeEps`. If the exact result is not smaller than the exact part by that slack, the fuse kept the part,
+/// and `volume` is `before` plus the exact change, so the guard sees what the fuse did. Otherwise `volume` stays the
+/// quick measure and the session's guard refuses the step as before. The boolean itself is built once.
 TopoDS_Shape boolean_fuse(
     const TopoDS_Shape& current,
     const TopTools_ListOfShape& tools,
@@ -1586,48 +1591,23 @@ TopoDS_Shape boolean_fuse(
     std::string& error,
     Handle(BRepTools_History)* history) {
     g_fuse_trace = {};
-    Handle(BRepTools_History) plain_history;
-    Handle(BRepTools_History)* plain_slot = history != nullptr ? &plain_history : nullptr;
-    const TopoDS_Shape plain = boolean_list("fuse", current, tools, error, plain_slot, kBooleanFuzzyMm);
+    const TopoDS_Shape plain = boolean_list("fuse", current, tools, error, history);
     if (!error.empty() || plain.IsNull() || !accepted_result(plain, volume, error)) {
-        g_fuse_trace = {};
         return {};
     }
-    const double plain_vol = volume;
     g_fuse_trace.set = true;
     g_fuse_trace.before = before;
-    g_fuse_trace.plain = plain_vol;
-    g_fuse_trace.guard = fuse_lost_volume(before, plain_vol);
+    g_fuse_trace.plain = volume;
+    g_fuse_trace.guard = fuse_lost_volume(before, volume);
     if (!g_fuse_trace.guard) {
-        if (history != nullptr) {
-            *history = plain_history;
-        }
         return plain;
     }
-    error.clear();
-    Handle(BRepTools_History) retry_history;
-    Handle(BRepTools_History)* retry_slot = history != nullptr ? &retry_history : nullptr;
-    std::string retry_error;
-    const TopoDS_Shape retry = boolean_list("fuse", current, tools, retry_error, retry_slot, kFuseRetryFuzzyMm);
-    g_fuse_trace.retried = true;
-    if (retry_error.empty() && !retry.IsNull()) {
-        double retry_vol = 0.0;
-        const bool solid = accepted_result(retry, retry_vol, retry_error);
-        g_fuse_trace.retry_set = true;
-        g_fuse_trace.retry = retry_vol;
-        if (solid && !fuse_lost_volume(before, retry_vol)) {
-            volume = retry_vol;
-            error.clear();
-            if (history != nullptr) {
-                *history = retry_history;
-            }
-            return retry;
-        }
-    }
-    volume = plain_vol;
-    error.clear();
-    if (history != nullptr) {
-        *history = plain_history;
+    g_fuse_trace.measured = true;
+    g_fuse_trace.part_exact = exact_volume(current);
+    g_fuse_trace.result_exact = exact_volume(plain);
+    if (!fuse_lost_volume(g_fuse_trace.part_exact, g_fuse_trace.result_exact)) {
+        g_fuse_trace.accepted = true;
+        volume = before + (g_fuse_trace.result_exact - g_fuse_trace.part_exact);
     }
     return plain;
 }
