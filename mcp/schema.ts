@@ -2071,6 +2071,11 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: "assembly_link",
+    description: "Link a child part to a parent, making an assembly when the parent is free. Both keep their positions. guide {kind:\"assembly\"}.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["child", "parent"], properties: { child: { type: "string", minLength: 1, maxLength: 64, description: "The part that sits on the parent." }, parent: { type: "string", minLength: 1, maxLength: 64, description: "The part it sits on. A free parent starts an assembly named after it." } } },
+  },
+  {
     name: "assembly_merge",
     description: "Join one assembly to another, keeping every part's assembled pose.",
     inputSchema: { type: "object", additionalProperties: false, required: ["from", "into"], properties: { from: { type: "string", minLength: 1, maxLength: 80, description: "Source assembly name or id." }, into: { type: "string", minLength: 1, maxLength: 80, description: "Destination assembly name or id." } } },

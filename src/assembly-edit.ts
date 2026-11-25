@@ -17,7 +17,7 @@ import type { ModelTree, Vec3 } from "./model-tree.ts";
 import { ratchetFromStamps } from "./plugins/clock-parts.ts";
 import { couplingLine, crossedNotes, declareCoupling, findCouplings, prepareTrain, preparedLines, removeDeclared, trainCheck, trainScales, trainTurn, type DeclareSpec, type GearPart, type Prepared } from "./gear-train.ts";
 import { gearsInTree, type WorldGear } from "./gear-pair.ts";
-import { assemblyOf, DECLARED_KINDS, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withFound, withMember, withRootAt, type Assembly, type Coupling, type Member, type MemberExprs } from "./assembly.ts";
+import { assemblyOf, attached, DECLARED_KINDS, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withFound, withMember, withRootAt, type Assembly, type Coupling, type Member, type MemberExprs } from "./assembly.ts";
 
 /** What a reply says of a part the plate does not hold. */
 export const UNKNOWN_PART = "That object is not on the plate. Call plate_list for the current handles.";
@@ -198,6 +198,29 @@ function givenName(value: unknown): string | undefined {
 export function placeEdit(world: AssemblyWorld, self: AssemblyPart, input: Record<string, unknown>): AssemblyEdit | AssemblyRefusal {
   const w = new Work(world);
   return w.done(modelPlace(w, self, input));
+}
+
+/**
+ * Pose's Link, for a host: seat `child` on `parent` where both stand. A free parent starts an assembly named after it,
+ * with the parent as its root. The child gets frame part. A cycle, or a part already in another assembly, is refused
+ * in one sentence and nothing changes.
+ */
+export function linkEdit(world: AssemblyWorld, input: Record<string, unknown>): AssemblyEdit | AssemblyRefusal {
+  const w = new Work(world);
+  const childId = input.child;
+  const parentId = input.parent;
+  if (typeof childId !== "string" || typeof parentId !== "string") return w.done(refuse("bad-argument", "Give child and parent, two parts on the plate."));
+  const child = w.find(childId);
+  const parent = w.find(parentId);
+  if (!child || !parent) return w.done(refuse("no-object", UNKNOWN_PART, "plate"));
+  const name = parent.name.replace(/\.[a-z0-9]+$/i, "") || "Assembly";
+  const next = attached(w.assemblies, child.id, parent.id, w.poseOf, name);
+  if ("reason" in next) return w.done(refuse("bad-placement", next.reason));
+  w.remember("Link");
+  w.setAssemblies(next);
+  w.setFrame(child.id, "part");
+  const assembly = next.find((row) => row.members.some((member) => member.object === child.id));
+  return w.done({ ok: true, child: child.id, parent: parent.id, assembly: assembly?.id, name: assembly?.name, note: "Linked. Both parts kept their positions." });
 }
 
 /** model_place {objects, to}: join several parts at their current poses, every one checked before anything changes. */

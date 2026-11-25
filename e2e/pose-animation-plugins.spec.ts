@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 
 // docs/plan-animation-plugins.md A5: a kept animation plays on an assembly it was not written for, its member
 // parameter a select of that assembly's members; and Keep in library… keeps a project's animation for any assembly.
@@ -64,7 +65,7 @@ test("a kept animation plays on another assembly by its members, and Keep in lib
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   const child = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${child}']`).click();
+  await linkInPose(page, child, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const doc = JSON.parse(readFileSync((await download.path())!, "utf8"));

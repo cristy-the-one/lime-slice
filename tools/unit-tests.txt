@@ -50,6 +50,7 @@ src/pose-export.test.ts
 src/export-scope.test.ts
 src/recipe/animation-run.test.ts
 mcp/assembly-bulk.test.ts
+mcp/assembly-link.test.ts
 mcp/pose.test.ts
 mcp/render-unnamed.test.ts
 mcp/slice-collisions.test.ts

@@ -426,6 +426,7 @@ export const KIND_GUIDES: Record<string, string> = {
     "3. model_place {object:<clip>, to:<hook>, z:8}: a part can sit on any member. A part sits in one assembly.",
     "To join many parts where they already stand, use model_place {objects:[<part1>, <part2>], to:<body>}. Every pose stays as it is; the whole request is checked before any part joins.",
     "assembly_merge {from:<assembly>, into:<assembly>} joins two assemblies at their current poses, retaining the destination's name and the internal parent links.",
+    "assembly_link {child, parent} does what Pose's Link does: the child sits on the parent where both stand, and a free parent starts an assembly named after it, with that parent as the root. The child gets frame part. A cycle, or a part already in another assembly, is refused in one sentence. A recipe keeps s.attach.",
     "4. model_params {set:{rimL:150}}: the reply's moved lists the hook and the clip with their new assembledMm.",
     "5. plate_list: each member's row has assembly; session_info lists the assemblies.",
     "Moving the root (model_place on it, without to) moves every member. model_place on a member without to changes its offset from its parent.",

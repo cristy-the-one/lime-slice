@@ -86,7 +86,7 @@ function iconizeToolbar() {
   hint(document.querySelector("#cancel"), "Stop the slice in progress");
 
   iconize(document.querySelector("#export"), Download);
-  hint(document.querySelector("#export"), "Save G-code");
+  hint(document.querySelector("#export"), "Export G-code");
 
   iconize(document.querySelector("#sendPrinter"), Printer);
 
@@ -154,7 +154,7 @@ function mountToolRail(hooks: ChromeHooks) {
     ["turn", Rotate3d, "Turn", "Drag a joint ring. Hold Shift to snap to 5 degrees."],
     ["reach", Grab, "Reach", "Drag a point on a part to move its jointed chain (inverse kinematics)."],
     ["joint", Crosshair, "Joint", "Select a member and enter its joint in the Pose panel."],
-    ["link", Waypoints, "Link", "Click a parent, then a child in the same assembly."],
+    ["link", Waypoints, "Link", "Link two parts to pose them together. Click a parent, then a child."],
   ] as const) {
     const button = toolButton(`pose-${id}`, icon, label, tip);
     button.dataset.poseTool = id;

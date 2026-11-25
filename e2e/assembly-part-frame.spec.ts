@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 import { mockModelTree, type MockSolid, type TreeMock } from "./model-tree-mock";
 
 /**
@@ -85,7 +86,7 @@ async function assembled(page: Page): Promise<{ tree: TreeMock; hook: string }> 
   const hook = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
   const body = (await page.locator("[data-plate-select]").first().getAttribute("data-plate-select"))!;
   await page.locator(`[data-plate-select='${body}']`).click();
-  await page.locator(`[data-plate-attach='${hook}']`).click();
+  await linkInPose(page, hook, body);
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
   await page.locator(`[data-plate-select='${hook}']`).click();
   await page.locator("#tabModel").click();

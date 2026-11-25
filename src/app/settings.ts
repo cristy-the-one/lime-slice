@@ -875,9 +875,6 @@ function objectListHtml(): Html | "" {
     const stale: { text: string } | null = fx.transitionStaleNote?.(obj.id) ?? null;
     const selected = obj.id === state.plate.selectedId;
     const group = assemblyOf(assemblies, obj.id);
-    const attach = many && !selected && !group && state.plate.selectedId
-      ? html`<button class="btn obj-attach" type="button" data-plate-attach="${obj.id}" aria-label="Attach ${obj.name} to ${selectedName}" data-tip="Attach to ${selectedName}: it keeps its place and moves with it in the assembly.">Attach</button>`
-      : "";
     const chainIds = componentIds(state.plate.objects, obj.id);
     const chainHead = chainIds.length > 1 && chainIds[0] === obj.id;
     const link = many && !selected
@@ -908,7 +905,6 @@ function objectListHtml(): Html | "" {
           ${eye}
           ${link}
           ${unlink}
-          ${attach}
           <!-- --- A7 model check --- -->
           ${obj.sim ? html`<button class="btn obj-stress" type="button" data-plate-stress="${obj.id}">Stress</button>` : ""}
           <button class="btn obj-check" type="button" data-plate-check="${obj.id}" aria-label="Check ${obj.name}">Check</button>
@@ -933,8 +929,7 @@ function objectListHtml(): Html | "" {
         <div class="obj-group-name"><b>${group.name}</b><span>${members.length} parts</span></div>
         <div class="obj-actions">
           <button class="btn obj-layout" type="button" data-assembly-layout="${group.id}" aria-label="Lay out ${group.name}" data-tip="Lay out these parts on the bed for print, around the other objects. The assembly stays as it is.">Lay out</button>
-          <button class="btn obj-step" type="button" data-assembly-step="${group.id}" aria-label="Export ${group.name} as STEP" data-tip="Save one STEP AP242 assembly of the posed parts.">STEP</button>
-          <button class="btn obj-ungroup" type="button" data-assembly-ungroup="${group.id}" aria-label="Ungroup ${group.name}" data-tip="Ungroup: every part keeps where it is.">Ungroup</button>
+          <button class="btn" type="button" data-edit-in-pose="${group.id}" aria-label="Edit ${group.name} in Pose" data-tip="Open Pose with this assembly selected.">Edit in Pose</button>
         </div>
       </div>${members.map(row)}`;
   });
@@ -1905,7 +1900,7 @@ function paintExport(button: HTMLButtonElement | null, isStale: boolean) {
   const current = !!state.result && !isStale;
   button.disabled = !state.mesh || state.busy;
   button.dataset.slice = current ? "current" : "first";
-  button.dataset.tip = current ? "Save G-code" : "Slice, then save G-code";
+  button.dataset.tip = current ? "Export G-code" : "Slice, then save G-code";
   button.classList.toggle("primary", current && !state.busy);
 }
 

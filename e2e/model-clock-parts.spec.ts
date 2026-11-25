@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 import { mockModelTree, type Body } from "./model-tree-mock";
 import { boxSolid } from "./plugin-fixture";
 
@@ -159,9 +160,9 @@ test("apply Ratchet wheel and Ratchet click with nothing open, then couple them 
   await page.locator("#plateAddFile").setInputFiles("samples/calibration_cube_20mm.stl");
   await expect(objects(page)).toHaveCount(3);
   const frame = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
-  await page.locator(`[data-plate-attach='${wheel}']`).click();
+  await linkInPose(page, wheel, frame);
   await page.locator(`[data-plate-select='${frame}']`).click();
-  await page.locator(`[data-plate-attach='${click}']`).click();
+  await linkInPose(page, click, frame);
   await expect(page.locator(".obj-member")).toHaveCount(3);
 
   // Pose: a hinge each, the one Pose gives (about +Z at the part's own origin, which the plugins put on the axis and the pivot).

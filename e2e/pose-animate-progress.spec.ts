@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 
 type TestWindow = { __limePluginLibrary: unknown; __limeRecipeRunner: unknown; __seconds: number; __starts: number };
 
@@ -49,7 +50,7 @@ async function longAnimation(page: Page, seconds: number) {
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   const child = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${child}']`).click();
+  await linkInPose(page, child, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const doc = JSON.parse(readFileSync((await download.path())!, "utf8"));

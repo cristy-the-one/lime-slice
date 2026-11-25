@@ -1325,6 +1325,7 @@ export const modelMethods = {
 };
 
 export const modelHandlers: Record<string, ToolHandler> = {
+  assembly_link: (s, input) => s.assemblyLink(input),
   assembly_merge: (s, input) => s.assemblyMerge(input),
   solid_new: (s, input) => {
     if (input.coupon !== undefined && input.feature === undefined) {

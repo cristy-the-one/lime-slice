@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 import { mockModelTree, type MockSolid } from "./model-tree-mock";
 import { memberPose, type Member } from "../src/assembly.ts";
 import { applyPose, type Affine } from "../src/model-space.ts";
@@ -28,7 +29,7 @@ async function setup(page: Page): Promise<{ knee: string; tip: string }> {
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   const knee = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${knee}']`).click();
+  await linkInPose(page, knee, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
   const doc = await downloadProject(page);
   const source = doc.objects.find((row) => row.id === knee)!;
@@ -260,7 +261,7 @@ test("Joint reads a cylindrical hole from a solid and keeps its print placement"
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   const child = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${child}']`).click();
+  await linkInPose(page, child, "part");
   const before = await downloadProject(page);
   await page.locator("#tabPose").click();
   const panel = page.locator("#posePanel"), canvas = page.locator("#pose");

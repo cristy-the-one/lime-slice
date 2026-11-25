@@ -2,7 +2,7 @@ import { type ColorMode } from "../colors";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { layFlatMatrix } from "../bed-rest";
 import { setSettleOn } from "../bed-rest-pref";
-import { alignSelectedTo, arrangePlate, attachPlateObject, clearPlateSelection, duplicatePlateObject, framePlateObject, layOutAssembly, linkPlateObject, notePivotTriple, removePlateObject, selectChain, selectPlateObject, setObjectPivot, showAllPlateObjects, togglePlateHidden, unlinkPlateObject, ungroupAssembly } from "./plate-actions";
+import { alignSelectedTo, arrangePlate, clearPlateSelection, duplicatePlateObject, editAssemblyInPose, framePlateObject, layOutAssembly, linkPlateObject, notePivotTriple, removePlateObject, selectChain, selectPlateObject, setObjectPivot, showAllPlateObjects, togglePlateHidden, unlinkPlateObject } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { setHtml } from "../ui/html";
@@ -345,11 +345,6 @@ export function wireApp() {
       selectPlateObject(plateSelect);
       return;
     }
-    const plateAttach = t.closest<HTMLElement>("[data-plate-attach]")?.dataset.plateAttach;
-    if (plateAttach) {
-      attachPlateObject(plateAttach);
-      return;
-    }
     const measureButton = t.closest<HTMLButtonElement>("[data-assembly-measure]");
     if (measureButton) {
       measureButton.disabled = true;
@@ -362,28 +357,9 @@ export function wireApp() {
       layOutAssembly(assemblyLayout);
       return;
     }
-    const assemblyStep = t.closest<HTMLButtonElement>("[data-assembly-step]");
-    if (assemblyStep?.dataset.assemblyStep) {
-      const assemblyId = assemblyStep.dataset.assemblyStep;
-      void import("./export-dialog.ts").then(({ showExport }) => {
-        void import("../modeling/partition-export.ts").then(({ exportStem }) => {
-          void import("./assemblies.ts").then(({ liveAssemblies }) => {
-            const name = liveAssemblies().find((row) => row.id === assemblyId)?.name ?? "assembly";
-            showExport({
-              scope: "assembly",
-              format: "step",
-              explicitFormat: true,
-              assemblyId,
-              fileName: `${exportStem(name)}.step`,
-            });
-          });
-        });
-      });
-      return;
-    }
-    const assemblyUngroup = t.closest<HTMLElement>("[data-assembly-ungroup]")?.dataset.assemblyUngroup;
-    if (assemblyUngroup) {
-      ungroupAssembly(assemblyUngroup);
+    const editInPose = t.closest<HTMLElement>("[data-edit-in-pose]")?.dataset.editInPose;
+    if (editInPose) {
+      editAssemblyInPose(editInPose);
       return;
     }
     const plateRemove = t.closest<HTMLElement>("[data-plate-remove]")?.dataset.plateRemove;

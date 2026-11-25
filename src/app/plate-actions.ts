@@ -7,11 +7,11 @@ import { bedToSourcePoint, centreOf, snapPivotPoint, usingCustomPivot, type Vec3
 import { fx } from "./fx.ts";
 import { applyPlace, place, syncPlateView } from "./files.ts";
 import { isHidden, isolate, setHidden, showAll } from "../model-hidden.ts";
-import { flushEdit, noteEdit } from "./history.ts";
+import { cancelEdit, flushEdit, noteEdit } from "./history.ts";
 import { loadModel, modelApi, withModel } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { session, state } from "./state.ts";
-import { attachTo, liveAssemblies, ungroup } from "./assemblies.ts";
+import { assemblyOfObject, attachTo, liveAssemblies, ungroup } from "./assemblies.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { currentRules } from "./rules.ts";
 import { sequentialClearance } from "../settings-rules.ts";
@@ -94,12 +94,95 @@ export function attachPlateObject(id: string): string | null {
   return null;
 }
 
+/**
+ * Pose's Link: seat `child` on `parent` where it stands, in `parent`'s assembly or a new one named after `parent`
+ * with `parent` as its root. The child gets frame part (D2). One undo step, and the child is selected in that step.
+ * Null when done, else the one sentence that refused it, with nothing kept.
+ */
+export function linkAssemblyParts(child: string, parent: string): string | null {
+  if (!state.plate.objects.some((obj) => obj.id === child) || !state.plate.objects.some((obj) => obj.id === parent)) return "That part is not on the plate.";
+  modelApi()?.commitModel();
+  noteEdit();
+  syncPlateFromState();
+  const refused = attachTo(child, parent);
+  if (refused) {
+    cancelEdit();
+    return refused;
+  }
+  state.plate = {
+    ...state.plate,
+    selectedId: child,
+    objects: state.plate.objects.map((obj) => (obj.id === child ? { ...obj, frame: "part" as const } : obj)),
+  };
+  applySelectedToState(state.plate);
+  place();
+  flushEdit();
+  return null;
+}
+
 /** Ungroup: the assembly goes, and every part keeps where it is in both views. */
 export function ungroupAssembly(id: string) {
   noteEdit();
   ungroup(id);
   place();
   flushEdit();
+}
+
+/** Why Ungroup assembly or Edit in Pose cannot run. Null when it can. */
+export function assemblyCommandReason(id: string): string | null {
+  if (id === "ungroup-assembly") {
+    if (state.stage !== "pose") return "Ungroup is in Pose. Select a member of the assembly.";
+    if (!state.plate.selectedId) return "Select a member of an assembly.";
+    if (!assemblyOfObject(state.plate.selectedId)) return "This part is not in an assembly.";
+    return null;
+  }
+  if (id === "edit-in-pose") {
+    const assemblies = liveAssemblies();
+    if (assemblies.length === 0) return "There is no assembly. Link two parts in Pose.";
+    const selected = state.plate.selectedId;
+    const inOne = selected !== null && assemblies.some((row) => row.members.some((member) => member.object === selected));
+    if (assemblies.length > 1 && !inOne) return "Select a part of the assembly.";
+    return null;
+  }
+  return null;
+}
+
+/** Open Pose with `id`'s assembly selected: the current member when it belongs there, otherwise the root. No undo step. */
+export function editAssemblyInPose(id: string) {
+  const assembly = liveAssemblies().find((row) => row.id === id);
+  if (!assembly) return;
+  const selected = state.plate.selectedId;
+  const member = assembly.members.some((row) => row.object === selected)
+    ? selected
+    : assembly.members.find((row) => row.parent === null)?.object ?? assembly.members[0]?.object ?? null;
+  if (member && member !== state.plate.selectedId) {
+    state.plate = { ...state.plate, selectedId: member };
+    applySelectedToState(state.plate);
+  }
+  fx.setStage("pose");
+}
+
+/** Palette: Ungroup the assembly of the member selected in Pose. */
+export function runUngroupAssembly(): string | null {
+  const reason = assemblyCommandReason("ungroup-assembly");
+  if (reason) return reason;
+  const assembly = assemblyOfObject(state.plate.selectedId!);
+  if (!assembly) return "This part is not in an assembly.";
+  ungroupAssembly(assembly.id);
+  return null;
+}
+
+/** Palette: Edit in Pose, on the selected member's assembly, or the only one. */
+export function runEditInPose(): string | null {
+  const reason = assemblyCommandReason("edit-in-pose");
+  if (reason) return reason;
+  const assemblies = liveAssemblies();
+  const selected = state.plate.selectedId;
+  const ofSelection = selected ? assemblies.find((row) => row.members.some((member) => member.object === selected)) : undefined;
+  const assembly = ofSelection ?? assemblies[0];
+  if (!assembly) return "There is no assembly. Link two parts in Pose.";
+  editAssemblyInPose(assembly.id);
+  return null;
 }
 
 /**
