@@ -7,6 +7,7 @@
  *
  * The replay is the MCP session's too (`replayOps`, `replayedTree`), so a rebuild lands on the same tree either way.
  */
+import { exactFrom, shownFingerprint } from "../model-reply.ts";
 import { editRequest, gotoRequest, keepSketch } from "../model-request.ts";
 import { forked, stepIds, type ForkStep } from "../model-edit.ts";
 import { jumped, pathTo, renumberedSteps, reserveId, withNode, type ModelOp, type ModelTree, type NodeId, type PluginStamp, type PluginValue } from "../model-tree.ts";
@@ -260,6 +261,12 @@ async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<Rebuil
     }
   }
   const others = calls.all.filter((row) => row !== target && row.origin !== "given" && (row.origin !== "made" || row.consumed));
+  // The solid a caller reads. Its fingerprint volume is the exact measure, written as the kernel writes it, the same
+  // figure model_describe reports. The stamp and the tree keep the stored fingerprint. A step's own reply stays quick.
+  const exact = exactFrom(await engine.tree(next.key, next.current, { call: "exactVolume", key: next.key, node: next.current }));
+  if (typeof exact === "number") solid = { ...solid, exactVolumeMm3: exact };
+  const fingerprint = shownFingerprint(solid);
+  if (fingerprint && fingerprint !== solid.fingerprint) solid = { ...solid, fingerprint };
   return { ok: true, tree: next, body, solid, stamp, ids, replayed: later.length, broken, ...(sameSolid !== undefined ? { sameSolid } : {}), notes, made: madeIt ? target : null, others, used: [...used.values()] };
 }
 

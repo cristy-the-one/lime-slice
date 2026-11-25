@@ -1,7 +1,7 @@
 /** Picking: the click on the solid, the plugin's face pick, the context bar, and the readout. */
 import { IDENTITY_POSE, applyPose, isIdentity } from "../../model-space";
 import type { ModelPick } from "../../model-view";
-import { type ParsedSolid } from "../../model-reply";
+import { shownVolumeMm3, type ParsedSolid } from "../../model-reply";
 import { nextModelPicks, selectionCountLabel } from "../../model-select";
 import { faceCentre, formatMm } from "../../model-plane";
 import { pathTo, type Vec3 } from "../../model-tree";
@@ -263,7 +263,7 @@ function describe(current: ParsedSolid, pick: ModelPick) {
 
 /** The solid's volume, or why there is none. */
 export function about(solid: ParsedSolid) {
-  return solid.editable ? `Volume ${mm(solid.volumeMm3)} mm³.` : VIEW_ONLY;
+  return solid.editable ? `Volume ${mm(shownVolumeMm3(solid))} mm³.` : VIEW_ONLY;
 }
 
 export function modelTool(): string | undefined {

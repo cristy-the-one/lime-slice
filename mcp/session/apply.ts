@@ -529,7 +529,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
     ...(cellReports.length ? { cells: cellReports.length === 1 ? cellReports[0] : cellReports } : {}),
     ...(ribReports.length ? { ribNet: ribReports.length === 1 ? ribReports[0] : ribReports } : {}),
     ...(options.label ? { label: options.label } : {}),
-    fingerprint: obj.solid?.fingerprint ?? null,
+      fingerprint: obj.solid?.fingerprint ?? null,
     bounds: obj.solid?.bounds ?? null,
   });
 }
@@ -652,7 +652,7 @@ async function applyCombined(this: Session, obj: PlateObject, raws: Record<strin
     applied: steps.length - (report.failed?.length ?? 0),
     combined: steps.length,
     ...(failures.length ? { failures, note: `${failures.length} op${failures.length === 1 ? " was" : "s were"} left out; the rest applied in one step.` } : {}),
-    fingerprint: obj.solid?.fingerprint ?? null,
+      fingerprint: obj.solid?.fingerprint ?? null,
     bounds: obj.solid?.bounds ?? null,
   };
 }

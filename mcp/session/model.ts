@@ -9,7 +9,7 @@ import { disjointBoolean } from "../../src/model-feasibility.ts";
 import { facePlane, formatMm } from "../../src/model-plane.ts";
 import { gearOf, placedRoot, type PrimitiveSpec } from "../../src/model-primitive.ts";
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
-import { decodeSurfaceInspect } from "../../src/model-reply.ts";
+import { decodeSurfaceInspect, exactFrom } from "../../src/model-reply.ts";
 import { listedContinuity, organicFirstProblem, organicProblem } from "../organic-checks.ts";
 import { boundsOf, planeAxes, planeAxesEcho, solidSections, describeReply, edgesReply, facesReply, nodeHandle, stepGuard } from "../../src/modeling/model-calls.ts";
 import { solidView } from "./sheet.ts";
@@ -768,7 +768,9 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid || obj.solid.positions.length < 9) return refuse("solid-unreadable", "This solid could not be read.");
   const printer = this.printer();
-  const base = checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm, belt: printer.kind === "belt" ? printer.belt : null }, input, obj.solid.triangles);
+  const checked = checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm, belt: printer.kind === "belt" ? printer.belt : null }, input, obj.solid.triangles);
+  const exact = await this.readExact(obj);
+  const base = typeof exact === "number" ? { ...checked, volumeMm3: exact } : checked;
   if (input.surfaces !== true || base.ok !== true) return base;
   // surfaces was asked: when it cannot be given, the reply says why instead of answering as a plain check.
   const notInspected = (why: string) => ({ ...base, surfaces: `Not inspected: ${why}` });
@@ -1208,13 +1210,22 @@ async function opened(this: Session, obj: PlateObject): Promise<ModelTree | { re
   return this.ensureTree(obj);
 }
 
+/** The exact volume of this part's solid, read only when a reply quotes it as a number. */
+async function readExact(this: Session, obj: PlateObject): Promise<number | undefined> {
+  if (!obj.tree) return undefined;
+  const raw = await this.treeCall({ call: "exactVolume", key: obj.tree.key, node: obj.tree.current }, "describe");
+  return exactFrom(raw);
+}
+
 async function describe(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const tree = await this.opened(obj);
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const solid = obj.solid;
   if (!solid) return refuse("solid-unreadable", "This solid could not be read.");
+  const exact = await this.readExact(obj);
+  const shown = exact === undefined ? solid : { ...solid, exactVolumeMm3: exact };
   const stale = this.staleTransitions(obj, tree);
-  return describeReply(solid, input, obj.frame ?? "model", stale.length > 0 ? { notes: stale.map((row) => row.note), staleTransitions: stale.map(({ note: _note, ...row }) => row) } : {}, typedPoseOf(obj));
+  return describeReply(shown, input, obj.frame ?? "model", stale.length > 0 ? { notes: stale.map((row) => row.note), staleTransitions: stale.map(({ note: _note, ...row }) => row) } : {}, typedPoseOf(obj));
 }
 
 /**
@@ -1408,6 +1419,7 @@ export const modelMethods = {
   loseTrees,
   lostReply,
   treeCall,
+  readExact,
   seedOf,
   stepBytes,
   ensureTree,
