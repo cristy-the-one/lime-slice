@@ -57,6 +57,7 @@ import { viewed } from "./view";
 import { openObject } from "./workplane";
 import { selectedEdges } from "../../model-blend";
 import { transitionFloorMm } from "../../model-transition.ts";
+import { bindPrintTransitionSolid } from "../command-reasons.ts";
 import { mountTransitionCard } from "../../ui/transition-card.ts";
 import { cancelEdit } from "./edit";
 
@@ -299,8 +300,10 @@ export function runQueuedReaim() {
 }
 
 export function bindTransition() {
+  const solidOpen = () => !!viewed()?.editable && !S.lens;
+  bindPrintTransitionSolid(solidOpen);
   mountTransitionCard({
-    solidOpen: () => !!viewed()?.editable && !S.lens,
+    solidOpen,
     pickedEdges: () => selectedEdges(S.picks),
     pose: () => transitionPose(openObject()),
     printerName: (id) => loadMachineLibrary().printers.find((row) => row.id === id)?.name ?? (id || "plate's printer"),

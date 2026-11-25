@@ -19,6 +19,7 @@ import { fx } from "./fx.ts";
 import { cancelEdit, holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
 import { refreshObjectList } from "./settings.ts";
 import { exportAssembly, linkAssemblyParts, ungroupAssembly } from "./plate-actions.ts";
+import { setAnimationFacts } from "./command-reasons.ts";
 import { session, state } from "./state.ts";
 import { PosePlayback } from "../pose-playback.ts";
 import type { AnimationResult, AnimationPart, PoseAnimation } from "../pose-anim.ts";
@@ -177,6 +178,7 @@ async function refreshAnimations(): Promise<void> {
   animationFiles = [...unique.values()].sort((a, b) => a.title.localeCompare(b.title));
   if (!animationFiles.some((file) => file.plugin === animationChoice)) animationChoice = animationFiles[0]?.plugin ?? "";
   if (state.stage === "pose") renderPanel();
+  else publishAnimationFacts();
 }
 /** Stop the animation being prepared: its build, its script and its frames' worker. `said` replaces the message. */
 function cancelPreparation(said?: string): void {
@@ -677,7 +679,20 @@ function drawProgress(): void {
   const live = block.querySelector<HTMLElement>("[data-pose-progress-live]")!;
   if (live.dataset.said !== words.live) { live.dataset.said = words.live; window.setTimeout(() => { live.textContent = words.live; }, 100); }
 }
+/** What the palette's animation commands can do. Published even when the panel is not on screen. */
+function publishAnimationFacts(): void {
+  const file = animationFiles.find((item) => item.plugin === animationChoice);
+  const ready = !!animation && !animation.motion;
+  setAnimationFacts({
+    plugins: animationFiles.length > 0,
+    assembly: !!selected() && !!file,
+    ready,
+    preparing: !!preparing,
+    inLibrary: !!animation && libraryShas.has(animation.plugin.sha),
+  });
+}
 function renderPanel(): void {
+  publishAnimationFacts();
   const panel = document.querySelector<HTMLElement>("#posePanel");
   if (!panel || state.stage !== "pose") return;
   panel.replaceChildren();

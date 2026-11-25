@@ -22,6 +22,8 @@ import { newProject } from "../app/new-project";
 import { saveCurrentProject } from "../app/project-io";
 import { clearSettingsSearch, commitTypedFields, focusSettingsSearch, revealPrinterDetails } from "../app/settings";
 import { modelExportReason } from "../app/export-availability.ts";
+import { actionReason } from "../app/command-reasons.ts";
+import { addHeightRange, addModifier } from "../app/override-actions.ts";
 import { state } from "../app/state";
 import { measureOn, setMeasureOn } from "../measure-pref";
 import { scrub, setStage, setView } from "../app/viewer";
@@ -124,7 +126,7 @@ export function mountPalette() {
     list.innerHTML = shown.map((command, index) => {
       const key = shortcutOf(command);
       const hint = key ? `<kbd>${escapeHtml(key)}</kbd>` : "";
-      const reason = modelExportReason(command.id) ?? assemblyCommandReason(command.id);
+      const reason = modelExportReason(command.id) ?? assemblyCommandReason(command.id) ?? actionReason(command.id);
       const note = reason ?? `${index < recentShown ? "Recent, " : ""}${command.group}`;
       const blocked = reason ? ` aria-disabled="true" title="${escapeHtml(reason)}"` : "";
       return `<li id="paletteOpt${index}" role="option" aria-selected="${index === 0 ? "true" : "false"}" data-id="${command.id}"${blocked}><span>${escapeHtml(command.label)}<small>${escapeHtml(note)}</small></span>${hint}</li>`;
@@ -144,7 +146,7 @@ export function mountPalette() {
 
   function runActive() {
     const command = shown[active];
-    if (!command || modelExportReason(command.id) || assemblyCommandReason(command.id)) return;
+    if (!command || modelExportReason(command.id) || assemblyCommandReason(command.id) || actionReason(command.id)) return;
     close();
     pushRecent(command.id);
     runCommand(command.id);
@@ -329,6 +331,24 @@ function needsModel(id: string): boolean {
   return id.startsWith("model-") || id.startsWith("sketch-") || ((id === "undo" || id === "redo") && state.stage === "model");
 }
 
+/** Feature-menu tools the rail button does not already run. NURBS is the sculpt tool. */
+const NAMED_MODEL_TOOL: Record<string, string> = {
+  "model-boss": "boss",
+  "model-texture": "texture",
+  "model-array": "array",
+  "model-ribs": "ribs",
+  "model-text": "text",
+  "model-patch": "patch",
+  "model-blend": "blend",
+  "model-nurbs": "sculpt",
+};
+
+/** Height ranges, modifiers and object settings live in the Objects group, which may be folded. */
+function showObjectsGroup(): void {
+  const group = document.querySelector<HTMLDetailsElement>('[data-group="objects"]');
+  if (group) group.open = true;
+}
+
 /** Runs the command's own case, else clicks its `target`. */
 export function runCommand(id: string) {
   if (needsModel(id) && !modelApi()) {
@@ -337,6 +357,16 @@ export function runCommand(id: string) {
   }
   if (id.startsWith("sketch-")) {
     runSketchKey(id);
+    return;
+  }
+  const blocked = actionReason(id);
+  if (blocked) {
+    pushToast(blocked, "error");
+    return;
+  }
+  const namedTool = NAMED_MODEL_TOOL[id];
+  if (namedTool) {
+    withModel((model) => model.openNamedModelTool(namedTool));
     return;
   }
   switch (id) {
@@ -497,6 +527,34 @@ export function runCommand(id: string) {
       return;
     case "model-split-print":
       withModel((model) => model.openSplitPrint());
+      return;
+    case "model-transition":
+      withModel((model) => model.openTransitionCard());
+      return;
+    case "add-height-range":
+      addHeightRange();
+      showObjectsGroup();
+      document.querySelector("[data-range]")?.scrollIntoView({ block: "nearest" });
+      return;
+    case "add-modifier-box":
+      addModifier("box");
+      showObjectsGroup();
+      document.querySelector("[data-volume]")?.scrollIntoView({ block: "nearest" });
+      return;
+    case "add-modifier-cylinder":
+      addModifier("cylinder");
+      showObjectsGroup();
+      document.querySelector("[data-volume]")?.scrollIntoView({ block: "nearest" });
+      return;
+    case "add-modifier-sphere":
+      addModifier("sphere");
+      showObjectsGroup();
+      document.querySelector("[data-volume]")?.scrollIntoView({ block: "nearest" });
+      return;
+    case "object-settings":
+      showObjectsGroup();
+      document.querySelector<HTMLElement>("#objInfill")?.focus();
+      document.querySelector("#objInfill")?.scrollIntoView({ block: "nearest" });
       return;
     case "model-auto-ribs":
       withModel((model) => model.openAutoRibsCard());
