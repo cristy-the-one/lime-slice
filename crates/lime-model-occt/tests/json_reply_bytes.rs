@@ -1,8 +1,10 @@
 //! Pins the `lime_occt_tree` JSON text of open, apply, probe, and goto.
 //!
 //! The expected files are the raw replies from commit 512f6e0a (the pre-#853
-//! order), captured through `lime_occt_tree`. A map compare would hide the
-//! `stepFaces` move, so the test matches the bytes.
+//! order), captured through `lime_occt_tree` on that OS. Open CASCADE's mesh
+//! differs per platform, the same way `mesh_angle` keeps separate Windows soup
+//! hashes, so each `target_os` has its own directory. A map compare would hide
+//! the `stepFaces` move, so the test matches the bytes.
 
 use serde_json::Value;
 use std::ffi::{CStr, CString};
@@ -43,11 +45,18 @@ fn call_tree(request: &str) -> String {
 }
 
 fn pinned(name: &str) -> String {
+    let os = std::env::consts::OS;
     let path = format!(
-        "{}/tests/fixtures/json_pin/{name}.json",
+        "{}/tests/fixtures/json_pin/{os}/{name}.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("pin {name} at {path}: {err}"))
+    match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => panic!(
+            "no JSON pin fixture for {os} ({name}). Expected {path}, the raw lime_occt_tree text of 512f6e0a on {os}. Open CASCADE's mesh is not the same bytes on every OS, so this check is not compared against another platform's fixture."
+        ),
+        Err(err) => panic!("pin {name} at {path}: {err}"),
+    }
 }
 
 fn keys_of(text: &str) -> String {
