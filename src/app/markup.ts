@@ -50,11 +50,12 @@ export function mountMarkup(root: HTMLElement) {
         <div class="popover" id="printerPick"></div>
       </details>
       <div class="modes title-tabs" role="tablist" aria-label="Workspace">
-        <button class="btn mode tab" id="tabPrepare" type="button" role="tab" data-tab="prepare" aria-label="Prepare" aria-selected="false" aria-pressed="false" aria-controls="prepareBody" data-key="1">Prepare</button>
-        <button class="btn mode tab on" id="tabPreview" type="button" role="tab" data-tab="preview" aria-label="Preview" aria-selected="true" aria-pressed="true" aria-controls="previewBody" data-key="2">Preview</button>
-        <button class="btn mode tab" id="tabGcode" type="button" role="tab" data-tab="gcode" aria-label="G-code" aria-selected="false" aria-pressed="false" aria-controls="gcodePane" data-key="3">G-code</button>
-        <button class="btn mode tab" id="tabModel" type="button" role="tab" data-tab="model" aria-label="Model" aria-selected="false" aria-pressed="false" aria-controls="modelBody" data-key="4">Model</button>
-        <button class="btn mode tab" id="tabPose" type="button" role="tab" data-tab="pose" aria-label="Pose" aria-selected="false" aria-pressed="false" aria-controls="poseBody" data-key="5">Pose</button>
+        <button class="btn mode tab" id="tabModel" type="button" role="tab" data-tab="model" aria-label="Model" aria-selected="false" aria-pressed="false" aria-controls="modelBody" data-key="1">Model</button>
+        <button class="btn mode tab" id="tabPose" type="button" role="tab" data-tab="pose" aria-label="Pose" aria-selected="false" aria-pressed="false" aria-controls="poseBody" data-key="2">Pose</button>
+        <span class="stage-split" aria-hidden="true"></span>
+        <button class="btn mode tab" id="tabPrepare" type="button" role="tab" data-tab="prepare" aria-label="Prepare" aria-selected="false" aria-pressed="false" aria-controls="prepareBody" data-key="3">Prepare</button>
+        <button class="btn mode tab on" id="tabPreview" type="button" role="tab" data-tab="preview" aria-label="Preview" aria-selected="true" aria-pressed="true" aria-controls="previewBody" data-key="4">Preview</button>
+        <button class="btn mode tab" id="tabGcode" type="button" role="tab" data-tab="gcode" aria-label="G-code" aria-selected="false" aria-pressed="false" aria-controls="gcodePane" data-key="5">G-code</button>
       </div>
       <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
       <button class="btn panel-toggle" id="toggleRight" type="button">Results</button>

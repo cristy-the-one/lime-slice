@@ -56,6 +56,7 @@ export const GUIDES: Guide[] = [
       "1. model_probe {op:{kind:\"partition\", cuts:[{origin, normal, connectors:{on:true}}]}, plan:true}: the planner places the dowels on each cut and names the ones that do not fit.",
       "2. model_probe the same op without plan, then model_apply it. Each placed dowel is a hole in both pieces; the pins are one more object, standing upright. A typed count that does not fit says how many do: \"Cut 1: 2 of 4 dowels fit.\"",
       "3. model_commit lays the pieces and the pins out on the bed. For a resin target the pins export as <name>-pins.",
+      "In the window the stage tabs are Model (1), Pose (2), Prepare (3), Preview (4) and G-code (5).",
     ].join("\n"),
   },
   {

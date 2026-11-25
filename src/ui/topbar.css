@@ -71,6 +71,15 @@
   opacity: 0.6;
 }
 .title-tabs .btn.mode[aria-pressed="true"]::after { opacity: 0.75; }
+/* Design, then print. A mark only: it is not a control, and the arrow keys skip it. */
+.title-tabs .stage-split {
+  flex: 0 0 1px;
+  width: 1px;
+  align-self: stretch;
+  margin: 4px var(--space-1);
+  background: var(--border-strong);
+  pointer-events: none;
+}
 
 /* The slot takes what the bar can spare; the estimate drops price, then mass, to stay whole in it. */
 .estimate-slot { flex: 0 1 252px; min-width: 104px; container: estimate / inline-size; display: flex; justify-content: flex-end; }

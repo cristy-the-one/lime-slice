@@ -63,9 +63,9 @@ test("Pose draws every part solid at its assembled pose, tints the selection, an
   const layoutBefore = await placeFields(page, [ledge, "part"]);
   await page.locator(`[data-plate-select='${ledge}']`).click();
 
-  // Key 5 opens Pose, the fifth tab.
+  // Key 2 opens Pose, the second tab.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.keyboard.press("5");
+  await page.keyboard.press("2");
   await expect(page.locator("#tabPose")).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#poseBody")).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeHidden();
