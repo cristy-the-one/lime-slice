@@ -1,4 +1,5 @@
 import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { mkdir, stat as statFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { ProtocolError } from "./engine.ts";
@@ -18,6 +19,19 @@ export function workspaceRoot(): string | null {
   return realpathSync(raw);
 }
 
+/**
+ * The same directory as workspaceRoot(). mkdir runs on the thread pool.
+ * The path string is realpathSync's, not fs.promises.realpath: on Windows the
+ * native one spells a temp directory differently, and autosave paths are compared
+ * to the workspace the caller set.
+ */
+export async function workspaceRootAsync(): Promise<string | null> {
+  const raw = process.env.LIME_MCP_WORKSPACE;
+  if (!raw || raw.trim() === "") return null;
+  await mkdir(raw, { recursive: true });
+  return realpathSync(raw);
+}
+
 export function requireWorkspace(): string {
   const root = workspaceRoot();
   if (!root) throw new ProtocolError("Set LIME_MCP_WORKSPACE to a directory before saving or exporting.");
@@ -32,17 +46,15 @@ function extensionOf(path: string): string {
   return dot < 0 ? "" : lower.slice(dot);
 }
 
-/** A named input mesh or project. Not confined to the workspace. A symlink to a regular file is the file. */
-export function resolveRead(path: string, kind: "mesh" | "lime" | "profile" | "machine"): string {
+type ReadKind = "mesh" | "lime" | "profile" | "machine";
+
+function resolveInput(path: string): string {
   if (!path || path.includes("\0")) throw new ProtocolError("That path is not a file this server can read.");
   const root = process.env.LIME_MCP_WORKSPACE;
-  const full = !isAbsolute(path) && root ? resolve(root, path) : resolve(path);
-  let stat;
-  try {
-    stat = statSync(full);
-  } catch {
-    throw new ProtocolError(`That file was not found: ${full}`);
-  }
+  return !isAbsolute(path) && root ? resolve(root, path) : resolve(path);
+}
+
+function resolvedFile(full: string, stat: { isFile(): boolean; size: number }, kind: ReadKind): string {
   if (!stat.isFile()) throw new ProtocolError("That path is not a regular file.");
   if (stat.size > meshByteLimit()) throw new ProtocolError("That file is larger than the mesh limit.");
   const ext = extensionOf(full);
@@ -53,6 +65,30 @@ export function resolveRead(path: string, kind: "mesh" | "lime" | "profile" | "m
       : "That file is not the kind this tool reads.");
   }
   return full;
+}
+
+/** A named input mesh or project. Not confined to the workspace. A symlink to a regular file is the file. */
+export function resolveRead(path: string, kind: ReadKind): string {
+  const full = resolveInput(path);
+  let stat;
+  try {
+    stat = statSync(full);
+  } catch {
+    throw new ProtocolError(`That file was not found: ${full}`);
+  }
+  return resolvedFile(full, stat, kind);
+}
+
+/** mesh_import's stat, on the thread pool, so a slow stat does not hold the stdio loop. */
+export async function resolveReadAsync(path: string, kind: ReadKind): Promise<string> {
+  const full = resolveInput(path);
+  let stat;
+  try {
+    stat = await statFile(full);
+  } catch {
+    throw new ProtocolError(`That file was not found: ${full}`);
+  }
+  return resolvedFile(full, stat, kind);
 }
 
 /** A font file for a text: a .ttf, .otf or .ttc, at most 40 MB (the engine's own limit). Read like a mesh, not confined to the workspace. */

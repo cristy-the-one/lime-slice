@@ -22,7 +22,7 @@ import type { PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { builtinLibrary, type MachineLibrary } from "../src/ui/machine-library.ts";
 import { systemOpener, type AppOpener } from "./app-open.ts";
-import { bridgeTarget, mirror, type BridgeLink } from "./bridge-client.ts";
+import { bridgeTarget, mirror, warmBridgeIdentity, type BridgeLink } from "./bridge-client.ts";
 import { RECEIPT_WAIT_MS, tandemEarlier, tandemOutcome } from "./tandem-receipts.ts";
 import { ProtocolError, type Engine } from "./engine.ts";
 import { imagesOf, withImages } from "./inline.ts";
@@ -260,6 +260,8 @@ export class Session {
   /** The autosave a previous server left in the workspace, offered until this session has a plate of its own. */
   previousAutosave: PreviousAutosave | null = null;
   startupChecked = false;
+  /** The first call's autosave scan and bridge identity check. Later calls wait for the same one. */
+  startupScan: Promise<void> | null = null;
   autosaveDirty = false;
   autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   autosaveWriting: Promise<void> = Promise.resolve();
@@ -291,11 +293,16 @@ export class Session {
     this.isolated = options.isolated === true;
   }
 
-  call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
-    if (!this.startupChecked) {
+  async call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
+    if (!this.startupScan) {
       this.startupChecked = true;
-      this.previousAutosave = takePreviousAutosave();
+      this.startupScan = Promise.all([takePreviousAutosave(), warmBridgeIdentity()]).then(([found]) => {
+        this.previousAutosave = found;
+      }).catch(() => {
+        this.previousAutosave = null;
+      });
     }
+    await this.startupScan;
     if (name === "call") {
       // call {tool, args}: any tool, for a client that only calls the tools in its list (docs/plan-mcp-discovery.md D3).
       // It runs as a direct call would, but never opens a group, so the client's tool list does not change.
