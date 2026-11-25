@@ -208,6 +208,7 @@ GUIDES.push(
       "Composite ops (pocket, boss, texture, pattern, mirror, array, ribs, text) are checked step by step, stored as one group, rolled back on a refusal, and undone as one step. A refusal names the failing piece as failedStep. A step that would leave pieces meeting only along an edge is left out and reported as leftOut. A ribNet is built as one boolean, like a pattern with combine:true, and checked once.",
       "Every step's result is checked against the solid before it (model_probe checks the same result model_apply would keep): new edges where pieces meet only along a line refuse it with code step-guard; damaged:true means Open CASCADE built it wrong (split the edit into smaller steps), touching:true means a tool sits against the part (move it). Such edges the part already had never refuse a step. A section answers or refuses within 30 s.",
       "A call that runs past about 45 s answers with a job: slice_wait {job} returns its result. One call makes at most 400 steps.",
+      "A client that speaks tasks gets a task for that call: tasks/get returns the same result, and tasks/cancel takes it back.",
       "A plain op needs model_probe first, or model_apply {op, probe:true}; model_edit {node, op, probe:true} likewise. Then model_history to read the steps, and model_commit to put the solid on the plate.",
     ].join("\n"),
   },
