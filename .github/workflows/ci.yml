@@ -1101,23 +1101,7 @@ jobs:
         run: npm ci
 
       - name: Unit tests
-        env:
-          # Temporary: stall of "ping answers during a slow import" on this runner. Removed before the PR is finished.
-          LIME_MCP_LOOP_DELAY: "1"
         run: npm run test:unit
-
-      - name: Slow-import ping, twenty times
-        if: always()
-        env:
-          LIME_MCP_LOOP_DELAY: "1"
-        shell: pwsh
-        run: |
-          $pass = 0
-          1..20 | ForEach-Object {
-            node --experimental-strip-types mcp/stdio.test.ts
-            if ($LASTEXITCODE -eq 0) { $pass++; Write-Host "RUN $_ PASS" } else { Write-Host "RUN $_ FAIL" }
-          }
-          Write-Host "slow-import ping: $pass of 20 passed"
 
       - name: Cache lust
         uses: actions/cache@v6

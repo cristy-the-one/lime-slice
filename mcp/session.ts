@@ -34,7 +34,6 @@ import { GROUP_NAMES, groupOf, SCHEMAS_REPLY_CAP, startingGroups } from "./group
 import { groupTools, nearestTools } from "./catalog.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, toolByName, validateTool } from "./schema.ts";
 import { autosavePath, readIdentity, sameProject, shelveAutosave, takePreviousAutosave, writeAutosave, type AutosaveIdentity, type PlanRecovery, type PreviousAutosave } from "./autosave.ts";
-import { markPhase, pausePreamble, resumePreamble, timePhase } from "./loop-delay.ts";
 import { withBoxAnchor, isComposite } from "../src/modeling/compose.ts";
 import { expressionMentions, isPlainNumber } from "../src/modeling/params.ts";
 import type { Assembly } from "../src/assembly.ts";
@@ -297,21 +296,13 @@ export class Session {
   async call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
     if (!this.startupScan) {
       this.startupChecked = true;
-      const start = performance.now();
       this.startupScan = Promise.all([takePreviousAutosave(), warmBridgeIdentity()]).then(([found]) => {
-        markPhase("autosave", performance.now() - start);
         this.previousAutosave = found;
       }).catch(() => {
         this.previousAutosave = null;
       });
     }
-    // The scan's disk work is on the thread pool. Keep that wait out of the sync preamble clock.
-    pausePreamble();
-    try {
-      await this.startupScan;
-    } finally {
-      resumePreamble();
-    }
+    await this.startupScan;
     if (name === "call") {
       // call {tool, args}: any tool, for a client that only calls the tools in its list (docs/plan-mcp-discovery.md D3).
       // It runs as a direct call would, but never opens a group, so the client's tool list does not change.
@@ -362,15 +353,15 @@ export class Session {
     const picked = edgePicksAsTyped(numbered.args);
     if ("reason" in picked) return Promise.resolve(refuse("bad-argument", picked.reason));
     args = picked.args;
-    const problem = timePhase("validate", () => validateTool(name, args ?? {}));
+    const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
     const changes = !annotationsFor(name).readOnlyHint && (changesPlate(name) || (name === "model_params" && input.rebuild === true));
     const activity = changes && !this.isolated ? crypto.randomUUID() : null;
-    if (activity) timePhase("mirror", () => { void mirror({ activity: { id: activity, phase: "start", tool: name, ...(typeof input.object === "string" ? { object: input.object } : {}) } }); });
+    if (activity) void mirror({ activity: { id: activity, phase: "start", tool: name, ...(typeof input.object === "string" ? { object: input.object } : {}) } });
     // The plate as it stood before a call that can run long is on disk before it starts; others rely on the save after.
     const long = LONG_CALLS.has(name) || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
-    if (changes && this.inflight === 0 && long) timePhase("flushAutosave", () => this.flushAutosave());
+    if (changes && this.inflight === 0 && long) this.flushAutosave();
     this.inflight += 1;
     // A detachable call's work stops only for slice_cancel: the request's own cancel, which a client also sends when it
     // gives up waiting, hands the work to a background job instead of throwing it away.

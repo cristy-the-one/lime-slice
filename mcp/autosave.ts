@@ -16,7 +16,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { access, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { markPhase } from "./loop-delay.ts";
 import { workspaceRoot, workspaceRootAsync } from "./workspace.ts";
 import { checkpointRecords, type RecipeCheckpoint } from "./recipe-checkpoint.ts";
 
@@ -132,23 +131,17 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 export async function takePreviousAutosave(): Promise<PreviousAutosave | null> {
-  const rootAt = performance.now();
   const root = await workspaceRootAsync();
-  markPhase("workspaceRoot", performance.now() - rootAt);
   if (!root) return null;
   const previous = join(root, PREVIOUS_NAME);
   try {
-    const shelvedAt = performance.now();
     const names = await readdir(root);
     if (names.some((name) => SHELVED.test(name))) moveRootShelved(root);
-    markPhase("moveRootShelved", performance.now() - shelvedAt);
-    const readAt = performance.now();
     const ended = names
       .map((name) => ({ name, pid: Number(OWN.exec(name)?.[1] ?? NaN) }))
       .filter((row) => Number.isInteger(row.pid) && row.pid !== process.pid && !alive(row.pid))
       .map((row) => ({ ...row, mtime: statSync(join(root, row.name)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
-    markPhase("readdirAutosave", performance.now() - readAt);
     if (ended.length > 0) {
       const newest = join(root, ended[0]!.name);
       const incoming = readIdentity(newest);
@@ -167,9 +160,7 @@ export async function takePreviousAutosave(): Promise<PreviousAutosave | null> {
       const shelved = key ? join(root, SHELF_DIR, `autosave-previous-${key}.lime`) : "";
       if (shelved && existsSync(shelved) && statSync(shelved).mtimeMs <= ended[0]!.mtime) unlinkSync(shelved);
     }
-    const tidyAt = performance.now();
     if (await pathExists(join(root, SHELF_DIR))) tidyShelf(root);
-    markPhase("tidyShelf", performance.now() - tidyAt);
     if (!(await pathExists(previous))) return null;
     const savedAt = statSync(previous).mtime.toISOString();
     let objects = 0;

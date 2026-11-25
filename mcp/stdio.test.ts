@@ -4,7 +4,7 @@
  * progress, a short slice_wait, and cancel.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, writeSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,8 +61,6 @@ function startRaw(extra: Record<string, string> = {}, fake = true, commandArgs: 
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString("utf8");
-    // Measurement only: the server's stall line has to reach the CI log before the child is killed.
-    if (process.env.LIME_MCP_LOOP_DELAY === "1") writeSync(2, chunk);
   });
   let buf = "";
   const pending: string[] = [];
@@ -456,10 +454,6 @@ for (let i = 0; i < 2; i += 1) {
   }
 }
 check("ping answers during a slow import", sawPing && pingAt < 100, `${pingAt} ms`);
-if (process.env.LIME_MCP_LOOP_DELAY === "1") {
-  process.stderr.write(`ping-at ${pingAt} ms\n`);
-  await new Promise((resolve) => setTimeout(resolve, 250));
-}
 slow.child.kill();
 
 if (engineCandidates(root).some((path) => existsSync(path))) {
