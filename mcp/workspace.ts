@@ -1,5 +1,5 @@
 import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
-import { mkdir, realpath, stat as statFile } from "node:fs/promises";
+import { mkdir, stat as statFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { ProtocolError } from "./engine.ts";
@@ -20,14 +20,16 @@ export function workspaceRoot(): string | null {
 }
 
 /**
- * The same directory, created on the thread pool. A slow mkdir or realpath
- * (Windows Defender on a fresh temp dir) must not hold the stdio loop.
+ * The same directory as workspaceRoot(). mkdir runs on the thread pool.
+ * The path string is realpathSync's, not fs.promises.realpath: on Windows the
+ * native one spells a temp directory differently, and autosave paths are compared
+ * to the workspace the caller set.
  */
 export async function workspaceRootAsync(): Promise<string | null> {
   const raw = process.env.LIME_MCP_WORKSPACE;
   if (!raw || raw.trim() === "") return null;
   await mkdir(raw, { recursive: true });
-  return realpath(raw);
+  return realpathSync(raw);
 }
 
 export function requireWorkspace(): string {
