@@ -209,11 +209,12 @@ try {
       );
     }
     const before = solid?.volumeMm3 ?? null;
+    // An apply without a passed probe is refused and the solid is left as it was. probe: true runs the check, including the volume guard, then applies.
     const fused = path.length === skinXs.length
-      ? await call("model_apply", { object: body, op: { kind: "sweep", op: "fuse", path, radius: 0.45, caps: "round", steps: 1 } })
+      ? await call("model_apply", { object: body, probe: true, op: { kind: "sweep", op: "fuse", path, radius: 0.45, caps: "round", steps: 1 } })
       : { ok: false, reason: "a ray missed, so the tube was not fused" };
     const after = (session as unknown as { find(id: string): { solid?: { volumeMm3: number } } | undefined }).find(body)?.solid?.volumeMm3 ?? null;
-    console.log(`skin fuse: before=${before === null ? "none" : before.toFixed(1)} after=${after === null ? "none" : after.toFixed(1)} reason=${fused.reason ?? ""}`);
+    console.log(`skin fuse: before=${before === null ? "none" : before.toFixed(1)} after=${after === null ? "none" : after.toFixed(1)} replyVolume=${typeof fused.volumeMm3 === "number" ? fused.volumeMm3.toFixed(1) : "none"} reason=${fused.reason ?? ""}`);
     const slack = before === null ? 0.01 : Math.max(before * 1e-4, 0.01);
     check(
       "the round-capped tube fuses without losing the part",
