@@ -196,21 +196,6 @@ jobs:
             echo "::warning::nextest download failed; Rust tests will run with cargo test."
           fi
 
-      # TEMPORARY: dump 512f6e0a JSON pins and upload them. Remove this step and the
-      # upload below once tests/fixtures/json_pin/<os>/ is committed. The job name stays.
-      - name: Record 512f6e0a JSON pin
-        shell: bash
-        run: |
-          if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-          "$PY" tools/ci/dump_json_pin.py "$RUNNER_TEMP/json-pin"
-
-      - name: Upload 512f6e0a JSON pin
-        uses: actions/upload-artifact@v7
-        with:
-          name: json-pin-${{ runner.os }}
-          path: ${{ runner.temp }}/json-pin
-          if-no-files-found: error
-
       - name: Test
         run: |
           cargo build -p lime-model-occt --locked
@@ -1533,21 +1518,6 @@ jobs:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
-      # TEMPORARY: dump 512f6e0a JSON pins and upload them. Remove this step and the
-      # upload below once tests/fixtures/json_pin/<os>/ is committed. The job name stays.
-      - name: Record 512f6e0a JSON pin
-        shell: bash
-        run: |
-          if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-          "$PY" tools/ci/dump_json_pin.py "$RUNNER_TEMP/json-pin"
-
-      - name: Upload 512f6e0a JSON pin
-        uses: actions/upload-artifact@v7
-        with:
-          name: json-pin-${{ runner.os }}
-          path: ${{ runner.temp }}/json-pin
-          if-no-files-found: error
-
       - name: Test the dynamic link
         run: |
           $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
@@ -1624,21 +1594,6 @@ jobs:
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
-
-      # TEMPORARY: dump 512f6e0a JSON pins and upload them. Remove this step and the
-      # upload below once tests/fixtures/json_pin/<os>/ is committed. The job name stays.
-      - name: Record 512f6e0a JSON pin
-        shell: bash
-        run: |
-          if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-          "$PY" tools/ci/dump_json_pin.py "$RUNNER_TEMP/json-pin"
-
-      - name: Upload 512f6e0a JSON pin
-        uses: actions/upload-artifact@v7
-        with:
-          name: json-pin-${{ runner.os }}
-          path: ${{ runner.temp }}/json-pin
-          if-no-files-found: error
 
       - name: Test the dynamic link
         run: cargo test -p lime-model -p lime-model-occt --locked -- --nocapture
