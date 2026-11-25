@@ -333,16 +333,97 @@ function wordsBase64(words: Float32Array | Uint32Array): string {
   return bytesToBase64(new Uint8Array(words.buffer, words.byteOffset, words.byteLength));
 }
 
+const LMB1_HEADER_BYTES = 12;
+const utf8Decoder = new TextDecoder();
+
 /**
- * The words in base64 `text`, viewed in place: the decoded bytes are a fresh buffer, so they start
- * on a word. Null when it is not base64 of whole words.
+ * Unpack a `model_tree` IPC reply from Tauri (`ArrayBuffer` containing an `LMB1` binary frame or
+ * plain UTF-8 JSON bytes) or a JSON string.
+ *
+ * `LMB1` layout: `[b"LMB1"][u32 LE jsonLen][u32 LE flags=0][utf8 json][0..3 pad][4-byte-aligned blobs]`.
+ * Every `{"$bin":[offset,byteLength]}` descriptor in the JSON header is hydrated in-place into a
+ * zero-copy `Uint8Array` view directly over the incoming `ArrayBuffer`, so `decodeSolid` and
+ * `decodeSurfaceInspect` create `Float32Array`/`Uint32Array` views with zero Base64 work or copies.
+ */
+export function unpackModelReply(raw: ArrayBuffer | Uint8Array | string): Record<string, unknown> {
+  if (typeof raw === "string") {
+    return JSON.parse(raw) as Record<string, unknown>;
+  }
+  const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+  const { buffer, byteOffset, byteLength } = bytes;
+  if (
+    byteLength >= LMB1_HEADER_BYTES
+    && bytes[0] === 0x4c // 'L'
+    && bytes[1] === 0x4d // 'M'
+    && bytes[2] === 0x42 // 'B'
+    && bytes[3] === 0x31 // '1'
+  ) {
+    const view = new DataView(buffer, byteOffset, LMB1_HEADER_BYTES);
+    const jsonLen = view.getUint32(4, true);
+    const flags = view.getUint32(8, true);
+    const blobBase = (LMB1_HEADER_BYTES + jsonLen + 3) & ~3;
+    if (flags !== 0 || LMB1_HEADER_BYTES + jsonLen > byteLength || blobBase > byteLength) {
+      throw new Error(DAMAGED);
+    }
+    const headerText = utf8Decoder.decode(new Uint8Array(buffer, byteOffset + LMB1_HEADER_BYTES, jsonLen));
+    const parsed = JSON.parse(headerText) as unknown;
+    const blobTotal = byteLength - blobBase;
+    const hydrated = hydrateBinRefs(parsed, buffer, byteOffset + blobBase, blobTotal);
+    if (!hydrated || typeof hydrated !== "object" || Array.isArray(hydrated)) {
+      throw new Error(DAMAGED);
+    }
+    return hydrated as Record<string, unknown>;
+  }
+  return JSON.parse(utf8Decoder.decode(bytes)) as Record<string, unknown>;
+}
+
+function hydrateBinRefs(value: unknown, buffer: ArrayBufferLike, blobStart: number, blobTotal: number): unknown {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      value[i] = hydrateBinRefs(value[i], buffer, blobStart, blobTotal);
+    }
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  const bin = record.$bin;
+  if (bin !== undefined && Object.keys(record).length === 1) {
+    if (!Array.isArray(bin) || bin.length !== 2) throw new Error(DAMAGED);
+    const off = bin[0];
+    const len = bin[1];
+    if (
+      typeof off !== "number" || typeof len !== "number"
+      || !Number.isInteger(off) || !Number.isInteger(len)
+      || off < 0 || len < 0 || off + len > blobTotal
+    ) {
+      throw new Error(DAMAGED);
+    }
+    return new Uint8Array(buffer, blobStart + off, len);
+  }
+  for (const key of Object.keys(record)) {
+    record[key] = hydrateBinRefs(record[key], buffer, blobStart, blobTotal);
+  }
+  return record;
+}
+
+/**
+ * The words in base64 `text` or an aligned `Uint8Array` view (from an `LMB1` binary IPC frame),
+ * viewed in place without copying when 4-byte aligned. Null when damaged or not whole words.
  */
 function words<T extends Float32Array | Uint32Array>(
-  text: unknown,
+  raw: unknown,
   kind: { new (buffer: ArrayBuffer, offset: number, length: number): T },
 ): T | null {
-  if (typeof text !== "string") return null;
-  const bytes = base64ToBytes(text);
+  if (raw instanceof Uint8Array) {
+    if (raw.byteLength % 4 !== 0) return null;
+    if (raw.byteOffset % 4 === 0) {
+      return new kind(raw.buffer as ArrayBuffer, raw.byteOffset, raw.byteLength / 4);
+    }
+    const aligned = raw.slice();
+    return new kind(aligned.buffer as ArrayBuffer, 0, aligned.byteLength / 4);
+  }
+  if (typeof raw !== "string") return null;
+  const bytes = base64ToBytes(raw);
   if (!bytes || bytes.byteLength % 4 !== 0) return null;
   return new kind(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength / 4);
 }

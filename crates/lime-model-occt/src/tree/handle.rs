@@ -26,7 +26,7 @@ impl Store {
                     ));
                 }
                 let mut shape = root_shape(Some(data_b64), None, None, None, None)?;
-                Ok(Answer::Plain(shape.reply(ROOT, chord_mm, false)?))
+                Ok(Answer::Object(shape.reply(ROOT, chord_mm, false)?))
             }
             Request::TextFonts => Ok(Answer::Plain(lettering::fonts_reply())),
             Request::TextFontAdd { data_b64, face } => Ok(Answer::Plain(
@@ -441,8 +441,8 @@ impl Store {
                 // `display.positions` corner for corner (tests/surface_inspect.rs). Without it, the plate mesh.
                 let display = self.display;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
-                let text = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count, display)?;
-                Ok(Answer::Plain(text))
+                let body = shape.surface_inspect(node, chord_mm, curvature, isoparms, iso_count, display)?;
+                Ok(Answer::Object(body))
             }
             Request::SurfaceAt { key, node, rays } => {
                 self.ensure(&key, node)?;

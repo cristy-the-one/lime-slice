@@ -394,19 +394,14 @@ async fn preview_mesh(payload: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Open CASCADE work is synchronous. Run it off the UI thread.
-async fn block_model(
-    work: impl FnOnce() -> Result<String, String> + Send + 'static,
-) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|err| err.to_string())?
-}
-
-/// One call on the Model history tree. The payload is passed through as it came.
+/// One call on the Model history tree, run off the UI thread. Returns an `LMB1` binary frame
+/// (zero-Base64 aligned mesh buffers) or plain UTF-8 JSON bytes over `tauri::ipc::Response`.
 #[tauri::command(async)]
-async fn model_tree(payload: String) -> Result<String, String> {
-    block_model(move || lime_model_load::tree(&payload)).await
+async fn model_tree(payload: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || lime_model_load::tree_bin(&payload))
+        .await
+        .map_err(|err| err.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {

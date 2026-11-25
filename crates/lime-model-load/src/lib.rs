@@ -15,11 +15,19 @@ use libloading::Library;
 
 type Tree = unsafe extern "C" fn(*const c_char) -> *mut c_char;
 type FreeStr = unsafe extern "C" fn(*mut c_char);
+type TreeBin = unsafe extern "C" fn(*const c_char, *mut usize) -> *mut u8;
+type FreeBytes = unsafe extern "C" fn(*mut u8, usize);
+
+#[derive(Clone, Copy)]
+struct BridgeFns {
+    tree: Tree,
+    free: FreeStr,
+    tree_bin: Option<(TreeBin, FreeBytes)>,
+}
 
 struct Bridge {
     _lib: Library,
-    tree: Tree,
-    free: FreeStr,
+    fns: BridgeFns,
     identity: String,
 }
 
@@ -44,10 +52,42 @@ pub fn tree(request: &str) -> Result<String, String> {
             return lime_recipe::native_geometry_request(&args).ok_or_else(|| "Invalid native geometry request".to_string());
         }
     }
-    let (call, free) = load()?;
+    let fns = load()?;
     let c = CString::new(request).map_err(|_| "tree request is not a C string".to_string())?;
-    let ptr = unsafe { call(c.as_ptr()) };
-    take(ptr, free)
+    let ptr = unsafe { (fns.tree)(c.as_ptr()) };
+    take(ptr, fns.free)
+}
+
+/// One call on the Model history tree, returning an `LMB1` binary frame when the bridge supports it
+/// (zero-Base64 mesh transfer), or plain UTF-8 JSON bytes otherwise.
+pub fn tree_bin(request: &str) -> Result<Vec<u8>, String> {
+    if request.contains("nativeGeometry") {
+        let value: serde_json::Value = serde_json::from_str(request).map_err(|e| e.to_string())?;
+        if value.get("call").and_then(serde_json::Value::as_str) == Some("nativeGeometry") {
+            let args = value.get("args").ok_or("Missing geometry arguments")?.to_string();
+            return lime_recipe::native_geometry_request(&args)
+                .map(String::into_bytes)
+                .ok_or_else(|| "Invalid native geometry request".to_string());
+        }
+    }
+    let fns = load()?;
+    let c = CString::new(request).map_err(|_| "tree request is not a C string".to_string())?;
+    if let Some((call_bin, free_bytes)) = fns.tree_bin {
+        let mut len: usize = 0;
+        let ptr = unsafe { call_bin(c.as_ptr(), &mut len) };
+        return take_bytes(ptr, len, free_bytes);
+    }
+    let ptr = unsafe { (fns.tree)(c.as_ptr()) };
+    take(ptr, fns.free).map(String::into_bytes)
+}
+
+fn take_bytes(ptr: *mut u8, len: usize, free: FreeBytes) -> Result<Vec<u8>, String> {
+    if ptr.is_null() {
+        return Err("Open CASCADE bridge returned nothing".into());
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    unsafe { free(ptr, len) };
+    Ok(bytes)
 }
 
 fn take(ptr: *mut c_char, free: FreeStr) -> Result<String, String> {
@@ -61,7 +101,7 @@ fn take(ptr: *mut c_char, free: FreeStr) -> Result<String, String> {
     Ok(text)
 }
 
-fn load() -> Result<(Tree, FreeStr), String> {
+fn load() -> Result<BridgeFns, String> {
     let mut slot = BRIDGE
         .lock()
         .map_err(|_| "Open CASCADE bridge lock is poisoned".to_string())?;
@@ -73,7 +113,12 @@ fn load() -> Result<(Tree, FreeStr), String> {
             std::fs::read(&path).map_err(|err| format!("Could not read bridge identity: {err}"))?;
         let identity = format!("occt:{:x}", sha2::Sha256::digest(bytes));
         let bridge = unsafe {
-            Bridge {
+            let tree_bin = lib
+                .get::<TreeBin>(b"lime_occt_tree_bin\0")
+                .ok()
+                .zip(lib.get::<FreeBytes>(b"lime_occt_bytes_free\0").ok())
+                .map(|(call, free)| (*call, *free));
+            let fns = BridgeFns {
                 tree: *lib.get::<Tree>(b"lime_occt_tree\0").map_err(|_| {
                     "This Open CASCADE bridge has no history tree. Install the matching Lime Slice."
                         .to_string()
@@ -81,6 +126,10 @@ fn load() -> Result<(Tree, FreeStr), String> {
                 free: *lib
                     .get::<FreeStr>(b"lime_occt_string_free\0")
                     .map_err(|err| format!("bridge is missing lime_occt_string_free: {err}"))?,
+                tree_bin,
+            };
+            Bridge {
+                fns,
                 _lib: lib,
                 identity,
             }
@@ -88,7 +137,7 @@ fn load() -> Result<(Tree, FreeStr), String> {
         *slot = Some(bridge);
     }
     let bridge = slot.as_ref().expect("bridge was just stored");
-    Ok((bridge.tree, bridge.free))
+    Ok(bridge.fns)
 }
 
 fn open_library(path: &Path) -> Result<Library, String> {
@@ -301,6 +350,8 @@ mod mesh_tests {
         let result: serde_json::Value = serde_json::from_str(&super::tree(&request.to_string()).unwrap()).unwrap();
         assert_eq!(result.as_array().unwrap().len(), 1);
         assert_eq!(result[0].as_array().unwrap().len(), 4);
+        let bin = super::tree_bin(&request.to_string()).unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&bin).unwrap(), result);
         assert!(super::tree(r#"{"call":"nativeGeometry","args":{"op":"invalid"}}"#).is_err());
     }
 
