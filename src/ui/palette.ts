@@ -16,7 +16,7 @@ import {
   saveSettingsProfile,
   selectedProfileId,
 } from "../app/profile-actions";
-import { removePlateObject } from "../app/plate-actions";
+import { assemblyCommandReason, removePlateObject, runEditInPose, runUngroupAssembly } from "../app/plate-actions";
 import { pickAddedMesh } from "../app/files";
 import { newProject } from "../app/new-project";
 import { saveCurrentProject } from "../app/project-io";
@@ -124,7 +124,7 @@ export function mountPalette() {
     list.innerHTML = shown.map((command, index) => {
       const key = shortcutOf(command);
       const hint = key ? `<kbd>${escapeHtml(key)}</kbd>` : "";
-      const reason = modelExportReason(command.id);
+      const reason = modelExportReason(command.id) ?? assemblyCommandReason(command.id);
       const note = reason ?? `${index < recentShown ? "Recent, " : ""}${command.group}`;
       const blocked = reason ? ` aria-disabled="true" title="${escapeHtml(reason)}"` : "";
       return `<li id="paletteOpt${index}" role="option" aria-selected="${index === 0 ? "true" : "false"}" data-id="${command.id}"${blocked}><span>${escapeHtml(command.label)}<small>${escapeHtml(note)}</small></span>${hint}</li>`;
@@ -144,7 +144,7 @@ export function mountPalette() {
 
   function runActive() {
     const command = shown[active];
-    if (!command || modelExportReason(command.id)) return;
+    if (!command || modelExportReason(command.id) || assemblyCommandReason(command.id)) return;
     close();
     pushRecent(command.id);
     runCommand(command.id);
@@ -596,6 +596,16 @@ export function runCommand(id: string) {
     case "tab-pose":
       setStage("pose");
       return;
+    case "ungroup-assembly": {
+      const reason = runUngroupAssembly();
+      if (reason) pushToast(reason, "error");
+      return;
+    }
+    case "edit-in-pose": {
+      const reason = runEditInPose();
+      if (reason) pushToast(reason, "error");
+      return;
+    }
     case "view-top":
       applyViewPreset("top");
       return;

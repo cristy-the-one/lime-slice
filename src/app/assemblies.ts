@@ -1,7 +1,7 @@
 /**
  * Assemblies in the app (docs/plan-assemblies.md, M5): the session's assemblies against the plate, a hand move that
- * carries a root's members or re-seats a member, Attach and Ungroup from the object list, and the assembly view, which
- * draws every object at its pose in model space on Prepare's viewport.
+ * carries a root's members or re-seats a member, Link and Ungroup from Pose, Lay out from the object list, and the
+ * assembly view, which draws every object at its pose in model space on Prepare's viewport.
  */
 import { assemblyOf, attached, freshAssemblyId, movedTo, readAssemblies, samePose, solveAssembly, type Assembly } from "../assembly.ts";
 import type { Bounds } from "../mesh-place.ts";

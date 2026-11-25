@@ -50,6 +50,7 @@ src/pose-export.test.ts
 src/export-scope.test.ts
 src/recipe/animation-run.test.ts
 mcp/assembly-bulk.test.ts
+mcp/assembly-link.test.ts
 mcp/pose.test.ts
 mcp/render-unnamed.test.ts
 mcp/slice-collisions.test.ts
@@ -303,6 +304,7 @@ mcp/place-frame.test.ts
 mcp/nothing-silent.test.ts
 mcp/one-vocabulary.test.ts
 mcp/e3-speed.test.ts
+mcp/pipe-caps.test.ts
 src/viewport-grab.test.ts
 src/model-grab.test.ts
 src/measure-points.test.ts

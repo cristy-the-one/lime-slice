@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose, ungroupInPose } from "./link-in-pose";
 
 /**
  * Assemblies M5 (docs/plan-assemblies.md, the owner's gaps item 20). Two objects grouped in the object list; the view
@@ -58,8 +59,8 @@ test("group two objects, see them assembled, and a lifted part is no overlap the
   await expect(page.locator("#plateOverlap"), "on one spot of the bed, the print layout flags them").toBeVisible();
   await expect(page.locator("#assemblyViewChip")).toBeHidden();
 
-  // Attach the ledge to the cube: one group, the cube its root.
-  await page.locator(`[data-plate-attach='${ledge}']`).click();
+  // Link the ledge to the cube in Pose: one group, the cube its root.
+  await linkInPose(page, ledge, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
   await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
   await expect(page.locator(".obj-member")).toHaveCount(2);
@@ -143,7 +144,7 @@ test("group two objects, see them assembled, and a lifted part is no overlap the
   await page.locator("[data-assembly-view='print']").click();
   await expect(page.locator("#prepare")).toHaveAttribute("data-view", "print");
   await expect(page.locator("#plateOverlap")).toBeVisible();
-  await page.locator("[data-assembly-ungroup]").click();
+  await ungroupInPose(page);
   await expect(page.locator("[data-assembly-head]")).toHaveCount(0);
   await expect(page.locator("#assemblyViewChip")).toBeHidden();
   await page.keyboard.press("Control+z");

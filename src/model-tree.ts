@@ -254,6 +254,12 @@ export interface SweepOp {
   scale?: [number, number][];
   /** Total smooth twist along the spine, in degrees. */
   twistDeg?: number;
+  /** Round dome or point tip on the spine's start. Absent is flat. */
+  capStart?: "flat" | "round" | "point";
+  /** Round dome or point tip on the spine's end. Absent is flat. */
+  capEnd?: "flat" | "round" | "point";
+  /** How far that dome or tip reaches, in millimetres. Absent: about as deep as the end is wide. */
+  capLength?: number;
   /** Stripped before the engine sees the op. */
   drawing?: LoftDrawing;
 }

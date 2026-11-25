@@ -614,6 +614,9 @@ pub(super) fn build(
             scale,
             twist_deg,
             aux_spine,
+            cap_start,
+            cap_end,
+            cap_length,
         } => build_sweep_shape(
             Some(from),
             *which,
@@ -624,6 +627,9 @@ pub(super) fn build(
             scale,
             *twist_deg,
             aux_spine.as_deref(),
+            *cap_start,
+            *cap_end,
+            *cap_length,
             &picks,
         ),
         Op::Shell { thickness, .. } => Shape::made(|error| unsafe {

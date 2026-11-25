@@ -70,7 +70,7 @@ export function mountMarkup(root: HTMLElement) {
             <nav><button type="button" id="force" hidden>Force re-slice</button></nav>
           </details>
         </div>
-        <button class="btn" id="export" type="button" disabled aria-label="Export G-code" data-tip="Export G-code">Export</button>
+        <button class="btn" id="export" type="button" disabled aria-label="Export G-code" data-tip="Export G-code">G-code</button>
       </div>
       <div class="gear-items" hidden>
         <label class="theme-field">Theme

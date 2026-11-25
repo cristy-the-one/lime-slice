@@ -674,6 +674,9 @@ extern "C" {
         scale_stations: *const f64,
         scale_count: c_int,
         twist_deg: f64,
+        cap_start: c_int,
+        cap_end: c_int,
+        cap_length: f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     /// --- Organic surfaces S3: controlled Loft v2 (apex caps, guide rails, boundary tangency/curvature, closed periodic, degree cap).

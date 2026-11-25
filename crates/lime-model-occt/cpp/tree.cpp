@@ -2906,6 +2906,9 @@ LimeShape* lime_tree_sweep(
     const double* scale_stations,
     int scale_count,
     double twist_deg,
+    int cap_start,
+    int cap_end,
+    double cap_length,
     char** error) {
     try {
         LIME_CATCH_FAULTS;
@@ -2939,6 +2942,9 @@ LimeShape* lime_tree_sweep(
             spec.scale_stations.assign(scale_stations, scale_stations + scale_count);
         }
         spec.twist_deg = twist_deg;
+        spec.cap_start = cap_start;
+        spec.cap_end = cap_end;
+        spec.cap_length = cap_length;
 
         double volume = 0.0;
         const TopoDS_Shape base = from != nullptr ? from->held.shape : TopoDS_Shape();

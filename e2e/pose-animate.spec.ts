@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { unzipSync } from "fflate";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 
 test("Pose plays, scrubs and keeps an animation without changing the pose until kept", async ({ page }) => {
   await page.addInitScript(() => {
@@ -46,7 +47,7 @@ test("Pose plays, scrubs and keeps an animation without changing the pose until 
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   const child = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${child}']`).click();
+  await linkInPose(page, child, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const doc = JSON.parse(readFileSync((await download.path())!, "utf8"));

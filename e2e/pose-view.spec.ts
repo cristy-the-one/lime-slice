@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { linkInPose } from "./link-in-pose";
 
 /**
  * Pose M1 (docs/plan-pose.md, section 4). A fifth stage draws every object at its assembled pose, solid in Model's
@@ -133,7 +134,7 @@ test("Pose draws assembled poses as the Assembly view does, and tints crossing p
   fs.mkdirSync(shots, { recursive: true });
   const ledge = await cubeAndLedge(page);
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${ledge}']`).click();
+  await linkInPose(page, ledge, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
   await page.locator("[data-assembly-view='assembly']").click();
   await expect(page.locator("#prepare")).toHaveAttribute("data-clashing", [ledge, "part"].sort().join(" "));
@@ -165,7 +166,7 @@ test("Pose with an empty plate says what to do", async ({ page }) => {
 test("Pose tints the selected part's joint chain up to its fixed anchor", async ({ page }) => {
   const ledge = await cubeAndLedge(page);
   await page.locator("[data-plate-select='part']").click();
-  await page.locator(`[data-plate-attach='${ledge}']`).click();
+  await linkInPose(page, ledge, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const doc = JSON.parse(fs.readFileSync((await download.path())!).toString("utf8"));
