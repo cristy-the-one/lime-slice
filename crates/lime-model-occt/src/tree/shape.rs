@@ -11,6 +11,7 @@ use super::ffi::{
     lime_tree_check,
     lime_tree_counts,
     lime_tree_editable,
+    lime_tree_exact_volume,
     lime_tree_fingerprint,
     lime_tree_free,
     lime_tree_mesh_free,
@@ -177,6 +178,20 @@ impl Shape {
             return Err(message.unwrap_or_else(|| "This shape cannot be edited".into()));
         }
         Ok(())
+    }
+
+    /// The exact volume, six decimals, cached on this solid. The per-step reply does not carry it.
+    pub(super) fn exact_volume_text(&mut self) -> Result<String, String> {
+        let mut buf = [0u8; 64];
+        // SAFETY: `buf` holds the text and its terminator. The cache write touches only this shape.
+        let ok = unsafe {
+            lime_tree_exact_volume(self.raw() as *mut RawShape, buf.as_mut_ptr().cast(), buf.len() as c_int)
+        };
+        if ok == 0 {
+            return Err("This solid's volume could not be read.".into());
+        }
+        let text = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr().cast()) };
+        Ok(text.to_string_lossy().into_owned())
     }
 
     pub(super) fn fingerprint(&self) -> Fingerprint {

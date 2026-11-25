@@ -2730,9 +2730,28 @@ int lime_tree_editable(const LimeShape* shape, char** error) {
 }
 
 void lime_tree_fingerprint(const LimeShape* shape, double* volume, int* faces, int* edges) {
+    // The quick measure, not exact_volume_gk. An apply that has not meshed answers with this, and the step guard
+    // reads that answer. The exact volume is a separate read, lime_tree_exact_volume.
     *volume = shape->held.volume;
     *faces = shape->held.faces.Extent();
     *edges = shape->held.edges.Extent();
+}
+
+/// The node's exact volume as six-decimal text, cached on the held solid. 0 when it cannot be written.
+int lime_tree_exact_volume(LimeShape* shape, char* out, int cap) {
+    try {
+        LIME_CATCH_FAULTS;
+        const std::string text = exact_volume_text(shape->held);
+        if (cap < 1 || static_cast<int>(text.size()) + 1 > cap) {
+            return 0;
+        }
+        std::memcpy(out, text.c_str(), text.size() + 1);
+        return 1;
+    } catch (const Standard_Failure&) {
+        return 0;
+    } catch (...) {
+        return 0;
+    }
 }
 
 /// The point at the middle of the edge's parameter range, and its length. 0 when the index is not on this solid.

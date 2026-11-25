@@ -171,6 +171,12 @@ pub(super) enum Request {
         #[serde(default = "default_chord")]
         chord_mm: f64,
     },
+    /// The exact volume of the solid `node` holds, six decimals, cached on that solid. A step's own reply
+    /// keeps the quick volume; this is the read a person or an agent asks for.
+    ExactVolume {
+        key: String,
+        node: NodeId,
+    },
     Drop {
         key: String,
         node: NodeId,
