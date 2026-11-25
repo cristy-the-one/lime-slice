@@ -2,10 +2,9 @@
  * A thin sweep fused onto a lofted skin that bends sharply, against real Open CASCADE.
  * Stand-in only, not a customer part. Each row is printed before any check, including a failure.
  *
- * Attempt 1 was an analytic ruled loft (circles, flare from r=8 to r=12 over 2.2 mm) with the
- * end 0.027–0.11 mm past the crease. Every plain fuse kept the part: the volume rose by about
- * 4.8 mm³ and the guard never tripped. This attempt puts a NURBS section through a near-right-angle
- * flare, so the cap extremity grazes that crease.
+ * Attempt 1, an analytic cone, and attempt 2, a ruled loft of smooth sections with the end
+ * 0.003–0.010 mm past a near-right-angle crease, both kept the part at all 48 steps. This attempt
+ * is a smoothed loft whose tail kicks sideways, and a spline tube that crosses that bend.
  *
  * Skips without LIME_OCCT_BRIDGE; fails in CI when it is unset. Ends with process.exit.
  */
@@ -35,17 +34,15 @@ process.env.LIME_MCP_WORKSPACE = workspace;
 process.env.LIME_MCP_MODEL_TIMEOUT_S = process.env.LIME_MCP_MODEL_TIMEOUT_S ?? "60";
 
 const BARREL_R = 8;
-const FLARE_Z0 = 24;
-/** 0.35 mm for an 8 mm radius jump: the wall turns nearly a right angle. */
-const FLARE_Z1 = 24.35;
-const FLARE_R1 = 16;
-const TAIL_Z = 36;
+const KICK_Z0 = 24;
+/** The outer skin leaves the barrel and runs to x=10 over 0.8 mm, about 68° off the axis. */
+const KICK_Z1 = 24.8;
+const KICK_X1 = 10;
 const TUBE_R = 0.45;
-/** How far the tube's inner side sits inside the barrel. The end then walks onto the flare. */
-const GRAZE = 0.03;
+/** How far the tube's inner side sits inside the barrel, before the kick. */
+const GRAZE = 0.04;
 const CENTER_X = BARREL_R + TUBE_R - GRAZE;
 const PATH_Z0 = 16;
-const PROFILE_N = 12;
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -80,31 +77,24 @@ const oneLine = (value: unknown) => String(value ?? "").replace(/\s+/g, " ").sli
 const loses = (before: number, after: number) => after < before - Math.max(before * 1e-4, 0.01);
 
 /**
- * Where the cap extremity sits. `inset` is how far the tube's inner generator is under the skin
- * there. On this flare that is 0.003–0.010 mm past the crease, so the end grazes the bend.
+ * Where the cap extremity sits on the kick. `inset` is how far the inner generator is under the
+ * straight generator from the barrel's +X point to the kicked section's +X point.
  */
 function zTip(inset: number): number {
-  return FLARE_Z0 + ((inset - GRAZE) * (FLARE_Z1 - FLARE_Z0)) / (FLARE_R1 - BARREL_R);
-}
-
-/** A closed smooth section through a circle. The +X point lies on the circle, so the ruled generator there is exact. */
-function circleSection(z: number, radius: number): Record<string, unknown> {
-  const profile: number[][] = [];
-  for (let i = 0; i < PROFILE_N; i += 1) {
-    const angle = (i / PROFILE_N) * Math.PI * 2;
-    profile.push([Math.cos(angle) * radius, Math.sin(angle) * radius]);
-  }
-  return { origin: [0, 0, z], profile, smooth: true };
+  return KICK_Z0 + ((inset - GRAZE) * (KICK_Z1 - KICK_Z0)) / (KICK_X1 - BARREL_R);
 }
 
 function tube(cap: Cap, inset: number): Record<string, unknown> {
   const reach = cap === "flat" ? 0 : TUBE_R;
   const zEnd = zTip(inset) - reach;
+  const start: [number, number, number] = [CENTER_X, -0.3, PATH_Z0];
+  const mid: [number, number, number] = [CENTER_X, 0, (PATH_Z0 + zEnd) / 2];
+  const end: [number, number, number] = [CENTER_X, 0.25, zEnd];
   const op: Record<string, unknown> = {
     kind: "sweep",
     op: "fuse",
-    sections: [{ origin: [CENTER_X, 0, PATH_Z0], radius: TUBE_R }],
-    spine: { kind: "polyline", points: [[CENTER_X, 0, PATH_Z0], [CENTER_X, 0, zEnd]] },
+    sections: [{ origin: start, radius: TUBE_R }],
+    spine: { kind: "spline", through: [start, mid, end] },
   };
   if (cap !== "flat") {
     op.capEnd = cap;
@@ -113,9 +103,10 @@ function tube(cap: Cap, inset: number): Record<string, unknown> {
   return op;
 }
 
-console.log("fuse-graze attempt 2: ruled loft of smooth 12-point sections. Barrel r=8 to z=24, flare to r=16 over 0.35 mm, then r=16 to z=36. The cap extremity is 0.003–0.010 mm past the crease.");
-console.log("fuse-graze attempt 1, for the record: analytic circles, flare r=8 to r=12 over 2.2 mm, end 0.027–0.11 mm past the crease. Plain fuse kept the part at all 48 steps (volume rose by about 4.8 mm³, guard never tripped).");
-console.log(`fuse-graze tube: radius ${TUBE_R}, centerline x=${CENTER_X.toFixed(2)} (${GRAZE.toFixed(2)} mm into the barrel). inset is the inner generator under the skin at the cap extremity, 0.10 to 0.25 mm by 0.01.`);
+console.log("fuse-graze attempt 3: smooth loft. Barrel r=8 to z=24, then the +X skin runs to x=10 at z=24.8 (center [6,0,24.8], r=4) and on to center [8,0,32], r=4. A spline tube crosses that kick.");
+console.log("fuse-graze attempt 2, for the record: ruled smooth 12-point sections, flare r=8 to r=16 over 0.35 mm, end 0.003–0.010 mm past the crease. Plain fuse kept the part at all 48 steps (volume rose by about 6.2 mm³, guard never tripped).");
+console.log("fuse-graze attempt 1, for the record: analytic circles, flare r=8 to r=12 over 2.2 mm. Plain fuse kept the part at all 48 steps (volume rose by about 4.8 mm³).");
+console.log(`fuse-graze tube: radius ${TUBE_R}, centerline x=${CENTER_X.toFixed(2)} (${GRAZE.toFixed(2)} mm into the barrel), bowed across Y so it crosses the seam at the kick. inset 0.10 to 0.25 mm by 0.01.`);
 console.log("fuse-graze retry: when the plain fuse (fuzzy 1e-7) is short of the part by the volume guard's own slack, a new boolean uses fuzzy 1e-5. The guard is unchanged. No mesh fallback.");
 
 let exitCode = 0;
@@ -123,8 +114,13 @@ try {
   const made = await call("solid_new", {
     feature: {
       kind: "loft",
-      ruled: true,
-      sections: [circleSection(0, BARREL_R), circleSection(FLARE_Z0, BARREL_R), circleSection(FLARE_Z1, FLARE_R1), circleSection(TAIL_Z, FLARE_R1)],
+      ruled: false,
+      sections: [
+        { origin: [0, 0, 0], radius: BARREL_R },
+        { origin: [0, 0, KICK_Z0], radius: BARREL_R },
+        { origin: [6, 0, KICK_Z1], radius: 4 },
+        { origin: [8, 0, 32], radius: 4 },
+      ],
     },
   });
   const object = String(made.object ?? "");
