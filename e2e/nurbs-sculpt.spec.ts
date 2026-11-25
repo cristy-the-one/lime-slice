@@ -217,13 +217,14 @@ test("on a moved and turned object, a drag moves the pole in the object's own fr
   const sculpt = await start(page);
   await newSurface(page, sculpt);
   // Turn the new object 90° about Z and move it.
-  if (!(await page.locator("#modelToolPlace").isVisible())) await page.locator('.rail-group[data-group="frame"] .rail-fold').click();
-  await page.locator("#modelToolPlace").click();
-  await expect(page.locator("#modelPlaceRz")).toBeVisible();
-  for (const [id, value] of [["#modelPlaceRz", 90], ["#modelPlaceX", 30]] as const) {
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await expect(page.locator("#poseMoveRz")).toBeVisible();
+  for (const [id, value] of [["#poseMoveRz", 90], ["#poseMoveX", 30]] as const) {
     await page.locator(id).fill(String(value));
     await page.locator(id).press("Tab");
   }
+  await page.locator("#tabModel").click();
   await openTool(page);
   await select(page, 5, 2);
   const before = await shownPole(page);

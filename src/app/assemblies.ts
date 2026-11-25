@@ -8,7 +8,7 @@ import type { Bounds } from "../mesh-place.ts";
 import type { PairResult } from "../interference.ts";
 import type { ContextPart } from "../model-context.ts";
 import { movedPose, posedBounds, thenPose, type Affine } from "../model-space.ts";
-import { meshToModel, modelPoseOf, plateUnionBounds, withModelPose } from "../plate.ts";
+import { meshToModel, modelPoseOf, withModelPose } from "../plate.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import { fx } from "./fx.ts";
 import { refreshObjectList } from "./settings.ts";
@@ -225,50 +225,20 @@ export async function measureClashes(volume: (a: string, b: string) => Promise<n
 export const assemblyView = { on: false };
 
 /**
- * The Print layout / Assembly chip under Prepare's camera chip, shown while the plate has an assembly, and the viewport
- * drawn as it says. Leaving the last assembly returns to the print layout.
+ * Prepare shows only the print layout (D5). Pose is the assembly view, so the old view chip is not built.
+ * Callers still refresh Pose from here.
  */
 export function syncAssemblyView() {
-  const has = liveAssemblies().length > 0;
-  if (!has) assemblyView.on = false;
-  const host = document.querySelector("#prepareBody");
-  let chip = document.querySelector<HTMLElement>("#assemblyViewChip");
-  if (host && !chip) {
-    chip = document.createElement("div");
-    chip.id = "assemblyViewChip";
-    chip.className = "modes stage-chip view-mode-chip";
-    chip.setAttribute("role", "group");
-    chip.setAttribute("aria-label", "View");
-    for (const [mode, label, tip] of [["print", "Print layout", "Where each part prints on the bed"], ["assembly", "Assembly", "Every part where it sits in the assembly"]] as const) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "btn";
-      button.dataset.assemblyView = mode;
-      button.dataset.tip = tip;
-      button.textContent = label;
-      button.addEventListener("click", () => setAssemblyView(mode === "assembly"));
-      chip.append(button);
-    }
-    host.append(chip);
-  }
-  if (chip) {
-    chip.hidden = !has;
-    for (const button of chip.querySelectorAll<HTMLButtonElement>("[data-assembly-view]")) button.setAttribute("aria-pressed", String((button.dataset.assemblyView === "assembly") === assemblyView.on));
-  }
-  const { bedX, bedY } = state.profile;
-  const clashing = assemblyView.on ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
-  fx.prepare?.setAssembled?.(assemblyView.on ? assembledParts(bedX, bedY).parts : null, state.plate.selectedId, clashing);
-  // The Pose stage draws the same assembled poses, so whatever redraws the Assembly view redraws Pose.
+  assemblyView.on = false;
+  document.querySelector("#assemblyViewChip")?.remove();
+  fx.prepare?.setAssembled?.(null, state.plate.selectedId, new Set());
   fx.syncPose?.();
 }
 
 export function setAssemblyView(on: boolean) {
-  if (assemblyView.on === on) return;
-  assemblyView.on = on;
+  // Pose is the assembly view, so Prepare stays on the print layout either way.
+  void on;
   syncAssemblyView();
-  const { bedX, bedY } = state.profile;
-  const bounds = on ? assembledParts(bedX, bedY).bounds : state.placed ? plateUnionBounds(state.plate.objects, bedX, bedY) : null;
-  if (bounds) fx.prepare?.frameBounds(bounds);
   refreshObjectList();
 }
 

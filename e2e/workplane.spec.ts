@@ -219,25 +219,27 @@ test("Edit step opens a hole cut on a face frame with its own model-space number
   await expect(canvas(page), "the frame is back after the edit").toHaveAttribute("data-workplane", SIDE);
 });
 
-test("the frame moves with its part under Place", async ({ page }) => {
+test("the frame moves with its part under Pose's Move", async ({ page }) => {
   await openModel(page);
   await onSide(page);
   await page.locator("#modelCancel").click();
-  await page.locator("#modelToolPlace").click();
-  await page.locator("#modelPlaceX").fill("30");
-  await page.locator("#modelPlaceX").dispatchEvent("input");
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await page.locator("#poseMoveX").fill("30");
+  await page.locator("#poseMoveX").press("Tab");
+  await page.locator("#tabModel").click();
   await expect(canvas(page)).toHaveAttribute("data-workplane", "face:50.00,10.00,5.00:90.00,0.00,90.00");
-  await page.locator("#modelCancel").click();
   await page.locator("#modelToolWorkplane").click();
   await expect(page.locator("#modelWpX"), "the panel reads where the frame now is").toHaveValue("50");
 });
 
 test("on a moved part, Global stays model space and a turn past Turn Y 90 keeps its numbers", async ({ page }) => {
   await openModel(page);
-  await page.locator("#modelToolPlace").click();
-  await page.locator("#modelPlaceX").fill("30");
-  await page.locator("#modelPlaceX").dispatchEvent("input");
-  await page.locator("#modelCancel").click();
+  await page.locator("#tabPose").click();
+  await page.keyboard.press("M");
+  await page.locator("#poseMoveX").fill("30");
+  await page.locator("#poseMoveX").press("Tab");
+  await page.locator("#tabModel").click();
   await page.locator("#modelToolWorkplane").click();
   await page.locator("#modelWpBed").click();
   await page.locator("#modelWpRy").fill("95");

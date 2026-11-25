@@ -66,10 +66,11 @@ test("Measure gives a crossing pair its common volume, and a sliver reads as a t
   const ids = await page.locator("#objectList [data-plate-select]").evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.plateSelect!));
   await page.locator(`[data-plate-select='${ids[0]}']`).click();
   await linkInPose(page, ids[1]!, ids[0]!);
-  await page.locator("[data-assembly-view='assembly']").click();
-  const row = page.locator("#assemblyInterference");
+  await page.locator("#tabPose").click();
+  const row = page.locator("#posePanel #assemblyInterference");
   await expect(row, "two solids on one spot share volume by the mesh").toContainText("one sits inside the other");
-  await expect(page.locator("#prepare")).toHaveAttribute("data-clashing", [...ids].sort().join(" "));
+  await expect(page.locator("#pose")).toHaveAttribute("data-looks", new RegExp(ids[0]!));
+  await expect(page.locator("#pose")).toHaveAttribute("data-looks", /clash/);
 
   await row.locator("[data-assembly-measure]").click();
   await expect(row).toContainText("14.2 mm³");
@@ -83,11 +84,11 @@ test("Measure gives a crossing pair its common volume, and a sliver reads as a t
 
   // Moved by 0.1 mm the pair is measured afresh; the kernel now finds a sliver, so it is a touch.
   common = 0.004;
-  await page.locator(`[data-plate-select='${ids[1]}']`).click();
-  await page.locator('#toolRail [data-tool="move"]').click();
+  await page.locator(`#posePanel [data-object='${ids[1]}']`).click();
+  await page.keyboard.press("M");
   await page.getByRole("button", { name: "Nudge X +0.1 mm" }).click();
   await expect(row.locator("[data-assembly-measure]")).toBeVisible();
   await row.locator("[data-assembly-measure]").click();
   await expect(row, "a sliver under 0.01 mm³ is a touch").toHaveCount(0);
-  await expect(page.locator("#prepare")).toHaveAttribute("data-clashing", "");
+  await expect(page.locator("#pose")).not.toHaveAttribute("data-looks", /clash/);
 });

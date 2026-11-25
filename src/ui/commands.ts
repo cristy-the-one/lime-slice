@@ -101,21 +101,21 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-split", label: "Split with a plane", group: "Model", keys: ["D"], when: "model", target: "#modelToolSplit", keywords: "plane" },
   // --- P1: Push/Pull takes P, which Split had. Split is D. P is also the gesture when no model tool is open. ---
   { id: "model-pushpull", label: "Push/Pull", group: "Model", keys: ["P"], when: "model", target: "#modelToolPull", keywords: "push pull face extrude offset move faces" },
-  // --- S2 sketch --- S in Model. S in Prepare is still Scale. ---
+  // --- S2 sketch --- S in Model is Sketch. S in Prepare is still Scale. ---
   { id: "model-sketch", label: "Sketch", group: "Model", keys: ["S"], when: "model", target: "#modelToolSketch", keywords: "line rectangle circle arc polygon slot spline trim offset fillet construction use plane draw" },
   { id: "model-fillet", label: "Fillet", group: "Model", keys: ["L"], when: "model", target: "#modelToolFillet", keywords: "round edge" },
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
   { id: "model-features", label: "Features", group: "Model", when: "model", target: '#modelToolFeatures, #modelFeatureMenu [data-tool="pocket"]', keywords: "pocket boss texture array ribs text" },
-  // --- A4 pattern and mirror. No shortcut: P is Push/Pull, H is Hole, Shift+P is Place. ---
+  // --- A4 pattern and mirror. No shortcut: P is Push/Pull, H is Hole. Shift+P is free (design-space move is Pose's M). ---
   { id: "model-pattern", label: "Pattern", group: "Model", when: "model", target: "#modelToolPattern", keywords: "repeat linear polar path copy steps" },
   { id: "model-mirror", label: "Mirror", group: "Model", when: "model", target: "#modelToolMirror", keywords: "reflect flip plane" },
   // --- A2 shell ---
   { id: "model-shell", label: "Shell", group: "Model", when: "model", target: "#modelToolShell", keywords: "hollow wall thickness open face" },
   // --- Draft on picked faces. No key, as Shell: the free letters belong to no scheme a draft fits.
   { id: "model-draft", label: "Draft", group: "Model", when: "model", target: "#modelToolDraft", keywords: "taper tilt wall angle mould mold release pull" },
-  { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },
-  { id: "model-place", label: "Place in model space", group: "Model", keys: ["Shift+P"], when: "model", target: "#modelToolPlace", keywords: "move turn position assembly align" },
+  // --- D2: Shift+S. Inside a sketch Shift+S stays Slot, and X is free in Model. Shift+P is free: design-space move is Pose's M. ---
+  { id: "model-scale", label: "Scale solid", group: "Model", keys: ["Shift+S"], when: "model", target: "#modelToolScale", keywords: "factor" },
   { id: "model-workplane", label: "Workplane", group: "Model", keys: ["Shift+U"], when: "model", target: "#modelToolWorkplane", keywords: "uvw local frame datum face bed origin sketch plane" },
   // --- A7 model check ---
   { id: "model-check", label: "Check the solid", group: "Model", keys: ["Shift+K"], when: "model", target: "#modelToolCheck", keywords: "overhang ceiling island thin wall fit printability" },
@@ -203,6 +203,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], when: "prepare", target: '#toolRail [data-tool="scale"]', keywords: "percent gizmo" },
   { id: "tool-pivot", label: "Pivot", group: "Tools", when: "prepare", target: '#toolRail [data-tool="pivot"]', keywords: "origin joint" },
   { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], when: "prepare", target: '#layflat, #toolRail [data-tool="layflat"]', keywords: "bed face" },
+  { id: "pose-move", label: "Move", group: "Tools", keys: ["M"], when: ["pose"], target: '#toolRail [data-pose-tool="move"]', layouts: ["desktop"], keywords: "pose move design space place snap align" },
   { id: "pose-select", label: "Select", group: "Tools", keys: ["V"], when: ["pose"], target: '#toolRail [data-pose-tool="select"]', layouts: ["desktop"], keywords: "pose pick orbit" },
   { id: "pose-turn", label: "Turn joint", group: "Tools", keys: ["R"], when: ["pose"], target: '#toolRail [data-pose-tool="turn"]', layouts: ["desktop"], keywords: "pose hinge ring forward kinematics angle" },
   { id: "pose-reach", label: "Reach", group: "Tools", keys: ["G"], when: ["pose"], target: '#toolRail [data-pose-tool="reach"]', layouts: ["desktop"], keywords: "pose ik inverse kinematics drag grab chain" },
@@ -240,21 +241,24 @@ export const COMMANDS: CommandSpec[] = [
   { id: "profile-import", label: "Import settings profile", group: "Settings", keywords: "limeprofile json open" },
 ];
 
-/** Gestures the sheet lists beside the keys. The pointer code lives in the views. */
-export const MOUSE_HINTS: { gesture: string; label: string }[] = [
-  { gesture: "Shift+click", label: "Model: add or remove a face or edge" },
+/** Gestures the sheet lists beside the keys. The pointer code lives in the views. `stages` is where the sheet shows the row. */
+export const MOUSE_HINTS: { gesture: string; label: string; stages: readonly string[] }[] = [
+  { gesture: "Shift+click", label: "Model: add or remove a face or edge", stages: ["Model"] },
   // --- P1 ---
-  { gesture: "Drag a face", label: "Push or pull. Alt adds or cuts on that face only." },
-  { gesture: "Click empty", label: "Clear the Model selection" },
-  { gesture: "Ctrl + drag", label: "Move the object: on the bed in Prepare, in model space in Model. It snaps to the other objects; Alt turns that off. Ctrl+click on another object opens it." },
-  { gesture: "Ctrl + right-drag", label: "Turn the object about Z, in Prepare and in Model. X, Y or Z while dragging picks the axis; Esc cancels." },
-  { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
-  { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },
-  { gesture: "Alt/Shift + wheel", label: "Resize the paint brush" },
-  { gesture: "Shift+click", label: "Paint: a straight line from the last dab" },
-  { gesture: "Drag the plane", label: "Move the By region split" },
-  { gesture: "2D: drag", label: "Pan the layer" },
-  { gesture: "2D: wheel", label: "Zoom at the cursor" },
+  { gesture: "Drag a face", label: "Push or pull. Alt adds or cuts on that face only.", stages: ["Model"] },
+  { gesture: "Click empty", label: "Clear the Model selection", stages: ["Model"] },
+  { gesture: "Ctrl+click", label: "Open the object under the pointer", stages: ["Model"] },
+  { gesture: "Ctrl + drag", label: "Move the object on the bed. It snaps to the other objects; Alt turns that off. Ctrl+click on another object opens it.", stages: ["Prepare"] },
+  { gesture: "Ctrl + right-drag", label: "Turn the object about Z. X, Y or Z while dragging picks the axis; Esc cancels.", stages: ["Prepare"] },
+  { gesture: "Drag", label: "Move (M) drags a part in design space. It snaps to the other parts; Alt turns snap off.", stages: ["Pose"] },
+  { gesture: "Right-drag", label: "Move's right-drag turns the part in design space. X, Y or Z picks the axis; Esc cancels.", stages: ["Pose"] },
+  { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°", stages: ["Prepare", "Model", "Pose"] },
+  { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring", stages: ["Prepare", "Model"] },
+  { gesture: "Alt/Shift + wheel", label: "Resize the paint brush", stages: ["Prepare"] },
+  { gesture: "Shift+click", label: "Paint: a straight line from the last dab", stages: ["Prepare"] },
+  { gesture: "Drag the plane", label: "Move the By region split", stages: ["Prepare", "Preview"] },
+  { gesture: "2D: drag", label: "Pan the layer", stages: ["Preview"] },
+  { gesture: "2D: wheel", label: "Zoom at the cursor", stages: ["Preview"] },
 ];
 
 /** Everything that decides whether a chord fires, read once per key press. */
@@ -469,45 +473,75 @@ export function screensOf(command: CommandSpec): readonly string[] {
   return typeof when === "string" ? SCOPE_SCREENS[when] : when;
 }
 
-/** Keyed commands for the sheet, grouped in registry order. A chord that another sheet row shares carries its context. */
+/** Sheet sections, in the order the overlay prints them. A command is listed in each stage where its key works. */
+export const SHEET_STAGES = ["App", "Model", "Sketch", "Pose", "Prepare", "Preview", "G-code"] as const;
+
+/** Stages whose keys a scope belongs on. App is a key that works in every stage, or only while a slice is running. */
+const SCOPE_SHEET: Record<KeyScope, readonly string[]> = {
+  always: ["App"],
+  help: ["App"],
+  running: ["App"],
+  workspace: ["App"],
+  searching: ["App"],
+  model: ["Model"],
+  "model-any": ["Model", "Sketch"],
+  sketch: ["Sketch"],
+  "sketch-feature": ["Sketch"],
+  "sketch-draw": ["Sketch"],
+  "sketch-loft": ["Sketch"],
+  prepare: ["Prepare"],
+  objects: ["Prepare"],
+  brush: ["Prepare"],
+  preview: ["Preview"],
+  find: ["Pose", "Prepare", "Preview", "G-code"],
+};
+
+function sheetStagesOf(command: CommandSpec): readonly string[] {
+  const when = command.when ?? "always";
+  if (typeof when !== "string") return when.map((stage) => STAGE_LABEL[stage]);
+  return SCOPE_SHEET[when];
+}
+
+/** Keyed commands for the sheet, one section per stage. A chord that another command shares carries its context. */
 export function helpGroups(commands: CommandSpec[] = COMMANDS): HelpGroup[] {
   const shown = commands.filter((command) => command.keys && command.show !== "none");
   const users = new Map<string, number>();
   for (const command of shown) for (const chord of new Set(command.keys)) users.set(chord, (users.get(chord) ?? 0) + 1);
-  const groups: HelpGroup[] = [];
+  const groups: HelpGroup[] = SHEET_STAGES.map((group) => ({ group, entries: [] }));
   for (const command of shown) {
-    let group = groups.find((g) => g.group === command.group);
-    if (!group) {
-      group = { group: command.group, entries: [] };
-      groups.push(group);
-    }
     const keys = command.keys!;
     const shared = keys.some((chord) => (users.get(chord) ?? 0) > 1);
-    group.entries.push({
+    const entry: HelpEntry = {
       id: command.id,
       keys,
       label: command.label,
       ...(shared ? { context: contextOf(command) } : {}),
       keywords: `${keys.join(" ")} ${command.keywords ?? ""}`.trim(),
-    });
+    };
+    for (const name of sheetStagesOf(command)) groups.find((group) => group.group === name)?.entries.push(entry);
   }
   return groups;
 }
 
-/** Every group on the sheet: the keyed commands (palette-listed or help-only) and the mouse gestures, all searchable. */
+/** Every group on the sheet: the keyed commands, and the mouse gestures in the stages they belong to. */
 export function sheetGroups(commands: CommandSpec[] = COMMANDS): HelpGroup[] {
-  return [
-    ...helpGroups(commands),
-    { group: "Mouse", entries: MOUSE_HINTS.map((hint, index) => ({ id: `mouse-${index}`, keys: [hint.gesture], label: hint.label, keywords: `${hint.gesture} mouse` })) },
-  ];
+  const groups = helpGroups(commands);
+  MOUSE_HINTS.forEach((hint, index) => {
+    for (const name of hint.stages) {
+      groups.find((group) => group.group === name)?.entries.push({
+        id: `mouse-${index}-${name}`,
+        keys: [hint.gesture],
+        label: hint.label,
+        keywords: `${hint.gesture} mouse`,
+      });
+    }
+  });
+  return groups;
 }
 
-/** The sheet groups that hold this workspace's keys: the ones that open by themselves. */
+/** The sheet groups that hold this workspace's keys: App, and the stage on screen. A sketch opens Sketch. */
 export function groupsForStage(stage: StageName, sketchOpen = false): string[] {
-  if (stage === "prepare") return ["Plate", "Tools"];
-  if (stage === "preview") return ["Layers"];
-  if (stage === "gcode") return ["Slice"];
-  return sketchOpen ? ["Sketch"] : ["Model"];
+  return ["App", sketchOpen ? "Sketch" : STAGE_LABEL[stage]];
 }
 
 /** The sheet's search: the palette's matching over each row's label, chords and group. A blank query keeps every group. */

@@ -57,7 +57,9 @@ const numberFields = [...markup.matchAll(/<label data-for="([\w ]+)"[^>]*>.*?<in
   id: match[2]!,
 }));
 check("the Model panel has number fields", numberFields.length >= 20);
-for (const tool of MODEL_TOOLS) {
+// Place left the toolbar for Pose's Move. Its number fields and dock handles are still in the markup.
+const dragTools = [...MODEL_TOOLS, "place" as const];
+for (const tool of dragTools) {
   const shown = numberFields.filter((field) => field.tools.includes(tool)).map((field) => field.id);
   for (const id of shown) check(`${tool} drags ${id}`, DRAG_FIELDS[tool].includes(id));
   for (const id of DRAG_FIELDS[tool]) check(`${tool} shows ${id} as a number`, shown.includes(id));
@@ -86,7 +88,7 @@ function context(primitive: DragContext["primitive"], extra: Partial<DragContext
     ...extra,
   };
 }
-for (const tool of MODEL_TOOLS) {
+for (const tool of dragTools) {
   const dragged = new Set<string>();
   // A hole's counterbore fields show only with its box ticked, and have handles then.
   // A feature's circle and polygon sizes show only for that shape, and have handles then.

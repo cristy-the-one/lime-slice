@@ -30,6 +30,7 @@ import { lookPoseChanged } from "../../ui/model-look";
 import { modelPoseOf, withFrame, withModelPose } from "../../plate";
 import { livePlate } from "../files";
 import { beginEdit, flushEdit, markModelEdit } from "../history";
+import { shownTurnFor } from "../pose-move";
 import { fx } from "../fx";
 import { session, state } from "../state";
 import type { Params } from "../../modeling/expr.ts";
@@ -193,16 +194,9 @@ export function grabReady(): boolean {
   return !!S.open && !S.busy && !S.jumping && !S.editing && !S.lens;
 }
 
-/** The pointer has left the slop of a Ctrl-press: Place opens, and the whole grab is one step of it. */
+/** Design-space move is Pose's Move. Ctrl-drag in Model stays with the open tool. */
 export function grabStart(): boolean {
-  if (!grabReady()) return false;
-  openPlaceTool();
-  if (openModelTool() !== "place") return false;
-  endPlace();
-  S.placeBefore = objectPose();
-  grabFrom = isIdentity(viewFrame()) ? null : S.placeBefore;
-  beginEdit();
-  return true;
+  return false;
 }
 
 /** `pose` is in the view the grab started in: for a part open in its own frame, that is its pose when the grab began. */
@@ -299,7 +293,8 @@ function frameShown() {
 /** The Position row, from the pose the plate object holds and the solid's own box, read once per solid. */
 export function syncPosition() {
   const pose = objectPose();
-  syncModelPosition(S.open ? placeFields(pose, pivotOf(S.open.solid), turnHint()) : null, isIdentity(pose), placeFrame());
+  const near = S.open ? shownTurnFor(S.open.objectId, pose) ?? turnHint() : undefined;
+  syncModelPosition(S.open ? placeFields(pose, pivotOf(S.open.solid), near) : null, isIdentity(pose), placeFrame());
 }
 
 /**
@@ -309,12 +304,9 @@ export function syncPosition() {
 export function resetPose() {
   const at = S.open;
   if (!at || S.busy || S.jumping || isIdentity(objectPose())) return;
-  openPlaceTool();
-  if (openModelTool() !== "place") return;
-  endPlace();
-  S.placeBefore = objectPose();
   beginEdit();
   putPose(at.objectId, IDENTITY_POSE);
-  endPlace();
-  syncPlaceFields(true);
+  flushEdit();
+  markModelEdit();
+  syncPosition();
 }
