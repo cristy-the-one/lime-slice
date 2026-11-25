@@ -40,10 +40,10 @@ check("progress the work reports is sent as it is", nextProgress(0.2, 0.6) === 0
   const before = process.env.LIME_MCP_WORKSPACE;
   process.env.LIME_MCP_WORKSPACE = shared;
   writeFileSync(join(shared, `autosave-${process.ppid}.lime`), JSON.stringify({ objects: [{}] }));
-  const live = takePreviousAutosave();
+  const live = await takePreviousAutosave();
   check("a running server's autosave is not taken", live === null && existsSync(join(shared, `autosave-${process.ppid}.lime`)));
   writeFileSync(join(shared, "autosave-2147483646.lime"), JSON.stringify({ objects: [{}, {}] }));
-  const ended = takePreviousAutosave();
+  const ended = await takePreviousAutosave();
   check("an ended server's autosave is offered as the previous plate", ended?.objects === 2 && ended.path === join(shared, "autosave-previous.lime") && !existsSync(join(shared, "autosave-2147483646.lime")), JSON.stringify(ended));
   if (before === undefined) delete process.env.LIME_MCP_WORKSPACE;
   else process.env.LIME_MCP_WORKSPACE = before;
