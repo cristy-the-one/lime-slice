@@ -7,6 +7,7 @@ import { AREA_NAMES, AREAS } from "./catalog.ts";
 import { GROUP_NAMES } from "./groups.ts";
 import { GUIDES } from "./guides.ts";
 import { imagesOf } from "./inline.ts";
+import { beginPreamble } from "./loop-delay.ts";
 import { annotationsFor, listedTools } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
 import { appVersion } from "./version.ts";
@@ -478,6 +479,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
       }, "list");
     }
     if (method === "tools/call") {
+      beginPreamble();
       const name = String(params.name ?? "");
       const args = params.arguments ?? {};
       try {

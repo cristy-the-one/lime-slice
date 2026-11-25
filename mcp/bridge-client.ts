@@ -9,6 +9,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { timePhase } from "./loop-delay.ts";
+
 export interface BridgeLink {
   /** Mesh hashes the current desktop has been sent. */
   known: Set<string>;
@@ -72,7 +74,7 @@ export function bridgeTokenFile(): string | null {
 let fileCache: { at: number; path: string; value: { url: string; token: string } | null } | null = null;
 
 function fromTokenFile(): { url: string; token: string } | null {
-  const path = bridgeTokenFile();
+  const path = timePhase("bridgeTokenFile", () => bridgeTokenFile());
   if (!path) return null;
   if (fileCache && fileCache.path === path && Date.now() - fileCache.at < 1000) return fileCache.value;
   let value: { url: string; token: string } | null = null;
