@@ -10,8 +10,8 @@ on:
     branches: [main]
 
 concurrency:
-  group: w1-brep-crash-loop-${{ github.ref }}
-  cancel-in-progress: false
+  group: w1-loop-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   w1-brep-crash-loop:
@@ -56,7 +56,58 @@ jobs:
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Build the lime-model-occt tests once
-        run: cargo test -p lime-model-occt --locked --no-run
+        env:
+          CC_ENABLE_DEBUG_OUTPUT: "1"
+        run: cargo test -p lime-model-occt --locked --no-run -vv
+
+      - name: Print which C runtime the bridge and OCCT load
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin.exe$' } | Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "DUMPBIN=$dumpbin"
+          $out = Join-Path $env:RUNNER_TEMP "w1-crt.txt"
+          function Show-Deps([string]$path) {
+            $lines = @("===== DEPENDENTS $path =====")
+            if (-not (Test-Path -LiteralPath $path)) { $lines += "MISSING"; $lines | Tee-Object -FilePath $out -Append | Write-Host; return }
+            $dep = & $dumpbin /nologo /dependents $path
+            $lines += $dep | Select-String -Pattern "Dump of file|Image has the following dependencies|vcruntime|msvcp|ucrtbase|VCRUNTIME|MSVCP|UCRT|api-ms-win-crt|concrt" | ForEach-Object { $_.Line }
+            $lines += "===== DIRECTIVES $path ====="
+            $dir = & $dumpbin /nologo /directives $path
+            $hit = @($dir | Select-String -Pattern "DEFAULTLIB|msvcr|vcruntime|ucrt|libcmtd|libcmt|msvcrt")
+            if ($hit.Count -eq 0) { $lines += "(no CRT directive)" } else { $lines += $hit | ForEach-Object { $_.Line } }
+            $lines | Tee-Object -FilePath $out -Append | Write-Host
+          }
+          "" | Set-Content -Path $out -Encoding utf8
+          Write-Host "===== SCRIPT CRT FLAGS ====="
+          @(
+            "cc 1.11.2 (Cargo.lock) passes -MD to MSVC unless crt-static or Build::static_crt(true). It does not pass -MDd.",
+            "build.rs adds /EHa on MSVC and does not pass /MD, /MDd, /MT, or /MTd.",
+            "tools/occt/install.py builds with the Visual Studio generator and cmake --build --config Release, which is /MD."
+          ) | Tee-Object -FilePath $out -Append | Write-Host
+          Select-String -Path tools\occt\install.py,crates\lime-model-occt\build.rs -Pattern "Release|CMAKE_CXX_FLAGS|/MD|/MT|EHa|static_crt" | ForEach-Object { "$($_.Filename):$($_.LineNumber): $($_.Line.Trim())" } | Tee-Object -FilePath $out -Append | Write-Host
+          $bins = @()
+          $bins += @(Get-ChildItem -Path target\debug,target\debug\deps -Filter brep-*.exe -ErrorAction SilentlyContinue)
+          $bins += @(Get-ChildItem -Path target\debug,target\debug\deps -Filter lime_model_occt.dll -ErrorAction SilentlyContinue)
+          $bins += @(Get-ChildItem -Path target\debug\build -Recurse -Include lime_occt_kernel.lib,*.obj -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'lime-model-occt|lime_occt' } | Select-Object -First 8)
+          foreach ($bin in $bins) { if ($bin) { Show-Deps $bin.FullName } }
+          foreach ($dll in @("TKernel.dll","TKBRep.dll","TKMesh.dll","TKBO.dll","TKDESTEP.dll","TKPrim.dll")) {
+            foreach ($dir in @("$env:OCCT_ROOT\bin","$env:OCCT_ROOT\lib")) {
+              $p = Join-Path $dir $dll
+              if (Test-Path -LiteralPath $p) { Show-Deps $p }
+            }
+          }
+          $cc = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Directory -Filter "cc-1.11.2*" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($cc) {
+            Write-Host "===== cc $($cc.FullName) crt_flag ====="
+            Select-String -Path (Join-Path $cc.FullName "src\lib.rs") -Pattern "let crt_flag" -Context 0,14 | ForEach-Object { $_.Line; $_.Context.PostContext } | Tee-Object -FilePath $out -Append | Write-Host
+          } else {
+            "cc-1.11.2 source not in the cargo registry" | Tee-Object -FilePath $out -Append | Write-Host
+          }
+          "CRT_REPORT=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Loop the brep binary and the other test binaries
         shell: pwsh
@@ -289,5 +340,6 @@ jobs:
           path: |
             ${{ runner.temp }}/w1-dumps
             ${{ runner.temp }}/w1-pdbs
+            ${{ runner.temp }}/w1-crt.txt
           if-no-files-found: ignore
           retention-days: 14
