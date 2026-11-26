@@ -339,7 +339,7 @@ Optional streamable HTTP stays on `127.0.0.1`. It requires a bearer token, the s
 
 The child `serve` is not the port 43118 a developer may already be using. The MCP process picks a free port and passes `--token`. It does not read `LIME_SLICE_TOKEN` from the user's environment into the child unless that is the operator's own `serve` and they pointed `LIME_MCP_SERVE` at it. Sharing a `serve` with the Vite UI mixes mesh stores and tree locks. The default is a private child.
 
-Negotiate the MCP protocol version the client offers. Tools, resources, prompts, and `notifications/progress` are enough for the first version. The long-running task features in the 2026-07-28 specification are a later optimisation. The official Rust SDK `rmcp` 3.5.1 (crates.io, 2026-10-05) advertises that specification; the first server does not need it, because `POST /api/jobs` is already the long-running slice.
+Negotiate the MCP protocol version the client offers. The server speaks `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25` and `2026-07-28`. A 2026-07-28 client carries the revision in each request's `_meta` and can call `server/discover`. A client that declares tasks gets a slice, an export or a long run as a native task, and `tasks/get` reports its progress. A client on an older revision, or one that does not declare tasks, still gets a job, and `slice_wait` returns it. `POST /api/jobs` is still the long-running slice underneath.
 
 ### Session and handles
 
