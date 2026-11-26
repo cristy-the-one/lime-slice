@@ -276,7 +276,10 @@ jobs:
 
           Write-Host "===== SUMMARY ====="
           if (Test-Path $summary) { Get-Content $summary | Write-Host }
-          exit 0
+          # Non-zero on purpose: this job is a measurement, and a repeated green
+          # check is not delivered. The fatal counts and the cdb log are the result.
+          Add-Summary "DIAGNOSTIC_EXIT 1"
+          exit 1
 
       - name: Upload dumps, PDBs, and debugger logs
         if: always()
