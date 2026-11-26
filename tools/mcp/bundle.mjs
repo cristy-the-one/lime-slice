@@ -1,7 +1,7 @@
 // Bundles the MCP server for the installer: plain JavaScript that a stock Node 22
 // runs without type stripping. The engine library is copied next to it by the
 // release workflow. Usage: node tools/mcp/bundle.mjs [outdir]
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
@@ -38,4 +38,8 @@ for (const name of readdirSync(`${root}crates`)) {
   mkdirSync(`${outdir}/${name}/src`, { recursive: true });
   copyFileSync(`${root}crates/${name}/src/lib.rs`, `${outdir}/${name}/src/lib.rs`);
 }
+// The skill travels with the server (docs/plan-mcp-2026-07-28.md §3a). The running
+// server reads `skills/` beside server.mjs, which is this folder in an install.
+rmSync(`${outdir}/skills`, { recursive: true, force: true });
+cpSync(`${root}mcp/skills`, `${outdir}/skills`, { recursive: true });
 console.log(`MCP server ${version} bundled into ${outdir}`);

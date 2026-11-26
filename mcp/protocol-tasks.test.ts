@@ -420,9 +420,10 @@ try {
     clientInfo: { name: "legacy", version: "0" },
   }));
   const legacyHello = await untilId(legacy, legacyInit);
+  // Skills are declared on this revision too. This check is only that tasks are not.
   check(
     "a 2025-11-25 initialize does not advertise tasks",
-    legacyHello.result?.capabilities?.extensions === undefined && legacyHello.result?.capabilities?.tools?.listChanged === true,
+    legacyHello.result?.capabilities?.extensions?.[TASKS] === undefined && legacyHello.result?.capabilities?.tools?.listChanged === true,
     JSON.stringify(legacyHello.result?.capabilities),
   );
   const legacyPart = await tool(legacy, "solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });

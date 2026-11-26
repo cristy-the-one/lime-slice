@@ -209,6 +209,7 @@ mcp/native-load.test.ts
 mcp/stdio.test.ts # serial — each new server's first reply must come within 4 s, and that missed once with 8 files on the cores
 mcp/protocol-2026.test.ts # serial — stdio server startup, same reason as stdio.test.ts
 mcp/protocol-tasks.test.ts # serial — stdio server startup, same reason as stdio.test.ts
+mcp/skills.test.ts # serial — stdio server startup, same reason as stdio.test.ts
 mcp/part-a.test.ts
 mcp/project-v4.test.ts
 mcp/batch1.test.ts
