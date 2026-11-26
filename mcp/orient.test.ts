@@ -202,9 +202,9 @@ check(
 
 const oneSlice = await call("slice_start", { cancelRunning: true });
 check(
-  "slice_start without scope names the object and says scope plate slices them all",
-  oneSlice.ok === true && JSON.stringify(oneSlice.sliced) === JSON.stringify([id])
-    && oneSlice.note === 'scope:"plate" slices them all.',
+  "slice_start without scope names the one object and adds no plate note",
+  oneSlice.ok === true && oneSlice.object === id && typeof oneSlice.name === "string"
+    && oneSlice.note === undefined && oneSlice.scope === undefined && oneSlice.sliced === undefined,
   oneSlice,
 );
 
