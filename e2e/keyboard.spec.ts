@@ -62,16 +62,18 @@ async function positions(page: Page): Promise<string[]> {
   return out;
 }
 
-test("1, 2 and 3 switch the stage; V cycles the preview mode", async ({ page }) => {
+test("3, 4 and 5 switch the stage; V cycles the preview mode", async ({ page }) => {
   await mockEngine(page);
   await openCube(page);
-  await page.keyboard.press("1");
-  await expect(page.locator("#tabPrepare")).toHaveAttribute("aria-pressed", "true");
-  await page.keyboard.press("2");
-  await expect(page.locator("#tabPreview")).toHaveAttribute("aria-pressed", "true");
+  const order = await page.locator(".title-tabs").evaluate((bar) => [...bar.children].map((el) => el.id || (el as HTMLElement).className));
+  expect(order).toEqual(["tabModel", "tabPose", "stage-split", "tabPrepare", "tabPreview", "tabGcode"]);
   await page.keyboard.press("3");
+  await expect(page.locator("#tabPrepare")).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("4");
+  await expect(page.locator("#tabPreview")).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("5");
   await expect(page.locator("#tabGcode")).toHaveAttribute("aria-pressed", "true");
-  await page.keyboard.press("2");
+  await page.keyboard.press("4");
 
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: 15_000 });
@@ -106,7 +108,7 @@ test("Shift+1..5 pick a strategy", async ({ page }) => {
 test("A arranges, Ctrl+D duplicates, Delete removes", async ({ page }) => {
   await mockEngine(page);
   await openCube(page);
-  await page.keyboard.press("1");
+  await page.keyboard.press("3");
   const rows = page.locator("[data-plate-id]");
   await expect(rows).toHaveCount(1);
 
@@ -135,10 +137,10 @@ test("Delete and A stay out of the way outside Prepare and inside fields", async
   await page.keyboard.press("Control+d");
   const rows = page.locator("[data-plate-id]");
   await expect(rows).toHaveCount(2);
-  await page.keyboard.press("2");
+  await page.keyboard.press("4");
   await page.keyboard.press("Delete");
   await expect(rows).toHaveCount(2);
-  await page.keyboard.press("1");
+  await page.keyboard.press("3");
   await page.locator("#placeX").focus();
   await page.keyboard.press("Backspace");
   await expect(rows).toHaveCount(2);
@@ -171,7 +173,7 @@ test("Ctrl+Enter slices from inside a settings field and keeps what was typed", 
 test("Ctrl+Enter slices a typed X position, not the old one", async ({ page }) => {
   const calls = await mockEngine(page);
   await openCube(page);
-  await page.keyboard.press("1");
+  await page.keyboard.press("3");
   const x = (i: number) => (calls.slices[i]!.pose as { translation: number[] }).translation[0]!;
   await page.keyboard.press("Control+Enter");
   await expect.poll(() => calls.slices.length).toBe(1);
@@ -200,7 +202,7 @@ test("Ctrl+B and Ctrl+Alt+B fold the side panels", async ({ page }) => {
 test("the rail is one vertical toolbar whose tool set and landmarks follow the stage", async ({ page }) => {
   await mockEngine(page);
   await openCube(page);
-  await page.keyboard.press("1");
+  await page.keyboard.press("3");
   const rail = page.getByRole("toolbar", { name: "Prepare tools" });
   await expect(rail).toHaveAttribute("aria-orientation", "vertical");
   await expect(page.getByRole("main", { name: "Prepare" })).toBeVisible();
@@ -234,7 +236,7 @@ test("the rail is one vertical toolbar whose tool set and landmarks follow the s
   }));
   expect(sides.tip, "a rail tip opens to the right of the rail").toBeGreaterThanOrEqual(sides.rail);
 
-  await page.keyboard.press("2");
+  await page.keyboard.press("4");
   await expect(page.getByRole("toolbar", { name: "Preview tools" })).toBeVisible();
   await expect(page.getByRole("main", { name: "Preview" })).toBeVisible();
   await expect(page.locator('#toolRail [data-tool="move"]')).toBeHidden();
@@ -268,7 +270,7 @@ test("layer keys step the preview, and a typed ] is not a layer step", async ({ 
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: 15_000 });
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.keyboard.press("2");
+  await page.keyboard.press("4");
   const layer = () => page.locator("#rangeHigh").inputValue().then(Number);
   await page.keyboard.press("Home");
   expect(await layer()).toBe(0);
@@ -308,7 +310,7 @@ test("the shortcut sheet and tooltips come from the registry", async ({ page }) 
   await expect(sheet).toBeHidden();
 
   await page.locator("#tabPreview").hover();
-  await expect(page.locator(".lime-tip[data-open=true] kbd")).toHaveText("2");
+  await expect(page.locator(".lime-tip[data-open=true] kbd")).toHaveText("4");
   await page.locator("#export").hover({ force: true });
   await expect(page.locator(".lime-tip[data-open=true] kbd")).toHaveText("Ctrl+E");
   await page.locator("#plateArrange").hover({ force: true });

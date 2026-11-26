@@ -2,9 +2,10 @@
 import { closeModelTool, openModelTool, setModelWaiting } from "../../ui/model-chrome";
 import { syncModelHistory, syncModelRecipe, syncTransitionStale } from "../../ui/model-history";
 import { refreshPluginsPanel } from "../../ui/plugins-panel";
-import { recipeNote } from "../../model-history";
+import { foldEndingAt, foldRedoFrom, recipeNote, stepLabel } from "../../model-history";
 import { sketchHistoryButtons } from "../sketch";
 import { modelTrees } from "../model-trees";
+import { nextPlateStepName } from "../history";
 import { session } from "../state";
 import { syncRebuildCount } from "../../ui/parameters.ts";
 import { stressOpen, stressUndoState, syncStress } from "../../ui/stress.ts";
@@ -88,4 +89,33 @@ export function syncUndo() {
   syncModelRecipe(S.open ? recipeNote(session.mcpModel, S.open.objectId) : null);
   syncPluginEnv();
   refreshPluginsPanel();
+}
+
+/**
+ * The name of the step Model's Undo or Redo would take, when that name is known.
+ * An open sketch, a cut card, Stress, or a tool with its own stack is not the part's history, so this does not name the solid's step then.
+ */
+export function modelHistoryName(way: "undo" | "redo"): string | null {
+  const sketch = sketchHistoryButtons();
+  if (sketch) return sketch[way] ? "sketch" : null;
+  if (canSwapBack(way)) return nextPlateStepName(way);
+  if (splitPrintHistory()) return null;
+  if (stressOpen() && !openModelTool() && (stressUndoState().undo || stressUndoState().redo)) return null;
+  if (openModelTool() === "place" || openModelTool() === "workplane") return null;
+  if (S.sculptHistory?.can(way)) return null;
+  const tree = treeOf(S.open);
+  if (!tree || S.busy || S.jumping || S.editing) return null;
+  if (way === "undo") {
+    const fold = foldEndingAt(tree, tree.current, modelTrees);
+    if (fold?.label) return fold.label;
+    if (undoNode(tree) == null) return null;
+    const node = tree.nodes.get(tree.current);
+    return node ? stepLabel(node) : null;
+  }
+  const fold = foldRedoFrom(tree, modelTrees);
+  if (fold?.label) return fold.label;
+  const next = redoNode(tree);
+  if (next == null) return null;
+  const node = tree.nodes.get(next);
+  return node ? stepLabel(node) : null;
 }

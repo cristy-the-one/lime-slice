@@ -95,7 +95,11 @@ check("an ingredient that does not build alone is not kept, with the line", alon
 const lesson = await a.call("nugget", { action: "save", kind: "lesson", id: "fillet", text: "select.onFace with nearPoint over a pocket picks the pocket floor; aim at material, such as a rib node." });
 check("a lesson is kept about an op kind", lesson.ok === true && lesson.id === "fillet/1" && String(lesson.shown).includes("guide {kind:\"fillet\"}"), lesson);
 const guide = await a.call("guide", { kind: "fillet" });
-check("guide {kind} ends with what was seen in practice, as data", JSON.stringify((guide.data as Row | undefined)?.seenInPractice) === JSON.stringify(["select.onFace with nearPoint over a pocket picks the pocket floor; aim at material, such as a rib node."]), guide.data);
+const { SHIPPED_LESSONS } = await import("./nuggets.ts");
+const savedText = "select.onFace with nearPoint over a pocket picks the pocket floor; aim at material, such as a rib node.";
+const seen = (guide.data as Row | undefined)?.seenInPractice;
+const wantSeen = [savedText, ...SHIPPED_LESSONS.filter((row) => row.about === "fillet").map((row) => row.text)].slice(0, 5);
+check("guide {kind} ends with what was seen in practice, as data", JSON.stringify(seen) === JSON.stringify(wantSeen), guide.data);
 let tooLong: Row = { ok: true };
 try {
   tooLong = await a.call("nugget", { action: "save", kind: "lesson", id: "fillet", text: "x".repeat(300) });

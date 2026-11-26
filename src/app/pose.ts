@@ -9,12 +9,14 @@ import { applyPose, inversePose, isIdentity, poseScale, seatLift, thenPose, turn
 import { meshSeat, meshToModel, modelPoseOf } from "../plate.ts";
 import { aboutAxis, bodyOf as massBodyOf, movingBody, partIntegrals, swing, type BodyPart } from "../mass.ts";
 import { poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
-import { createPoseView, type PoseCamera, type PoseHit, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
+import { createPoseView, type MoveEvent, type PoseCamera, type PoseHit, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
 import { cylinderJoint } from "../pose-cylinder.ts";
 import { loadModel } from "./workspaces.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import type { Vec3 } from "../model-tree.ts";
-import { assembledParts, assemblyClashes, liveAssemblies, syncAssemblyView } from "./assemblies.ts";
+import { assembledParts, assemblyClashes, liveAssemblies, measureClashes, syncAssemblyView } from "./assemblies.ts";
+import { alignMove, appendMoveCard, highlightAlign, moveFieldChanged, onPoseMove, poseSettleChanged, setMoveFrame } from "./pose-move.ts";
+import { isAlignRelation } from "../place-snap.ts";
 import { fx } from "./fx.ts";
 import { cancelEdit, holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
 import { refreshObjectList } from "./settings.ts";
@@ -37,7 +39,7 @@ import { clickFits, freeWayOf, ratchetFromStamps, ratchetStamp, readRatchet, RAT
 /** One turn of a train's first gear, in steps that are no whole number of teeth for any likely gear (as the MCP checks). */
 const CHECK_ANGLES = Array.from({ length: 24 }, (_, i) => (i * 360) / 23);
 
-type Tool = "select" | "turn" | "joint" | "link" | "reach";
+type Tool = "select" | "turn" | "joint" | "link" | "reach" | "move";
 let view: PoseView | null = null;
 let tool: Tool = "select";
 let linkParent: string | null = null;
@@ -360,15 +362,28 @@ function replaceMember(assembly: Assembly, member: Member): void {
   if ("reason" in next) { message = next.reason; renderPanel(); return; }
   editAssembly(next);
 }
+function poseMove(event: MoveEvent): void {
+  if (tool !== "move") return;
+  if (event.phase === "start" || event.phase === "change") dragging = true;
+  onPoseMove(event);
+  if (event.phase === "end" || event.phase === "cancel") {
+    dragging = false;
+    syncPose();
+  }
+}
 function setTool(next: Tool): void {
   stopAnimation();
   view?.cancelReach();
+  if (next !== "move") view?.cancelMove();
   pickSerial++;
   tool = next;
   view?.setReach(next === "reach");
+  view?.setMove(next === "move");
   chainSelected = false;
   linkParent = null;
-  message = next === "link" ? "Choose the parent, then its child." : next === "reach" ? "Drag a point on a jointed part." : next === "joint" ? "Select a linked part, then click its cylindrical face. Shift-click a mesh to snap its pivot." : "";
+  message = next === "link" ? "Choose the parent, then its child." : next === "reach" ? "Drag a point on a jointed part." : next === "joint" ? "Select a linked part, then click its cylindrical face. Shift-click a mesh to snap its pivot." : next === "move" ? "Drag a part in design space. Right-drag turns it. Alt turns snap off. Shift snaps to 1 mm and 15°." : "";
+  const nudge = document.querySelector<HTMLElement>("#gizmoNudge");
+  if (nudge && state.stage === "pose") nudge.hidden = next !== "move" || !state.plate.selectedId;
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-pose-tool]")) button.setAttribute("aria-pressed", String(button.dataset.poseTool === tool));
   syncPose();
 }
@@ -518,10 +533,16 @@ function mount(): PoseView | null {
   view.onPick(pick);
   view.onTurn(turn);
   view.onReach(reach);
+  view.onMove((event) => poseMove(event));
+  view.setMove(tool === "move");
   // The tool rail and the view buttons are heard in wire.ts (pickPoseTool, pickPoseView): they are on screen before
   // this module has loaded.
   document.querySelector("#posePanel")?.addEventListener("click", panelClick);
   document.querySelector("#posePanel")?.addEventListener("change", panelChange);
+  document.querySelector("#posePanel")?.addEventListener("focusin", (event) => {
+    const input = event.target;
+    if (input instanceof HTMLSelectElement && input.id === "poseAlignTo" && input.value) highlightAlign(input.value);
+  });
   document.querySelector("#posePanel")?.addEventListener("input", (event) => {
     const slider = event.target as HTMLInputElement;
     if (!slider.hasAttribute("data-pose-animation-frame") || !animation) return;
@@ -547,7 +568,7 @@ function mount(): PoseView | null {
 export function pickPoseTool(value: string): void {
   if (state.stage !== "pose") return;
   if (!view) showPose();
-  if (value === "select" || value === "turn" || value === "joint" || value === "link" || value === "reach") setTool(value);
+  if (value === "select" || value === "turn" || value === "joint" || value === "link" || value === "reach" || value === "move") setTool(value);
 }
 /** A press on one of Pose's view buttons (Top, Front, Iso), or its key. The same holds: the view needs its parts first. */
 export function pickPoseView(preset: string): void {
@@ -605,6 +626,10 @@ export function syncPose(): void {
   const empty = document.querySelector<HTMLElement>("#poseEmpty");
   if (empty) empty.hidden = placed.parts.length > 0;
   if (!dragging && !animation) renderPanel();
+  if (tool === "move" && state.stage === "pose") {
+    const nudge = document.querySelector<HTMLElement>("#gizmoNudge");
+    if (nudge) nudge.hidden = !state.plate.selectedId;
+  }
 }
 export function setPoseTheme(): void { view?.setTheme(); }
 
@@ -725,6 +750,25 @@ function renderPanel(): void {
   if (free.length) {
     addText(tree, "p", "Free parts", "pose-free");
     for (const part of free) addPart(part.id, 0);
+  }
+  if (tool === "move") appendMoveCard(panel);
+  const clashRows = assemblyClashes();
+  if (clashRows.length) {
+    const interference = document.createElement("div");
+    interference.className = "meta warn-text";
+    interference.id = "assemblyInterference";
+    interference.dataset.tip = "Checked at the assembled poses. It never blocks a slice: a press fit is meant to cross.";
+    interference.append(document.createTextNode(`${clashRows.map((row) => (row.unmeasured ? `${row.line} (mesh only: ${row.unmeasured})` : row.line)).join("; ")} `));
+    if (clashRows.some((row) => row.volumeMm3 === undefined && row.unmeasured === undefined)) {
+      const measure = document.createElement("button");
+      measure.className = "btn";
+      measure.type = "button";
+      measure.dataset.assemblyMeasure = "1";
+      measure.dataset.tip = "Ask the kernel for each pair's common volume. Under 0.01 mm³ is a touch.";
+      measure.textContent = "Measure";
+      interference.append(measure);
+    }
+    panel.append(interference);
   }
   // The pose is what an export writes: STEP AP242 assembly, glTF, 3MF, STL, OBJ, or Pose sheet.
   if (assemblies.length) {
@@ -1501,8 +1545,26 @@ function coupleGears(start: string): void {
   flushEdit();
 }
 function panelClick(event: Event): void {
+  const measure = (event.target as Element).closest<HTMLButtonElement>("[data-assembly-measure]");
+  if (measure) {
+    measure.disabled = true;
+    measure.textContent = "Measuring…";
+    void measureClashes(async (a, b) => (await loadModel()).commonVolume(a, b));
+    return;
+  }
   const target = (event.target as Element).closest<HTMLButtonElement>("[data-pose-action]");
   if (!target) return;
+  if (target.dataset.poseAction === "move-frame") {
+    const frame = target.dataset.placeFrame;
+    if (frame === "part" || frame === "model") setMoveFrame(frame);
+    return;
+  }
+  if (target.dataset.poseAction === "move-align") {
+    const to = document.querySelector<HTMLSelectElement>("#poseAlignTo");
+    const how = document.querySelector<HTMLSelectElement>("#poseAlignHow");
+    if (to?.value && how && isAlignRelation(how.value)) alignMove(to.value, how.value);
+    return;
+  }
   const action = target.dataset.poseAction;
   if (animation && action && !action.startsWith("animation-") && action !== "pose-export") stopAnimation();
   if (action === "pose-export") {
@@ -1655,6 +1717,18 @@ function panelClick(event: Event): void {
 }
 function panelChange(event: Event): void {
   const input = event.target as HTMLInputElement | HTMLSelectElement;
+  if (input.id.startsWith("poseMove") && input instanceof HTMLInputElement && input.type === "number") {
+    moveFieldChanged(input);
+    return;
+  }
+  if (input.id === "poseSettleOn" && input instanceof HTMLInputElement) {
+    poseSettleChanged(input.checked);
+    return;
+  }
+  if (input.id === "poseAlignTo" && input instanceof HTMLSelectElement) {
+    highlightAlign(input.value);
+    return;
+  }
   if (input.dataset.poseAnimation === "choice") { stopAnimation(); cancelPreparation(""); animationChoice = input.value; syncPose(); return; }
   if (input.dataset.poseAnimationMember) {
     const assembly = selected()?.assembly;

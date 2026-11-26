@@ -26,7 +26,7 @@ import { matchShellSolids, type SolidBounds } from "../shell-solids.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../../src/step-solids.ts";
 import { assemblyOf } from "../../src/assembly.ts";
 import { alignedHinge } from "../../src/pose.ts";
-import { resolveRead } from "../workspace.ts";
+import { resolveReadAsync } from "../workspace.ts";
 import { type Job, ModelRunaway, NAME_LIMIT, OVERLAP, type PlateObject, type PlateSnap, STEP, type SnapObject, type ToolHandler, UNKNOWN_OBJECT, positionsFrom, shownName, xyGap } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -230,7 +230,7 @@ function plateRedo(this: Session): Record<string, unknown> {
 
 async function meshImport(this: Session, path: string, tolerance: number, pieces = false): Promise<Record<string, unknown>> {
   await new Promise((resolve) => setImmediate(resolve));
-  const full = resolveRead(path, "mesh");
+  const full = await resolveReadAsync(path, "mesh");
   const bytes = new Uint8Array(await readFile(full));
   const fileName = full.split(/[\\/]/).pop() ?? "mesh.stl";
   let note: string | undefined;

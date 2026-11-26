@@ -2,6 +2,7 @@
  * MCP over stdio. One JSON-RPC message per line. Logs stay off stdout.
  */
 import { randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 
 import { AREA_NAMES, AREAS } from "./catalog.ts";
 import { GROUP_NAMES } from "./groups.ts";
@@ -418,6 +419,24 @@ function missingResource(err: unknown): err is Error {
   return err instanceof Error && err.name === "ProtocolError" && err.message === "That resource is not on this server.";
 }
 
+/**
+ * A ping answered from the stdin batch, before a tool call in the same read runs.
+ * The meta checks match handleRpc's, so the reply is the one a ping through handleRpc would get.
+ */
+function pingReply(session: Session, message: RpcMessage): Record<string, unknown> {
+  const id = message.id ?? null;
+  const params = message.params ?? {};
+  const metaFields = metaRecord(params);
+  const metaVersion = typeof metaFields?.[META_PROTOCOL] === "string" ? metaFields[META_PROTOCOL] : undefined;
+  if (metaVersion !== undefined || metaFields?.[META_CLIENT] !== undefined) {
+    noteClient(metaVersion ?? "", metaFields?.[META_CLIENT] ?? null, metaFields?.[META_CAPS] ?? null);
+    rememberClientName(session, metaFields?.[META_CLIENT]);
+  }
+  if (metaVersion !== undefined && !supportedVersion(metaVersion)) return unsupportedVersion(id, metaVersion);
+  if (metaVersion === MODERN_VERSION) modernClients.add(session);
+  return result(id, {});
+}
+
 export async function handleRpc(session: Session, message: RpcMessage, meta?: CallMeta): Promise<Record<string, unknown> | null> {
   const id = message.id ?? null;
   const method = message.method ?? "";
@@ -453,7 +472,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
         instructions: modernInit ? DISCOVERY_INSTRUCTIONS : instructionsFor(session.toolGroups),
       });
     }
-    if (method === "ping") return result(id, {});
+    if (method === "ping") return pingReply(session, message);
     if (method === "tasks/get" || method === "tasks/update" || method === "tasks/cancel") {
       return await taskMethod(session, id, method, params, metaFields, modern);
     }
@@ -657,21 +676,42 @@ export function serve(session: Session, input: NodeJS.ReadableStream = process.s
     });
   };
 
-  const acceptLine = (line: string) => {
+  // stream.write only queues a libuv write. A synchronous stall in a tool call
+  // later in this same read would hold that ping until the loop turned. writeSync
+  // puts the bytes on the pipe first.
+  const sendNow = (message: Record<string, unknown>) => {
+    const line = `${JSON.stringify(message)}\n`;
+    if (output === process.stdout) {
+      try {
+        writeSync(1, line);
+        return;
+      } catch {
+        // The pipe cannot take the line synchronously.
+      }
+    }
+    send(message);
+  };
+
+  const takeLine = (line: string, deferred: RpcMessage[]) => {
     const trimmed = line.trim();
     if (trimmed === "") return;
     let value: unknown;
     try {
       value = JSON.parse(trimmed);
     } catch {
-      send(error(null, -32700, "Parse error"));
+      sendNow(error(null, -32700, "Parse error"));
       return;
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-      send(error(null, -32600, "Invalid Request"));
+      sendNow(error(null, -32600, "Invalid Request"));
       return;
     }
-    accept(value as RpcMessage);
+    const message = value as RpcMessage;
+    if (message.method === "ping") {
+      sendNow(pingReply(session, message));
+      return;
+    }
+    deferred.push(message);
   };
 
   input.on("data", (chunk: Buffer) => {
@@ -681,12 +721,15 @@ export function serve(session: Session, input: NodeJS.ReadableStream = process.s
       send(error(null, -32700, "Parse error"));
       return;
     }
+    const lines: string[] = [];
     for (;;) {
       const nl = buffer.indexOf(0x0a);
-      if (nl < 0) return;
-      const line = buffer.subarray(0, nl).toString("utf8");
+      if (nl < 0) break;
+      lines.push(buffer.subarray(0, nl).toString("utf8"));
       buffer = buffer.subarray(nl + 1);
-      acceptLine(line);
     }
+    const deferred: RpcMessage[] = [];
+    for (const line of lines) takeLine(line, deferred);
+    for (const message of deferred) accept(message);
   });
 }

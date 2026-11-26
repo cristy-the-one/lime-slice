@@ -61,7 +61,7 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | Settings profile save, rename, duplicate, delete, import, export | Settings drawer, commands | ok |
 | Theme, settings level, rail labels, captions | the top bar's ⋯ menu, commands | ok |
 | Tandem bridge (MCP link) | top bar | ok |
-| Undo, Redo | Ctrl+Z, but Model has its own Undo and Redo buttons, and Model's Place keeps its own stack | key: R6, one routing per stage (I4) |
+| Undo, Redo | Ctrl+Z and Ctrl+Shift+Z (Ctrl+Y) are one command each. Model reads the open part, and the rail buttons are that command. Pose, Prepare, Preview and G-code read the plate. The palette names the step when it is known. An open sketch keeps its own undo | ok (R6, I4). Place's own stack is gone (I5) |
 
 ### Model
 
@@ -70,24 +70,24 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | New solid, Sketch, Push/Pull, Fillet, Chamfer, Shell, Draft, Split, Boolean, Pattern, Mirror, Hole, Pocket | rail, commands | ok |
 | Pattern, Mirror, Shell, Draft | no key | ok: keys are optional (R3 holds) |
 | Scale solid | X | key: Prepare's Scale is S; S is Sketch in Model (D2) |
-| Place in model space | Shift+P | move → Pose: it sets design space, Pose's job (D4) |
+| Place in model space | was Shift+P | ok: it is Pose's Move, M (D4, I5). Shift+P is free. Model keeps Workplane |
 | Boolean with another object | Shift+G | ok: it changes this solid's shape |
 | Workplane, Measure, Check, View (zebra, curvature, isoparms) | rail, commands | ok |
 | Parameters, Plugins, Auto ribs, Stress | Features menu, commands | ok |
 | Split to print, Print transition | Features menu | ok (R8): label the group "For printing"; Print transition needs a command |
-| History, Undo, Redo | rail foot buttons | key: Ctrl+Z routes here (R6), the buttons stay as views of it |
+| History, Undo, Redo | rail foot buttons, the same Ctrl+Z | ok (R6, I4): the buttons stay as views of the part's history |
 | STEP | rail foot | merge → Export… (X1) |
 
 ### Pose
 
 | Action | Today | Verdict |
 |---|---|---|
-| Select, Turn joint, Reach, Joint | rail, V/R/G/J | ok |
+| Select, Turn joint, Reach, Joint, Move | rail, V/R/G/J/M | ok: Move is design space (D4, I5) |
 | Link | L; refuses a free parent | show: makes the assembly (X2) |
 | Animations: play, stop, keep frame, save, keep in library | panel buttons, no commands | cmd |
 | Export… | panel, only with an assembly | merge → Export… (X1) |
 | Attach, Ungroup | in Prepare | move → Pose (X2) |
-| Assembly view (assembled poses) | Prepare's view chip | move → Pose is that view (D5) |
+| Assembly view (assembled poses) | Pose's view | ok: Prepare's chip is gone (D5, I5) |
 
 ### Prepare
 
@@ -99,7 +99,7 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | Section | C | ok, and the same key in Preview and G-code |
 | Strategy (Speed … By region) | Shift+1…5 | ok |
 | Lay out one assembly | assembly header | ok: it moves the print layout |
-| Attach, Ungroup, STEP, assembly view chip | assembly header and view chip | move (X2, D5), merge (X1) |
+| Attach, Ungroup, STEP | assembly header | ok: Attach and Ungroup are Pose's (X2). The view chip is gone (D5, I5). STEP merges (X1) |
 | Height ranges, modifiers, per-part overrides | object list and drawer, no commands | cmd |
 
 ### Preview and G-code
@@ -116,7 +116,7 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 
 | Idea | Prepare | Model | Pose | Verdict |
 |---|---|---|---|---|
-| Move | M (Move) | Shift+P (Place) | — | Place moves to Pose as Move, M (D4) |
+| Move | M (Move) | — | M (Move) | ok: same key, same idea (D4, I5). Shift+P is free |
 | Rotate | R | — | R (Turn joint) | ok |
 | Scale | S | X | — | key (D2) |
 | Select | Esc clears | Esc clears | V | ok: Pose's V is a tool, the others have none |
@@ -128,7 +128,7 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | Idea | Window | MCP | Verdict |
 |---|---|---|---|
 | print-layout position | Move, Rotate (Prepare) | `object_place` | ok, and the guide says "Prepare's Move" |
-| design-space position | Place (Model) | `model_place` | name: "Move in Pose" once D4 lands, `model_place` kept |
+| design-space position | Move (Pose) | `model_place` | ok: the window says Move, `model_place` kept (D4, I5) |
 | join two parts | Attach (Prepare), Link (Pose) | `s.attach` in recipes, no MCP call | name: one word, **Link**, everywhere (X2 adds `assembly_link`) |
 | export | six entries | `export_3mf`, `model_export_step`, `pose_export` | merge: **Export** and `export` (X1) |
 

@@ -124,8 +124,8 @@ test("keys pressed before Model has loaded run once it loads", async ({ page }) 
   const held = await holdModelChunk(page);
   await page.goto("/");
   await expect(page.locator("#tabPreview")).toHaveAttribute("aria-selected", "true");
-  // 4 is the Model tab's key and Shift+N opens New solid there. Both are pressed before Model's code has arrived.
-  await page.keyboard.press("4");
+  // 1 is the Model tab's key and Shift+N opens New solid there. Both are pressed before Model's code has arrived.
+  await page.keyboard.press("1");
   await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Shift+N");
   expect(await page.locator("#modelToolNew").count(), "Model has not loaded").toBe(0);

@@ -14,7 +14,7 @@ The pictures are the web UI in the dark theme against a local engine with the Op
 
 ### Model a part
 
-Model edits a STEP solid, or starts one from a primitive, a gear, a part, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again.
+Model edits a STEP solid, or starts one from a primitive, a gear, a part, or a sketch on the bed or on a flat face. The sketcher has its own constraint solver: it keeps lines horizontal, vertical, square or equal as you draw, and a size can be a number or an expression that names a parameter. From a sketch you extrude, revolve, loft, sweep, or drill holes. On the solid you push and pull faces, fillet and chamfer edges, draft walls, shell, split, pattern, mirror and join, and add text. Every step goes into History, where you can reopen it with new numbers and the steps after it are built again. Ctrl+Z undoes the last step of the part you have open (the rail's Undo and Redo are the same history). Inside a sketch, Ctrl+Z undoes the sketch. The command palette names that step when History has a name for it.
 
 ![Sketching a 40 × 24 mm rectangle on the bed, extruding it 16 mm, cutting a 10 mm hole up through it, then editing the first extrude down to 12 mm from History.](docs/screenshots/clip-model.gif)
 
@@ -40,7 +40,7 @@ The desktop release includes the Open CASCADE libraries. A build without them st
 
 ### Assemble, animate and run
 
-Link two parts in **Pose** to make an assembly, then give them joints: fixed, hinge, slide, ball, or held. **Pose** moves them without changing where they print. Turn a part by its ring or type an angle, and **Until contact** turns or slides it until it meets another part and stops there.
+Link two parts in **Pose** to make an assembly, then give them joints: fixed, hinge, slide, ball, or held. **Move** (M) moves a part in design space, a free part included, and snaps it to the other parts. **Pose** is the assembled view: Prepare shows only the print layout, and Edit in Pose or the Pose tab opens the assembly. Turn a part by its ring or type an angle, and **Until contact** turns or slides it until it meets another part and stops there. Ctrl+Z in Pose undoes the last design-space step (a Move, a Link, a joint). In Prepare, Preview and G-code the same key undoes the last plate step.
 
 - **Couplings.** **Couple gears** finds every pair of gears that mesh, gives each a hinge about its own axis, and couples them, so turning one turns the whole train at the tooth ratios. Ring gears, planetary stages and rack and pinion couple the same way. The Couplings form couples any two parts by a ratio, a winch (a drum that winds a cord), a ratchet with its click, or a friction clutch.
 - **Animations** are plugins that set joint angles over time. Pose prepares the frames in the background and plays them. You can keep a frame, save the animation as a GIF or PNG frames, or keep it in the plugin library to play on another assembly.
@@ -59,7 +59,7 @@ A recipe is a short Rust program that builds a part or a whole assembly. The des
 
 ### Slice
 
-**Prepare** puts parts on the plate. Move, turn and scale them, lay a face flat, snap one part against another, and choose a strategy: speed, efficiency, toughness, or a blend of them by weight, by layer, or by region. Each strategy is a real set of walls, infill, speeds, acceleration, seam and retraction. **Preview** draws the toolpaths in 2D, 3D, or both, with the time and filament by feature, and the G-code tab shows the file.
+**Prepare** puts parts on the plate. Move, turn and scale them, lay a face flat, snap one part against another, and choose a strategy: speed, efficiency, toughness, or a blend of them by weight, by layer, or by region. Each strategy is a real set of walls, infill, speeds, acceleration, seam and retraction. **Preview** draws the toolpaths in 2D, 3D, or both, with the time and filament by feature, and the G-code tab shows the file. The stage tabs follow the work: Model is 1, Pose is 2, then Prepare is 3, Preview is 4 and G-code is 5.
 
 <img alt="Prepare. The overhang sample on the Lime 220, with the strategy list and the Objects card in the settings dock." src="docs/screenshots/prepare.png" width="720">
 

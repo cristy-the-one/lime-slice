@@ -63,9 +63,9 @@ test("Pose draws every part solid at its assembled pose, tints the selection, an
   const layoutBefore = await placeFields(page, [ledge, "part"]);
   await page.locator(`[data-plate-select='${ledge}']`).click();
 
-  // Key 5 opens Pose, the fifth tab.
+  // Key 2 opens Pose, the second tab.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await page.keyboard.press("5");
+  await page.keyboard.press("2");
   await expect(page.locator("#tabPose")).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#poseBody")).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeHidden();
@@ -130,25 +130,20 @@ async function placeFields(page: Page, ids: string[]): Promise<string[]> {
   return out;
 }
 
-test("Pose draws assembled poses as the Assembly view does, and tints crossing parts amber", async ({ page }) => {
+test("Pose draws assembled poses and tints crossing parts amber", async ({ page }) => {
   fs.mkdirSync(shots, { recursive: true });
   const ledge = await cubeAndLedge(page);
   await page.locator("[data-plate-select='part']").click();
   await linkInPose(page, ledge, "part");
   await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
-  await page.locator("[data-assembly-view='assembly']").click();
-  await expect(page.locator("#prepare")).toHaveAttribute("data-clashing", [ledge, "part"].sort().join(" "));
-  const assembled = boxes(await page.locator("#prepare").getAttribute("data-assembled"));
+  await expect(page.locator("#assemblyViewChip")).toHaveCount(0);
 
   await page.locator("#tabPose").click();
   const pose = page.locator("#pose");
   await expect(pose).toHaveAttribute("data-looks", new RegExp(`${ledge}:clash`));
   await expect(pose).toHaveAttribute("data-looks", /part:clash/);
   const posed = boxes(await pose.getAttribute("data-posed"));
-  for (const id of [ledge, "part"]) {
-    expect(posed[id]!.length).toBe(6);
-    posed[id]!.forEach((value, axis) => expect(value, `${id} axis ${axis} matches the Assembly view`).toBeCloseTo(assembled[id]![axis]!, 1));
-  }
+  for (const id of [ledge, "part"]) expect(posed[id]!.length).toBe(6);
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(shots, "pose-clash.png") });
 });

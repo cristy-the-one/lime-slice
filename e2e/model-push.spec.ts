@@ -361,8 +361,8 @@ test("leaving Model with a Tab edit open closes the box, and the app's keys work
   await page.locator("#tabPrepare").click();
   await expect(page.locator("#tabPrepare")).toHaveAttribute("aria-selected", "true");
   await page.locator("body").click({ position: { x: 2, y: 2 } });
-  await page.keyboard.press("2");
-  await expect(page.locator("#tabPreview"), "2 opens Preview: the hidden box took no key").toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("4");
+  await expect(page.locator("#tabPreview"), "4 opens Preview: the hidden box took no key").toHaveAttribute("aria-selected", "true");
   await page.locator("#tabModel").click();
   await expect(hud, "the box does not come back with Model").toBeHidden();
 });

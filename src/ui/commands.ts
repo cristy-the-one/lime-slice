@@ -22,6 +22,25 @@ export type KeyScope =
 
 export type StageName = "prepare" | "preview" | "gcode" | "model" | "pose";
 
+/**
+ * Which history Ctrl+Z and Ctrl+Shift+Z (and Ctrl+Y) read. One command each; this table is the routing.
+ * An open sketch is not a stage: `sketch-undo` and `sketch-redo` keep the key there, as they do today.
+ * Pose's design-space steps are plate steps, so Pose reads the same plate history Prepare, Preview and G-code do.
+ */
+export const STAGE_UNDO: Record<StageName, "model" | "plate"> = {
+  model: "model",
+  pose: "plate",
+  prepare: "plate",
+  preview: "plate",
+  gcode: "plate",
+};
+
+/** The palette row: "Undo" alone, or "Undo Fillet" when the next step's name is known. */
+export function undoCommandLabel(label: string, name: string | null | undefined): string {
+  const trimmed = name?.replace(/\s+/g, " ").trim() ?? "";
+  return trimmed ? `${label} ${trimmed}` : label;
+}
+
 export interface CommandSpec {
   id: string;
   label: string;
@@ -69,11 +88,11 @@ export const COMMANDS: CommandSpec[] = [
   { id: "cancel-slice", label: "Cancel slice", group: "Slice", keys: ["Esc"], when: "running", typing: true, target: "#cancel", keywords: "stop abort" },
   { id: "export", label: "Export G-code", group: "Slice", keys: ["Ctrl+E"], target: "#export", layouts: ["desktop"], keywords: "save download" },
   { id: "send-printer", label: "Send to printer", group: "Slice", keywords: "prusa link upload gcode host" },
-  { id: "tab-prepare", label: "Prepare", group: "View", keys: ["1"], when: "workspace", target: "#tabPrepare, #compactTabs [data-tab=prepare]", keywords: "tab mesh stage" },
-  { id: "tab-preview", label: "Preview", group: "View", keys: ["2"], when: "workspace", target: "#tabPreview, #compactTabs [data-tab=preview]", keywords: "tab toolpath stage" },
-  { id: "tab-gcode", label: "G-code", group: "View", keys: ["3"], when: "workspace", target: "#tabGcode", layouts: ["desktop"], keywords: "tab gcode stage" },
-  { id: "tab-model", label: "Model", group: "View", keys: ["4"], when: "workspace", target: "#tabModel, #compactTabs [data-tab=model]", keywords: "tab solid face edge measure" },
-  { id: "tab-pose", label: "Pose", group: "View", keys: ["5"], when: "workspace", target: "#tabPose", layouts: ["desktop"], keywords: "tab joints assembly posture" },
+  { id: "tab-model", label: "Model", group: "View", keys: ["1"], when: "workspace", target: "#tabModel, #compactTabs [data-tab=model]", keywords: "tab solid face edge measure" },
+  { id: "tab-pose", label: "Pose", group: "View", keys: ["2"], when: "workspace", target: "#tabPose", layouts: ["desktop"], keywords: "tab joints assembly posture" },
+  { id: "tab-prepare", label: "Prepare", group: "View", keys: ["3"], when: "workspace", target: "#tabPrepare, #compactTabs [data-tab=prepare]", keywords: "tab mesh stage" },
+  { id: "tab-preview", label: "Preview", group: "View", keys: ["4"], when: "workspace", target: "#tabPreview, #compactTabs [data-tab=preview]", keywords: "tab toolpath stage" },
+  { id: "tab-gcode", label: "G-code", group: "View", keys: ["5"], when: "workspace", target: "#tabGcode", layouts: ["desktop"], keywords: "tab gcode stage" },
   { id: "view-cycle", label: "Cycle 2D, split, 3D", group: "View", keys: ["V"], when: "preview", keywords: "preview mode flat solid" },
   { id: "view-2d", label: "2D preview", group: "View", target: '[data-mode="flat"]', keywords: "flat" },
   { id: "view-split", label: "Split preview", group: "View", target: '[data-mode="split"]' },
@@ -107,16 +126,15 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
   { id: "model-features", label: "Features", group: "Model", when: "model", target: '#modelToolFeatures, #modelFeatureMenu [data-tool="pocket"]', keywords: "pocket boss texture array ribs text" },
-  // --- A4 pattern and mirror. No shortcut: P is Push/Pull, H is Hole, Shift+P is Place. ---
+  // --- A4 pattern and mirror. No shortcut: P is Push/Pull, H is Hole. Shift+P is free (design-space move is Pose's M). ---
   { id: "model-pattern", label: "Pattern", group: "Model", when: "model", target: "#modelToolPattern", keywords: "repeat linear polar path copy steps" },
   { id: "model-mirror", label: "Mirror", group: "Model", when: "model", target: "#modelToolMirror", keywords: "reflect flip plane" },
   // --- A2 shell ---
   { id: "model-shell", label: "Shell", group: "Model", when: "model", target: "#modelToolShell", keywords: "hollow wall thickness open face" },
   // --- Draft on picked faces. No key, as Shell: the free letters belong to no scheme a draft fits.
   { id: "model-draft", label: "Draft", group: "Model", when: "model", target: "#modelToolDraft", keywords: "taper tilt wall angle mould mold release pull" },
-  // --- D2: Shift+S. Inside a sketch Shift+S stays Slot, and X is free in Model. ---
+  // --- D2: Shift+S. Inside a sketch Shift+S stays Slot, and X is free in Model. Shift+P is free: design-space move is Pose's M. ---
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["Shift+S"], when: "model", target: "#modelToolScale", keywords: "factor" },
-  { id: "model-place", label: "Place in model space", group: "Model", keys: ["Shift+P"], when: "model", target: "#modelToolPlace", keywords: "move turn position assembly align" },
   { id: "model-workplane", label: "Workplane", group: "Model", keys: ["Shift+U"], when: "model", target: "#modelToolWorkplane", keywords: "uvw local frame datum face bed origin sketch plane" },
   // --- A7 model check ---
   { id: "model-check", label: "Check the solid", group: "Model", keys: ["Shift+K"], when: "model", target: "#modelToolCheck", keywords: "overhang ceiling island thin wall fit printability" },
@@ -204,6 +222,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], when: "prepare", target: '#toolRail [data-tool="scale"]', keywords: "percent gizmo" },
   { id: "tool-pivot", label: "Pivot", group: "Tools", when: "prepare", target: '#toolRail [data-tool="pivot"]', keywords: "origin joint" },
   { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], when: "prepare", target: '#layflat, #toolRail [data-tool="layflat"]', keywords: "bed face" },
+  { id: "pose-move", label: "Move", group: "Tools", keys: ["M"], when: ["pose"], target: '#toolRail [data-pose-tool="move"]', layouts: ["desktop"], keywords: "pose move design space place snap align" },
   { id: "pose-select", label: "Select", group: "Tools", keys: ["V"], when: ["pose"], target: '#toolRail [data-pose-tool="select"]', layouts: ["desktop"], keywords: "pose pick orbit" },
   { id: "pose-turn", label: "Turn joint", group: "Tools", keys: ["R"], when: ["pose"], target: '#toolRail [data-pose-tool="turn"]', layouts: ["desktop"], keywords: "pose hinge ring forward kinematics angle" },
   { id: "pose-reach", label: "Reach", group: "Tools", keys: ["G"], when: ["pose"], target: '#toolRail [data-pose-tool="reach"]', layouts: ["desktop"], keywords: "pose ik inverse kinematics drag grab chain" },
@@ -223,6 +242,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "paint-reinforce", label: "Reinforce", group: "Tools", keys: ["N"], when: "prepare", target: '#toolRail [data-tool="reinforce"]', keywords: "brush infill solid density depth" },
   { id: "brush-smaller", label: "Smaller brush", group: "Tools", keys: ["["], when: "brush", repeat: true, show: "help" },
   { id: "brush-larger", label: "Larger brush", group: "Tools", keys: ["]"], when: "brush", repeat: true, show: "help" },
+  // One command each. `STAGE_UNDO` picks the history at run time; the Model buttons stay as views of the part's history.
   { id: "undo", label: "Undo", group: "Edit", keys: ["Ctrl+Z"], when: "workspace", typing: true, target: "#modelUndo", keywords: "placement settings revert" },
   { id: "redo", label: "Redo", group: "Edit", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], when: "workspace", typing: true, target: "#modelRedo", keywords: "placement settings model again" },
   { id: "search", label: "Search settings", group: "Edit", keys: ["/", "Ctrl+F"], when: "find", keywords: "find filter" },
@@ -247,9 +267,12 @@ export const MOUSE_HINTS: { gesture: string; label: string; stages: readonly str
   // --- P1 ---
   { gesture: "Drag a face", label: "Push or pull. Alt adds or cuts on that face only.", stages: ["Model"] },
   { gesture: "Click empty", label: "Clear the Model selection", stages: ["Model"] },
-  { gesture: "Ctrl + drag", label: "Move the object: on the bed in Prepare, in model space in Model. It snaps to the other objects; Alt turns that off. Ctrl+click on another object opens it.", stages: ["Prepare", "Model"] },
-  { gesture: "Ctrl + right-drag", label: "Turn the object about Z, in Prepare and in Model. X, Y or Z while dragging picks the axis; Esc cancels.", stages: ["Prepare", "Model"] },
-  { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°", stages: ["Prepare", "Model"] },
+  { gesture: "Ctrl+click", label: "Open the object under the pointer", stages: ["Model"] },
+  { gesture: "Ctrl + drag", label: "Move the object on the bed. It snaps to the other objects; Alt turns that off. Ctrl+click on another object opens it.", stages: ["Prepare"] },
+  { gesture: "Ctrl + right-drag", label: "Turn the object about Z. X, Y or Z while dragging picks the axis; Esc cancels.", stages: ["Prepare"] },
+  { gesture: "Drag", label: "Move (M) drags a part in design space. It snaps to the other parts; Alt turns snap off.", stages: ["Pose"] },
+  { gesture: "Right-drag", label: "Move's right-drag turns the part in design space. X, Y or Z picks the axis; Esc cancels.", stages: ["Pose"] },
+  { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°", stages: ["Prepare", "Model", "Pose"] },
   { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring", stages: ["Prepare", "Model"] },
   { gesture: "Alt/Shift + wheel", label: "Resize the paint brush", stages: ["Prepare"] },
   { gesture: "Shift+click", label: "Paint: a straight line from the last dab", stages: ["Prepare"] },

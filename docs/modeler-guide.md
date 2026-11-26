@@ -3,7 +3,7 @@
 The long form of the README's [Model a part](../README.md#model-a-part) section: every tool, how it behaves, and its limits.
 
 
-Model edits a STEP solid, or starts one from a primitive or a sketch. The desktop release includes the Open CASCADE libraries. A build without them still slices an unedited STEP file, and Model stays off. `.lime` version 4 stores the solid as Open CASCADE's binary brep, so a saved part opens in Model without rebuilding every face from scratch, and gzips its big binary records (meshes, solids, root STEPs) so a file is about a quarter of its version 3 size. The contract is [docs/step-modeler.md](step-modeler.md).
+Model is the first stage tab (1). Pose is 2, Prepare is 3, Preview is 4 and G-code is 5. Model edits a STEP solid, or starts one from a primitive or a sketch. The desktop release includes the Open CASCADE libraries. A build without them still slices an unedited STEP file, and Model stays off. `.lime` version 4 stores the solid as Open CASCADE's binary brep, so a saved part opens in Model without rebuilding every face from scratch, and gzips its big binary records (meshes, solids, root STEPs) so a file is about a quarter of its version 3 size. The contract is [docs/step-modeler.md](step-modeler.md).
 
 ### Sketches and the constraint solver
 
@@ -23,7 +23,7 @@ Those five are sketch operations. They are buttons on the sketch card, and keys 
 
 Step-by-step examples, with the window at each click, are in [docs/tutorials](tutorials/README.md): three revolves, three lofts, and three sweeps.
 
-The rail's other Model tools are still there: New solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube, gear, part), fillet, chamfer, shell, split, scale (Shift+S), boolean, pattern, mirror, and the Features menu (pocket, boss, texture, array, ribs, text, Parameters). Part is a hex nut, a socket-head cap screw, a hex-head screw or a washer, from the ISO row for M3 to M24, and also a spacer, a shaft, a collar, a heat-set boss, a plate, an L-bracket, or a GT2 pulley of 12 to 60 teeth with an approximate GT2 groove. The shank is plain. A modelled thread is not available yet. The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet. A gear is an involute spur. The card says how it sits against the gear it meshes with, or the nearest gear it reaches: meshing, too close or too far (with the centre distance and the distance they mesh at), teeth crossing, a gear that cannot be built, or a module or pressure angle that does not match. `model_check` reports the same pairs. Measure and Check sit under Inspect. Place and Workplane sit under Frame. Undo, Redo, and STEP sit at the foot of the rail.
+The rail's other Model tools are still there: New solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube, gear, part), fillet, chamfer, shell, split, scale (Shift+S), boolean, pattern, mirror, and the Features menu (pocket, boss, texture, array, ribs, text, Parameters). Part is a hex nut, a socket-head cap screw, a hex-head screw or a washer, from the ISO row for M3 to M24, and also a spacer, a shaft, a collar, a heat-set boss, a plate, an L-bracket, or a GT2 pulley of 12 to 60 teeth with an approximate GT2 groove. The shank is plain. A modelled thread is not available yet. The V pulley waits on the ISO 4183 groove table, which is not in Lime Slice yet. A gear is an involute spur. The card says how it sits against the gear it meshes with, or the nearest gear it reaches: meshing, too close or too far (with the centre distance and the distance they mesh at), teeth crossing, a gear that cannot be built, or a module or pressure angle that does not match. `model_check` reports the same pairs. Measure and Check sit under Inspect. Workplane sits under Frame. Move in design space is Pose's Move (M), a free part included, snapping to the other parts. Undo and Redo at the foot of the rail are the same Ctrl+Z and Ctrl+Shift+Z as the rest of the window: in Model they walk this part's history, and inside a sketch they undo the sketch. STEP sits beside them.
 
 ### Push/pull and edge drag
 
@@ -35,7 +35,7 @@ Hover an edge and type a radius. Enter fillets that edge. The same gesture with 
 
 Parameters live under History in the left dock. Each row is a name and a value, or an expression in other parameters. Type that name into a size field: the field shows the number it evaluates to, with an ƒ mark, and keeps the expression. Change the parameter and Rebuild replays the steps that use it.
 
-History lists every step. Edit step (the row, or Shift+E) reopens that step's panel, including a group of sketch holes. The tree is stored in the `.lime` project. A part an MCP recipe built shows "Built by a recipe" and that line stays read-only: changing the recipe's parameters and rebuilding from them is not in the window yet. Undo and redo walk the same tree.
+History lists every step. Edit step (the row, or Shift+E) reopens that step's panel, including a group of sketch holes. The tree is stored in the `.lime` project. A part an MCP recipe built shows "Built by a recipe" and that line stays read-only: changing the recipe's parameters and rebuilding from them is not in the window yet. Ctrl+Z and Ctrl+Shift+Z walk the same tree. The command palette names the step when History has a name for it.
 
 ### Section view
 

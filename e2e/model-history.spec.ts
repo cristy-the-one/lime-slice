@@ -377,7 +377,7 @@ test("an arrow press just before leaving Model does not move the step the plate 
   await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await row(page, "Cut box 6").focus();
   await page.keyboard.press("ArrowUp");
-  await page.keyboard.press("1");
+  await page.keyboard.press("3");
   await expect(page.locator("#prepareBody")).toBeVisible();
   await expect(page.locator("#objectList .obj").first()).toContainText("20 × 20 × 6");
   await expect(page.locator("#modelHistoryTree"), "the arrow's pause ran out").not.toHaveAttribute("aria-busy", "true");
@@ -392,9 +392,9 @@ test("the row menu closes when Model closes", async ({ page }) => {
   await row(page, "Cut box 6").locator(".mh-more").click();
   const menu = page.getByRole("menu", { name: "Step" });
   await expect(menu).toBeVisible();
-  await page.keyboard.press("1");
+  await page.keyboard.press("3");
   await expect(page.locator("#prepareBody")).toBeVisible();
-  await page.keyboard.press("4");
+  await page.keyboard.press("1");
   await expect(readout(page)).toContainText(volume(4));
   await expect(menu).toBeHidden();
 });
