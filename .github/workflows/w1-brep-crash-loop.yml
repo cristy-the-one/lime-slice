@@ -113,6 +113,16 @@ jobs:
             Add-Content -Path $summary -Value $line
           }
 
+          function Get-ExitHex($code) {
+            if ($null -eq $code) { return "null" }
+            $n = [int64]$code
+            if ($n -lt 0) { $n += 4294967296 }
+            return ('{0:X8}' -f $n)
+          }
+          function Test-FatalHex([string]$hex) {
+            return $hex -in @('C0000005','C0000374','C0000409','C00000FD','C000001D','C0000094','C0000096')
+          }
+
           $dumpsKept = 0
           function Invoke-Loop([string]$exe, [int]$times, [string]$label, [string[]]$extraArgs, [int]$timeoutSec) {
             $crashes = 0; $passes = 0; $other = 0; $timeouts = 0
@@ -133,32 +143,36 @@ jobs:
                 continue
               }
               $code = $p.ExitCode
-              if ($null -eq $code) { $code = -1 }
-              $unsigned = [uint32]($code -band 0xFFFFFFFF)
+              $hex = Get-ExitHex $code
               $ms += $sw.ElapsedMilliseconds
+              $body = ""
+              if (Test-Path $stdout) { $body = (Get-Content $stdout -Raw -ErrorAction SilentlyContinue) }
+              $afterOk = $body -match "test result: ok"
               if ($code -eq 0) {
                 $passes++
                 Remove-Item -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
               }
-              elseif ($unsigned -eq 0xC0000005) {
+              elseif (Test-FatalHex $hex) {
                 $crashes++
                 $script:dumpsKept++
-                Add-Summary "CRASH $label iter=$i exit=0xC0000005 elapsed_ms=$($sw.ElapsedMilliseconds)"
+                $when = if ($afterOk) { "after-ok" } else { "during-test" }
+                Add-Summary "CRASH $label iter=$i exit=0x$hex when=$when elapsed_ms=$($sw.ElapsedMilliseconds)"
+                if ($body) { ($body -split "`n" | Select-Object -First 12) | ForEach-Object { Add-Summary "STDOUT $label $_" } }
                 $deadline = (Get-Date).AddSeconds(30)
                 do {
                   $now = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
                   if ($now.Count -gt $before.Count) { break }
                   Start-Sleep -Seconds 1
                 } while ((Get-Date) -lt $deadline)
-                if ($script:dumpsKept -eq 3) {
+                if ($script:dumpsKept -eq 2) {
                   reg delete "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" /f | Out-Null
-                  Add-Summary "WER_DUMPS_STOPPED after 3 access violations so later iterations only count"
+                  Add-Summary "WER_DUMPS_STOPPED after 2 fatal exits so later iterations only count"
                 }
               } else {
                 $other++
-                Add-Summary "OTHER $label iter=$i exit=$code (0x$($unsigned.ToString('X8'))) elapsed_ms=$($sw.ElapsedMilliseconds)"
-                if (Test-Path $stdout) { Get-Content $stdout -Tail 40 | ForEach-Object { Add-Summary "STDOUT $label $_" } }
-                if (Test-Path $stderr) { Get-Content $stderr -Tail 40 | ForEach-Object { Add-Summary "STDERR $label $_" } }
+                Add-Summary "OTHER $label iter=$i exit=$code (0x$hex) elapsed_ms=$($sw.ElapsedMilliseconds)"
+                if ($body) { ($body -split "`n" | Select-Object -First 12) | ForEach-Object { Add-Summary "STDOUT $label $_" } }
+                if (Test-Path $stderr) { Get-Content $stderr -Tail 20 | ForEach-Object { Add-Summary "STDERR $label $_" } }
               }
             }
             $avg = if ($ms.Count) { [int](($ms | Measure-Object -Average).Average) } else { 0 }
@@ -201,65 +215,64 @@ jobs:
             Add-Summary "OCCT_PDB $($_.FullName)"
           }
 
+          function Invoke-CdbUntilCrash([string]$label, [int]$times) {
+            if (-not (Test-Path -LiteralPath $cdb)) { Add-Summary "CDB_MISSING $label"; return $false }
+            $deps = Split-Path $brep
+            $cdbScript = Join-Path $dumpDir "catch-$label.txt"
+            Set-Content -Path $cdbScript -Encoding ascii -Value @(
+              '.echo CDB_READY',
+              'sxe -c "!analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; qd" av',
+              'sxe -c "!analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; qd" c0000374',
+              'sxe -c "!analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; qd" c0000409',
+              'g',
+              'q'
+            )
+            for ($i = 1; $i -le $times; $i++) {
+              $log = Join-Path $dumpDir "cdb-$label-$i.txt"
+              $cmd = '$<' + $cdbScript
+              $p = Start-Process -FilePath $cdb -ArgumentList @('-g','-G','-lines','-logo',$log,'-y',$deps,'-c',$cmd,$brep,'--nocapture') -PassThru
+              if (-not $p.WaitForExit(90000)) {
+                taskkill /F /T /PID $p.Id | Out-Null
+                Add-Summary "CDB_TIMEOUT $label iter=$i"
+                continue
+              }
+              $text = ""
+              if (Test-Path $log) { $text = [string](Get-Content $log -Raw -ErrorAction SilentlyContinue) }
+              $hex = Get-ExitHex $p.ExitCode
+              if ($text -match '---KB---') {
+                Add-Summary "CDB_HIT $label iter=$i exit=0x$hex"
+                Get-Content $log | Write-Host
+                return $true
+              }
+              Add-Summary "CDB_MISS $label iter=$i exit=0x$hex"
+            }
+            return $false
+          }
+
           Add-Summary "LOOP_BREP exe=$brep threads=default"
           $main = Invoke-Loop $brep 100 "brep-default" @() 180
           Invoke-CdbDumps "after-brep-100"
+          Add-Summary "DIAGNOSTIC --test-threads=1 (not a fix); 20 runs"
+          Invoke-Loop $brep 20 "brep-threads1" @("--test-threads=1") 180 | Out-Null
 
-          if ($main.crashes -eq 0) {
-            Add-Summary "NO_CRASH_IN_100 increasing to 300 and a --test-threads=1 diagnostic"
-            Invoke-Loop $brep 200 "brep-default-extra" @() 180 | Out-Null
-            Invoke-Loop $brep 30 "brep-threads1" @("--test-threads=1") 180 | Out-Null
-            Invoke-CdbDumps "after-extra"
+          Add-Summary "CDB_LIVE natural second-process, up to 40 tries"
+          $hit = Invoke-CdbUntilCrash "natural" 40
+          if (-not $hit) { Add-Summary "CDB_NATURAL_NO_HIT" }
+
+          $gflags = Join-Path (Split-Path $cdb) "gflags.exe"
+          if (Test-Path -LiteralPath $gflags) {
+            $image = Split-Path $brep -Leaf
+            & $gflags /p /enable $image /full
+            Add-Summary "PAGEHEAP enable $image exit=$LASTEXITCODE"
+            Add-Summary "CDB_LIVE pageheap, up to 20 tries"
+            Invoke-CdbUntilCrash "pageheap" 20 | Out-Null
+            & $gflags /p /disable $image
+            Add-Summary "PAGEHEAP disable $image exit=$LASTEXITCODE"
           } else {
-            Add-Summary "DIAGNOSTIC --test-threads=1 (not a fix); 20 runs"
-            Invoke-Loop $brep 20 "brep-threads1" @("--test-threads=1") 180 | Out-Null
+            Add-Summary "GFLAGS_MISSING $gflags"
           }
 
-          $othersStarted = Get-Date
-          foreach ($exe in $exes) {
-            if ((Split-Path $exe -Leaf) -like "brep-*.exe") { continue }
-            if (((Get-Date) - $othersStarted).TotalMinutes -gt 50) {
-              Add-Summary "OTHER_BUDGET_STOP remaining skipped after 50 minutes"
-              break
-            }
-            $name = [IO.Path]::GetFileNameWithoutExtension($exe)
-            $ran = Invoke-Loop $exe 3 "other-$name" @() 120
-            if ($ran.crashes -gt 0) {
-              $pdb = [IO.Path]::ChangeExtension($exe, ".pdb")
-              if (Test-Path -LiteralPath $pdb) { Copy-Item -LiteralPath $pdb -Destination $pdbDir -Force }
-              Copy-Item -LiteralPath $exe -Destination $pdbDir -Force
-            }
-          }
-          Invoke-CdbDumps "after-others"
-
-          if ($main.crashes -gt 0) {
-            $dumps = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue)
-            if ($dumps.Count -eq 0 -and (Test-Path -LiteralPath $cdb)) {
-              Add-Summary "NO_WER_DUMP running up to 15 iterations under cdb"
-              $cdbScript = Join-Path $dumpDir "catch.txt"
-              Set-Content -Path $cdbScript -Encoding ascii -Value @(
-                'sxe -c "!analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; qd" av',
-                'g',
-                'q'
-              )
-              for ($i = 1; $i -le 15; $i++) {
-                $log = Join-Path $dumpDir "cdb-live-$i.txt"
-                $p = Start-Process -FilePath $cdb -ArgumentList @("-g","-G","-logo",$log,"-y",$pdbDir,"-c","`$<$cdbScript",$brep,"--nocapture") -PassThru -NoNewWindow
-                if (-not $p.WaitForExit(180000)) {
-                  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-                  Add-Summary "CDB_LIVE_TIMEOUT iter=$i"
-                  continue
-                }
-                $text = if (Test-Path $log) { Get-Content $log -Raw -ErrorAction SilentlyContinue } else { "" }
-                if ($text -match "ACCESS_VIOLATION|---KB---") {
-                  Add-Summary "CDB_LIVE_HIT iter=$i"
-                  Get-Content $log | Write-Host
-                  break
-                }
-                Add-Summary "CDB_LIVE_MISS iter=$i exit=$($p.ExitCode)"
-              }
-            }
-          }
+          Add-Summary "OTHER_BINARIES not repeated this run; previous run 45888256265 looped each other lime-model-occt binary 3 times with no fatal exit (gear iter 3 was a 120s timeout, not a crash)"
 
           Write-Host "===== SUMMARY ====="
           if (Test-Path $summary) { Get-Content $summary | Write-Host }
