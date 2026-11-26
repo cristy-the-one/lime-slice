@@ -18,10 +18,13 @@ function codeOnly(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
-/** True when the test reads LIME_RECIPE_REQUIRED or calls findLust. */
+/**
+ * True when the test reads LIME_RECIPE_REQUIRED or skips a section on `if (findLust())`. A test that only calls
+ * findLust, as recipe-find.test.ts does with node standing in for lust, runs everywhere and is not gated.
+ */
 export function isLustGated(text) {
   const src = codeOnly(text);
-  return /\bLIME_RECIPE_REQUIRED\b/.test(src) || /\bfindLust\s*\(/.test(src);
+  return /\bLIME_RECIPE_REQUIRED\b/.test(src) || /\bif\s*\(\s*!?\s*findLust\s*\(\s*\)\s*\)/.test(src);
 }
 
 function walkTests(dir, acc) {

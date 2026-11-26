@@ -80,6 +80,10 @@ const gone = await call("plugin", { action: "get", id: "nothing-here" });
 check("an unknown name lists the names of both libraries", gone.ok === false && String(gone.reason).includes("gear-wheel") && String(gone.reason).includes("clash"), gone);
 
 const before = readdirSync(own).sort();
+if (!findLust() && process.env.LIME_RECIPE_REQUIRED === "1") {
+  console.error("plugin-extra: lust is required here (LIME_LUST)");
+  process.exit(1);
+}
 if (findLust()) {
   const ran = await call("recipe_run", { plugin: "gear-wheel" });
   check("recipe_run runs a shared plugin", ran.ok === true, ran);

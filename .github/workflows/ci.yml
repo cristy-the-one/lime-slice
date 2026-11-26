@@ -1013,7 +1013,6 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/clock-couple.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/clock-parts.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/graham-port.test.ts
-          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-find.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-followups.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-checkpoint.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts

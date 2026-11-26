@@ -165,7 +165,11 @@ const sheet = JSON.parse(readFileSync(String(poseRes.path), "utf8"));
 const armRow = sheet.members.find((m: { name: string }) => m.name === "Arm");
 check("Pose sheet records 4 members and Arm hinge at 30 deg", sheet.format === "lime-pose" && sheet.members.length === 4 && Math.abs(armRow.joint.value - 30) < 1e-6, show(sheet));
 
-// 8. Frame export & animated GLB (when lust is available)
+// 8. Frame export & animated GLB (when lust is available; LIME_RECIPE_REQUIRED=1 makes a missing lust a failure)
+if (!findLust() && process.env.LIME_RECIPE_REQUIRED === "1") {
+  console.error("pose-export: lust is required here (LIME_LUST)");
+  process.exit(1);
+}
 if (findLust()) {
   const animSrc = `use lime_recipe::{anim::*, Session};
 fn main() {
