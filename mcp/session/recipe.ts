@@ -43,6 +43,9 @@ import { readFile } from "node:fs/promises";
 import { environmentOf, proofData, proofText, startContext, type RunProof } from "./run-proof.ts";
 import { addSink, ensureMeshes, kernelRow, newSink, newTap, skipsMesh, splitOf, type KernelSink } from "./mesh-end.ts";
 
+/** One note on a run that opts out of strict. Accepted through 7.4; removed in 7.5.0. */
+const STRICT_OPT_OUT_NOTE = "//! strict: false is accepted through 7.4 and removed in 7.5.0: read or handle each queued step's result instead.";
+
 /**
  * recipe_run: lust builds the recipe in a warm slot (applying its safe fixes), then runs it with each call it makes
  * going through runCall as a plan step does. The run is one transaction: a refusal the recipe does not handle, a
@@ -293,8 +296,10 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   /** The entry the run is kept under: the one it replaces, else its name. */
   const key = replacing?.name ?? name;
   const source = rerun ? rerun.stored.source : lfOnly(typed!);
-  // Warn first (docs/plan-agent-ergonomics.md decision 1). `//! strict: true` is the opt-in that fails a run for a dropped step.
-  const strict = /^\s*\/\/!\s*strict:\s*true\s*$/m.test(source);
+  // Strict is the default from 7.4.0 (docs/plan-agent-ergonomics.md decision 1). A refused queued step the recipe never
+  // reads fails the run. `//! strict: false` opts out for this release; `//! strict: true` still means strict.
+  const strictOptOut = /^\s*\/\/!\s*strict:\s*false\s*$/m.test(source);
+  const strict = !strictOptOut;
   const params = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}), ...presetParams, ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
   if (typeof input.object === "string" && input.params === undefined) {
     const fromRun = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}) };
@@ -371,6 +376,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   /** Parts that were on the plate before the run, with the step each stood at. */
   const touched = new Map<string, number | null>();
   const notes: string[] = [...(checkpoint?.notes ?? [])];
+  // One note for the run, not one per dropped step. A resumed run already carried it in the checkpoint.
+  if (strictOptOut && !notes.includes(STRICT_OPT_OUT_NOTE)) notes.push(STRICT_OPT_OUT_NOTE);
   const warnings: (string | { line: number; tool: string; reason: string })[] = [];
   if (reusedWarning) warnings.push(reusedWarning);
   /** --- R-A. Recipe data the run read, by name: kept with the recipe so a rerun builds the same elsewhere. */

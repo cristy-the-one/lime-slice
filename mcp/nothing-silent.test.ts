@@ -9,7 +9,8 @@ import { join } from "node:path";
 
 import { fakeEngine } from "./engine.ts";
 import { findLust, lustFeatures } from "./recipe.ts";
-import { readPlugin } from "./plugins.ts";
+import { bodyHash, readPlugin, writePlugin, type PluginHeader, type PluginParam } from "./plugins.ts";
+import { writePreset } from "./nuggets.ts";
 import { Session } from "./session.ts";
 
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-nothing-ws-"));
@@ -93,21 +94,120 @@ const MISSED = `${USE}fn main() {
 }
 `;
 
-// --- Item 1. An unread refused apply_later stays ok, with a warning. strict rolls it back.
+// --- Item 1. Strict is the default (7.4.0). No header rolls an unread refused step back.
+// `//! strict: true` still rolls it back. `//! strict: false` warns, keeps the parts, and notes the opt-out once.
+const OPT_OUT = "//! strict: false is accepted through 7.4 and removed in 7.5.0: read or handle each queued step's result instead.";
+const REFUSED = "A queued step was refused and the recipe never read it";
+function notesOf(reply: R): string[] {
+  return ((reply.notes ?? []) as string[]);
+}
+function droppedOf(reply: R): { line?: number; tool?: string; reason?: string }[] {
+  return ((reply.warnings ?? []) as { line?: number; tool?: string; reason?: string }[]).filter((row) => typeof row.line === "number" && typeof row.tool === "string" && typeof row.reason === "string" && row.reason.length > 0);
+}
 {
   const session = new Session(fakeEngine());
   const call = callOf(session);
   const reply = await call("recipe_run", { source: MISSED, name: "missed", timeoutS: 120 });
-  const warnings = (reply.warnings ?? []) as { line?: number; tool?: string; reason?: string }[];
-  const dropped = warnings.filter((row) => typeof row.line === "number" && typeof row.tool === "string" && typeof row.reason === "string" && row.reason.length > 0);
-  const buried = ((reply.notes ?? []) as string[]).some((note) => note.includes("apply_later was refused"));
+  const buried = notesOf(reply).some((note) => note.includes("apply_later was refused"));
   const at = lineOf(MISSED, "apply_later");
-  const warned = reply.ok === true && !buried && dropped.some((row) => row.line === at && row.tool === "model_apply");
+  const rolledBack = reply.ok === false && !buried && objectsOf(session).length === 0 && String(reply.reason ?? "").includes(`${REFUSED}: line ${at} model_apply`);
+  check("item 1: an unread refused step with no header rolls the run back", rolledBack, { reply: { ok: reply.ok, reason: reply.reason, warnings: reply.warnings, notes: reply.notes }, left: objectsOf(session) });
   const strict = new Session(fakeEngine());
   const strictCall = callOf(strict);
   const rolled = await strictCall("recipe_run", { source: `//! strict: true\n${MISSED}`, name: "missed-strict", timeoutS: 120 });
   const back = rolled.ok === false && objectsOf(strict).length === 0;
-  check("item 1: an unread refused step warns, and strict rolls the run back", warned && back, { reply: { ok: reply.ok, warnings: reply.warnings, notes: reply.notes }, rolled: { ok: rolled.ok, reason: rolled.reason, code: rolled.code }, left: objectsOf(strict) });
+  check("item 1: //! strict: true rolls the run back", back, { rolled: { ok: rolled.ok, reason: rolled.reason, code: rolled.code }, left: objectsOf(strict) });
+  const loose = new Session(fakeEngine());
+  const looseCall = callOf(loose);
+  const opted = `  //! strict: false  \n${MISSED}`;
+  const warned = await looseCall("recipe_run", { source: opted, name: "missed-loose", timeoutS: 120 });
+  const looseAt = lineOf(opted, "apply_later");
+  const looseNotes = notesOf(warned);
+  const kept = warned.ok === true && objectsOf(loose).length > 0 && !looseNotes.some((note) => note.includes("apply_later was refused"))
+    && droppedOf(warned).some((row) => row.line === looseAt && row.tool === "model_apply")
+    && looseNotes.filter((note) => note === OPT_OUT).length === 1;
+  check("item 1: //! strict: false warns, keeps the parts, and notes the opt-out once", kept, { warned: { ok: warned.ok, warnings: warned.warnings, notes: warned.notes, reason: warned.reason }, left: objectsOf(loose) });
+  const again = kept ? await looseCall("recipe_run", { object: warned.object, timeoutS: 120 }) : { ok: false };
+  const againNotes = notesOf(again);
+  check("item 1: a rerun follows the stored source header", again.ok === true && objectsOf(loose).length > 0 && droppedOf(again).some((row) => row.tool === "model_apply") && againNotes.filter((note) => note === OPT_OUT).length === 1, { again: { ok: again.ok, warnings: again.warnings, notes: again.notes, reason: again.reason }, left: objectsOf(loose) });
+}
+
+const SIZED = (header: string) => `${header}use lime_recipe::{ops, Json, Session};
+
+fn main() {
+    let mut s = Session::start();
+    let d = s.number("diameter", 20.0).range(1.0, 40.0).get();
+    let p = s.solid_new(ops::cuboid(60.0, 20.0, 10.0)).unwrap();
+    s.apply_later(&p, Json::obj().set("kind", "hole").set("origin", [0.0, 0.0, 10.0]).set("axis", [0.0, 0.0, -1.0]).set("diameterMm", d).set("depth", 4.0)).unwrap();
+    s.done(&p);
+}
+`;
+
+{
+  const session = new Session(fakeEngine());
+  const call = callOf(session);
+  const bare = await call("recipe_run", { source: SIZED(""), name: "sized", params: { diameter: 4 }, timeoutS: 120, keep: { title: "Sized hole", description: "A hole." } });
+  const refused = bare.ok === true && String(bare.keepRefused ?? "").startsWith("This plugin does not build with its own defaults") && String(bare.keepRefused ?? "").includes(REFUSED) && !readPlugin("sized-hole", process.env.LIME_PLUGINS_DIR);
+  check("item 1: a kept plugin with no header fails its defaults check under strict", refused, { bare: { ok: bare.ok, keepRefused: bare.keepRefused, kept: bare.kept, reason: bare.reason, notes: bare.notes } });
+  const loose = await call("recipe_run", { source: SIZED("//! strict: false\n"), name: "sized-loose", params: { diameter: 4 }, timeoutS: 120, keep: { title: "Loose hole", description: "A hole." } });
+  const file = readPlugin("loose-hole", process.env.LIME_PLUGINS_DIR);
+  const body = file && !("reason" in file) ? file.body : "";
+  const keptLoose = loose.ok === true && (loose.kept as { id?: string } | undefined)?.id === "loose-hole" && notesOf(loose).filter((note) => note === OPT_OUT).length === 1 && body.includes("//! strict: false") && !body.includes("//! strict: true");
+  check("item 1: a plugin kept with //! strict: false is kept, with the note", keptLoose, { loose: { ok: loose.ok, kept: loose.kept, keepRefused: loose.keepRefused, notes: loose.notes, reason: loose.reason }, body: body.slice(0, 240) });
+}
+
+function plant(id: string, body: string, params: PluginParam[] = []): void {
+  const header: PluginHeader = { plugin: id, title: id, version: 1, description: "A queued drop.", author: "Test", api: "1.16", "source-sha256": bodyHash(body), created: "2026-11-26", target: "new", params };
+  writePlugin(header, body, process.env.LIME_PLUGINS_DIR);
+}
+
+{
+  const session = new Session(fakeEngine());
+  const call = callOf(session);
+  plant("bare-drop", MISSED);
+  plant("loose-drop", `//! strict: false\n${MISSED}`);
+  const outer = `${USE}fn main() {
+    let mut s = Session::start();
+    let loose = match s.run_plugin("loose-drop", Json::obj()) { Ok(run) => run.part, Err(e) => { s.log(&e.reason); s.solid_new(ops::cuboid(1.0, 1.0, 1.0)).unwrap() } };
+    let said = match s.run_plugin("bare-drop", Json::obj()) { Ok(_) => "ran".to_string(), Err(e) => e.reason };
+    s.log(&said);
+    s.done(&loose);
+}
+`;
+  const ran = await call("recipe_run", { source: outer, name: "nested-own", timeoutS: 120 });
+  const notes = notesOf(ran);
+  const follows = ran.ok === true && notes.some((note) => note === `loose-drop: ${OPT_OUT}`) && notes.some((note) => note.includes(`bare-drop: ${REFUSED}`)) && !notes.some((note) => note === OPT_OUT) && objectsOf(session).length === 1;
+  check("item 1: a nested run follows its own header", follows, { ran: { ok: ran.ok, notes, warnings: ran.warnings, reason: ran.reason, created: ran.created }, left: objectsOf(session) });
+  const optedOuter = `//! strict: false\n${USE}fn main() {
+    let mut s = Session::start();
+    let said = match s.run_plugin("bare-drop", Json::obj()) { Ok(_) => "ran".to_string(), Err(e) => e.reason };
+    s.log(&said);
+    let p = s.solid_new(ops::cuboid(2.0, 2.0, 2.0)).unwrap();
+    s.done(&p);
+}
+`;
+  const over = await call("recipe_run", { source: optedOuter, name: "nested-over", timeoutS: 120 });
+  const overNotes = notesOf(over);
+  check("item 1: an opted-out run does not opt out a nested run", over.ok === true && overNotes.filter((note) => note === OPT_OUT).length === 1 && overNotes.some((note) => note.includes(`bare-drop: ${REFUSED}`)), { over: { ok: over.ok, notes: overNotes, reason: over.reason } });
+  const pluginRun = await call("recipe_run", { plugin: "loose-drop", timeoutS: 120 });
+  check("item 1: a kept plugin run follows its stored source header", pluginRun.ok === true && droppedOf(pluginRun).some((row) => row.tool === "model_apply") && notesOf(pluginRun).filter((note) => note === OPT_OUT).length === 1, { pluginRun: { ok: pluginRun.ok, warnings: pluginRun.warnings, notes: pluginRun.notes, reason: pluginRun.reason } });
+  const bareRun = await call("recipe_run", { plugin: "bare-drop", timeoutS: 120 });
+  check("item 1: a kept plugin with no header rolls back", bareRun.ok === false && String(bareRun.reason ?? "").includes(REFUSED), { bareRun: { ok: bareRun.ok, reason: bareRun.reason, notes: bareRun.notes } });
+  writePreset({ plugin: "loose-drop", name: "plain", params: {}, created: "2026-11-26" });
+  writePreset({ plugin: "bare-drop", name: "plain", params: {}, created: "2026-11-26" });
+  const preset = await call("recipe_run", { plugin: "loose-drop", preset: "plain", timeoutS: 120 });
+  const presetBare = await call("recipe_run", { plugin: "bare-drop", preset: "plain", timeoutS: 120 });
+  check("item 1: a preset run follows the plugin source header", preset.ok === true && notesOf(preset).filter((note) => note === OPT_OUT).length === 1 && presetBare.ok === false && String(presetBare.reason ?? "").includes(REFUSED), { preset: { ok: preset.ok, notes: preset.notes, reason: preset.reason }, presetBare: { ok: presetBare.ok, reason: presetBare.reason } });
+  const made = String(pluginRun.object ?? "");
+  const rebuilt = made ? await call("recipe_run", { object: made, timeoutS: 120 }) : { ok: false };
+  check("item 1: a rebuild follows the stamped plugin source header", rebuilt.ok === true && notesOf(rebuilt).filter((note) => note === OPT_OUT).length === 1 && droppedOf(rebuilt).some((row) => row.tool === "model_apply"), { rebuilt: { ok: rebuilt.ok, notes: rebuilt.notes, warnings: rebuilt.warnings, reason: rebuilt.reason } });
+}
+
+{
+  const session = new Session(fakeEngine());
+  const guide = await callOf(session)("guide", { topic: "recipes", full: true });
+  const text = String(guide.text ?? "");
+  check("item 1: the recipes guide says strict is the default from 7.4.0", text.includes("Strict is the default from 7.4.0") && text.includes("a refused queued step the recipe never reads fails the run") && text.includes("`//! strict: false` is the opt-out for one release"), text.slice(0, 200));
 }
 
 const TWO = `${USE}fn main() {
