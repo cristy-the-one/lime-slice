@@ -423,6 +423,57 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
 }
 .layer-action.is-pause, .layer-action.is-filament { background: var(--stage-chip-on); }
 .layer-action.is-filament { color: var(--amber); }
+/* Desktop only. The touch rule (max-width: 480px) and compact.css keep their 44px track and 28px thumb.
+   A styled thumb needs appearance: none; writing-mode and direction on the input keep it vertical, max at the top.
+   WebKit pins the thumb's left edge to the 6px groove, so the thumb shifts left by half the overhang. */
+@media (min-width: 481px) {
+  html:not(.layout-compact) .track,
+  html:not(.layout-compact) .track input[type="range"] { width: 34px; }
+  html:not(.layout-compact) .track input[type="range"] {
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  /* Split: a grouped rule is dropped when either pseudo is unknown to the browser. */
+  html:not(.layout-compact) .track input[type="range"]::-webkit-slider-runnable-track {
+    width: 6px;
+    height: 100%;
+    border: none;
+    border-radius: 3px;
+    background: linear-gradient(to top, var(--accent) var(--fill, 100%), #3b3b3b var(--fill, 100%));
+  }
+  html:not(.layout-compact) .track input[type="range"]::-moz-range-track {
+    width: 6px;
+    height: 100%;
+    border: none;
+    border-radius: 3px;
+    background: linear-gradient(to top, var(--accent) var(--fill, 100%), #3b3b3b var(--fill, 100%));
+  }
+  html:not(.layout-compact) .track input[type="range"]::-moz-range-progress { background: transparent; border: none; }
+  html:not(.layout-compact) .track input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 24px;
+    height: 24px;
+    margin: 0 0 0 -9px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    pointer-events: auto;
+  }
+  html:not(.layout-compact) .track input[type="range"]::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+    margin: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+    pointer-events: auto;
+  }
+  html:not(.layout-compact) .layer-action { left: 37px; }
+  html:not(.layout-compact) .band { left: 13px; }
+  html:not(.layout-compact) .layer-pin { left: 3px; }
+  html:not(.layout-compact) .range-band { left: 5px; }
+}
 .range-band {
   position: absolute;
   left: 2px;

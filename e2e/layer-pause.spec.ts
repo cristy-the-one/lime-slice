@@ -89,3 +89,83 @@ test("a saved project keeps its layer actions, and a new mesh clears them", asyn
   await page.locator("#tabPreview").click();
   await expect(page.locator("#layerPins .layer-pin")).toHaveCount(1);
 });
+
+type Box = { x: number; y: number; width: number; height: number };
+
+function overlaps(a: Box, b: Box) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+/** Hit box of the range thumb. The input ignores pointers except on the thumb, so elementFromPoint finds it. */
+async function thumbBox(page: Page, id: string): Promise<Box> {
+  const box = await page.locator(id).evaluate((input) => {
+    const track = input.parentElement!.getBoundingClientRect();
+    const hits: { x: number; y: number }[] = [];
+    const x0 = Math.floor(track.left) - 16;
+    const x1 = Math.ceil(track.right) + 16;
+    const y0 = Math.floor(track.top) - 20;
+    const y1 = Math.ceil(track.bottom) + 20;
+    for (let y = y0; y <= y1; y += 1) {
+      for (let x = x0; x <= x1; x += 1) {
+        if (document.elementFromPoint(x, y) === input) hits.push({ x, y });
+      }
+    }
+    if (hits.length === 0) return null;
+    const xs = hits.map((hit) => hit.x);
+    const ys = hits.map((hit) => hit.y);
+    const left = Math.min(...xs);
+    const top = Math.min(...ys);
+    const right = Math.max(...xs) + 1;
+    const bottom = Math.max(...ys) + 1;
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  });
+  expect(box, `${id} thumb hit box`).not.toBeNull();
+  return box!;
+}
+
+test("the pause button sits clear of a wider layer thumb", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#slice").click();
+  await page.locator("#tabPreview").click();
+  const button = page.locator("#layerAction");
+  await expect(button).toBeVisible();
+  await expect(button).toHaveText("+");
+
+  const at = async (where: string) => {
+    const thumb = await thumbBox(page, "#rangeHigh");
+    const pause = (await button.boundingBox())!;
+    const gap = pause.x - (thumb.x + thumb.width);
+    expect.soft(thumb.width, `${where} thumb width`).toBeGreaterThanOrEqual(22);
+    expect.soft(thumb.height, `${where} thumb height`).toBeGreaterThanOrEqual(22);
+    expect.soft(gap, `${where} gap between thumb and pause`).toBeGreaterThanOrEqual(6);
+    expect.soft(overlaps(pause, thumb), `${where} pause overlaps the thumb`).toBe(false);
+    expect.soft(pause.y < thumb.y + thumb.height && pause.y + pause.height > thumb.y, `${where} pause tracks the thumb`).toBe(true);
+    return { thumb, pause, gap };
+  };
+
+  const top = await at("top layer");
+  const next = (await page.locator("#layerNext").boundingBox())!;
+  expect.soft(overlaps(top.pause, next), "top layer pause overlaps Next layer").toBe(false);
+
+  const before = await page.locator("#rangeHigh").inputValue();
+  const track = (await page.locator("#vslider .track").boundingBox())!;
+  await page.mouse.click(track.x + track.width / 2, track.y + track.height / 2);
+  await expect(page.locator("#rangeHigh")).toHaveValue(before);
+
+  const thumb = top.thumb;
+  await page.mouse.move(thumb.x + thumb.width / 2, thumb.y + thumb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(thumb.x + thumb.width / 2, thumb.y + thumb.height / 2 + 70, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => Number(await page.locator("#rangeHigh").inputValue())).toBeLessThan(Number(before));
+
+  await page.locator("#rangeHigh").evaluate((el: HTMLInputElement) => {
+    el.value = String(Math.round(Number(el.max) / 2));
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await at("middle layer");
+});
