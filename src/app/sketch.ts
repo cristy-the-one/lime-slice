@@ -145,6 +145,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     text.className = "model-tool-label";
     text.textContent = label;
     button.append(text);
+    button.setAttribute("aria-label", label);
     button.classList.add("is-icon");
   }
   setDrivingEvaluator((text) => {

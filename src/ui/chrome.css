@@ -145,33 +145,66 @@
   .tool-rail .rail-sep { margin: 4px 0; }
 }
 /*
- * Names under the icons (the setting "Names under tool icons"). The rail keeps its 48 px, so the viewport and the
- * panels do not move; only the buttons grow taller, and only in a window with the room for them.
+ * Names on tool buttons. The name sits inside the button's 32 px (26 px when dense), so the rail stays 48 px and a
+ * caption never covers the next tool. The Features row is the exception: Pocket is 24 px wide, so its name sits under
+ * the pair and that one row grows. A rail that still overflows after folding sets data-caps="off" and the names drop.
  */
-@media (min-width: 1280px) and (min-height: 800px) {
-  html[data-rail-captions="1"]:not([data-rail-labels="1"]) .tool-rail button[data-cap]:not(#leftToggle) {
-    width: 44px;
-    height: auto;
-    min-height: 38px;
-    padding: 3px 0 2px;
-    gap: 1px;
-    grid-auto-flow: row;
-    grid-template-rows: auto auto;
-    align-content: center;
-  }
-  html[data-rail-captions="1"]:not([data-rail-labels="1"]) .tool-rail button[data-cap]::before {
-    content: attr(data-cap);
-    grid-row: 2;
-    font-size: 9px;
-    font-weight: 600;
-    line-height: 1.1;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: clip;
-    white-space: nowrap;
-    color: inherit;
-  }
-  html[data-rail-captions="1"]:not([data-rail-labels="1"]) .tool-rail button[data-cap] > svg { grid-row: 1; }
+html[data-rail-captions="1"]:not(.layout-compact) #toolRail:not([data-caps="off"]) button[data-cap] {
+  width: 46px;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  grid-template-rows: 14px 9px;
+  align-content: center;
+  place-items: center;
+}
+html[data-rail-captions="1"]:not(.layout-compact) #toolRail:not([data-caps="off"]) button[data-cap]::before {
+  content: attr(data-cap);
+  grid-row: 2;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 9px;
+  white-space: nowrap;
+  color: inherit;
+}
+html[data-rail-captions="1"]:not(.layout-compact) #toolRail:not([data-caps="off"]) button[data-cap] > :is(svg, .ico) {
+  grid-row: 1;
+  width: 14px;
+  height: 14px;
+}
+html[data-rail-captions="1"]:not(.layout-compact) #toolRail:not([data-caps="off"]) button.more[data-cap]::after { bottom: 12px; }
+html[data-rail-captions="1"]:not(.layout-compact) #toolRail:not([data-caps="off"]) .model-feature {
+  position: relative;
+  height: 34px;
+  align-items: start;
+}
+html[data-rail-captions="1"]:not(.layout-compact) #toolRail:not([data-caps="off"]) .model-feature .model-tool {
+  position: static;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  align-self: start;
+  overflow: visible;
+  grid-template-rows: 1fr;
+}
+html[data-rail-captions="1"]:not(.layout-compact) #toolRail:not([data-caps="off"]) .model-feature .model-feature-more {
+  height: 24px;
+  align-self: start;
+}
+html[data-rail-captions="1"]:not(.layout-compact) #toolRail:not([data-caps="off"]) .model-feature .model-tool::before {
+  content: attr(data-cap);
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 10px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 10px;
+  text-align: center;
+  pointer-events: none;
 }
 /* A button that opens a flyout carries a corner mark. */
 .tool-rail button.more { position: relative; }

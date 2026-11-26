@@ -412,6 +412,8 @@ function labelWithIcon(button: HTMLElement, node: IconNode, label: string) {
   text.className = "model-tool-label";
   text.textContent = label;
   button.append(text);
+  // The painted caption is a ::before. An aria-label keeps that from joining this name.
+  button.setAttribute("aria-label", label);
 }
 
 export function mountModelChrome(next: ModelChromeHooks) {
@@ -3387,6 +3389,7 @@ function showFeatureButton(next: MenuTool) {
   if (!button) return;
   button.dataset.tool = next;
   labelWithIcon(button, FEATURE_ICONS[next], featureName(next));
+  button.dataset.cap = featureName(next);
   button.dataset.tip = FEATURE_TIPS[next];
   button.dataset.tipIdle = FEATURE_TIPS[next];
 }

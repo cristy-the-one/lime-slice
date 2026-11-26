@@ -59,7 +59,7 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | Calibrate… | Prepare rail. Command `calibrate`, when prepare. Off Prepare the palette keeps it disabled: "Calibrate is in Prepare." It had no key. | ok (D3, I6) |
 | Printers menu, printer chip | Top bar, beside File. The menu holds the current printer and filament, the printer and filament library, and machine settings. The chip opens that menu. | ok (D3, I6) |
 | Settings profile save, rename, duplicate, delete, import, export | Settings drawer, commands | ok |
-| Theme, settings level, rail labels, captions | the top bar's ⋯ menu, commands | ok |
+| Theme, settings level, names on tool buttons | the top bar's ⋯ menu | ok |
 | Tandem bridge (MCP link) | top bar | ok |
 | Undo, Redo | Ctrl+Z and Ctrl+Shift+Z (Ctrl+Y) are one command each. Model reads the open part, and the rail buttons are that command. Pose, Prepare, Preview and G-code read the plate. The palette names the step when it is known. An open sketch keeps its own undo | ok (R6, I4). Place's own stack is gone (I5) |
 

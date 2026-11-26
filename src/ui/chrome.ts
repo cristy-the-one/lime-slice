@@ -209,7 +209,6 @@ function mountToolRail(hooks: ChromeHooks) {
   mountRovingFocus(rail);
   mountRailFolds(rail);
   flyouts = mountRailFlyouts(rail);
-  mountRailLabels();
   mountRailCaptions();
   paintRailStage(hooks.stage());
 
@@ -385,17 +384,16 @@ function paintDockNames(stage: Stage) {
   if (model) window.dispatchEvent(new Event("lime-inspect"));
 }
 
-const RAIL_LABELS_KEY = "lime-slice-rail-labels";
-
 /**
- * Short names under the Prepare and Preview rail icons. On by default; chrome.css draws them only in a window at least
- * 1280 px wide and 800 px high, and the rail stays 48 px wide, so nothing else moves. The setting turns them off.
+ * Short names under every stage's rail icons. On by default. The names sit inside the button, so the rail stays 48 px
+ * wide. A short window folds a group first; if it still overflows, the names drop. A saved rail-labels value is unread.
  */
 function mountRailCaptions() {
   const input = document.querySelector<HTMLInputElement>("#railCaptions");
   const apply = (on: boolean) => {
     document.documentElement.dataset.railCaptions = on ? "1" : "0";
     if (input) input.checked = on;
+    fitRail();
   };
   const on = prefs.getBool("lime-slice-rail-captions");
   apply(on);
@@ -405,25 +403,16 @@ function mountRailCaptions() {
   });
 }
 
-/** Show labels is a setting, off until the user turns it on. It widens the rail to 132 px. */
-function mountRailLabels() {
-  const input = document.querySelector<HTMLInputElement>("#railLabels");
-  const apply = (on: boolean) => {
-    document.documentElement.dataset.railLabels = on ? "1" : "0";
-    if (input) input.checked = on;
-  };
-  let on = false;
-  on = prefs.getBool(RAIL_LABELS_KEY);
-  apply(on);
-  input?.addEventListener("change", () => {
-    apply(input.checked);
-    prefs.setBool(RAIL_LABELS_KEY, input.checked);
-    fitRail();
-  });
-}
-
 /** E3. Groups fold into one flyout button when the rail is too short for every tool, the least used first. */
 const FOLD_ORDER = ["frame", "inspect", "features", "shape", "create"];
+/** The name under a folded group's button: the same short word as the group's heading. */
+const FOLD_CAPTIONS: Record<string, string> = {
+  create: "Make",
+  shape: "Shape",
+  features: "Feat.",
+  inspect: "Check",
+  frame: "Frame",
+};
 let openFold: HTMLElement | null = null;
 
 function mountRailFolds(rail: HTMLElement) {
@@ -445,6 +434,8 @@ function addRailFolds(root: HTMLElement) {
     fold.setAttribute("aria-label", `${name} tools`);
     fold.setAttribute("aria-expanded", "false");
     fold.setAttribute("aria-controls", tools.id);
+    const cap = FOLD_CAPTIONS[group.dataset.group ?? ""];
+    if (cap) fold.dataset.cap = cap;
     tools.before(fold);
   }
 }
@@ -513,7 +504,11 @@ export function fitRail() {
   const rail = document.querySelector<HTMLElement>("#toolRail");
   if (!rail) return;
   closeFold(false);
+  delete rail.dataset.caps;
   const overflows = () => rail.scrollHeight > rail.clientHeight + 1;
+  const dropCaptions = () => {
+    if (document.documentElement.dataset.railCaptions === "1" && overflows()) rail.dataset.caps = "off";
+  };
   const groups = FOLD_ORDER
     .map((name) => rail.querySelector<HTMLElement>(`.rail-group[data-group="${name}"]`))
     .filter((group): group is HTMLElement => !!group);
@@ -534,7 +529,12 @@ export function fitRail() {
   };
   for (const group of groups) fold(group, false);
   delete rail.dataset.fit;
-  if (document.documentElement.classList.contains("layout-compact") || rail.querySelector("#railModel")?.closest("[hidden]")) return;
+  if (document.documentElement.classList.contains("layout-compact")) return;
+  // Other stages have no groups to fold. A rail that still overflows drops the names.
+  if (rail.querySelector("#railModel")?.closest("[hidden]")) {
+    dropCaptions();
+    return;
+  }
   if (overflows()) rail.dataset.fit = "dense";
   for (const group of groups) {
     if (!overflows()) break;
@@ -542,6 +542,7 @@ export function fitRail() {
     if (!group.querySelector<HTMLElement>(":scope > .rail-tools button")?.checkVisibility()) continue;
     fold(group, true);
   }
+  dropCaptions();
   rovingReset(rail);
 }
 
@@ -622,13 +623,19 @@ function toolButton(id: string, node: IconNode, label: string, tip: string) {
   return button;
 }
 
-/** The short name under a Prepare/Preview rail icon (chrome.css draws it from `data-cap`). The aria-label keeps the full name. */
+/** The short name under a rail icon (chrome.css draws it from `data-cap`). The aria-label keeps the full name. */
 const RAIL_CAPTIONS: Record<string, string> = {
   move: "Move",
   rotate: "Rotate",
   scale: "Scale",
   pivot: "Pivot",
   layflat: "Flat",
+  "pose-move": "Move",
+  "pose-select": "Select",
+  "pose-turn": "Turn",
+  "pose-reach": "Reach",
+  "pose-joint": "Joint",
+  "pose-link": "Link",
   "view-flat": "2D",
   "view-split": "Split",
   "view-solid": "3D",

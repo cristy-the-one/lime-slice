@@ -16,12 +16,12 @@ const RAIL = `
         <div class="rail-group" data-group="create" role="group" aria-label="Create">
           <span class="rail-caption" aria-hidden="true" title="Create">Make</span>
           <div class="rail-tools">
-            <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive">New solid</button>
+            <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive" data-cap="New solid">New solid</button>
             <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
-            <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
-            <button class="model-tool" id="modelToolPatch" type="button" data-tool="patch" hidden aria-pressed="false" data-tip="Patch: fill an opening. Each edge shows G0, G1, or G2.">Patch</button>
-            <button class="model-tool" id="modelToolNurbs" type="button" data-tool="sculpt" hidden aria-pressed="false" data-tip="NURBS: drag poles on a surface. On a solid it stays in the Features menu.">NURBS</button>
-            <button class="model-tool" id="modelToolBlend" type="button" data-tool="blend" hidden aria-pressed="false" data-tip="Blend: bridge two open edges. G1 or G2, with a tension on each side.">Blend</button>
+            <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card." data-cap="Sketch">Sketch</button>
+            <button class="model-tool" id="modelToolPatch" type="button" data-tool="patch" hidden aria-pressed="false" data-tip="Patch: fill an opening. Each edge shows G0, G1, or G2." data-cap="Patch">Patch</button>
+            <button class="model-tool" id="modelToolNurbs" type="button" data-tool="sculpt" hidden aria-pressed="false" data-tip="NURBS: drag poles on a surface. On a solid it stays in the Features menu." data-cap="NURBS">NURBS</button>
+            <button class="model-tool" id="modelToolBlend" type="button" data-tool="blend" hidden aria-pressed="false" data-tip="Blend: bridge two open edges. G1 or G2, with a tension on each side." data-cap="Blend">Blend</button>
           </div>
         </div>
         <div class="rail-group" data-group="shape" data-solid-only role="group" aria-label="Shape">
@@ -29,27 +29,27 @@ const RAIL = `
           <span class="rail-caption" aria-hidden="true" title="Shape">Shape</span>
           <div class="rail-tools">
             <!-- P1: Push/Pull. P. Also the gesture when no other model tool is open. -->
-            <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push/Pull: move a face. Hold Alt to add or cut material on that face only">Push/Pull</button>
-            <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Fillet: round every selected edge in one step">Fillet</button>
-            <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer: bevel every selected edge in one step">Chamfer</button>
+            <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push/Pull: move a face. Hold Alt to add or cut material on that face only" data-cap="Push/Pull">Push/Pull</button>
+            <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Fillet: round every selected edge in one step" data-cap="Fillet">Fillet</button>
+            <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer: bevel every selected edge in one step" data-cap="Chamfer">Chamfer</button>
             <!-- A2 shell -->
-            <button class="model-tool" id="modelToolShell" type="button" data-tool="shell" aria-pressed="false" data-tip="Shell: hollow the solid to a wall thickness, with picked faces open">Shell</button>
-            <button class="model-tool" id="modelToolDraft" type="button" data-tool="draft" hidden aria-pressed="false" data-tip="Draft: tilt the picked walls. A positive angle opens them toward the pull so the part releases">Draft</button>
-            <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane">Split</button>
-            <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale solid">Scale</button>
+            <button class="model-tool" id="modelToolShell" type="button" data-tool="shell" aria-pressed="false" data-tip="Shell: hollow the solid to a wall thickness, with picked faces open" data-cap="Shell">Shell</button>
+            <button class="model-tool" id="modelToolDraft" type="button" data-tool="draft" hidden aria-pressed="false" data-tip="Draft: tilt the picked walls. A positive angle opens them toward the pull so the part releases" data-cap="Draft">Draft</button>
+            <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane" data-cap="Split">Split</button>
+            <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale solid" data-cap="Scale">Scale</button>
           </div>
         </div>
         <div class="rail-group" data-group="features" data-solid-only role="group" aria-label="Features">
           <div class="rail-sep"></div>
           <span class="rail-caption" aria-hidden="true" title="Features">Feat.</span>
           <div class="rail-tools">
-            <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Boolean: fuse, cut, or intersect a primitive or another object on the plate">Boolean</button>
-            <button class="model-tool" id="modelToolPattern" type="button" data-tool="pattern" aria-pressed="false" data-tip="Pattern: repeat history steps in a line, around an axis, or along a path">Pattern</button>
-            <button class="model-tool" id="modelToolMirror" type="button" data-tool="mirror" aria-pressed="false" data-tip="Mirror: mirror history steps across X, Y, Z, or a picked flat face">Mirror</button>
-            <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Hole: cut a cylinder into the picked face, or straight down">Hole</button>
+            <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Boolean: fuse, cut, or intersect a primitive or another object on the plate" data-cap="Boolean">Boolean</button>
+            <button class="model-tool" id="modelToolPattern" type="button" data-tool="pattern" aria-pressed="false" data-tip="Pattern: repeat history steps in a line, around an axis, or along a path" data-cap="Pattern">Pattern</button>
+            <button class="model-tool" id="modelToolMirror" type="button" data-tool="mirror" aria-pressed="false" data-tip="Mirror: mirror history steps across X, Y, Z, or a picked flat face" data-cap="Mirror">Mirror</button>
+            <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Hole: cut a cylinder into the picked face, or straight down" data-cap="Hole">Hole</button>
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
-              <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
+              <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face" data-cap="Pocket">Pocket</button>
               <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, patch, blend, NURBS, parameters, plugins, stress, split to print, print transition"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
@@ -80,31 +80,31 @@ const RAIL = `
           <div class="rail-sep"></div>
           <span class="rail-caption" aria-hidden="true" title="Inspect">Check</span>
           <div class="rail-tools">
-            <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" data-solid-only aria-pressed="false" data-tip="Measure: drag two points on the solid and read the distance">Measure</button>
+            <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" data-solid-only aria-pressed="false" data-tip="Measure: drag two points on the solid and read the distance" data-cap="Measure">Measure</button>
             <!-- --- A7 model check --- also for a mesh, so not solid-only. -->
-            <button class="model-tool" id="modelToolCheck" type="button" data-tool="check" aria-pressed="false" data-tip="Check: overhangs, ceilings, islands, thin walls, and whether it fits the build volume">Check</button>
+            <button class="model-tool" id="modelToolCheck" type="button" data-tool="check" aria-pressed="false" data-tip="Check: overhangs, ceilings, islands, thin walls, and whether it fits the build volume" data-cap="Check">Check</button>
             <!-- --- A10. View: section, colour by step, the bed, the sizes. --- -->
-            <button class="model-look-open" id="modelLookOpen" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelLookPanel" data-tip="View: section, colour by step, the bed">View</button>
+            <button class="model-look-open" id="modelLookOpen" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelLookPanel" data-tip="View: section, colour by step, the bed" data-cap="View">View</button>
           </div>
         </div>
         <div class="rail-group" data-group="frame" data-solid-only role="group" aria-label="Frame">
           <div class="rail-sep"></div>
           <span class="rail-caption" aria-hidden="true" title="Frame">Frame</span>
           <div class="rail-tools">
-            <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Workplane: the U, V, W frame Hole, Boolean, and Split are typed in. Move in design space is Pose's Move.">Workplane</button>
+            <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Workplane: the U, V, W frame Hole, Boolean, and Split are typed in. Move in design space is Pose's Move." data-cap="W.plane">Workplane</button>
           </div>
         </div>
         <!-- The phone's History sheet. The desktop shows History in the Model dock. -->
-        <button class="model-tool" id="modelHistoryOpen" type="button" data-solid-only aria-controls="modelHistory" aria-expanded="false" data-tip="History">History</button>
+        <button class="model-tool" id="modelHistoryOpen" type="button" data-solid-only aria-controls="modelHistory" aria-expanded="false" data-tip="History" data-cap="History">History</button>
       </div>
       <!-- The rail foot's Model buttons: chrome.ts moves them above the dock toggle. -->
       <div class="rail-set rail-model-foot" id="railModelFoot" data-for="model" role="group" aria-label="Model history and export" data-model-ui>
         <div class="rail-group" data-group="edit" role="group" aria-label="Edit">
           <span class="rail-caption" aria-hidden="true" title="Edit">Edit</span>
         </div>
-        <button class="model-tool" id="modelUndo" type="button" data-solid-only disabled data-tip="Undo the last solid edit">Undo</button>
-        <button class="model-tool" id="modelRedo" type="button" data-solid-only disabled data-tip="Redo the last solid edit">Redo</button>
-        <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Export this solid as a STEP file">STEP</button>
+        <button class="model-tool" id="modelUndo" type="button" data-solid-only disabled data-tip="Undo the last solid edit" data-cap="Undo">Undo</button>
+        <button class="model-tool" id="modelRedo" type="button" data-solid-only disabled data-tip="Redo the last solid edit" data-cap="Redo">Redo</button>
+        <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Export this solid as a STEP file" data-cap="STEP">STEP</button>
         <div class="rail-sep"></div>
       </div>
       <div class="rail-fly model-look-panel" id="modelLookPanel" role="dialog" aria-label="View" data-model-ui hidden>

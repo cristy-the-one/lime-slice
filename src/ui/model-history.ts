@@ -240,6 +240,7 @@ export function mountModelHistory(next: ModelHistoryHooks) {
     const text = document.createElement("span");
     text.className = "model-tool-label";
     text.textContent = label;
+    open.setAttribute("aria-label", label);
     open.replaceChildren(icon(History), text);
   }
   const position = document.querySelector<HTMLButtonElement>("#modelPositionOpen");
