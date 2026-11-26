@@ -413,6 +413,8 @@ test("a later NURBS step: History Edit opens the tool on its own grid, a drag ed
   await page.locator("#objectList .obj").nth(1).click();
   await page.locator("#tabModel").click();
   const stepRow = page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }).nth(1);
+  await solidShown(page);
+  await expect(stepRow.locator(".mh-edit")).toBeEnabled();
   await stepRow.locator(".mh-edit").click();
   await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]"), "the step's grid, not the root's").toHaveCount(64);
   await select(page, 3, 3);
@@ -451,6 +453,14 @@ async function reopen(page: Page, file: Buffer) {
   await page.locator("#tabModel").click();
 }
 
+/**
+ * The solid Model just opened is on screen. History Edit is refused while that open is still jumping, and the edit
+ * control is not the signal: it is missing until the solid is drawn, and it is not disabled while the modeler is busy.
+ */
+async function solidShown(page: Page) {
+  await expect(page.locator("#modelReadout")).toContainText("Pick a face or an edge.");
+}
+
 /** The largest Z of a binary STL, base64. */
 function stlTopZ(b64: string): number {
   const bytes = Buffer.from(b64, "base64");
@@ -468,6 +478,9 @@ test("Undo takes a drag and a later Thicken back in the order they were made, an
   await expect.poll(() => sculpt.nurbsOpens().length).toBe(2);
   const dragged = lastGrid(sculpt)[3]![3]![2];
   await page.keyboard.press("Escape");
+  // The open is counted while the page still says "Building the surface…" and Thicken's click is ignored until that clears.
+  await expect(page.locator("#modelReadout")).toContainText("Surface updated.");
+  await expect(page.locator("#modelSheetThickenGo")).toBeEnabled();
   await page.locator("#modelSheetThickenGo").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 9800 mm³");
   // Scenario 1: the first Undo takes the Thicken back, not the drag.
@@ -492,6 +505,9 @@ test("Undo takes a drag and a later Thicken back in the order they were made, an
   await page.locator("#modelUndo").click();
   await expect.poll(() => sculpt.nurbsOpens().length).toBe(5);
   expect(lastGrid(sculpt)[3]![3]![2]).toBe(0);
+  // Counted while the page still says "Building the surface…". Thicken is ignored until the undo has been shown.
+  await expect(page.locator("#modelReadout")).toContainText("Surface drag undone.");
+  await expect(page.locator("#modelSheetThickenGo")).toBeEnabled();
   await page.locator("#modelSheetThickenMm").fill("3");
   await page.locator("#modelSheetThickenGo").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 9800 mm³");
@@ -576,7 +592,11 @@ test("two drags of a later NURBS step, the second released while the first build
     await route.fallback();
   });
   await reopen(page, file);
-  await page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }).nth(1).locator(".mh-edit").click();
+  const laterStep = page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }).nth(1).locator(".mh-edit");
+  // reopen returns with an empty readout: the open is still out, and Edit is refused until the solid is shown.
+  await solidShown(page);
+  await expect(laterStep).toBeEnabled();
+  await laterStep.click();
   await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]")).toHaveCount(64);
   const edits = sculpt.tree.of("edit").length;
   await select(page, 3, 3);
@@ -591,6 +611,9 @@ test("two drags of a later NURBS step, the second released while the first build
   expect(poles[4]![4]![2]).toBeGreaterThan(21);
   expect((second.replay as { op: { kind: string } }[]).map((step) => step.op.kind), "the Thicken replays on it").toEqual(["thicken"]);
   await expect.poll(async () => (await shownPole(page))[2], "what is drawn is what was built").toBeCloseTo(poles[4]![4]![2], 6);
+  // The edit count passed while the page still said "Building the surface…" and Undo was disabled. The click waits out both.
+  await expect(page.locator("#modelReadout")).toContainText("Surface updated.");
+  await expect(page.locator("#modelUndo")).toBeEnabled();
   // One Undo per drag, newest first.
   await page.locator("#modelUndo").click();
   await expect.poll(async () => {
@@ -611,7 +634,10 @@ test("a later-step drag released just before another object is opened is kept, a
     await route.fallback();
   });
   await reopen(page, file);
-  await page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }).nth(1).locator(".mh-edit").click();
+  const keptStep = page.locator("#modelHistoryTree .mh-row").filter({ hasText: "NURBS" }).nth(1).locator(".mh-edit");
+  await solidShown(page);
+  await expect(keptStep).toBeEnabled();
+  await keptStep.click();
   await expect(page.locator("#modelNurbsOverlay [data-nurbs-iu]")).toHaveCount(64);
   await select(page, 3, 3);
   await dragAxis(page, "z", 0, -40);
