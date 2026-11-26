@@ -37,17 +37,24 @@ export function mountMarkup(root: HTMLElement) {
             </nav>
           </details>
           <button type="button" id="exportModel" data-key="Ctrl Shift E">Export…</button>
-          <hr />
-          <button type="button" id="calibrateOpen">Calibrate…</button>
-          <button type="button" id="machineOpen">Printers and filaments…</button>
         </nav>
+      </details>
+      <details class="menu" id="printersMenu">
+        <summary class="btn ghost" aria-label="Printers menu">Printers<span class="caret" aria-hidden="true"></span></summary>
+        <div class="printers-panel">
+          <p class="menu-note">Current printer and filament</p>
+          <div class="popover" id="printerPick"></div>
+          <nav>
+            <button type="button" id="machineOpen">Printers and filaments…</button>
+            <button type="button" id="machineSettings">Machine settings…</button>
+          </nav>
+        </div>
       </details>
       <input id="file" type="file" accept=".stl,.3mf,.step,.stp,.lime,.STL,.3MF,.STEP,.STP,.LIME" multiple hidden />
       <input id="plateAddFile" type="file" accept=".stl,.3mf,.step,.stp,.STL,.3MF,.STEP,.STP" multiple hidden />
       <input id="projectFile" type="file" accept=".lime,application/json" hidden />
       <details class="menu" id="printerChip">
         <summary class="btn chip" aria-label="Printer, filament and nozzle" data-tip="Printer, filament and nozzle"><span id="printerChipLabel"></span><span class="caret" aria-hidden="true"></span></summary>
-        <div class="popover" id="printerPick"></div>
       </details>
       <div class="modes title-tabs" role="tablist" aria-label="Workspace">
         <button class="btn mode tab" id="tabModel" type="button" role="tab" data-tab="model" aria-label="Model" aria-selected="false" aria-pressed="false" aria-controls="modelBody" data-key="1">Model</button>

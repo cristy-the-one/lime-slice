@@ -75,19 +75,19 @@ test("saved presets become settings profiles once", async ({ page }) => {
   await expect(page.locator("#presetPick")).toHaveCount(0);
 });
 
-test("the Calibrate sheet opens from the File menu and closes on Escape", async ({ page }) => {
+test("the Calibrate sheet opens from the Prepare rail and closes on Escape", async ({ page }) => {
   await quiet(page);
   await page.goto("/");
   await expect(page.locator("#calibrate")).toBeHidden();
   await expect(page.locator("#left #pacal")).toHaveCount(0);
-  await page.locator("#fileMenu > summary").click();
+  await page.locator("#tabPrepare").click();
   await page.locator("#calibrateOpen").click();
   await expect(page.locator("#calibrate")).toBeVisible();
   await expect(page.locator("#calibrate #pacal")).toBeVisible();
   await expect(page.locator("#calibrate #retractcal")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator("#calibrate")).toBeHidden();
-  await expect(page.locator("#fileMenu > summary")).toBeFocused();
+  await expect(page.locator("#calibrateOpen")).toBeFocused();
 });
 
 test("no setting appears twice, and a tier hides the groups with nothing to show", async ({ page }) => {

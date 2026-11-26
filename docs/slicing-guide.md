@@ -20,7 +20,9 @@ The long form of the README's [Slice](../README.md#slice) section: placing parts
 
 **Reinforce** paints a patch on the surface, or places a box or a cylinder, so that part of the model prints denser infill, up to solid. The rest of the part keeps the strategy.
 
-**Printer, filament, and nozzle** sit in the chip at the top. The library includes a generic 45° belt and the Ideaformer IR3 V2. On a belt the part rides along the belt, and the layer readout's Z is position along the belt, not height above the bed. The 20 mm cube on the IR3 V2, same speed strategy, is 3 min 46 s and 2.11 g.
+**Printers** is the menu beside File. It holds the current printer and filament, the printer and filament library, and machine settings. The chip at the top opens that same menu. The library includes a generic 45° belt and the Ideaformer IR3 V2. On a belt the part rides along the belt, and the layer readout's Z is position along the belt, not height above the bed. The 20 mm cube on the IR3 V2, same speed strategy, is 3 min 46 s and 2.11 g.
+
+**Calibrate** is a button on Prepare's rail. It opens the sheet for pressure advance, flow, temperature and retraction towers, and adds those test parts to the plate. Off Prepare the command stays in the palette, disabled, and the tip says "Calibrate is in Prepare."
 
 **Supports.** Automatic, painted only, or off. The default style is organic tree (`supportStyle: "tree"`). With supports on, the vertical gap, the sideways gap, the dense layers under the part, and a brim around trunks that stand on the bed are their own settings. The three gap and layer fields show Auto until you type: Auto is the usual gap (one layer vertically, at least 0.12 mm, and 0.55 mm sideways) and three dense interface layers, and clearing a box goes back to Auto. A typed 0 is a real 0 for both gaps (the support touches the part), and 0 interface layers prints one, the fewest there can be. A tree brim of 0 is no brim.
 

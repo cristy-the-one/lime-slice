@@ -471,11 +471,29 @@ export function wireApp() {
       if (button.getAttribute("aria-disabled") === "true") return;
       void import("./export-dialog.ts").then(({ openExportCommand }) => openExportCommand("export-model"));
     }
-    else if (button.id === "machineOpen") revealPrinterDetails();
-    else if (button.id === "calibrateOpen") {
-      fileMenu.querySelector<HTMLElement>("summary")?.focus();
-      document.dispatchEvent(new CustomEvent("lime-open-calibrate"));
-    }
+  });
+  // The chip and the Printers menu are one menu: opening either opens both, and a click in either keeps both open.
+  let printerMenuSync = false;
+  const syncPrinterMenu = (open: boolean) => {
+    if (printerMenuSync) return;
+    printerMenuSync = true;
+    const menu = document.querySelector<HTMLDetailsElement>("#printersMenu");
+    const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
+    if (menu && menu.open !== open) menu.open = open;
+    if (chip && chip.open !== open) chip.open = open;
+    printerMenuSync = false;
+  };
+  document.querySelector("#printersMenu")?.addEventListener("toggle", (ev) => {
+    syncPrinterMenu((ev.currentTarget as HTMLDetailsElement).open);
+  });
+  document.querySelector("#printerChip")?.addEventListener("toggle", (ev) => {
+    syncPrinterMenu((ev.currentTarget as HTMLDetailsElement).open);
+  });
+  document.querySelector("#printersMenu")?.addEventListener("click", (ev) => {
+    const button = (ev.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!button || (button.id !== "machineOpen" && button.id !== "machineSettings")) return;
+    syncPrinterMenu(false);
+    revealPrinterDetails();
   });
   mountProjectFiles();
   // Both pickers take several files: Open replaces the plate with one and adds the rest, Add adds them all.
@@ -542,7 +560,9 @@ export function wireApp() {
   });
   document.addEventListener("pointerdown", (ev) => {
     const target = ev.target as Element | null;
+    const inPrinters = !!target?.closest("#printersMenu, #printerChip");
     document.querySelectorAll<HTMLDetailsElement>("details.menu[open]").forEach((menu) => {
+      if (inPrinters && (menu.id === "printersMenu" || menu.id === "printerChip")) return;
       if (!target || !menu.contains(target)) menu.open = false;
     });
   });

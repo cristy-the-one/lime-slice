@@ -73,9 +73,9 @@ Also in the window:
 - **Painting**: seams, supports (enforce or block) and Reinforce, which prints a painted patch, a box or a cylinder with denser infill, up to solid.
 - **Per-object settings, height ranges and modifier volumes**, and a print order of all at once or one object at a time.
 - **Ironing, fuzzy skin, scarf seams, adaptive layers, arc fitting**, Klipper or Marlin pressure advance, and fan control by feature.
-- **Calibrate…**: pressure advance, flow, temperature and retraction towers.
+- **Calibrate** on Prepare's rail: pressure advance, flow, temperature and retraction towers. It adds the test parts to the plate. Off Prepare the command stays in the palette, disabled.
 - **Layer pause** or filament change at a marked layer.
-- **Printers and filaments**: a library with the Lime 220, a generic 45° belt and the Ideaformer IR3 V2, plus New printer… from any of them.
+- **Printers**, the menu beside File: the current printer and filament, the printer and filament library, and machine settings. The printer chip opens the same menu. The library has the Lime 220, a generic 45° belt and the Ideaformer IR3 V2, plus New printer… from any of them.
 - **Foreign 3MF**: a PrusaSlicer, OrcaSlicer, Bambu Studio or Cura project opens as a mesh, and you can copy its layer height, walls, infill and supports.
 - **Send** uploads the G-code to a Prusa Link, Moonraker or OctoPrint host and can start the job.
 - **Projects** (`.lime`) keep the plate, settings, painting, Model history and assemblies. The installer registers `.lime`. Hover the lime icon at the top left to see the installed version.

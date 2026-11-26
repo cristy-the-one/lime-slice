@@ -28,4 +28,4 @@ The G-code header gains `; retract 1.200 mm at 30 mm/s` when a length is set, an
 
 ## UI
 
-An expert Retraction group. The checkbox is off. On, two fields send the length and, when it is not 30, the speed. The same group generates the tower, lists the bands, and saves the chosen length onto the filament.
+An expert Retraction group. The checkbox is off. On, two fields send the length and, when it is not 30, the speed. Prepare's Calibrate generates the tower, lists the bands, and saves the chosen length onto the filament.

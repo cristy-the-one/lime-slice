@@ -30,4 +30,4 @@ The G-code header gains `; flow 1.050` when it is not `1`.
 
 ## UI
 
-A flow field on the filament, default `1`, step `0.01`, from `0.5` to `1.5`. The flow calibration group, expert, generates the tower, lists the bands, and saves the chosen multiplier onto the filament. Off `1`, the slice body does not carry the field.
+A flow field on the filament, default `1`, step `0.01`, from `0.5` to `1.5`. Prepare's Calibrate opens the flow calibration group, which generates the tower, lists the bands, and saves the chosen multiplier onto the filament. Off `1`, the slice body does not carry the field.

@@ -64,7 +64,7 @@ test("custom retraction is omitted until it is set", async ({ page }) => {
   expect(bodies[1].retractLength).toBe(1.2);
   expect(bodies[1]).not.toHaveProperty("retractSpeed");
 
-  await page.locator("#fileMenu > summary").click();
+  await page.locator("#tabPrepare").click();
   await page.locator("#calibrateOpen").click();
   await page.locator("#retractcal").click();
   await expect.poll(() => cals.length).toBe(1);

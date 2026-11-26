@@ -56,8 +56,8 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | STEP of an assembly | Prepare's assembly header | merge → Export… (X1) |
 | Pose Export… (STEP, glTF, 3MF, STL, OBJ, pose sheet) | Pose panel, only with an assembly | merge, show → Export… (X1) |
 | Split to print's export sheet | Model, Split to print | ok: its pieces are not on the plate |
-| Calibrate… | File menu | move → Prepare: it adds test parts to the plate (D3) |
-| Printers and filaments…, printer chip | File menu and top bar | ok as app level; the menu entry moves to a **Printers** item beside File (D3) |
+| Calibrate… | Prepare rail. Command `calibrate`, when prepare. Off Prepare the palette keeps it disabled: "Calibrate is in Prepare." It had no key. | ok (D3, I6) |
+| Printers menu, printer chip | Top bar, beside File. The menu holds the current printer and filament, the printer and filament library, and machine settings. The chip opens that menu. | ok (D3, I6) |
 | Settings profile save, rename, duplicate, delete, import, export | Settings drawer, commands | ok |
 | Theme, settings level, rail labels, captions | the top bar's ⋯ menu, commands | ok |
 | Tandem bridge (MCP link) | top bar | ok |
@@ -101,6 +101,7 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | Lay out one assembly | assembly header | ok: it moves the print layout |
 | Attach, Ungroup, STEP | assembly header | ok: Attach and Ungroup are Pose's (X2). The view chip is gone (D5, I5). STEP merges (X1) |
 | Height ranges, modifiers, per-part overrides | object list and drawer, no commands | cmd |
+| Calibrate | rail | ok (D3, I6): towers and blends on the plate |
 
 ### Preview and G-code
 
