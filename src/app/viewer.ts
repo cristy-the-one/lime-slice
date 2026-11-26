@@ -59,6 +59,10 @@ export function paintSlider() {
   state.rangeLow = Math.min(state.rangeLow, state.layer);
   hi.value = String(state.layer);
   lo.value = String(state.rangeLow);
+  // The desktop groove paints accent up to the thumb. Touch and compact ignore --fill.
+  const fill = (value: number) => (max === 0 ? "100%" : `${(value / max) * 100}%`);
+  hi.style.setProperty("--fill", fill(state.layer));
+  lo.style.setProperty("--fill", fill(state.rangeLow));
   const nextBtn = document.querySelector<HTMLButtonElement>("#layerNext");
   const prevBtn = document.querySelector<HTMLButtonElement>("#layerPrev");
   if (nextBtn) nextBtn.disabled = n === 0 || state.layer >= max;
