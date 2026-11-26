@@ -94,10 +94,19 @@ struct Held {
     std::vector<std::string> edge_about;
     /// The Model view's display mesh lives on a copy of `shape`, so its finer triangles never reach the faces of
     /// `shape`, whose mesh is the one committed, sliced and exported. `display_faces[i]` is the copy of face i + 1,
-    /// with its orientation; `display_meshed` is the chord the copy was meshed at, 0 for none yet.
+    /// with its orientation; `display_edges[i]` is the copy of edge i + 1; `display_meshed` is the chord the copy was
+    /// meshed at, 0 for none yet.
+    ///
+    /// When built from a parent solid that already had a display mesh, `display_inherited_*` hold ref-counted handles
+    /// to that parent's copied faces/edges for sub-shapes shared with the parent (null for faces/edges this step made),
+    /// so `display_faces()` can copy and mesh only around `made` instead of copying and re-meshing the whole solid.
     TopoDS_Shape display_shape;
     std::vector<TopoDS_Face> display_faces;
+    std::vector<TopoDS_Edge> display_edges;
     double display_meshed = 0;
+    double display_inherited_chord = 0;
+    std::vector<TopoDS_Face> display_inherited_faces;
+    std::vector<TopoDS_Edge> display_inherited_edges;
 
     /// Drops the surface_at face cache. Defined in kernel.cpp, where that cache lives.
     ~Held();
@@ -171,6 +180,8 @@ SurfaceInspect surface_inspect(Held& held, double chord, bool want_curvature, bo
 std::string describe(Held& held);
 /// Give `held` the face and edge measures `from` has worked out for the faces and edges the two share.
 void inherit_about(Held& held, const Held& from);
+/// Give `held` ref-counted handles to `from`'s display-copied faces and edges for sub-shapes the two share.
+void inherit_display(Held& held, const Held& from);
 bool measure_distance(
     const Held& held,
     const char* a_kind,

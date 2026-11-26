@@ -1,11 +1,10 @@
 name: CI
 
 on:
-  # feature/organic-surfaces is here so PRs into the integration branch get CI; remove it from both lists once that branch is merged.
   push:
-    branches: [main, feature/organic-surfaces]
+    branches: [main]
   pull_request:
-    branches: [main, feature/organic-surfaces]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always

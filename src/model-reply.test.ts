@@ -1,5 +1,5 @@
 import { bytesToBase64 } from "./base64.ts";
-import { DAMAGED, MISMATCHED, SOLID_FORMAT, decodeSolid, decodeSurfaceInspect, encodeSolid, type ParsedSolid } from "./model-reply.ts";
+import { DAMAGED, MISMATCHED, SOLID_FORMAT, decodeSolid, decodeSurfaceInspect, encodeSolid, unpackModelReply, type ParsedSolid } from "./model-reply.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -126,6 +126,92 @@ const inspected = decodeSurfaceInspect({
 });
 check("surfaceInspect decodes buffers and summaries", typeof inspected !== "string" && inspected.minRadiusMm?.[0] === 2.5 && inspected.isoPoints?.length === 6 && inspected.continuity.g1 === 2);
 eq("surfaceInspect error passes through", decodeSurfaceInspect({ error: "missing" }), "missing");
+
+// --- LMB1 binary IPC framing (zero-Base64 zero-copy ArrayBuffer views) ---
+function packLmb1(header: Record<string, unknown>, blobs: Uint8Array[]): ArrayBuffer {
+  let blobBytes = 0;
+  for (const b of blobs) blobBytes = ((blobBytes + 3) & ~3) + b.byteLength;
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(header));
+  const blobBase = (12 + jsonBytes.byteLength + 3) & ~3;
+  const buf = new ArrayBuffer(blobBase + blobBytes);
+  const out = new Uint8Array(buf);
+  out.set([0x4c, 0x4d, 0x42, 0x31], 0); // "LMB1"
+  const view = new DataView(buf);
+  view.setUint32(4, jsonBytes.byteLength, true);
+  view.setUint32(8, 0, true);
+  out.set(jsonBytes, 12);
+  let cursor = blobBase;
+  for (const b of blobs) {
+    cursor = (cursor + 3) & ~3;
+    out.set(b, cursor);
+    cursor += b.byteLength;
+  }
+  return buf;
+}
+
+{
+  const posArr = Float32Array.from(sent.positions);
+  const triArr = Uint32Array.from(sent.triangles);
+  const epArr = Float32Array.from([...sent.edges[0]!.points, ...sent.edges[1]!.points]);
+  const eoArr = Uint32Array.from([0, 2, 5]);
+  const dispPos = Float32Array.from(sent.positions);
+  const dispNorm = Float32Array.from(sent.positions.map((_, i) => (i % 3 === 2 ? 1 : 0)));
+  const dispTri = Uint32Array.from(sent.triangles);
+  const blobs = [posArr, triArr, epArr, eoArr, dispPos, dispNorm, dispTri].map(
+    (a) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength),
+  );
+  const refs: [number, number][] = [];
+  let off = 0;
+  for (const b of blobs) {
+    off = (off + 3) & ~3;
+    refs.push([off, b.byteLength]);
+    off += b.byteLength;
+  }
+  const frame = packLmb1(
+    {
+      id: 7,
+      format: SOLID_FORMAT,
+      volumeMm3: sent.volumeMm3,
+      solid: true,
+      faces: sent.faces,
+      edgeLengths: sent.edges.map((e) => e.lengthMm),
+      fingerprint: { volumeMm3: 12.5, faces: 2, edges: 2 },
+      positions: { $bin: refs[0] },
+      triangles: { $bin: refs[1] },
+      edgePoints: { $bin: refs[2] },
+      edgeOffsets: { $bin: refs[3] },
+      display: {
+        positions: { $bin: refs[4] },
+        normals: { $bin: refs[5] },
+        triangles: { $bin: refs[6] },
+      },
+    },
+    blobs,
+  );
+  const unpacked = unpackModelReply(frame);
+  const binSolid = solid(unpacked);
+  eq("LMB1 solid positions match base64 round-trip", Array.from(binSolid.positions), Array.from(back.positions));
+  eq("LMB1 solid triangles match base64 round-trip", Array.from(binSolid.triangles), Array.from(back.triangles));
+  eq("LMB1 edge points match", binSolid.edges.map((e) => Array.from(e.points)), back.edges.map((e) => Array.from(e.points)));
+  check("LMB1 positions view the incoming ArrayBuffer with zero copy", binSolid.positions.buffer === frame);
+  check("LMB1 triangles view the incoming ArrayBuffer with zero copy", binSolid.triangles.buffer === frame);
+  check("LMB1 display positions & normals view the incoming ArrayBuffer with zero copy",
+    !!binSolid.display && binSolid.display.positions.buffer === frame && binSolid.display.normals?.buffer === frame);
+
+  // Plain UTF-8 JSON bytes and JSON strings pass through unpackModelReply cleanly.
+  const plainBytes = new TextEncoder().encode(JSON.stringify({ ok: true, id: 4 })).buffer;
+  eq("plain UTF-8 JSON ArrayBuffer unpacks cleanly", unpackModelReply(plainBytes), { ok: true, id: 4 });
+  eq("JSON string unpacks cleanly", unpackModelReply(JSON.stringify({ error: "nope" })), { error: "nope" });
+
+  // Corrupt LMB1 frames (bad flags, out-of-bounds $bin) are rejected.
+  let threw = false;
+  try {
+    unpackModelReply(packLmb1({ positions: { $bin: [0, 9999] } }, []));
+  } catch {
+    threw = true;
+  }
+  check("out-of-bounds LMB1 $bin descriptor throws", threw);
+}
 
 if (failed) throw new Error(`${failed} model reply checks failed`);
 console.log("model-reply: ok");

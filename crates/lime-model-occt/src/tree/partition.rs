@@ -11,7 +11,7 @@ use super::ffi::{lime_tree_partition, RawShape};
 use super::group::GroupBudget;
 use super::joints::{Joined, Joint, JointAnswer};
 use super::ops::{Op, Solid};
-use super::outcome::{Failure, Part};
+use super::outcome::{BinObject, Failure, Part};
 use super::shape::{take_text, Shape};
 
 /// --- Split to print, part numbers (plan sections 2 and 10). Each piece's number as `textStrokes` draws it, centred
@@ -293,7 +293,7 @@ pub(super) fn piece_replies(
     pieces: &mut [Shape],
     piece_keys: &[Option<String>],
     chord: f64,
-) -> Result<Vec<Option<String>>, Failure> {
+) -> Result<Vec<Option<BinObject>>, Failure> {
     pieces
         .iter_mut()
         .enumerate()

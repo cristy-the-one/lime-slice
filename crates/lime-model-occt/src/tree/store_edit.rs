@@ -200,7 +200,7 @@ impl Store {
                 node.pieces = piece_keys.to_vec();
                 node.pins = pins_key.clone();
             }
-            let text = self.reply(key, tip, chord)?;
+            let body = self.reply(key, tip, chord)?;
             let replies = piece_replies(&mut pieces, piece_keys, chord)?;
             let mut fields = vec![
                 (
@@ -215,11 +215,11 @@ impl Store {
             push_numbers(&mut fields, numbered.as_deref(), joined.as_ref());
             if !piece_keys.is_empty() {
                 let list = self.start_pieces(pieces, piece_keys, replies, chord);
-                fields.push(("pieces", Part::Json(list)));
+                fields.push(("pieces", list));
             }
             if let (Some(pins), Some(pins_key)) = (pins, pins_key) {
                 let list = self.start_pins(pins, &pins_key, chord)?;
-                fields.push(("pins", Part::Json(list)));
+                fields.push(("pins", list));
             }
             if let Some((node, error)) = broken {
                 fields.push((
@@ -235,7 +235,7 @@ impl Store {
             }
             return Ok(Answer::Held {
                 key: key.to_string(),
-                text,
+                body,
                 fields,
             });
         }
