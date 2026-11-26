@@ -61,7 +61,7 @@ Each milestone is one PR into `main`, with tests for every change, and with the 
 
 ### E1: nothing silent
 
-1. A run whose recipe never read a refused queued step does not succeed silently. The reply gets `ok: true` with a top-level `warnings` entry per dropped step (line, tool, reason). With a new recipe flag, `//! strict: true`, a dropped step fails the run and rolls it back. Whether strict becomes the default is decision 1.
+1. A run whose recipe never read a refused queued step does not succeed silently. The reply gets `ok: true` with a top-level `warnings` entry per dropped step (line, tool, reason). With a new recipe flag, `//! strict: true`, a dropped step fails the run and rolls it back. Whether strict becomes the default is decision 1. 7.4.0 made strict the default; `//! strict: false` is the opt-out for that release.
 2. A rerun of a multi-part recipe that would drop hand-made steps or branches says so before it runs: a `mode:"dry"` reply lists them, and a real run refuses unless `replaceHandEdits: true` is passed.
 3. `nugget save {from}` saves the code of the run it names. If that run was a dry run with newer code than the last kept version, it keeps the newer code, or refuses with a sentence. It never silently keeps the old one.
 4. `keep` with a `name` that differs only by punctuation from a kept id (`t26-touring-body` against `t-26-touring-body`) refuses with "did you mean". A new id is made only when no near match exists.
@@ -130,6 +130,6 @@ E1 first: it is small, and silent loss costs the most trust. Then E2 and E3, whi
 
 The owner decided all three on 2026-11-24: "go with your proposals on all three decisions".
 
-1. **Strict runs: warn first, then strict.** For one release, a dropped queued step warns (`warnings` in the reply) and `//! strict: true` opts in to failing the run. In the release after, strict becomes the default and `//! strict: false` opts out. E1 ships the first half; the switch is one line in the next release's notes.
+1. **Strict runs.** Strict is the default from 7.4.0: a refused queued step the recipe never reads fails the run. `//! strict: false` is the opt-out for one release (accepted through 7.4, removed in 7.5.0). E1 shipped the warn-first half, with `//! strict: true` opting in; that header still means strict.
 2. **Aliases: "did you mean", not silent.** One spelling stays canonical. A common alias is refused with a sentence that names the canonical field or op ("`path` is not a field of project_save; did you mean `name`?"). The E2 audit lists every alias it answers.
 3. **`orient_compare`: estimate, then slice the best two.** Every rotation is first scored without slicing: overhang area and unheld area from the part's own faces against the printer's rule (45° belt layers, or a flat bed). Only the two best rotations are sliced for time, grams and unheld length. `slice: "all"` slices every rotation when the caller wants exact numbers for each. The reply marks which rows are estimates and which are sliced.
