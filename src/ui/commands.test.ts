@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { COMMANDS, sheetGroups, contextOf, filterHelp, fires, fuzzyScore, groupsForStage, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, resolveKey, screensOf, shortcutOf, tipWithShortcut, type KeyContext, type KeyEventLike } from "./commands.ts";
+import { COMMANDS, STAGE_UNDO, sheetGroups, contextOf, filterHelp, fires, fuzzyScore, groupsForStage, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, resolveKey, screensOf, shortcutOf, tipWithShortcut, undoCommandLabel, type KeyContext, type KeyEventLike } from "./commands.ts";
 
 let failed = 0;
 
@@ -571,6 +571,37 @@ eq("Redo carries its label and a context", sheetRows.find((row) => row.id === "r
 eq("Loft says Sketch beside Shift+L", [sheetRows.find((row) => row.id === "sketch-loft")?.context, sheetRows.find((row) => row.id === "model-chamfer")?.context], ["Sketch", "Model"]);
 eq("a stage list names its stages", contextOf({ id: "x", label: "x", group: "x", when: ["prepare", "preview"] }), "Prepare or Preview");
 eq("undo works outside a sketch only", [press("Ctrl+Z"), press("Ctrl+Z", sketchCtx)], ["undo", "sketch-undo"]);
+
+// R6: one undo command and one redo command. The stage table says which history each reads. A sketch is not a stage.
+eq(
+  "undo and redo are one command each",
+  [COMMANDS.filter((command) => command.id === "undo").length, COMMANDS.filter((command) => command.id === "redo").length],
+  [1, 1],
+);
+eq(
+  "Ctrl+Z and Ctrl+Shift+Z and Ctrl+Y are those two commands",
+  [
+    COMMANDS.filter((command) => command.keys?.includes("Ctrl+Z")).map((command) => command.id),
+    COMMANDS.filter((command) => command.keys?.includes("Ctrl+Shift+Z") || command.keys?.includes("Ctrl+Y")).map((command) => command.id),
+  ],
+  [
+    ["sketch-undo", "undo"],
+    ["sketch-redo", "redo"],
+  ],
+);
+eq("stage undo routes Model to the part and every print stage, and Pose, to the plate", STAGE_UNDO, {
+  model: "model",
+  pose: "plate",
+  prepare: "plate",
+  preview: "plate",
+  gcode: "plate",
+});
+for (const stage of ["model", "pose", "prepare", "preview", "gcode"] as const) {
+  eq(`Ctrl+Z in ${stage} is the one undo command`, press("Ctrl+Z", { stage }), "undo");
+  eq(`Ctrl+Shift+Z in ${stage} is the one redo command`, press("Ctrl+Shift+Z", { stage }), "redo");
+  eq(`Ctrl+Y in ${stage} is the one redo command`, press("Ctrl+Y", { stage }), "redo");
+}
+eq("the palette names a known step and leaves an unknown one plain", [undoCommandLabel("Undo", "Fillet"), undoCommandLabel("Redo", "Move"), undoCommandLabel("Undo", null), undoCommandLabel("Undo", "  ")], ["Undo Fillet", "Redo Move", "Undo", "Undo"]);
 
 // The sheet's search and its folded groups. --------------------------------------------------------------------
 

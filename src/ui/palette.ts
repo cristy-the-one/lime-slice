@@ -1,5 +1,5 @@
 import { fx } from "../app/fx";
-import { redoUserEdit, undoUserEdit } from "../app/history";
+import { nextPlateStepName, redoUserEdit, undoUserEdit } from "../app/history";
 import { runSketchKey } from "../app/sketch-keys";
 import { modelApi, withModel } from "../app/workspaces";
 // Model's styles stay in the first stylesheet, in the place they always had (its code loads on first use): the empty
@@ -30,7 +30,7 @@ import { scrub, setStage, setView } from "../app/viewer";
 import { applyViewPreset } from "./viewport";
 import { pickModelFile } from "../platform";
 import { nudgeBrushRadius } from "./brush-radius";
-import { chordMatches, COMMANDS, filterHelp, groupsForStage, paletteCommands, rankCommands, shortcutOf, sheetGroups, type CommandSpec, type HelpGroup } from "./commands";
+import { chordMatches, COMMANDS, filterHelp, groupsForStage, paletteCommands, rankCommands, shortcutOf, sheetGroups, STAGE_UNDO, undoCommandLabel, type CommandSpec, type HelpGroup } from "./commands";
 import { loadRecent, pushRecent, withRecents } from "./palette-recent";
 import { toggleDock } from "./splitters";
 import { pushToast } from "./toasts";
@@ -38,6 +38,15 @@ import "./phase2.css";
 
 const MAX_ROWS = 12;
 const PALETTE_CHORD = shortcutOf(COMMANDS.find((command) => command.id === "palette")!)!;
+
+/** Undo and Redo, with the next step's name when the stage's history has one. */
+function namedUndo(command: CommandSpec): CommandSpec {
+  if (command.id !== "undo" && command.id !== "redo") return command;
+  const way = command.id === "undo" ? "undo" : "redo";
+  const name = STAGE_UNDO[state.stage] === "model" ? modelApi()?.modelHistoryName(way) ?? null : nextPlateStepName(way);
+  const label = undoCommandLabel(command.label, name);
+  return label === command.label ? command : { ...command, label };
+}
 
 export function mountStageTabs() {
   const list = document.querySelector<HTMLElement>('[role="tablist"][aria-label="Workspace"]');
@@ -108,7 +117,8 @@ export function mountPalette() {
 
   function render(query: string) {
     // The palette's own row is not offered while it is open. With nothing typed, the last five commands lead.
-    const offered = paletteCommands().filter((command) => command.id !== "palette");
+    // Undo and Redo name the step they will take, when that step's name is known ("Undo Move", "Undo Fillet").
+    const offered = paletteCommands().filter((command) => command.id !== "palette").map(namedUndo);
     if (query.trim()) {
       shown = rankCommands(offered, query).slice(0, MAX_ROWS);
       recentShown = 0;
@@ -471,8 +481,8 @@ export function runCommand(id: string) {
       stepBrush(0.5);
       return;
     case "undo":
-      // In Model this steps the solid's history only, never Prepare's, even with nothing left to undo.
-      if (state.stage === "model") {
+      // Model steps the open part (the rail button), including a sketch while one is open. Every other stage steps the plate.
+      if (STAGE_UNDO[state.stage] === "model") {
         const button = document.querySelector<HTMLButtonElement>("#modelUndo");
         if (button && !button.disabled) button.click();
         return;
@@ -560,8 +570,7 @@ export function runCommand(id: string) {
       withModel((model) => model.openAutoRibsCard());
       return;
     case "redo":
-      // In Model this steps the solid's history only, never Prepare's, even with nothing left to redo.
-      if (state.stage === "model") {
+      if (STAGE_UNDO[state.stage] === "model") {
         const button = document.querySelector<HTMLButtonElement>("#modelRedo");
         if (button && !button.disabled) button.click();
         return;

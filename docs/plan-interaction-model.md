@@ -61,7 +61,7 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | Settings profile save, rename, duplicate, delete, import, export | Settings drawer, commands | ok |
 | Theme, settings level, rail labels, captions | the top bar's ⋯ menu, commands | ok |
 | Tandem bridge (MCP link) | top bar | ok |
-| Undo, Redo | Ctrl+Z, but Model has its own Undo and Redo buttons. A design-space move is one plate step, undone in Pose | key: R6, one routing per stage (I4). Place's own stack is gone (I5) |
+| Undo, Redo | Ctrl+Z and Ctrl+Shift+Z (Ctrl+Y) are one command each. Model reads the open part, and the rail buttons are that command. Pose, Prepare, Preview and G-code read the plate. The palette names the step when it is known. An open sketch keeps its own undo | ok (R6, I4). Place's own stack is gone (I5) |
 
 ### Model
 
@@ -75,7 +75,7 @@ Verdicts: **ok** (right place, has a command); **cmd** (right place, needs a com
 | Workplane, Measure, Check, View (zebra, curvature, isoparms) | rail, commands | ok |
 | Parameters, Plugins, Auto ribs, Stress | Features menu, commands | ok |
 | Split to print, Print transition | Features menu | ok (R8): label the group "For printing"; Print transition needs a command |
-| History, Undo, Redo | rail foot buttons | key: Ctrl+Z routes here (R6), the buttons stay as views of it |
+| History, Undo, Redo | rail foot buttons, the same Ctrl+Z | ok (R6, I4): the buttons stay as views of the part's history |
 | STEP | rail foot | merge → Export… (X1) |
 
 ### Pose

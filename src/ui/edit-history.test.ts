@@ -7,6 +7,7 @@ import {
   emptyHistory,
   foldSince,
   historyRefs,
+  namePlateChange,
   pushStep,
   putBrepFor,
   redoSnap,
@@ -154,6 +155,40 @@ check("the rest is a copy", cloned.plate!.objects[0] !== solid.plate!.objects[0]
   check("the named step is a copy, not the caller's snap", swapped.undo.at(-1) !== before && before.label === undefined);
   const undone = undoSnap(swapped, snap(2));
   check("undo of the named step restores the state before the swap", undone?.restore.placement.partScale === 1 && undone.restore.label === "Assistant: Fuse Ornament gear on Glasses frame");
+}
+
+function plated(row: PlateSnapObject, placement = snap(1).placement): EditSnap {
+  return { ...snap(1), placement, plate: { selectedId: row.id, objects: [row] } };
+}
+
+{
+  const still = plated(plateRow("a"));
+  const moved = plated({ ...plateRow("a"), modelPose: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [15, 0, 0] } });
+  const shifted = plated(
+    { ...plateRow("a"), centered: false, offset: { x: 12, y: 0, z: 0 } },
+    { ...snap(1).placement, centered: false, offset: { x: 12, y: 0, z: 0 } },
+  );
+  const turned = plated(
+    { ...plateRow("a"), orient: [0, -1, 0, 1, 0, 0, 0, 0, 1] },
+    { ...snap(1).placement, orient: [0, -1, 0, 1, 0, 0, 0, 0, 1] },
+  );
+  const scaled = plated({ ...plateRow("a"), partScale: 1.5 }, { ...snap(1).placement, partScale: 1.5 });
+  const both = plated(
+    { ...plateRow("a"), modelPose: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [4, 0, 0] }, offset: { x: 4, y: 0, z: 0 } },
+    { ...snap(1).placement, offset: { x: 4, y: 0, z: 0 } },
+  );
+  check("a design-space move is Move", namePlateChange(still, moved) === "Move");
+  check("a print-layout move is Move", namePlateChange(still, shifted) === "Move");
+  check("a turn is Rotate", namePlateChange(still, turned) === "Rotate");
+  check("a scale is Scale", namePlateChange(still, scaled) === "Scale");
+  check("a move in both spaces is not named", namePlateChange(still, both) === null);
+  check("an unchanged plate is not named", namePlateChange(still, still) === null);
+  const linked = { ...still, assemblies: [{ id: "asm" }] };
+  const ungrouped = { ...linked, assemblies: [] };
+  check("making an assembly is Link", namePlateChange(still, linked) === "Link");
+  check("dropping an assembly is Ungroup", namePlateChange(linked, ungrouped) === "Ungroup");
+  check("a joint edit is not named", namePlateChange(linked, { ...linked, assemblies: [{ id: "asm", joint: "hinge" }] }) === null);
+  check("a settings change is not named", namePlateChange(still, { ...still, settings: { layerHeight: 0.3 } }) === null);
 }
 
 if (failed) {

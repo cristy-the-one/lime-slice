@@ -17,9 +17,11 @@ import {
   emptyHistory,
   foldSince,
   historyRefs,
+  namePlateChange,
   pushStep,
   putBrepFor,
   redoSnap,
+  sameSnap,
   undoSnap,
   type EditHistory,
   type EditSnap,
@@ -370,6 +372,21 @@ export function patchEditBrep(token: string, brep: ArrayBuffer | undefined) {
 /** The steps Undo and Redo would take next, so Model can tell that a step it made is still the newest. */
 export function newestEdits(): { undo: EditSnap | null; redo: EditSnap | null; pending: boolean } {
   return { undo: history.undo.at(-1) ?? null, redo: history.redo.at(-1) ?? null, pending: history.pending != null };
+}
+
+/** The name of the plate step Undo or Redo would take, when that name is known. */
+export function nextPlateStepName(way: "undo" | "redo"): string | null {
+  const current = capture();
+  if (way === "undo") {
+    if (history.pending && !sameSnap(history.pending, current)) return history.pending.label?.trim() || namePlateChange(history.pending, current);
+    const earlier = history.undo.at(-1);
+    if (!earlier) return null;
+    return earlier.label?.trim() || namePlateChange(earlier, current);
+  }
+  if (history.pending && !sameSnap(history.pending, current)) return null;
+  const later = history.redo.at(-1);
+  if (!later) return null;
+  return later.label?.trim() || namePlateChange(current, later);
 }
 
 export function undoUserEdit(): boolean {

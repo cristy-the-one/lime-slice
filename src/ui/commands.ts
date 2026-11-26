@@ -22,6 +22,25 @@ export type KeyScope =
 
 export type StageName = "prepare" | "preview" | "gcode" | "model" | "pose";
 
+/**
+ * Which history Ctrl+Z and Ctrl+Shift+Z (and Ctrl+Y) read. One command each; this table is the routing.
+ * An open sketch is not a stage: `sketch-undo` and `sketch-redo` keep the key there, as they do today.
+ * Pose's design-space steps are plate steps, so Pose reads the same plate history Prepare, Preview and G-code do.
+ */
+export const STAGE_UNDO: Record<StageName, "model" | "plate"> = {
+  model: "model",
+  pose: "plate",
+  prepare: "plate",
+  preview: "plate",
+  gcode: "plate",
+};
+
+/** The palette row: "Undo" alone, or "Undo Fillet" when the next step's name is known. */
+export function undoCommandLabel(label: string, name: string | null | undefined): string {
+  const trimmed = name?.replace(/\s+/g, " ").trim() ?? "";
+  return trimmed ? `${label} ${trimmed}` : label;
+}
+
 export interface CommandSpec {
   id: string;
   label: string;
@@ -223,6 +242,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "paint-reinforce", label: "Reinforce", group: "Tools", keys: ["N"], when: "prepare", target: '#toolRail [data-tool="reinforce"]', keywords: "brush infill solid density depth" },
   { id: "brush-smaller", label: "Smaller brush", group: "Tools", keys: ["["], when: "brush", repeat: true, show: "help" },
   { id: "brush-larger", label: "Larger brush", group: "Tools", keys: ["]"], when: "brush", repeat: true, show: "help" },
+  // One command each. `STAGE_UNDO` picks the history at run time; the Model buttons stay as views of the part's history.
   { id: "undo", label: "Undo", group: "Edit", keys: ["Ctrl+Z"], when: "workspace", typing: true, target: "#modelUndo", keywords: "placement settings revert" },
   { id: "redo", label: "Redo", group: "Edit", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], when: "workspace", typing: true, target: "#modelRedo", keywords: "placement settings model again" },
   { id: "search", label: "Search settings", group: "Edit", keys: ["/", "Ctrl+F"], when: "find", keywords: "find filter" },
