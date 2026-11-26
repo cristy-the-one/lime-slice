@@ -1,6 +1,8 @@
 # Temporary: reproduce the Windows brep access violation and print a native stack.
-# Removed before this PR is ready for review. Push / pull_request on
-# claude/w1-brep-windows-crash only. Does not change any existing CI job.
+# One loop runs the same brep binary 100 times three ways: baseline Delabella,
+# LIME_OCCT_MESHER=watson, and LIME_OCCT_MESH_PARALLEL=0. Removed before this
+# PR is ready for review. Push / pull_request on claude/w1-brep-windows-crash
+# only. Does not change any existing CI job.
 name: W1 brep crash loop
 
 on:
@@ -300,13 +302,28 @@ jobs:
             return $false
           }
 
-          Add-Summary "LOOP_BREP exe=$brep threads=default"
-          $main = Invoke-Loop $brep 100 "brep-default" @() 180
-          Invoke-CdbDumps "after-brep-100"
-          Add-Summary "DIAGNOSTIC --test-threads=1 (not a fix); 20 runs"
-          Invoke-Loop $brep 20 "brep-threads1" @("--test-threads=1") 180 | Out-Null
+          function Clear-MeshEnv {
+            Remove-Item Env:LIME_OCCT_MESHER -ErrorAction SilentlyContinue
+            Remove-Item Env:LIME_OCCT_MESH_PARALLEL -ErrorAction SilentlyContinue
+          }
+          Add-Summary "READ A only -> Delabella under the thread pool. A and C, not B -> Delabella on a face. B as well -> not Delabella."
+          Clear-MeshEnv
+          Add-Summary "VARIANT A baseline Delabella InParallel=true exe=$brep MESHER='$($env:LIME_OCCT_MESHER)' PARALLEL='$($env:LIME_OCCT_MESH_PARALLEL)'"
+          Invoke-Loop $brep 100 "A-baseline" @() 180 | Out-Null
+          Invoke-CdbDumps "after-A"
 
-          Add-Summary "CDB_LIVE natural second-process, up to 40 tries"
+          $env:LIME_OCCT_MESHER = "watson"
+          Add-Summary "VARIANT B LIME_OCCT_MESHER=watson InParallel=true (parallel meshing, Watson) MESHER='$($env:LIME_OCCT_MESHER)' PARALLEL='$($env:LIME_OCCT_MESH_PARALLEL)'"
+          Invoke-Loop $brep 100 "B-watson" @() 180 | Out-Null
+          Clear-MeshEnv
+
+          $env:LIME_OCCT_MESH_PARALLEL = "0"
+          Add-Summary "VARIANT C Delabella LIME_OCCT_MESH_PARALLEL=0 (InParallel false). Temporary switch. MESHER='$($env:LIME_OCCT_MESHER)' PARALLEL='$($env:LIME_OCCT_MESH_PARALLEL)'"
+          Invoke-Loop $brep 100 "C-serial" @() 180 | Out-Null
+          Clear-MeshEnv
+          Add-Summary "MESH_ENV_CLEARED before cdb MESHER='$($env:LIME_OCCT_MESHER)' PARALLEL='$($env:LIME_OCCT_MESH_PARALLEL)'"
+
+          Add-Summary "CDB_LIVE natural second-process, baseline env, up to 40 tries"
           $hit = Invoke-CdbUntilCrash "natural" 40
           if (-not $hit) { Add-Summary "CDB_NATURAL_NO_HIT" }
 

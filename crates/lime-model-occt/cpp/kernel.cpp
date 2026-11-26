@@ -732,6 +732,14 @@ void mesh_faces(const TopoDS_Shape& shape, double chord, double angle = 0.5) {
     parameters.Angle = angle;
     parameters.Relative = Standard_False;
     parameters.InParallel = Standard_True;
+    // Temporary, for the Windows brep crash loop only. The loop sets
+    // LIME_OCCT_MESH_PARALLEL=0 so this mesh runs on the calling thread.
+    // Removed before that PR is ready, unless this is the fix.
+    if (const char* parallel = std::getenv("LIME_OCCT_MESH_PARALLEL")) {
+        if (std::strcmp(parallel, "0") == 0) {
+            parameters.InParallel = Standard_False;
+        }
+    }
     parameters.MeshAlgo = g_watson_mesher.load() ? IMeshTools_MeshAlgoType_Watson : IMeshTools_MeshAlgoType_Delabella;
     const BRepMesh_IncrementalMesh mesher(shape, parameters);
     if (parameters.MeshAlgo == IMeshTools_MeshAlgoType_Watson || g_no_mesher_fallback.load()) {
