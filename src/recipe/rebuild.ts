@@ -19,6 +19,7 @@ import { carriedEnv, splitPluginData } from "./plugin-data.ts";
 import { runNestedInApp, topNested, type AppPluginSources } from "./app-nested.ts";
 import { pinsOf, type PluginCode } from "./nested.ts";
 import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, unreadKeys, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
+import { strictQueueFailure } from "./strict.ts";
 
 /** The steps on the way to the shown step that came after a run: what a rebuild of it replays. */
 export function laterSteps(tree: ModelTree, run: StampedRun): NodeId[] {
@@ -210,7 +211,9 @@ async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<Rebuil
     await back();
     return { ok: false as const, reason, ...extra, notes, ...left(), ...(queue.replay ? { replay: queue.replay } : {}) };
   };
-  for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${row.line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
+  // The same rule as a fresh run (`./apply.ts`): the stored source's header, not the run that made the step.
+  const queued = queue.replay ? null : strictQueueFailure(input.body, queue.unreported(), notes);
+  if (queued) return refuse(queued);
   if (!out.ok || !out.done) return refuse(out.reason ?? "The plugin failed.", out.line !== undefined ? { line: out.line } : {});
   // --- O4. A stamped run made at most one part and changed at most the part it was given: so must its rebuild.
   const made = calls.all.filter((row) => row.origin === "made" && !row.consumed);

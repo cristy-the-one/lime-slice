@@ -329,6 +329,7 @@ src/recipe/api-level.test.ts
 src/recipe/nested.test.ts
 src/recipe/rerun-assembly.test.ts
 src/recipe/queue.test.ts
+src/recipe/apply.test.ts
 tools/ci/bump-only.test.mjs
 tools/ci/bundle-budget.test.mjs
 tools/ci/smoke-shards.test.mjs
