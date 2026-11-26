@@ -86,6 +86,8 @@ export function actionReason(id: string): string | null {
       return null;
     case "model-view":
       return state.stage === "model" ? null : "View is in Model.";
+    case "calibrate":
+      return state.stage === "prepare" ? null : "Calibrate is in Prepare.";
     case "measure-points":
       return state.stage === "prepare" ? null : "Measure between points is in Prepare.";
     case "pose-animation-play":

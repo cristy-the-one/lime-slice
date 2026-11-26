@@ -7,6 +7,7 @@ import {
   createElement,
   DraftingCompass,
   Download,
+  FlaskConical,
   Grab,
   Grid3x3,
   Minus,
@@ -178,6 +179,10 @@ function mountToolRail(hooks: ChromeHooks) {
   between.append(points);
   const paints = railSet("prepare", "Paint");
   paints.append(sep(), caption("Paint"), paint);
+  const calibrate = toolButton("calibrate", FlaskConical, "Calibrate", "Pressure advance, flow, temperature and retraction towers. Adds test parts to the plate.");
+  calibrate.id = "calibrateOpen";
+  const calibrateSet = railSet("prepare", "Calibrate");
+  calibrateSet.append(sep(), calibrate);
   const edits = railSet("preview gcode", "Edit");
   edits.append(sep(), caption("Edit"), supports);
 
@@ -199,7 +204,7 @@ function mountToolRail(hooks: ChromeHooks) {
   foot.append(leftToggle);
 
   const model = document.querySelector<HTMLElement>("#railModel");
-  rail.append(place, pose, look, bed, shared, between, paints, edits, ...(model ? [model] : []), gizmoNudge(), foot);
+  rail.append(place, pose, look, bed, shared, between, paints, calibrateSet, edits, ...(model ? [model] : []), gizmoNudge(), foot);
   host?.prepend(rail);
   mountRovingFocus(rail);
   mountRailFolds(rail);
@@ -222,6 +227,7 @@ function mountToolRail(hooks: ChromeHooks) {
     }
     if (id === "measure-points") setPointMeasure(button.getAttribute("aria-pressed") !== "true");
     if (id === "layflat") document.querySelector<HTMLButtonElement>("#layflat")?.click();
+    if (id === "calibrate") document.dispatchEvent(new CustomEvent("lime-open-calibrate"));
     if (id === "section") toggleSection();
     if (id === "dock") toggleDock("left");
     const mode = button.dataset.mode;
@@ -627,6 +633,7 @@ const RAIL_CAPTIONS: Record<string, string> = {
   "view-split": "Split",
   "view-solid": "3D",
   rulers: "Measure",
+  calibrate: "Calibrate",
   "measure-points": "Points",
   section: "Section",
   supports: "Supports",

@@ -58,6 +58,41 @@
   box-shadow: var(--shadow-pop);
 }
 .popover select { width: 100%; }
+/* Printers is the home of the library, machine settings, and the current printer. The chip opens this same panel. */
+#printersMenu > .printers-panel {
+  position: absolute;
+  z-index: var(--z-menu);
+  margin-top: var(--space-1);
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+#printersMenu .menu-note { margin: 0; font-size: var(--fs-2); color: var(--muted); }
+#printersMenu > .printers-panel > .popover {
+  position: static;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+#printersMenu > .printers-panel > nav {
+  position: static;
+  z-index: auto;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
 
 /* The stage tabs never shrink under the estimate; the printer chip and the estimate give way first. */
 .title-tabs { flex: 0 0 auto; margin: 0 auto; }

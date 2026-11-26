@@ -136,6 +136,8 @@ Cube score is back to the unrecovered 3D number (11577 vs 11572) and prints in 2
 
 ## Pressure-advance calibration
 
+In the window, Prepare's Calibrate rail button opens the sheet that writes this tower and saves the chosen K onto the filament.
+
 `lime-slice calibrate pa` writes a tower. Each band is a slow 40 mm/s frame and a slow-fast-slow line. The fast feed is the volumetric cap (here 133.3 mm/s at 0.45 × 0.2 mm and 12 mm³/s). A sample `--start 0 --end 0.04 --step 0.02 --band-height 1` produced three Klipper bands and 88.7 mm of filament:
 
 | Band | K | Z |

@@ -422,12 +422,13 @@ export function runCommand(id: string) {
       return;
     }
     case "printer-pick": {
-      const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
-      if (chip) chip.open = true;
-      chip?.querySelector<HTMLSelectElement>("#machinePrinter")?.focus();
+      const menu = document.querySelector<HTMLDetailsElement>("#printersMenu");
+      if (menu) menu.open = true;
+      document.querySelector<HTMLSelectElement>("#machinePrinter")?.focus();
       return;
     }
     case "printer-edit":
+    case "machine-settings":
       revealPrinterDetails();
       return;
     case "calibrate":

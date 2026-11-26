@@ -25,4 +25,4 @@ The tower header is `; TEMP_CALIBRATION`. Each band is `; TEMP_BAND`. The wall i
 
 ## UI
 
-An expert group, Temperature calibration, generates the tower, lists the bands, and saves the chosen °C onto the filament. The machine line already shows that nozzle temperature. A slice body does not gain a temperature field of its own.
+Prepare's Calibrate opens the Temperature calibration group. It generates the tower, lists the bands, and saves the chosen °C onto the filament. The machine line already shows that nozzle temperature. A slice body does not gain a temperature field of its own.

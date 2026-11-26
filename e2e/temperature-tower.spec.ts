@@ -48,7 +48,7 @@ test("a saved band writes the filament nozzle temperature", async ({ page }) => 
   await page.goto("/");
   await autoSliceOff(page);
   await expect(page.getByText("Mock only")).toHaveCount(0);
-  await page.locator("#fileMenu > summary").click();
+  await page.locator("#tabPrepare").click();
   await page.locator("#calibrateOpen").click();
   await page.locator("#tempcal").click();
   await expect.poll(() => cals.length).toBe(1);
@@ -105,7 +105,7 @@ test("an exported tower carries the printer's start and end G-code", async ({ pa
   await page.locator("#machineStart").fill("G29 ; probe");
   await page.locator("#machineEnd").fill("M300 ; beep");
   await page.locator("#machineEnd").blur();
-  await page.locator("#fileMenu > summary").click();
+  await page.locator("#tabPrepare").click();
   await page.locator("#calibrateOpen").click();
   await page.locator("#tempcal").click();
   await expect(page.locator("#tempexport")).toBeVisible();

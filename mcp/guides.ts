@@ -86,6 +86,7 @@ export const GUIDES: Guide[] = [
       "3. Read the bands. calibration_apply {kind:\"pa\", value} saves it on the filament.",
       "4. blend_compare, then blend_apply {index}, then slice_start.",
       "Nothing is sent to a printer.",
+      "In the window, Calibrate is the Prepare rail button. It adds the tower to the plate.",
     ].join("\n"),
   },
 ];

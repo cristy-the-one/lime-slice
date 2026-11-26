@@ -403,6 +403,9 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   '#toolRail [data-tool="section"]': ["prepare", "preview", "gcode"],
   '#toolRail [data-tool="supports"]': ["preview", "gcode"],
   '#toolRail [data-tool="paint"]': ["prepare"],
+  '#toolRail [data-tool="calibrate"]': ["prepare"],
+  "#machineOpen": ["prepare", "preview", "gcode", "model", "pose"],
+  "#machineSettings": ["prepare", "preview", "gcode", "model", "pose"],
   '#toolRail [data-tool="seam"]': ["prepare"],
   '#toolRail [data-tool="reinforce"]': ["prepare"],
   // Undo and Redo run in every stage. The Model buttons are the tooltip targets, and the handler clicks them only in Model.
@@ -453,6 +456,8 @@ const TARGET_LAYOUTS: Record<string, readonly ("desktop" | "compact")[]> = {
   "#timing": ["desktop"],
   "#export": ["desktop"],
   "#force": ["desktop"],
+  "#machineOpen": ["desktop"],
+  "#machineSettings": ["desktop"],
   "#modelHistoryOpen": ["compact"],
   "#compactChromeShow": ["compact"],
 };
@@ -728,6 +733,7 @@ const BY_ID: Record<string, string> = {
   exportModel: "export-model",
   calibrateOpen: "calibrate",
   machineOpen: "printer-edit",
+  machineSettings: "machine-settings",
   force: "force-slice",
   modelMenuParameters: "model-parameters",
   modelMenuPlugins: "model-plugins",
@@ -784,8 +790,10 @@ for (const match of modelMarkup.matchAll(/<button\b([^>]*)>([^<]*)<\/button>/g))
 for (const match of appMarkup.matchAll(/<button\b([^>]*)>([^<]*)<\/button>/g)) {
   const tag = match[1] ?? "";
   if (/\bdata-sample=/.test(tag)) continue;
-  const control = buttonTag(tag, match[2] ?? "", "file menu");
-  if (control.file || control.id === "exportModel" || control.id === "calibrateOpen" || control.id === "machineOpen" || control.id === "force") controls.push(control);
+  const id = attr(tag, "id");
+  const printers = id === "machineOpen" || id === "machineSettings";
+  const control = buttonTag(tag, match[2] ?? "", printers ? "printers menu" : "file menu");
+  if (control.file || control.id === "exportModel" || printers || control.id === "force") controls.push(control);
 }
 for (const match of chromeSource.matchAll(/toolButton\(\s*"([^"]+)"/g)) {
   const tool = match[1]!;
@@ -822,6 +830,14 @@ for (const id of ["heightAdd", "volumeBox", "volumeCylinder", "volumeSphere"]) {
   check(`R3 #${id} has a command`, COMMANDS.some((command) => (command.target ?? "").split(",").some((part) => new RegExp(`#${id}(?![\\w-])`).test(part))));
 }
 check("Samples is one command for the sample files", COMMANDS.some((command) => command.id === "samples"));
+
+const calibrate = COMMANDS.find((command) => command.id === "calibrate");
+check("I6 calibrate is a Prepare command", calibrate?.when === "prepare" && calibrate.group === "Prepare");
+check("I6 calibrate has no key", !calibrate?.keys?.length);
+check("I6 calibrate targets the Prepare rail", (calibrate?.target ?? "").includes('[data-tool="calibrate"]'));
+check("I6 Calibrate is on the Prepare rail in the markup check", controls.some((control) => control.tool === "calibrate"));
+check("I6 Printers menu entries are in the markup check", ["machineOpen", "machineSettings"].every((id) => controls.some((control) => control.id === id && control.where === "printers menu")));
+check("I6 File menu no longer holds Calibrate or Printers", !appMarkup.includes("calibrateOpen") && appMarkup.indexOf('id="fileMenu"') < appMarkup.indexOf('id="printersMenu"') && appMarkup.indexOf('id="printersMenu"') < appMarkup.indexOf('id="printerChip"'));
 
 if (failed) {
   console.error(`${failed} failed`);
