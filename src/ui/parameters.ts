@@ -21,6 +21,12 @@ export interface ParameterHooks {
 }
 
 let hooks: ParameterHooks | null = null;
+let actionsEnabled = () => true;
+
+/** Model's kernel gate. Registered by the Model view so this panel does not import it. */
+export function bindParameterActions(read: () => boolean) {
+  actionsEnabled = read;
+}
 
 /**
  * Hide Parameters while a sketch is open and none of its dimension expressions name a table entry.
@@ -116,7 +122,10 @@ export function mountParameters(next: ParameterHooks) {
     if (parametersOpen()) closeParameters();
     else openParameters(false);
   });
-  document.querySelector("#modelParamsRebuild")?.addEventListener("click", () => hooks?.rebuild());
+  document.querySelector("#modelParamsRebuild")?.addEventListener("click", () => {
+    if (!actionsEnabled()) return;
+    hooks?.rebuild();
+  });
   document.querySelector("#modelParamsBody")?.addEventListener("input", onInput);
   document.querySelector("#modelParamsBody")?.addEventListener("click", onClick);
   setFolded(readFolded(Object.keys(next.table()).length));

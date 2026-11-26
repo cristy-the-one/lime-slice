@@ -21,6 +21,7 @@ import { livePlate, openMeshPicker, pickAddedMesh } from "../files";
 import { fx } from "../fx";
 import { sketchHistoryButtons, sketchRedo, sketchUndo } from "../sketch";
 import { state } from "../state";
+import { modelActionsEnabled } from "./actions";
 import { applyOp, applyTool } from "./apply";
 import { installNurbsStub } from "./nurbs-tool";
 import { sewOp, thickenOp } from "../../model-request";
@@ -61,6 +62,7 @@ export function bindToolbar() {
   document.querySelector("#modelPickEdge")?.addEventListener("click", () => setMode("edge"));
   document.querySelector("#modelApply")?.addEventListener("click", () => void applyTool());
   document.querySelector("#modelSheetThickenGo")?.addEventListener("click", () => {
+    if (!modelActionsEnabled()) return;
     const input = document.querySelector<HTMLInputElement>("#modelSheetThickenMm");
     const thickness = Number(input?.value ?? 2);
     if (!(thickness > 0) || !Number.isFinite(thickness)) {
@@ -70,9 +72,11 @@ export function bindToolbar() {
     void applyOp(thickenOp(thickness), `Thickening sheet to ${thickness} mm…`);
   });
   document.querySelector("#modelSheetSewGo")?.addEventListener("click", () => {
+    if (!modelActionsEnabled()) return;
     void applyOp(sewOp({ capPlanar: true, makeSolid: true }), "Capping & sewing sheet into a solid…");
   });
   document.querySelector("#modelStep")?.addEventListener("click", () => {
+    if (!modelActionsEnabled()) return;
     void import("../export-dialog.ts").then(({ showExport }) => {
       showExport({
         scope: "part",
@@ -99,6 +103,7 @@ export function bindToolbar() {
       splitPrintStep("undo");
       return;
     }
+    if (!modelActionsEnabled()) return;
     if (openModelTool() === "place") placeStep("undo");
     else if (openModelTool() === "workplane") workplaneStep("undo");
     else void step("undo");
@@ -116,6 +121,7 @@ export function bindToolbar() {
       splitPrintStep("redo");
       return;
     }
+    if (!modelActionsEnabled()) return;
     if (openModelTool() === "place") placeStep("redo");
     else if (openModelTool() === "workplane") workplaneStep("redo");
     else void step("redo");

@@ -7,9 +7,10 @@ import { sketchHistoryButtons } from "../sketch";
 import { modelTrees } from "../model-trees";
 import { nextPlateStepName } from "../history";
 import { session } from "../state";
-import { syncRebuildCount } from "../../ui/parameters.ts";
+import { bindParameterActions, syncRebuildCount } from "../../ui/parameters.ts";
 import { stressOpen, stressUndoState, syncStress } from "../../ui/stress.ts";
 import { splitPrintHistory } from "../../ui/split-print.ts";
+import { MODEL_BUILDING, bindModelActionRepaint, bindModelHistoryLocal, modelActionsEnabled, modelActionsShownBusy, noteModelActions } from "./actions";
 import { S } from "./shared";
 import { treeOf } from "./edges";
 import { canRemake, canUnmake } from "./history";
@@ -32,17 +33,61 @@ export function showEdits(on: boolean) {
   if (!on) closeModelTool();
 }
 
+/** The building sentence on a button, or its own tip once the build is done. */
+function paintBusyTip(button: HTMLButtonElement, tip: string, show: boolean) {
+  if (show) {
+    button.title = MODEL_BUILDING;
+    button.dataset.tip = MODEL_BUILDING;
+    return;
+  }
+  if (button.title === MODEL_BUILDING) button.removeAttribute("title");
+  button.dataset.tip = tip;
+}
+
+/** Sheet ops and Rebuild follow the same show delay as Undo. Their handlers refuse at once. */
+function paintLatchedActions() {
+  const show = modelActionsShownBusy();
+  for (const id of ["#modelSheetThickenGo", "#modelSheetSewGo"]) {
+    const button = document.querySelector<HTMLButtonElement>(id);
+    if (!button) continue;
+    if (!button.dataset.tipIdle && button.dataset.tip && button.dataset.tip !== MODEL_BUILDING) button.dataset.tipIdle = button.dataset.tip;
+    button.disabled = show;
+    paintBusyTip(button, button.dataset.tipIdle ?? button.dataset.tip ?? "", show);
+  }
+  const params = document.querySelector<HTMLButtonElement>("#modelParamsRebuild");
+  if (params) {
+    if (show) {
+      params.disabled = true;
+      params.title = MODEL_BUILDING;
+      params.dataset.tip = MODEL_BUILDING;
+    } else if (params.title === MODEL_BUILDING) {
+      params.disabled = false;
+      params.removeAttribute("title");
+      if (params.dataset.tip === MODEL_BUILDING) params.removeAttribute("data-tip");
+    }
+  }
+  const plugin = document.querySelector<HTMLButtonElement>("#modelPluginRebuild");
+  if (!plugin) return;
+  if (show) {
+    plugin.disabled = true;
+    plugin.title = MODEL_BUILDING;
+    plugin.dataset.tip = MODEL_BUILDING;
+  } else if (plugin.title === MODEL_BUILDING) plugin.removeAttribute("title");
+}
+
 export function syncUndo() {
+  noteModelActions();
   syncStress();
   const tree = treeOf(S.open);
   const undo = document.querySelector<HTMLButtonElement>("#modelUndo");
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
   const placing = openModelTool() === "place";
   const framing = openModelTool() === "workplane";
-  // While a step is edited, Cancel is the way back.
-  const held = S.busy || S.jumping || !tree || !!S.editing;
-  const unmake = !S.busy && !S.jumping && !S.editing && (canUnmake() || canSwapBack("undo") || S.sculptHistory?.can("undo") === true);
-  const remake = !S.busy && !S.jumping && !S.editing && (canRemake() || canSwapBack("redo") || S.sculptHistory?.can("redo") === true);
+  const show = modelActionsShownBusy();
+  // While a step is edited, Cancel is the way back. A build shows as disabled only after it has lasted.
+  const held = show || !tree || !!S.editing;
+  const unmake = modelActionsEnabled() && !S.editing && (canUnmake() || canSwapBack("undo") || S.sculptHistory?.can("undo") === true);
+  const remake = modelActionsEnabled() && !S.editing && (canRemake() || canSwapBack("redo") || S.sculptHistory?.can("redo") === true);
   // --- S2: Undo and Redo step the sketch while one is open. ---
   const sketchHist = sketchHistoryButtons();
   const stressHist = stressOpen() && !openModelTool() ? stressUndoState() : { undo: false, redo: false };
@@ -50,35 +95,39 @@ export function syncUndo() {
   if (undo) {
     if (sketchHist) {
       undo.disabled = !sketchHist.undo;
-      undo.dataset.tip = "Undo the last sketch edit";
+      paintBusyTip(undo, "Undo the last sketch edit", false);
     } else if (cardHist) {
       undo.disabled = !cardHist.undo;
-      undo.dataset.tip = "Undo the last change to the cuts";
+      paintBusyTip(undo, "Undo the last change to the cuts", false);
     } else if (stressHist.undo || stressHist.redo) {
       undo.disabled = !stressHist.undo;
-      undo.dataset.tip = "Undo the last hold or load";
+      paintBusyTip(undo, "Undo the last hold or load", false);
     } else {
       undo.disabled = !(unmake && !placing && !framing) && (held || (placing ? S.placeUndo.length === 0 && !S.placeBefore : framing ? S.wpUndo.length === 0 && !S.wpBefore : undoNode(tree!) == null));
-      undo.dataset.tip = placing ? "Undo the last move" : framing ? "Undo the last workplane move" : "Undo the last solid edit";
+      paintBusyTip(undo, placing ? "Undo the last move" : framing ? "Undo the last workplane move" : "Undo the last solid edit", show);
     }
   }
   if (redo) {
     if (sketchHist) {
       redo.disabled = !sketchHist.redo;
-      redo.dataset.tip = "Redo the last sketch edit";
+      paintBusyTip(redo, "Redo the last sketch edit", false);
     } else if (cardHist) {
       redo.disabled = !cardHist.redo;
-      redo.dataset.tip = "Redo the last change to the cuts";
+      paintBusyTip(redo, "Redo the last change to the cuts", false);
     } else if (stressHist.undo || stressHist.redo) {
       redo.disabled = !stressHist.redo;
-      redo.dataset.tip = "Redo the last hold or load";
+      paintBusyTip(redo, "Redo the last hold or load", false);
     } else {
       redo.disabled = !(remake && !placing && !framing) && (held || (placing ? S.placeRedo.length === 0 : framing ? S.wpRedo.length === 0 : redoNode(tree!) == null));
-      redo.dataset.tip = placing ? "Redo the last move" : framing ? "Redo the last workplane move" : "Redo the last solid edit";
+      paintBusyTip(redo, placing ? "Redo the last move" : framing ? "Redo the last workplane move" : "Redo the last solid edit", show);
     }
   }
   const stepButton = document.querySelector<HTMLButtonElement>("#modelStep");
-  if (stepButton) stepButton.disabled = S.busy || S.jumping || !tree;
+  if (stepButton) {
+    if (!stepButton.dataset.tipIdle && stepButton.dataset.tip && stepButton.dataset.tip !== MODEL_BUILDING) stepButton.dataset.tipIdle = stepButton.dataset.tip;
+    stepButton.disabled = show || !tree;
+    paintBusyTip(stepButton, stepButton.dataset.tipIdle ?? stepButton.dataset.tip ?? "", show);
+  }
   setModelWaiting(S.busy || S.jumping);
   syncModelHistory(tree, modelTrees, S.lens?.row ?? null);
   syncTransitionStale(staleView());
@@ -89,7 +138,12 @@ export function syncUndo() {
   syncModelRecipe(S.open ? recipeNote(session.mcpModel, S.open.objectId) : null);
   syncPluginEnv();
   refreshPluginsPanel();
+  paintLatchedActions();
 }
+
+bindModelActionRepaint(syncUndo);
+bindModelHistoryLocal(() => !!(sketchHistoryButtons() || (stressOpen() && !openModelTool()) || splitPrintHistory()));
+bindParameterActions(modelActionsEnabled);
 
 /**
  * The name of the step Model's Undo or Redo would take, when that name is known.

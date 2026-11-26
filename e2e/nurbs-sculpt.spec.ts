@@ -455,7 +455,8 @@ async function reopen(page: Page, file: Buffer) {
 
 /**
  * The solid Model just opened is on screen. History Edit is refused while that open is still jumping, and the edit
- * control is not the signal: it is missing until the solid is drawn, and it is not disabled while the modeler is busy.
+ * control is not the signal: it is missing until the solid is drawn. Once a build has lasted long enough to show,
+ * that pencil is disabled with the other Model actions.
  */
 async function solidShown(page: Page) {
   await expect(page.locator("#modelReadout")).toContainText("Pick a face or an edge.");

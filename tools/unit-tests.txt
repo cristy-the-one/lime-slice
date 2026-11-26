@@ -17,6 +17,7 @@ src/flow.test.ts
 src/adhesion.test.ts
 src/surface-pattern.test.ts
 src/xy-comp.test.ts
+src/app/model-actions.test.ts
 src/support-interface.test.ts
 src/bridge-tune.test.ts
 src/layer-actions.test.ts

@@ -8,6 +8,7 @@ import { dropRefusal, readRow, rowStep, stepLabel, type RowKey } from "../../mod
 import { newestEdits, redoUserEdit, undoUserEdit } from "../history";
 import { modelTrees } from "../model-trees";
 import { state } from "../state";
+import { MODEL_BUILDING, modelActionsShownBusy } from "./actions";
 import { S } from "./shared";
 import { brokenOnPath, failed, keepSolid, recentSolid } from "./apply";
 import { nodeName, treeOf } from "./edges";
@@ -217,7 +218,9 @@ export function bindHistory() {
       const tree = treeOf(S.open);
       const step = tree ? rowStep(modelTrees, tree, row) : null;
       if (!step) return "This step is no longer in the history.";
-      return step.joins.length === 0 ? editRefusal(step.tree, step.id) : toolEditRefusal(step.tree, step.joins, step.id);
+      const why = step.joins.length === 0 ? editRefusal(step.tree, step.id) : toolEditRefusal(step.tree, step.joins, step.id);
+      if (why) return why;
+      return modelActionsShownBusy() ? MODEL_BUILDING : null;
     },
     edit(row) {
       // Shift+E away from History edits the step shown; while an edit is open that is its parent, so the key waits.
