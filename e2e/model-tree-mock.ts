@@ -1,4 +1,4 @@
-import type { Page, Route } from "@playwright/test";
+import { expect, type Page, type Route } from "@playwright/test";
 import { encodeSolid } from "../src/model-reply";
 import { fnv1aHex } from "../src/slice-action";
 import { unpackLime } from "./lime-file";
@@ -33,6 +33,11 @@ export interface TreeMock {
   /** Every request to `/api/model/tree`, in order. */
   calls: Body[];
   of(call: string): Body[];
+  /**
+   * The newest `call`, once more than `after` have been sent. `after` is `of(call).length` read before the click,
+   * so a spec waits for the request it is about to read instead of taking an empty list.
+   */
+  sent(call: string, after: number): Promise<Body>;
   /** Drop every tree, as a restarted engine does: the next call on one answers `{error: "unknown"}`. */
   forget(): void;
 }
@@ -399,9 +404,14 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     const step = typeof body.id === "number" && typeof body.error !== "string";
     await route.fulfill({ json: handlers.held && step && doc ? { ...body, held: [...doc.keys()].sort((a, b) => a - b) } : body });
   });
+  const of = (call: string) => calls.filter((request) => request.call === call);
   return {
     calls,
-    of: (call) => calls.filter((request) => request.call === call),
+    of,
+    sent: async (call, after) => {
+      await expect.poll(() => of(call).length).toBeGreaterThan(after);
+      return of(call).at(-1)!;
+    },
     forget: () => {
       docs.clear();
       waiting.clear();

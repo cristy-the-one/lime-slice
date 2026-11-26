@@ -222,8 +222,9 @@ test("a ring gear: Ring hides the bore, hub and shift, shows Rim, draws the rim'
   await page.locator("#modelGearRim").press("Tab");
   await expect.poll(async () => Number(((await ghost(page)) ?? "").split(" ")[3]), { message: "the ghost is the rim, 50 across" }).toBeCloseTo(50, 0);
   await expect(apply(page)).toBeEnabled();
+  const opens = tree.of("open").length;
   await apply(page).click();
-  const sent = tree.of("open").at(-1)!.primitive as Record<string, unknown>;
+  const sent = (await tree.sent("open", opens)).primitive as Record<string, unknown>;
   expect(sent).toMatchObject({ primitive: "gear", teeth: 36, module: 1, internal: true, rim: 50 });
   expect(sent.bore, "a ring sends no bore").toBeUndefined();
   await expect(rows(page).first()).toContainText(/ring gear 36 teeth m 1/i);
@@ -244,8 +245,9 @@ test("a rack: Rack shows Back and hides the bore, hub, rim, shift and phase, dra
   await page.locator("#modelGearBack").press("Tab");
   // Ten teeth of module 1 are 10 PI long, half a pitch past each end tooth's centre.
   await expect.poll(async () => Number(((await ghost(page)) ?? "").split(" ")[3]), { message: "the ghost is the rack's length" }).toBeCloseTo(10 * Math.PI, 0);
+  const opens = tree.of("open").length;
   await apply(page).click();
-  const sent = tree.of("open").at(-1)!.primitive as Record<string, unknown>;
+  const sent = (await tree.sent("open", opens)).primitive as Record<string, unknown>;
   expect(sent).toMatchObject({ primitive: "gear", teeth: 10, module: 1, rack: true, back: 3 });
   expect(sent.phaseDeg, "a rack sends no phase").toBeUndefined();
   await expect(rows(page).first()).toContainText(/rack 10 teeth m 1/i);
