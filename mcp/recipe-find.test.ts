@@ -1,6 +1,7 @@
 /**
  * Where recipe_run looks for lust (mcp/recipe.ts `lustCandidates`, `findLust`): LIME_LUST, then the copy the installers
- * ship beside server.mjs, then `lust` on PATH. Node stands in for lust: it answers `--version` too.
+ * ship beside server.mjs, then `lust` on PATH. Node stands in for lust: it answers `--version` too. Skips without
+ * lust; LIME_RECIPE_REQUIRED=1 makes that a failure.
  */
 import { copyFileSync, linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,15 @@ function check(name: string, ok: boolean, detail: unknown = "") {
   }
   failed += 1;
   console.error(`FAIL ${name} ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+}
+
+if (!findLust()) {
+  if (process.env.LIME_RECIPE_REQUIRED === "1") {
+    console.error("recipe-find: lust is required here (LIME_LUST)");
+    process.exit(1);
+  }
+  console.log("recipe-find: skipped (set LIME_LUST to a lust build)");
+  process.exit(0);
 }
 
 const dir = mkdtempSync(join(tmpdir(), "lime-recipe-find-"));
