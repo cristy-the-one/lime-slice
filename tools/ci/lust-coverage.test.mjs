@@ -3,10 +3,15 @@
 // run somewhere in .github/workflows/ci.yml with LIME_RECIPE_REQUIRED=1. The unit chain has
 // no lust, so a file that is missing here prints "lust items skipped" and exits 0.
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/** `mcp/foo.test.ts` on Windows and Linux. Pass `win32` to try a Windows path on any host. */
+function posixRel(abs, from = root, impl = { relative, sep }) {
+  return impl.relative(from, abs).split(impl.sep).join("/");
+}
 
 /** Comments are not a read of the variable or a call. */
 function codeOnly(text) {
@@ -37,7 +42,9 @@ function walkTests(dir, acc) {
 export function requiredRuns(ci) {
   const required = new Set();
   const fileRe = /(?:mcp|src)\/[\w./-]+\.test\.ts/g;
-  const steps = ci.split(/\n(?= {6}- )/);
+  // A Windows checkout writes CRLF. `.` does not match `\r`, so a `run:` line kept its
+  // carriage return and the script under it was never read.
+  const steps = ci.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split(/\n(?= {6}- )/);
   for (const step of steps) {
     const envRequired = /^[ \t]*LIME_RECIPE_REQUIRED:\s*["']?1["']?\s*$/m.test(step);
     const commands = runLines(step);
@@ -90,7 +97,7 @@ const onDisk = [];
 for (const dir of ["mcp", "src"]) walkTests(join(root, dir), onDisk);
 const gated = onDisk
   .filter((path) => isLustGated(readFileSync(path, "utf8")))
-  .map((path) => path.slice(root.length + 1).replaceAll("\\", "/"))
+  .map((path) => posixRel(path))
   .sort();
 
 let failed = 0;
@@ -107,8 +114,36 @@ for (const file of gated) {
     "(add it to a lust list in .github/workflows/ci.yml)",
   );
 }
+const onDiskPosix = new Set(onDisk.map((path) => posixRel(path)));
 for (const file of required) {
-  ok(`${file} named in ci.yml exists`, onDisk.some((path) => path.endsWith(`/${file}`) || path.endsWith(file)));
+  ok(`${file} named in ci.yml exists`, onDiskPosix.has(file));
+}
+
+// The same list from a CRLF copy of the workflow. This is the Windows checkout.
+// Normalize first so a file that is already CRLF is not turned into CR CR LF.
+const lf = ci.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+const crlfRequired = requiredRuns(lf.replace(/\n/g, "\r\n"));
+ok(
+  "a CRLF workflow names the same runs",
+  crlfRequired.size === required.size && [...required].every((file) => crlfRequired.has(file)),
+  `(${crlfRequired.size} vs ${required.size})`,
+);
+ok(
+  "a Windows path becomes mcp/recipe-find.test.ts",
+  posixRel(
+    "D:\\a\\lime-slice\\lime-slice\\mcp\\recipe-find.test.ts",
+    "D:\\a\\lime-slice\\lime-slice",
+    win32,
+  ) === "mcp/recipe-find.test.ts",
+);
+const clockCouple = "          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/clock-couple.test.ts\n";
+if (lf.includes(clockCouple)) {
+  const dropped = requiredRuns(lf.replace(clockCouple, "").replace(/\n/g, "\r\n"));
+  ok(
+    "dropping clock-couple from a CRLF workflow is reported",
+    !dropped.has("mcp/clock-couple.test.ts") && dropped.size === required.size - 1,
+    `(${dropped.size} vs ${required.size})`,
+  );
 }
 
 if (failed > 0) process.exit(1);
