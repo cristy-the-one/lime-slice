@@ -25,6 +25,7 @@ import { fixedReply } from "../line-diff.ts";
 import { lineMap, lineText, locate, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
 import { presetProblem, readPreset } from "../nuggets.ts";
 import { queueSummary, RecipeQueue, type QueuedOp } from "../../src/recipe/queue.ts";
+import { isStrictOptOut, STRICT_OPT_OUT_NOTE, unreadQueuedReason } from "../../src/recipe/strict.ts";
 import type { Resolved } from "../../src/recipe/ingredients.ts";
 import { builtText, unreadKeys } from "../../src/recipe/host.ts";
 import { budgetOf } from "./plugin.ts";
@@ -42,9 +43,6 @@ import { autosavePath } from "../autosave.ts";
 import { readFile } from "node:fs/promises";
 import { environmentOf, proofData, proofText, startContext, type RunProof } from "./run-proof.ts";
 import { addSink, ensureMeshes, kernelRow, newSink, newTap, skipsMesh, splitOf, type KernelSink } from "./mesh-end.ts";
-
-/** One note on a run that opts out of strict. Accepted through 7.4; removed in 7.5.0. */
-const STRICT_OPT_OUT_NOTE = "//! strict: false is accepted through 7.4 and removed in 7.5.0: read or handle each queued step's result instead.";
 
 /**
  * recipe_run: lust builds the recipe in a warm slot (applying its safe fixes), then runs it with each call it makes
@@ -298,7 +296,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const source = rerun ? rerun.stored.source : lfOnly(typed!);
   // Strict is the default from 7.4.0 (docs/plan-agent-ergonomics.md decision 1). A refused queued step the recipe never
   // reads fails the run. `//! strict: false` opts out for this release; `//! strict: true` still means strict.
-  const strictOptOut = /^\s*\/\/!\s*strict:\s*false\s*$/m.test(source);
+  const strictOptOut = isStrictOptOut(source);
   const strict = !strictOptOut;
   const params = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}), ...presetParams, ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
   if (typeof input.object === "string" && input.params === undefined) {
@@ -755,7 +753,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   for (const row of dropped) warnings.push(row);
   if (dropped.length && strict) {
     out.ok = false;
-    out.reason = `A queued step was refused and the recipe never read it: line ${dropped[0]!.line} ${dropped[0]!.tool} (${dropped[0]!.reason}).`;
+    out.reason = unreadQueuedReason(dropped[0]!);
   }
   // --- API 1.16. A nested run keeps nothing itself: a failure takes its own parts back at once, so the recipe that ran
   // it can carry on; a run that reached done hands its parts, its notes and the plugins it ran in turn to that recipe.

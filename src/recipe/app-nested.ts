@@ -16,6 +16,7 @@ import { inlineIngredients } from "./ingredients.ts";
 import { nestedLimits, nestedRefusal, nestedResult, nestingRefusal, pickPluginCode, readPluginRun, type PluginCode, type PluginSources } from "./nested.ts";
 import { splitPluginData } from "./plugin-data.ts";
 import type { RecipeRunner } from "./rebuild.ts";
+import { strictQueueFailure } from "./strict.ts";
 
 /** Where the window finds a plugin's code, and whether a person must see it first. */
 export interface AppPluginSources {
@@ -86,6 +87,12 @@ export async function runNestedInApp(args: Record<string, unknown>, parent: AppR
       out.ok = false;
       out.reason = stop;
     }
+  }
+  // A nested run reads its own stored source, not the recipe that ran it.
+  const queued = strictQueueFailure(file.body, queue.unreported(), child.notes);
+  if (queued) {
+    out.ok = false;
+    out.reason = queued;
   }
   const made = child.all.filter((row) => row.origin === "made" && !row.consumed);
   if (!out.ok || !out.done || made.length === 0) {

@@ -18,6 +18,7 @@ import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppR
 import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, unreadKeys, type RecipeLimits } from "./host.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
 import type { RecipeRunner } from "./rebuild.ts";
+import { strictQueueFailure } from "./strict.ts";
 
 export interface PluginRunInput {
   /** The part on screen, when the run is given one: it starts on `tree.current`. Null runs with no part. */
@@ -162,7 +163,11 @@ async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<Plu
     await back();
     return { ok: false as const, reason, ...extra, notes, ...trace, ...(queue.replay ? { replay: queue.replay } : {}) };
   };
-  for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${row.line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
+  // Strict is the default (7.4.0): a refused queued step this recipe never reads fails the run and
+  // nothing is kept. `//! strict: false` in the stored source keeps the per-step notes and one opt-out
+  // note. A replay is built again one by one first; that run is judged on its own header.
+  const queued = queue.replay ? null : strictQueueFailure(input.body, queue.unreported(), notes);
+  if (queued) return refuse(queued);
   if (!out.ok || !out.done) return refuse(out.reason ?? "The plugin failed.", out.line !== undefined ? { line: out.line } : {});
   // --- Several parts (O4 as built in the window): every part the run made is kept, and the given part when the run
   // changed it, each stamped with the same run id and values and its own fingerprint, as the MCP stamps them.

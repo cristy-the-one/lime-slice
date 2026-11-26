@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOff } from "./auto-slice";
 import { answerSheet, askSheet } from "./ask-sheet";
-import { BODY, pluginProject, SHA, type Doc } from "./plugin-fixture";
+import { mockModelTree } from "./model-tree-mock";
+import { BODY, boxSolid, pluginProject, SHA, type Doc } from "./plugin-fixture";
 import { FILE_NOTCH, FILE_OUTLINE, FILE_OUTLINE_BARE, scriptedLibrary, scriptedRunner, SHA_V4 } from "./plugins-scripted";
 
 /**
@@ -340,4 +342,124 @@ test("animation plugins are identified and directed to Pose", async ({ page }) =
   await expect(card(page).locator("#modelPluginsTarget")).toContainText("Open Pose");
   await expect(card(page).locator("#modelPluginsPreview")).toBeDisabled();
   await expect(card(page).locator("#modelPluginsPreview")).toHaveAttribute("data-reason", /Open Pose/);
+});
+
+/**
+ * A plugin that queues a cut and never reads the refusal. No `//! strict: false`, so the run fails
+ * and the readout carries the same sentence the MCP gives.
+ */
+const MISSED_BODY = [
+  "use lime_recipe::{ops, Json, Session};",
+  "",
+  "fn main() {",
+  "    let mut s = Session::start();",
+  "    let p = s.solid_new(ops::cuboid(60.0, 20.0, 10.0)).unwrap();",
+  "    s.apply_later(&p, Json::obj().set(\"kind\", \"boolean\").set(\"op\", \"cut\")).unwrap();",
+  "    s.done(&p);",
+  "}",
+  "",
+].join("\n");
+const MISSED_FILE = [
+  "//! ---",
+  "//! plugin: missed-cut",
+  "//! title: Missed cut",
+  "//! version: 1",
+  "//! description: A cut the recipe queues and never reads.",
+  "//! author: Marius",
+  "//! api: 1.16",
+  `//! source-sha256: ${createHash("sha256").update(MISSED_BODY, "utf8").digest("hex")}`,
+  "//! target: new",
+  "//! params: []",
+  "//! ---",
+  MISSED_BODY,
+].join("\n");
+
+/** Plays the missed-cut recipe: make a bar, queue a cut that misses it, end without reading the refusal. */
+async function missedRunner(page: Page) {
+  await page.addInitScript(() => {
+    type Handler = (event: { payload: unknown }) => void;
+    const handlers = new Map<string, Set<Handler>>();
+    const emit = (event: string, payload: unknown) => setTimeout(() => {
+      for (const handler of handlers.get(event) ?? []) handler({ payload });
+    }, 0);
+    let run = "";
+    let object = "";
+    let step = 0;
+    const say = (line: unknown) => emit("recipe-line", { run, line: JSON.stringify(line) });
+    (window as unknown as { __limeRecipeRunner: unknown }).__limeRecipeRunner = {
+      invoke: async (command: string, args: Record<string, unknown> = {}) => {
+        if (command === "recipe_available") return { ok: true, lust: "scripted" };
+        if (command === "recipe_build") return { code: 0, stdout: "", stderr: "", exe: "/scripted/missed-cut", main: "/scripted/missed-cut/src/main.rs" };
+        if (command === "recipe_start") {
+          run = String(args.run);
+          object = "";
+          step = 0;
+          return null;
+        }
+        if (command === "recipe_send") {
+          const msg = JSON.parse(String(args.line)) as { v?: number; describe?: boolean; ok?: boolean; error?: string; result?: { object?: string } };
+          if (msg.v === 1 && msg.describe) {
+            say({ describe: { end: true, line: 3 } });
+            return null;
+          }
+          if (msg.v === 1) {
+            say({ id: 1, call: "solid_new", args: { primitive: "box", dx: 60, dy: 20, dz: 10, name: "bar" }, at: { line: 5 } });
+            return null;
+          }
+          if (msg.ok === false) {
+            emit("recipe-exit", { run, code: 101, reason: null, stderr: `thread 'main' (7) panicked at src/main.rs:6:5:\n${msg.error}\n` });
+            return null;
+          }
+          step += 1;
+          if (step === 1) {
+            object = String(msg.result?.object ?? "");
+            say({ id: 2, call: "model_apply", args: { object, queue: "later", probe: true, op: { kind: "boolean", op: "cut", primitive: "box", dx: 2, dy: 2, dz: 2, origin: [1000, 0, 0] } }, at: { line: 6 } });
+            return null;
+          }
+          say({ done: { object, metrics: {} } });
+          return null;
+        }
+        if (command === "recipe_close_input" || command === "recipe_kill") {
+          emit("recipe-exit", { run, code: command === "recipe_kill" ? null : 0, reason: null, stderr: "" });
+          return null;
+        }
+        throw new Error(`no command ${command}`);
+      },
+      listen: async (event: string, handler: Handler) => {
+        const set = handlers.get(event) ?? new Set<Handler>();
+        handlers.set(event, set);
+        set.add(handler);
+        return () => set.delete(handler);
+      },
+    };
+  });
+}
+
+test("a refused queued step the plugin never reads fails the run, and the window shows that reason", async ({ page }) => {
+  mkdirSync(shots, { recursive: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.addInitScript(() => {
+    localStorage.setItem("lime-slice-theme", "dark");
+    localStorage.setItem("lime-slice-plugins-live", "0");
+  });
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  await mockModelTree(page, {
+    open: () => boxSolid([60, 20, 10]),
+    apply: (_request, parent) => parent,
+  });
+  await scriptedLibrary(page, false, { "missed-cut.rs": MISSED_FILE });
+  await missedRunner(page);
+  await page.goto("/");
+  await autoSliceOff(page);
+  await expect(page.locator("#objectList .obj")).toHaveCount(0);
+  await page.locator("#tabModel").click();
+  await page.locator("#modelEmptyPlugins").click();
+  await expect(card(page)).toBeVisible();
+  await card(page).locator('.pp-pick[data-key="library:missed-cut"]').click();
+  await expect(card(page).locator("#modelPluginsTitle")).toContainText("Missed cut");
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Missed cut did not run: A queued step was refused and the recipe never read it: line 6 model_apply (The tool does not touch the part.)");
+  await expect(page.locator("#objectList .obj")).toHaveCount(0);
+  await page.screenshot({ path: `${shots}/strict-unread-refused.png` });
 });
