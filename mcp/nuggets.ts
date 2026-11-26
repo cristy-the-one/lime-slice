@@ -125,6 +125,41 @@ export interface Lesson {
 }
 
 /**
+ * Technique lessons from the ergonomics inventory (docs/plan-agent-ergonomics.md §3, last row), keyed by the op
+ * they belong to. Each sentence restates a rule the ops guide already states, kept under LESSON_MAX, and is reached
+ * only through guide {kind} (seenInPractice) or nugget find. None of these ids was already fixed by E1–E5a or
+ * I1–I5: those items own other lessons (a silent tool, vocabulary, speed, volume, stage order, commands, keys,
+ * Pose Move). notes/LESSONS.md is not in this repo, and §1 has no per-id sentence, so these follow the ops guide.
+ */
+const TECHNIQUE_LESSONS: readonly (Lesson & { words: string })[] = [
+  { n: -1, about: "fillet", created: "2026-11-25", words: "T11 fillet edge faces rebuild", text: "T11 A picked fillet edge is kept by its faces' kinds and normals, so a rebuild that moves or resizes the part fillets the same edge." },
+  { n: -2, about: "fillet", created: "2026-11-25", words: "T12 fillet G2 conic straight", text: "T12 G2 and conic fillets are exact only on a straight edge between two flat faces. Elsewhere a conic is refused, and a G2 fillet stays only when its seams measure G2." },
+  { n: -3, about: "fillet", created: "2026-11-25", words: "T15 fillet unify seam", text: "T15 A fillet that stops at the largest that fits, on a seam an extrude, revolve, loft or join left, wants unify first. A recess, a pad and a boolean already merge those faces." },
+  { n: -4, about: "fillet", created: "2026-11-25", words: "L5 nearPoint recess rib", text: "L5 nearPoint over a recess or a hole falls through to the face below. Aim it at material, such as a rib, or the refusal names the face it took." },
+  { n: -5, about: "loft", created: "2026-11-25", words: "T17 loft section plane normal", text: "T17 Each loft section lies on its own plane. W, that plane's normal, should point along the way to the next section." },
+  { n: -6, about: "loft", created: "2026-11-25", words: "T18 loft startCondition tangent", text: "T18 A loft steers an end by direction only. startCondition and endCondition are normal or tangent; curvature is refused." },
+  { n: -7, about: "sweep", created: "2026-11-25", words: "T21 sweep pipe transition bend", text: "T21 A path with a bend and a profile is built as a pipe shell. transition transformed can be refused at a sharp bend; use right or round there." },
+  { n: -8, about: "sweep", created: "2026-11-25", words: "T22 sweep caps dome taper", text: "T22 caps round closes both ends with a dome, and point with a short taper. Left out, a round cap reaches about as deep as the end is wide." },
+  { n: -9, about: "sweep", created: "2026-11-25", words: "T23 sweep radiusV ellipse", text: "T23 radiusV makes the swept section an ellipse, with V toward up. Up is +Z when it is left out." },
+  { n: -10, about: "shell", created: "2026-11-25", words: "T24 shell openFaces void", text: "T24 shell with no open face is a closed void. An open face is an index or a selector of normal and nearPoint." },
+  { n: -11, about: "hole", created: "2026-11-25", words: "T26 hole tap drill allowance", text: "T26 A modelled thread is not available. A nut or a screw hole uses the tap drill, and allowance is added to that drill." },
+  { n: -12, about: "boolean", created: "2026-11-25", words: "T27 boolean turn centre origin", text: "T27 turn pivots about the primitive's own centre, not about origin. origin is the min corner or the base centre before the turn, and the turn then swings it." },
+  { n: -13, about: "extrude", created: "2026-11-25", words: "T29 extrude loops island", text: "T29 loops replaces profile. A loop inside no other is an outline, one inside an outline is its hole, and one inside a hole is an island." },
+  { n: -14, about: "text", created: "2026-11-25", words: "L8 text around outline", text: "L8 lettering on a curved face takes around. text_outline returns the letters as a Section, so a recipe can extrude them or cut a stencil." },
+  { n: -15, about: "mirror", created: "2026-11-25", words: "L9 mirror keepOriginal sweep", text: "L9 mirror applies the op and its mirror image. keepOriginal false applies only the image, and a sweep's path and up are mirrored with it." },
+  { n: -16, about: "gear", created: "2026-11-25", words: "B1 gear centre distance phase", text: "B1 Two gears mesh at centre distance module times (z1 + z2) / 2. The second phase is mate_phase of the first." },
+  { n: -17, about: "thicken", created: "2026-11-25", words: "B4 thicken sheet wall fold", text: "B4 thicken offsets an open sheet into a solid wall. A sheet that bends tighter than the thickness, or folds, is refused rather than built uneven." },
+  { n: -18, about: "draft", created: "2026-11-25", words: "B6 draft pull neutral", text: "B6 A positive draft opens the faces toward pull, so the part releases: matter leaves the pull side of the neutral plane. A floor parallel to pull is refused." },
+  { n: -19, about: "chamfer", created: "2026-11-25", words: "B10 chamfer size2 flip", text: "B10 On a chamfer, size runs along the edge's upper face and size2 along the other. flip swaps the two faces." },
+  { n: -20, about: "pattern", created: "2026-11-25", words: "B11 pattern count combine skipped", text: "B11 pattern count includes the original. combine true builds every copy in one boolean, and a copy that misses is counted in skipped." },
+  { n: -21, about: "revolve", created: "2026-11-25", words: "B14 revolve smooth corners", text: "B14 smooth on a revolve profile draws splines through its points. corners keep those points sharp, and two corners in a row make a straight edge." },
+  { n: -22, about: "faceExtrude", created: "2026-11-25", words: "B15 faceExtrude distance upTo", text: "B15 faceExtrude distance follows the solid's outward normal: positive adds material, negative cuts. upTo stops at another face, and the distance only picks the direction." },
+  { n: -23, about: "moveFaces", created: "2026-11-25", words: "B18 moveFaces outward hole", text: "B18 moveFaces positive follows the outward normal, so a top grows and a hole wall moves inward, which makes the hole smaller. Negative on a hole wall widens it." },
+  { n: -24, about: "join", created: "2026-11-25", words: "B21 join keepTool undo", text: "B21 join uses another object's solid where it stands. Without keepTool the tool leaves the plate, and undo of the join puts it back." },
+  { n: -25, about: "ribNet", created: "2026-11-25", words: "B23 ribNet surface_at points", text: "B23 ribNet points sit on the surface, within 2 mm. surface_at gives them on a curved face, and each run stands along the surface normal." },
+];
+
+/**
  * Lessons that ship with the app, in every library: `nugget find` lists them beside a person's own (`shipped: true`),
  * and `get` reads them; they are not removed. Numbered 0 and down, so they never take a library lesson's number.
  * `words` are what a search for them would say, besides the sentence.
@@ -132,6 +167,7 @@ export interface Lesson {
 export const SHIPPED_LESSONS: readonly (Lesson & { words: string })[] = [
   // --- docs/plan-native-recipes.md 7.1, the queued booleans.
   { n: 0, about: "apply", created: "2026-11-09", words: "slow speed fast many batch queue queued loop booleans", text: "Many applies on one part build fast when nothing reads the part between them. Move faces_find, measure and section out of the loop." },
+  ...TECHNIQUE_LESSONS,
 ];
 
 function lessonsPath(): string {
@@ -170,9 +206,17 @@ export function removeLesson(n: number): boolean {
   return true;
 }
 
-/** The lessons guide {kind} shows for an op kind or helper: up to five, newest first. */
+/** The lessons guide {kind} shows for an op kind or helper: the person's own newest first, then the shipped ones, up to five. */
 export function seenInPractice(about: string): string[] {
-  return listLessons(about).slice(-LESSONS_SHOWN).reverse().map((row) => row.text);
+  const own = listLessons(about).slice().reverse();
+  const shipped = SHIPPED_LESSONS.filter((row) => row.about === about);
+  const out: string[] = [];
+  for (const text of [...own.map((row) => row.text), ...shipped.map((row) => row.text)]) {
+    if (out.some((have) => have.toLowerCase() === text.toLowerCase())) continue;
+    out.push(text);
+    if (out.length === LESSONS_SHOWN) break;
+  }
+  return out;
 }
 
 // --- Top-level items of a Rust source, for I12 (lifting) and I13 (harvest).

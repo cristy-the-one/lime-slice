@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.LIME_PLUGINS_DIR = mkdtempSync(join(tmpdir(), "lime-nuggets-lib-"));
-const { addLesson, harvestFunctions, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, seenInPractice, topItems, writePreset } = await import("./nuggets.ts");
+const { addLesson, harvestFunctions, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, seenInPractice, SHIPPED_LESSONS, topItems, writePreset } = await import("./nuggets.ts");
 
 let failed = 0;
 function check(name: string, ok: boolean, detail: unknown = "") {
@@ -93,7 +93,8 @@ const one = addLesson("fillet", "Aim nearPoint at material.", "2026-11-02");
 addLesson("extrude", "Loops nest: a loop inside another is its hole.", "2026-11-02");
 const two = addLesson("fillet", "A fillet larger than the rib refuses.", "2026-11-02");
 check("the same lesson twice is kept once", addLesson("fillet", "aim nearpoint at material.", "2026-11-02").n === one.n && listLessons().length === 3, listLessons());
-check("seen in practice is newest first, for that kind only", JSON.stringify(seenInPractice("fillet")) === JSON.stringify(["A fillet larger than the rib refuses.", "Aim nearPoint at material."]), seenInPractice("fillet"));
+const shippedFillet = SHIPPED_LESSONS.filter((lesson) => lesson.about === "fillet").map((lesson) => lesson.text);
+check("seen in practice is newest first, for that kind only, then the shipped lessons", JSON.stringify(seenInPractice("fillet")) === JSON.stringify(["A fillet larger than the rib refuses.", "Aim nearPoint at material.", ...shippedFillet].slice(0, 5)), seenInPractice("fillet"));
 for (let k = 0; k < 6; k += 1) addLesson("fillet", `lesson ${k}`, "2026-11-02");
 check("at most five are shown", seenInPractice("fillet").length === 5 && seenInPractice("fillet")[0] === "lesson 5", seenInPractice("fillet"));
 check("remove takes a lesson by number", removeLesson(two.n) && !listLessons().some((l) => l.n === two.n), "");
