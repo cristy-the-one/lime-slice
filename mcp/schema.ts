@@ -1853,7 +1853,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_start",
-    description: "Start slicing the selected object, or the whole plate when scope is plate, once it is placed and set; pass wait: true to wait for the result in one call, or follow with slice_wait. A second slice needs cancelRunning. With no scope, the reply names the objects it sliced and that scope:\"plate\" slices them all.",
+    description: "Start slicing the selected object, or the whole plate when scope is plate, once it is placed and set; pass wait: true to wait for the result in one call, or follow with slice_wait. A second slice needs cancelRunning. With no scope and more than one object on the plate, the reply names the object it sliced and that scope:\"plate\" slices them all.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

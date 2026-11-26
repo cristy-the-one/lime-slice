@@ -375,7 +375,7 @@ export interface Job {
   slicedIds: string[];
   /** Another object was on the plate, so the result names the slice set. */
   others: boolean;
-  /** The caller left scope out, so the reply names what was sliced and that scope plate slices them all. */
+  /** The caller left scope out. With another object on the plate, the reply names what was sliced and that scope plate slices them all. */
   scopeOmitted: boolean;
   stamp: string;
   status: string;

@@ -256,7 +256,7 @@ function sliceIdentity(this: Session, job: Job): Record<string, unknown> {
   const named = this.find(job.objectId);
   const one = named ? { object: named.id, name: shownName(named.name) } : { object: job.objectId };
   // The ids name what was sliced. The sentence stays short: the finished summary is kept under 300 bytes.
-  if (job.scopeOmitted) return { ...one, scope: "object", sliced: job.slicedIds, note: 'scope:"plate" slices them all.' };
+  if (job.scopeOmitted && job.others) return { ...one, scope: "object", sliced: job.slicedIds, note: 'scope:"plate" slices them all.' };
   if (job.others) return { ...one, scope: "object", sliced: job.slicedIds };
   return one;
 }
