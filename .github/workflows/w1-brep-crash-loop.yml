@@ -1,0 +1,277 @@
+# Temporary: reproduce the Windows brep access violation and print a native stack.
+# Removed before this PR is ready for review. Push / pull_request on
+# claude/w1-brep-windows-crash only. Does not change any existing CI job.
+name: W1 brep crash loop
+
+on:
+  push:
+    branches: [claude/w1-brep-windows-crash]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: w1-brep-crash-loop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  w1-brep-crash-loop:
+    name: W1 brep crash loop (temporary)
+    if: github.head_ref == 'claude/w1-brep-windows-crash' || github.ref == 'refs/heads/claude/w1-brep-windows-crash'
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      LIME_REQUIRE_OCCT: "1"
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Point at the OCCT install
+        run: Add-Content -Path $env:GITHUB_ENV -Value "OCCT_ROOT=${{ runner.temp }}\occt-7.9.2"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 300
+        run: python tools/occt/install.py --prefix "$env:OCCT_ROOT"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build the lime-model-occt tests once
+        run: cargo test -p lime-model-occt --locked --no-run
+
+      - name: Loop the brep binary and the other test binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $dumpDir = Join-Path $env:RUNNER_TEMP "w1-dumps"
+          $pdbDir = Join-Path $env:RUNNER_TEMP "w1-pdbs"
+          New-Item -ItemType Directory -Force -Path $dumpDir, $pdbDir | Out-Null
+          "DUMP_DIR=$dumpDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PDB_DIR=$pdbDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
+          $env:RUST_BACKTRACE = "1"
+          Write-Host "OCCT_ROOT=$env:OCCT_ROOT"
+          Write-Host "CPU=$((Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum)"
+          Get-ChildItem "$env:OCCT_ROOT\bin\*.dll","$env:OCCT_ROOT\lib\*.dll" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name | Sort-Object -Unique | Write-Host
+
+          function Set-DumpKey([string]$name) {
+            $key = if ($name) { "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$name" } else { "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" }
+            reg add $key /v DumpFolder /t REG_SZ /d $dumpDir /f | Out-Null
+            reg add $key /v DumpType /t REG_DWORD /d 2 /f | Out-Null
+            reg add $key /v DumpCount /t REG_DWORD /d 4 /f | Out-Null
+          }
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting" /v DontShowUI /t REG_DWORD /d 1 /f | Out-Null
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting" /v Disabled /t REG_DWORD /d 0 /f | Out-Null
+          Set-DumpKey ""
+
+          $jsonLog = Join-Path $env:RUNNER_TEMP "w1-no-run.json"
+          # Already built. --no-run only prints the executable paths.
+          cargo test -p lime-model-occt --locked --no-run --message-format=json | Out-File -FilePath $jsonLog -Encoding utf8NoBOM
+          $exes = @()
+          foreach ($line in Get-Content $jsonLog) {
+            try { $obj = $line | ConvertFrom-Json } catch { continue }
+            if ($obj.executable -and (Test-Path -LiteralPath $obj.executable)) {
+              $exes += (Resolve-Path -LiteralPath $obj.executable).Path
+            }
+          }
+          $exes = $exes | Sort-Object -Unique
+          Write-Host "TEST_BINARIES $($exes.Count)"
+          $exes | ForEach-Object { Write-Host "BIN $_" }
+          foreach ($exe in $exes) { Set-DumpKey (Split-Path $exe -Leaf) }
+
+          $cdb = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe"
+          if (-not (Test-Path -LiteralPath $cdb)) {
+            $found = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $cdb = $found.FullName }
+          }
+          Write-Host "CDB=$cdb exists=$(Test-Path -LiteralPath $cdb)"
+
+          $summary = Join-Path $dumpDir "summary.txt"
+          function Add-Summary([string]$line) {
+            Write-Host $line
+            Add-Content -Path $summary -Value $line
+          }
+
+          $dumpsKept = 0
+          function Invoke-Loop([string]$exe, [int]$times, [string]$label, [string[]]$extraArgs, [int]$timeoutSec) {
+            $crashes = 0; $passes = 0; $other = 0; $timeouts = 0
+            $ms = @()
+            for ($i = 1; $i -le $times; $i++) {
+              $before = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+              $sw = [Diagnostics.Stopwatch]::StartNew()
+              $argList = @("--nocapture") + $extraArgs
+              $stdout = Join-Path $dumpDir "stdout-$label-$i.txt"
+              $stderr = Join-Path $dumpDir "stderr-$label-$i.txt"
+              $p = Start-Process -FilePath $exe -ArgumentList $argList -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+              $finished = $p.WaitForExit($timeoutSec * 1000)
+              $sw.Stop()
+              if (-not $finished) {
+                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                $timeouts++
+                Add-Summary "TIMEOUT $label iter=$i elapsed_ms=$($sw.ElapsedMilliseconds)"
+                continue
+              }
+              $code = $p.ExitCode
+              if ($null -eq $code) { $code = -1 }
+              $unsigned = [uint32]($code -band 0xFFFFFFFF)
+              $ms += $sw.ElapsedMilliseconds
+              if ($code -eq 0) {
+                $passes++
+                Remove-Item -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
+              }
+              elseif ($unsigned -eq 0xC0000005) {
+                $crashes++
+                $script:dumpsKept++
+                Add-Summary "CRASH $label iter=$i exit=0xC0000005 elapsed_ms=$($sw.ElapsedMilliseconds)"
+                $deadline = (Get-Date).AddSeconds(30)
+                do {
+                  $now = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+                  if ($now.Count -gt $before.Count) { break }
+                  Start-Sleep -Seconds 1
+                } while ((Get-Date) -lt $deadline)
+                if ($script:dumpsKept -eq 3) {
+                  reg delete "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" /f | Out-Null
+                  Add-Summary "WER_DUMPS_STOPPED after 3 access violations so later iterations only count"
+                }
+              } else {
+                $other++
+                Add-Summary "OTHER $label iter=$i exit=$code (0x$($unsigned.ToString('X8'))) elapsed_ms=$($sw.ElapsedMilliseconds)"
+                if (Test-Path $stdout) { Get-Content $stdout -Tail 40 | ForEach-Object { Add-Summary "STDOUT $label $_" } }
+                if (Test-Path $stderr) { Get-Content $stderr -Tail 40 | ForEach-Object { Add-Summary "STDERR $label $_" } }
+              }
+            }
+            $avg = if ($ms.Count) { [int](($ms | Measure-Object -Average).Average) } else { 0 }
+            Add-Summary "RESULT $label crashes=$crashes passes=$passes other=$other timeouts=$timeouts total=$times avg_ms=$avg"
+            return [pscustomobject]@{ crashes = $crashes; passes = $passes; other = $other; timeouts = $timeouts }
+          }
+
+          function Invoke-CdbDumps([string]$reason) {
+            if (-not (Test-Path -LiteralPath $cdb)) {
+              Add-Summary "CDB_MISSING $reason"
+              return
+            }
+            $dumps = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue)
+            if ($dumps.Count -eq 0) { Add-Summary "NO_DUMPS $reason"; return }
+            foreach ($dump in $dumps) {
+              $log = Join-Path $dumpDir ("cdb-" + $dump.BaseName + ".txt")
+              if (Test-Path -LiteralPath $log) { continue }
+              Add-Summary "CDB_ANALYZE $reason $($dump.Name) bytes=$($dump.Length)"
+              $cmds = "lm; !analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; q"
+              $err = Join-Path $dumpDir ("cdb-" + $dump.BaseName + ".err.txt")
+              $p = Start-Process -FilePath $cdb -ArgumentList @("-z",$dump.FullName,"-y",$pdbDir,"-c",$cmds) -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
+              if (-not $p.WaitForExit(240000)) {
+                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                Add-Summary "CDB_TIMEOUT $($dump.Name)"
+              } else {
+                Add-Summary "CDB_DONE $($dump.Name) exit=$($p.ExitCode)"
+              }
+              if (Test-Path $log) { Get-Content $log | Write-Host }
+              if (Test-Path $err) { Get-Content $err | Write-Host }
+            }
+          }
+
+          $brep = $exes | Where-Object { (Split-Path $_ -Leaf) -like "brep-*.exe" } | Select-Object -First 1
+          if (-not $brep) { Add-Summary "NO_BREP_EXE"; exit 1 }
+          $brepPdb = [IO.Path]::ChangeExtension($brep, ".pdb")
+          if (Test-Path -LiteralPath $brepPdb) { Copy-Item -LiteralPath $brepPdb -Destination $pdbDir -Force }
+          Copy-Item -LiteralPath $brep -Destination $pdbDir -Force
+          Get-ChildItem $env:OCCT_ROOT -Recurse -Include *.pdb -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $pdbDir -Force
+            Add-Summary "OCCT_PDB $($_.FullName)"
+          }
+
+          Add-Summary "LOOP_BREP exe=$brep threads=default"
+          $main = Invoke-Loop $brep 100 "brep-default" @() 180
+          Invoke-CdbDumps "after-brep-100"
+
+          if ($main.crashes -eq 0) {
+            Add-Summary "NO_CRASH_IN_100 increasing to 300 and a --test-threads=1 diagnostic"
+            Invoke-Loop $brep 200 "brep-default-extra" @() 180 | Out-Null
+            Invoke-Loop $brep 30 "brep-threads1" @("--test-threads=1") 180 | Out-Null
+            Invoke-CdbDumps "after-extra"
+          } else {
+            Add-Summary "DIAGNOSTIC --test-threads=1 (not a fix); 20 runs"
+            Invoke-Loop $brep 20 "brep-threads1" @("--test-threads=1") 180 | Out-Null
+          }
+
+          $othersStarted = Get-Date
+          foreach ($exe in $exes) {
+            if ((Split-Path $exe -Leaf) -like "brep-*.exe") { continue }
+            if (((Get-Date) - $othersStarted).TotalMinutes -gt 50) {
+              Add-Summary "OTHER_BUDGET_STOP remaining skipped after 50 minutes"
+              break
+            }
+            $name = [IO.Path]::GetFileNameWithoutExtension($exe)
+            $ran = Invoke-Loop $exe 3 "other-$name" @() 120
+            if ($ran.crashes -gt 0) {
+              $pdb = [IO.Path]::ChangeExtension($exe, ".pdb")
+              if (Test-Path -LiteralPath $pdb) { Copy-Item -LiteralPath $pdb -Destination $pdbDir -Force }
+              Copy-Item -LiteralPath $exe -Destination $pdbDir -Force
+            }
+          }
+          Invoke-CdbDumps "after-others"
+
+          if ($main.crashes -gt 0) {
+            $dumps = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue)
+            if ($dumps.Count -eq 0 -and (Test-Path -LiteralPath $cdb)) {
+              Add-Summary "NO_WER_DUMP running up to 15 iterations under cdb"
+              $cdbScript = Join-Path $dumpDir "catch.txt"
+              Set-Content -Path $cdbScript -Encoding ascii -Value @(
+                'sxe -c "!analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; qd" av',
+                'g',
+                'q'
+              )
+              for ($i = 1; $i -le 15; $i++) {
+                $log = Join-Path $dumpDir "cdb-live-$i.txt"
+                $p = Start-Process -FilePath $cdb -ArgumentList @("-g","-G","-logo",$log,"-y",$pdbDir,"-c","`$<$cdbScript",$brep,"--nocapture") -PassThru -NoNewWindow
+                if (-not $p.WaitForExit(180000)) {
+                  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                  Add-Summary "CDB_LIVE_TIMEOUT iter=$i"
+                  continue
+                }
+                $text = if (Test-Path $log) { Get-Content $log -Raw -ErrorAction SilentlyContinue } else { "" }
+                if ($text -match "ACCESS_VIOLATION|---KB---") {
+                  Add-Summary "CDB_LIVE_HIT iter=$i"
+                  Get-Content $log | Write-Host
+                  break
+                }
+                Add-Summary "CDB_LIVE_MISS iter=$i exit=$($p.ExitCode)"
+              }
+            }
+          }
+
+          Write-Host "===== SUMMARY ====="
+          if (Test-Path $summary) { Get-Content $summary | Write-Host }
+          exit 0
+
+      - name: Upload dumps, PDBs, and debugger logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w1-brep-dumps
+          path: |
+            ${{ runner.temp }}/w1-dumps
+            ${{ runner.temp }}/w1-pdbs
+          if-no-files-found: ignore
+          retention-days: 14
