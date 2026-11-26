@@ -41,6 +41,7 @@ import { lastEdge, modelApplyReady, shellFacesLabel, type ModelPickRef } from ".
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
 import { fx } from "../app/fx";
+import { MODEL_BUILDING, modelActionsShownBusy } from "../app/model/actions";
 import { state } from "../app/state";
 import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queueModelCheck, refreshModelCheck as rerunModelCheck } from "./model-check-panel.ts";
 import { evaluate, type Params } from "../modeling/expr.ts";
@@ -966,7 +967,7 @@ export function setModelPreview(next: ModelSolid | null) {
 
 /** The modeler is busy with an edit or a jump: Apply is off until it is done. */
 export function setModelWaiting(next: boolean) {
-  if (waiting === next) return;
+  // Always repaint. The disabled look waits out a short build, so waiting can stay true while the look changes.
   waiting = next;
   refreshApply();
 }
@@ -2392,23 +2393,38 @@ function refreshSketchTool() {
   else button.removeAttribute("title");
 }
 
+function paintApplyBuilding(button: HTMLButtonElement) {
+  const show = waiting && modelActionsShownBusy();
+  if (show) {
+    if (!button.dataset.tipIdle && button.dataset.tip && button.dataset.tip !== MODEL_BUILDING) button.dataset.tipIdle = button.dataset.tip;
+    button.title = MODEL_BUILDING;
+    button.dataset.tip = MODEL_BUILDING;
+    return;
+  }
+  if (button.title === MODEL_BUILDING) button.removeAttribute("title");
+  if (button.dataset.tip === MODEL_BUILDING && button.dataset.tipIdle) button.dataset.tip = button.dataset.tipIdle;
+}
+
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   // An open card says when its Apply is ready.
   if (!button || card) return;
+  const busyLook = waiting && modelActionsShownBusy();
   // --- P1: Apply moves the selected faces once the distance is a real change and the dry-run agrees. ---
   if (tool === "pushpull") {
     const distance = num("#modelPull");
     const face = picks.some((pick) => pick.kind === "face");
     const probeOk = !!probe && probe.phase === "done" && probe.ok;
-    button.disabled = waiting || !face || distance === 0 || !probeOk || (!!edit && !!hooks?.editUnchanged());
+    button.disabled = busyLook || !face || distance === 0 || !probeOk || (!!edit && !!hooks?.editUnchanged());
+    paintApplyBuilding(button);
     return;
   }
   if (tool === "draft") {
     const angle = num("#modelDraft");
     const face = picks.some((pick) => pick.kind === "face");
     const probeOk = !!probe && probe.phase === "done" && probe.ok;
-    button.disabled = waiting || !face || angle === 0 || angle < -30 || angle > 30 || !probeOk || (!!edit && !!hooks?.editUnchanged());
+    button.disabled = busyLook || !face || angle === 0 || angle < -30 || angle > 30 || !probeOk || (!!edit && !!hooks?.editUnchanged());
+    paintApplyBuilding(button);
     return;
   }
   // --- A5. A step's edges need no pick: Apply waits on that step and the dry-run. ---
@@ -2419,7 +2435,8 @@ function refreshApply() {
     : stepBlend
       ? edgeStepKnown() && probeAllowsApply(current, probe)
       : modelApplyReady(current, picks, num("#modelFactor"), current === "split" && !!splitPlan()?.inside, probeAllowsApply(current, probe));
-  button.disabled = waiting || !current || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !ready || gearRefused() !== null || partRefused() !== null;
+  button.disabled = busyLook || !current || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !ready || gearRefused() !== null || partRefused() !== null;
+  paintApplyBuilding(button);
 }
 
 function refreshNote() {

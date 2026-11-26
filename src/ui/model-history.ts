@@ -9,6 +9,7 @@ import { historyFolds, historyKey, historyLayout, pluginStepView, positionText, 
 import type { ObjectFrame, PlaceFields } from "../model-space";
 import { toolKeys, type ModelTree, type PluginStamp, type PluginValue } from "../model-tree";
 import { isMobileLayout } from "../platform";
+import { MODEL_BUILDING, modelActionsEnabled, modelActionsShownBusy } from "../app/model/actions";
 import { state } from "../app/state";
 import { openDock } from "./dock-reveal";
 import { pickField, sketchValue, type SketchChoice } from "./pick-field";
@@ -368,7 +369,8 @@ function inputs(): unknown[] {
     used.push(tool);
     queue.push(...toolKeys(tool));
   }
-  return [tree, shownKey(), staleKey, ...used];
+  // The building gate changes no step, but it does change which pencils can be clicked.
+  return [tree, shownKey(), staleKey, modelActionsShownBusy(), ...used];
 }
 
 /** A row of the open solid's own that is a print transition made for another pose. */
@@ -511,7 +513,7 @@ function render() {
       rowEls.set(row.key, el);
     }
     // --- A10. The swatch colour is part of the signature, so turning colour by step on repaints the rows.
-    const sig = JSON.stringify([row, layout!.lanes, ownColour(row) ?? "", staleRow(row), row.plugin ? pluginEnvKey : 0]);
+    const sig = JSON.stringify([row, layout!.lanes, ownColour(row) ?? "", staleRow(row), row.plugin ? pluginEnvKey : 0, modelActionsShownBusy()]);
     // A row being renamed keeps its field; it is painted when the name is done.
     if (row.key !== renaming && rowSigs.get(row.key) !== sig) {
       paintRow(el, row, layout!.lanes);
@@ -652,12 +654,20 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     foldBtn.dataset.tip = row.fold!.expanded ? "Hide these steps" : "Show these steps";
   }
   // A folded run is not one step. A step that cannot be edited shows no pencil; its menu says why.
-  edit.hidden = (!!row.fold && !row.fold.expanded) || !!hooks?.editRefusal(row.key);
+  // A build keeps the pencil, disabled, so the click is not taken and the reason is on the button.
+  const refusal = hooks?.editRefusal(row.key) ?? null;
+  const building = refusal === MODEL_BUILDING;
+  edit.hidden = (!!row.fold && !row.fold.expanded) || (!!refusal && !building);
+  edit.disabled = building;
   edit.setAttribute("aria-label", `Edit step: ${row.label}`);
-  edit.dataset.tip = "Edit step";
+  edit.dataset.tip = building ? MODEL_BUILDING : "Edit step";
+  if (building) edit.title = MODEL_BUILDING;
+  else if (edit.title === MODEL_BUILDING) edit.removeAttribute("title");
   // A plugin step's pencil opens its values: the run is one step, whether folded or not.
   if (view) {
     edit.hidden = false;
+    edit.disabled = false;
+    if (edit.title === MODEL_BUILDING) edit.removeAttribute("title");
     edit.setAttribute("aria-label", `Plugin values: ${row.label}`);
     edit.dataset.tip = "Plugin values";
   }
@@ -1663,6 +1673,7 @@ function draftChanges(view: PluginStepView): Record<string, PluginValue | null> 
 
 /** Rebuild: the plugin runs with the card's values; the card then shows the new run's. */
 async function rebuildFromCard() {
+  if (!modelActionsEnabled()) return;
   const id = pluginCardRow;
   const row = id == null ? undefined : layout?.rows.find((item) => item.key === id);
   const view = pluginView(row);

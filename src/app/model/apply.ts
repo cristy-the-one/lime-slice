@@ -1,5 +1,6 @@
 /** Apply: the tool's op sent to the engine, the pull apply, and the message after. */
 import { viewRequest } from "../../model-mesh-quality";
+import { modelActionsEnabled } from "./actions";
 import { boxUnder } from "../../model-space";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { locatedBoxes } from "../../model-check.ts";
@@ -119,6 +120,7 @@ function blendWorking(kind: "fillet" | "chamfer", op: ModelOp): string {
 }
 
 export async function applyTool() {
+  if (!modelActionsEnabled()) return;
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (pluginsPanelOpen()) {
     if (button && !button.disabled) await applyPluginsPanel();

@@ -73,8 +73,17 @@ function plateModifierReason(offStage: string, simple: string): string | null {
   return null;
 }
 
+/** Model registers this. Until then a build is not a reason, and the modeler stays out of the first chunk. */
+let modelBuildingReason: (id: string) => string | null = () => null;
+
+export function bindModelActionReason(read: (id: string) => string | null): void {
+  modelBuildingReason = read;
+}
+
 /** The sentence for `id`, or null when this command can run (or is not one of these). */
 export function actionReason(id: string): string | null {
+  const building = modelBuildingReason(id);
+  if (building) return building;
   const modelTool = MODEL_TOOLS[id];
   if (modelTool) return state.stage === "model" ? null : `${modelTool} is in Model.`;
   switch (id) {
