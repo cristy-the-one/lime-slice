@@ -10,7 +10,8 @@ import { session } from "../state";
 import { bindParameterActions, syncRebuildCount } from "../../ui/parameters.ts";
 import { stressOpen, stressUndoState, syncStress } from "../../ui/stress.ts";
 import { splitPrintHistory } from "../../ui/split-print.ts";
-import { MODEL_BUILDING, bindModelActionRepaint, bindModelHistoryLocal, modelActionsEnabled, modelActionsShownBusy, noteModelActions } from "./actions";
+import { bindModelActionReason } from "../command-reasons.ts";
+import { MODEL_BUILDING, bindModelActionRepaint, bindModelHistoryLocal, modelActionReason, modelActionsEnabled, modelActionsShownBusy, noteModelActions } from "./actions";
 import { S } from "./shared";
 import { treeOf } from "./edges";
 import { canRemake, canUnmake } from "./history";
@@ -144,6 +145,7 @@ export function syncUndo() {
 bindModelActionRepaint(syncUndo);
 bindModelHistoryLocal(() => !!(sketchHistoryButtons() || (stressOpen() && !openModelTool()) || splitPrintHistory()));
 bindParameterActions(modelActionsEnabled);
+bindModelActionReason(modelActionReason);
 
 /**
  * The name of the step Model's Undo or Redo would take, when that name is known.

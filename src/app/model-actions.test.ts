@@ -13,8 +13,10 @@ register(new URL("../model-view/resolve-ts.mjs", import.meta.url).href, import.m
 
 const { S } = await import("./model/shared.ts");
 const { state } = await import("./state.ts");
-const { actionReason } = await import("./command-reasons.ts");
-const { MODEL_BUILDING, MODEL_BUSY_SHOW_MS, bindModelActionRepaint, bindModelHistoryLocal, modelActionsEnabled, modelActionsShownBusy, noteModelActions } = await import("./model/actions.ts");
+const { actionReason, bindModelActionReason } = await import("./command-reasons.ts");
+const { MODEL_BUILDING, MODEL_BUSY_SHOW_MS, bindModelActionRepaint, bindModelHistoryLocal, modelActionReason, modelActionsEnabled, modelActionsShownBusy, noteModelActions } = await import("./model/actions.ts");
+
+bindModelActionReason(modelActionReason);
 
 const stage = state.stage;
 const busy = S.busy;
@@ -82,6 +84,7 @@ S.busy = busy;
 S.jumping = jumping;
 bindModelHistoryLocal(() => false);
 bindModelActionRepaint(() => {});
+bindModelActionReason(() => null);
 
 if (failed) {
   console.error(`${failed} failed`);
