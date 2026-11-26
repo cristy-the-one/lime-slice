@@ -10,6 +10,7 @@ import { GUIDES } from "./guides.ts";
 import { imagesOf } from "./inline.ts";
 import { annotationsFor, listedTools } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
+import { getSkill, listSkills, readSkillFile, SKILLS_EXTENSION } from "./skills.ts";
 import { appVersion } from "./version.ts";
 
 /**
@@ -197,13 +198,16 @@ function noteClient(version: string, info: unknown, capabilities: unknown): void
 }
 
 function capabilitiesFor(session: Session, modern: boolean, tasks: boolean): Record<string, unknown> {
-  const capabilities: Record<string, unknown> = {
+  // Skills are declared on every revision (an empty object leaves directoryRead false).
+  // Tasks stay 2026-only: SEP-2663 does not exist on 2025-11-25.
+  const extensions: Record<string, unknown> = { [SKILLS_EXTENSION]: {} };
+  if (tasks) extensions[TASKS_EXTENSION] = {};
+  return {
     tools: !modern && session.toolGroups ? { listChanged: true } : {},
     resources: {},
     prompts: {},
+    extensions,
   };
-  if (tasks) capabilities.extensions = { [TASKS_EXTENSION]: {} };
-  return capabilities;
 }
 
 function declaresTasks(metaFields: Record<string, unknown> | null, modern: boolean): boolean {
@@ -526,6 +530,13 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
     }
     if (method === "resources/read") {
       const uri = String(params.uri ?? "");
+      if (uri.startsWith("skill://")) {
+        // This buffer is the one skills/list hashes. The text is that buffer as UTF-8;
+        // neither side rewrites newlines.
+        const bytes = readSkillFile(uri);
+        if (!bytes) return error(id, -32602, "That resource is not on this server.");
+        return result(id, { contents: [{ uri, mimeType: "text/markdown", text: bytes.toString("utf8") }] }, "read");
+      }
       try {
         const body = await session.resource(uri);
         return result(id, { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(body) }] }, "read");
@@ -534,6 +545,15 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
         if (missingResource(err)) return error(id, -32602, err.message);
         throw err;
       }
+    }
+    if (method === "skills/list") {
+      return result(id, { skills: listSkills() }, "list");
+    }
+    if (method === "skills/get") {
+      const uri = typeof params.uri === "string" ? params.uri : "";
+      const skill = getSkill(uri);
+      if (!skill) return error(id, -32602, "That skill is not on this server.");
+      return result(id, { skill });
     }
     if (method === "prompts/list") {
       return result(id, {
