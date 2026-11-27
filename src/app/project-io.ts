@@ -14,7 +14,6 @@ import {
 import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes } from "../base64.ts";
 import { meshRecord, type HeldPiece, type LimeProject, type ProjectPlacement, type ProjectProfile, type ProjectResult, type ToolTree } from "../project-envelope.ts";
-import { decodeProjectEnvelope, encodeProject } from "../project-pack.ts";
 import { geometryHash, projectSummary, thumbnailFromPng, type ProjectThumbnail } from "../project-thumb.ts";
 import { capturePlatePng } from "./thumb-capture.ts";
 import { saveProfile, type PrinterProfile } from "../profiles.ts";
@@ -38,7 +37,7 @@ import { customGcodeNotice } from "../layer-actions.ts";
 import { setProjectTitle } from "./project-title.ts";
 import { projectFileName } from "../project-file-name.ts";
 import { session, state } from "./state.ts";
-import { dropProjectFonts, shelf } from "./user-fonts.ts";
+import { dropProjectFonts } from "./user-fonts-hook.ts";
 import { clearStressCells } from "../sim/stress-cells.ts";
 
 /** A picture opened with the file. Kept when a later save cannot draw and the geometry is unchanged. */
@@ -89,6 +88,7 @@ export async function saveCurrentProject() {
   if (plugins) project.plugins = plugins;
   // --- Text milestone 4 (D5): the fonts of the person's that texts use go in the project, whole, or as the outlines of the
   // letters used when the font's licence forbids embedding it.
+  const { shelf } = await import("./user-fonts.ts");
   const fonts = await shelf.recordsFor(project, session.fonts);
   if (fonts) project.fonts = fonts;
   if (Object.keys(session.parameters).length > 0) project.parameters = { ...session.parameters };
@@ -108,6 +108,8 @@ export async function saveCurrentProject() {
   }
   if (!project.thumbnail && keptThumb?.meshHash === hash) project.thumbnail = keptThumb;
   const name = projectFileName(session.projectTitle, state.mesh.name);
+  // The packer loads with the first save or open, as the Model sections reader does.
+  const { encodeProject } = await import("../project-pack.ts");
   const wrote = await saveProjectText(await encodeProject(project), name);
   if (!wrote) return;
   setProjectTitle(name);
@@ -132,6 +134,7 @@ export async function openProjectFile(file: File) {
  * held piece) loads their reader first, which is not in the app's first chunk.
  */
 async function readProjectText(text: string): Promise<ProjectResult> {
+  const { decodeProjectEnvelope } = await import("../project-pack.ts");
   const parsed = await decodeProjectEnvelope(text);
   if (!parsed.ok || !parsed.project.modelSections) return parsed;
   try {
@@ -206,6 +209,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   // --- Text milestone 4: the project's fonts go to the engine before its history is rebuilt from them.
   session.fonts = project.fonts;
   dropProjectFonts();
+  const { shelf } = await import("./user-fonts.ts");
   const fontNotes = await shelf.adopt(project.fonts);
   session.parameters = project.parameters ? { ...project.parameters } : {};
   session.assemblies = project.assemblies ? structuredClone(project.assemblies) : [];

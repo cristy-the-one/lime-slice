@@ -12,6 +12,7 @@ import { setUserFontLookup } from "../modeling/text-fonts.ts";
 import { UserFontShelf, type FontFace as CollectionFace, type UserFont } from "../modeling/user-fonts.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { treeCall } from "./step-solids.ts";
+import { userFontsHook } from "./user-fonts-hook.ts";
 
 export const shelf = new UserFontShelf(treeCall);
 setUserFontLookup((id) => shelf.fonts.get(id));
@@ -181,6 +182,7 @@ export async function removeUserFont(id: string, usedByProject: boolean): Promis
 export function dropProjectFonts(): void {
   for (const font of shelf.list()) if (font.from === "project" && !libraryFiles.has(font.id)) shelf.remove(font.id);
 }
+userFontsHook.drop = dropProjectFonts;
 
 /** The fonts the picker lists after the bundled ones: the person's library and this project's, by name. */
 export function listedFonts(): UserFont[] {
