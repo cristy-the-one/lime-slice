@@ -2733,16 +2733,38 @@ class Remesher {
   }
 
   /** The live mesh, vertices renumbered in order. */
+  /**
+   * A live triangle the shell solver would keep. Watson can leave a face whose remesh flattens one triangle to no
+   * area; the solver stops the plan on that triangle, so it is left out. A triangle with no area adds nothing.
+   */
+  private shellKeeps(t: number): boolean {
+    if (!this.alive(t)) return false;
+    const T = this.T;
+    const a = T[t * 3]!, b = T[t * 3 + 1]!, c = T[t * 3 + 2]!;
+    if (a === b || b === c || a === c) return false;
+    const P = this.P;
+    const ax = P[a * 3]!, ay = P[a * 3 + 1]!, az = P[a * 3 + 2]!;
+    const bx = P[b * 3]!, by = P[b * 3 + 1]!, bz = P[b * 3 + 2]!;
+    const cx = P[c * 3]!, cy = P[c * 3 + 1]!, cz = P[c * 3 + 2]!;
+    const abx = bx - ax, aby = by - ay, abz = bz - az;
+    const acx = cx - ax, acy = cy - ay, acz = cz - az;
+    const la = Math.hypot(abx, aby, abz);
+    const longest = Math.max(la, Math.hypot(acx, acy, acz), Math.hypot(cx - bx, cy - by, cz - bz));
+    const twice = Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx);
+    // The same test as lime-sim's `triangle`: no length, or no area against the longest edge.
+    return la > 0 && Number.isFinite(la) && Number.isFinite(twice) && twice > 1e-12 * longest * longest;
+  }
+
   compact(): { P: V3[]; T: Tri3[]; L: number[]; N: V3[] } {
     const map = new Int32Array(this.P.length / 3).fill(-1);
     const T: Tri3[] = [];
     const L: number[] = [];
     const used: number[] = [];
-    for (let t = 0; t < this.T.length / 3; t += 1) if (this.alive(t)) for (let k = 0; k < 3; k += 1) used.push(this.T[t * 3 + k]!);
+    for (let t = 0; t < this.T.length / 3; t += 1) if (this.shellKeeps(t)) for (let k = 0; k < 3; k += 1) used.push(this.T[t * 3 + k]!);
     const sorted = [...new Set(used)].sort((a, b) => a - b);
     sorted.forEach((v, i) => (map[v] = i));
     for (let t = 0; t < this.T.length / 3; t += 1) {
-      if (!this.alive(t)) continue;
+      if (!this.shellKeeps(t)) continue;
       T.push([map[this.T[t * 3]!]!, map[this.T[t * 3 + 1]!]!, map[this.T[t * 3 + 2]!]!]);
       L.push(this.L[t]!);
     }

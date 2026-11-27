@@ -1,12 +1,14 @@
 /**
- * Byte compare of ribs_plan replies against the real planner at abeb0353.
+ * Byte compare of ribs_plan replies against a captured planner run.
  *
  * Fixtures: mcp/fixtures/plan-refs-abeb0353.json
- * Commit: abeb0353e755ba679f81de52298842d089e7057f
- * Run: https://github.com/cristy-the-one/lime-slice/actions/runs/44734038583
- * Generator branch: ribs-next/tmp-refs-abeb0353 (3acd7934). Do not merge it. Do not regenerate these files.
+ * Recaptured on 05c99d4d (run 45943043698) after faces were meshed with Watson. The wall mesh triangle
+ * counts moved (the tray 526 → 522, the panel 226 → 230) and the rib paths moved with them. The file
+ * name keeps the abeb0353 capture it replaced. Do not regenerate these files for a planner change that
+ * is not a mesh change.
  *
- * The walls are the vent tests' walls, each 3 mm. At abeb0353 resin venting is off (no vent field).
+ * The walls are the vent tests' walls, each 3 mm. A reference that already carries plan.vents is compared
+ * in full. A reference from before venting (no vents object) still allows the three vent keys.
  * Clock fields stripped before the compare, and named here:
  * - reply.seconds: wall, plan, total, and planner.bare, planner.field, planner.trace, planner.embed,
  *   planner.select, planner.connect, planner.prune, planner.size, planner.baselines, planner.solver, planner.total
@@ -202,7 +204,7 @@ function diffs(path: string, live: unknown, ref: unknown, out: string[]): void {
 }
 
 const fixture = JSON.parse(readFileSync(join(root, "mcp/fixtures/plan-refs-abeb0353.json"), "utf8")) as { commit: string; replies: Record<string, Reply> };
-if (fixture.commit !== "abeb0353e755ba679f81de52298842d089e7057f") {
+if (fixture.commit !== "05c99d4d4d40da04973d9837346af2e40cd3b7a0") {
   console.error(`plan-refs: fixture commit is ${fixture.commit}`);
   process.exit(1);
 }
@@ -234,7 +236,7 @@ for (const wall of walls) {
       console.log(`plan-refs: ${name} ribs.events abeb0353 ${JSON.stringify(refEvents)}`);
       const live = stripClock(reply);
       const stored = stripClock(ref);
-      if (process === "resin") {
+      if (process === "resin" && !ventsNonEmpty(stored)) {
         const refused = allowResinVents(name, live, stored);
         if (refused) found.push(refused);
       } else console.log(`plan-refs: ${name} allowed keys: none`);
@@ -243,9 +245,8 @@ for (const wall of walls) {
     if (found.length) {
       failed += 1;
       console.error(`plan-refs FAIL ${name}`);
-      console.error(`W1_PLANREF ${name} ${JSON.stringify(stripClock(reply))}`);
       for (const line of found) console.error(`  ${line}`);
-    } else console.log(`plan-refs: ${name} matches abeb0353 aside from the clock fields and the allowed keys printed above`);
+    } else console.log(`plan-refs: ${name} matches the captured reply aside from the clock fields and the allowed keys printed above`);
   }
 }
 if (failed) {

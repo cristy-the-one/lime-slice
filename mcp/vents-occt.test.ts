@@ -246,8 +246,7 @@ const platformStart = await call("ribs_plan", { object, wall: floor, process: "r
 const platform = platformStart.job ? await waitJob(String(platformStart.job)) : platformStart;
 const away = platform.plan?.vents as Reply | undefined;
 const awayNotes = (platform.plan?.notes ?? platform.notes ?? []) as string[];
-console.log(`vents-occt: platform-facing ok=${platform.ok} status=${platform.status ?? ""} plan=${platform.plan ? Object.keys(platform.plan as Reply).join(",") : "none"} vents=${JSON.stringify(away ?? null).slice(0, 400)} reason=${JSON.stringify(platform.reason ?? platform.message ?? platform.error ?? null).slice(0, 300)}`);
-check("the same floor facing the platform cups nothing", platform.ok === true && Array.isArray(away?.pockets) && away.pockets.length === 0 && (away.unvented ?? []).length === 0, JSON.stringify(away ?? null).slice(0, 300));
+check("the same floor facing the platform cups nothing", platform.ok === true && Array.isArray(away?.pockets) && away.pockets.length === 0 && (away.unvented ?? []).length === 0, JSON.stringify(away ?? platform.reason ?? platform.message ?? null).slice(0, 300));
 check("the note names the given plate-frame axis", awayNotes.some((note) => note === GIVEN_AXIS), JSON.stringify(awayNotes));
 
 const tFilament = Date.now();
