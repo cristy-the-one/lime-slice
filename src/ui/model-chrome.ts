@@ -1083,9 +1083,11 @@ function toggleTool(next: ModelTool, editing = false) {
     seatedWpFace = lastFace(picks);
     syncWorkplaneFields(true);
   }
-  // Place, the workplane, and Check change nothing on Apply, so the button only closes the tool.
+  // Place, the workplane, and Check change nothing on Apply, so the button only closes the tool. NURBS commits each
+  // drag on release, so there is nothing left to apply or to cancel either: its one button is Done, and Undo takes a
+  // drag back.
   const cancel = document.querySelector("#modelCancel");
-  if (cancel) cancel.textContent = next === "place" || next === "workplane" || next === "check" ? "Done" : "Cancel";
+  if (cancel) cancel.textContent = next === "place" || next === "workplane" || next === "check" || next === "sculpt" ? "Done" : "Cancel";
   const apply = document.querySelector("#modelApply");
   if (apply) apply.textContent = editing ? "Update" : next === "create" ? "Create" : "Apply";
   // --- A5. A fillet opened fresh starts on picked edges. An edit fills its own mode next. ---
