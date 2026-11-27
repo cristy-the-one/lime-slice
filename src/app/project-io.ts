@@ -14,7 +14,6 @@ import {
 import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes } from "../base64.ts";
 import { meshRecord, type HeldPiece, type LimeProject, type ProjectPlacement, type ProjectProfile, type ProjectResult, type ToolTree } from "../project-envelope.ts";
-import { decodeProjectEnvelope, encodeProject } from "../project-pack.ts";
 import { geometryHash, projectSummary, thumbnailFromPng, type ProjectThumbnail } from "../project-thumb.ts";
 import { capturePlatePng } from "./thumb-capture.ts";
 import { saveProfile, type PrinterProfile } from "../profiles.ts";
@@ -109,6 +108,8 @@ export async function saveCurrentProject() {
   }
   if (!project.thumbnail && keptThumb?.meshHash === hash) project.thumbnail = keptThumb;
   const name = projectFileName(session.projectTitle, state.mesh.name);
+  // The packer loads with the first save or open, as the Model sections reader does.
+  const { encodeProject } = await import("../project-pack.ts");
   const wrote = await saveProjectText(await encodeProject(project), name);
   if (!wrote) return;
   setProjectTitle(name);
@@ -133,6 +134,7 @@ export async function openProjectFile(file: File) {
  * held piece) loads their reader first, which is not in the app's first chunk.
  */
 async function readProjectText(text: string): Promise<ProjectResult> {
+  const { decodeProjectEnvelope } = await import("../project-pack.ts");
   const parsed = await decodeProjectEnvelope(text);
   if (!parsed.ok || !parsed.project.modelSections) return parsed;
   try {
