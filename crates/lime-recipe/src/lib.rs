@@ -7821,7 +7821,7 @@ pub mod anim {
 
     /// One joint target in the member's part frame, or a model-space Reach target.
     /// A number is degrees on a hinge. `Travel` is millimetres on a slide; both encode as a JSON number, which the
-    /// host reads by the joint. `Pose::set` takes either (`set(name, mm)` is degrees; `set(name, Aim::Travel(mm))` is travel).
+    /// host reads by the joint. `Pose::set` takes either (`set(name, number)` is degrees on a hinge; `set(name, Aim::Travel(mm))` is travel).
     #[derive(Clone, Debug, PartialEq)]
     pub enum Aim {
         Degrees(f64), Travel(f64), Rest, Aligned, Min, Max, Fraction(f64),

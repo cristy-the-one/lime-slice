@@ -139,6 +139,8 @@ test("dragging the slide arrow moves travel, and Ctrl+Z restores it", async ({ p
   await page.mouse.move(handle[0], handle[1]);
   await page.mouse.down();
   await page.mouse.move(handle[0] + (dx / length) * 90, handle[1] + (dy / length) * 90, { steps: 12 });
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await page.screenshot({ path: path.join(shotDir, "slide-arrow-drag.png") });
   await page.mouse.up();
   await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Travel mm").inputValue()))).toBeGreaterThan(1);
   const travel = Number(await panel.getByLabel("Travel mm").inputValue());
