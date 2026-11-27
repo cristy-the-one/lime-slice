@@ -75,8 +75,8 @@ API facts that bite:
   a line ("only touches"): inset them so they overlap.
 - Nothing is dropped silently: a step skipped inside `apply_later`, an ignored field, a reused param or a colour that
   can't apply comes back as a **warning**. Read `warnings`. From 7.4.0 runs are **strict**: a refused `apply_later` step
-  the recipe never reads fails and rolls back the run (handle `s.flush` / each result). `//! strict: false` opts out
-  through 7.4 only (removed in 7.5.0); before 7.4.0, `//! strict: true` opts in.
+  the recipe never reads fails and rolls back the run (handle `s.flush` / each result). `//! strict: false` was removed
+  after 7.5.1 (a run that carries it is strict and gets one note); before 7.4.0, `//! strict: true` opts in.
 - A bending path with a `profile` is always a **pipe-shell** sweep, and takes `caps`/`capStart`/`capEnd` `round` or
   `point` (+ `capLength` mm); round caps meet the pipe G1. Arcs: `sections` + `spine:{kind:"segments"}` with tangent
   arcs (reverse-curve radius > profile reach). `radius` = one number, a one-element list, or one per path point.

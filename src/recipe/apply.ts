@@ -164,8 +164,8 @@ async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<Plu
     return { ok: false as const, reason, ...extra, notes, ...trace, ...(queue.replay ? { replay: queue.replay } : {}) };
   };
   // Strict is the default (7.4.0): a refused queued step this recipe never reads fails the run and
-  // nothing is kept. `//! strict: false` in the stored source keeps the per-step notes and one opt-out
-  // note. A replay is built again one by one first; that run is judged on its own header.
+  // nothing is kept. `//! strict: false` in the stored source no longer opts out: the run is strict and
+  // carries one note. A replay is built again one by one first; that run is judged on its own header.
   const queued = queue.replay ? null : strictQueueFailure(input.body, queue.unreported(), notes);
   if (queued) return refuse(queued);
   if (!out.ok || !out.done) return refuse(out.reason ?? "The plugin failed.", out.line !== undefined ? { line: out.line } : {});
