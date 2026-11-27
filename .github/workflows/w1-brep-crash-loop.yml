@@ -1,4 +1,5 @@
-# Temporary: 200 runs of tests/brep.rs after the mesher is Watson.
+# Temporary: 200 brep runs of the Watson mesher, plus Model timings of this
+# head and of main (7a9cdedb, Delabella), clippy, and golden_ab.
 # Removed in a later commit on this branch, before the PR is ready.
 # Push / pull_request on claude/w1-brep-windows-crash only.
 # Does not change any existing CI job.
@@ -19,12 +20,14 @@ jobs:
     name: W1 brep crash loop (temporary)
     if: github.head_ref == 'claude/w1-brep-windows-crash' || github.ref == 'refs/heads/claude/w1-brep-windows-crash'
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     env:
       LIME_REQUIRE_OCCT: "1"
       CARGO_BUILD_JOBS: "4"
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Point at the OCCT install
         run: Add-Content -Path $env:GITHUB_ENV -Value "OCCT_ROOT=${{ runner.temp }}\occt-7.9.2"
@@ -56,23 +59,54 @@ jobs:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
-      - name: Build the lime-model-occt tests once
-        run: cargo test -p lime-model-occt --locked --no-run
-
-      - name: Loop the brep binary 200 times
+      - name: Measure Watson, main's mesher, the brep loop, clippy, and golden
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
           $PSNativeCommandUseErrorActionPreference = $false
-          $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
-          $jsonLog = Join-Path $env:RUNNER_TEMP "w1-no-run.json"
-          cargo test -p lime-model-occt --locked --no-run --message-format=json | Out-File -FilePath $jsonLog -Encoding utf8NoBOM
-          $brep = $null
-          foreach ($line in Get-Content $jsonLog) {
-            try { $obj = $line | ConvertFrom-Json } catch { continue }
-            if ($obj.executable -and (Split-Path $obj.executable -Leaf) -like "brep-*.exe") { $brep = $obj.executable }
+          $out = Join-Path $env:RUNNER_TEMP "w1-measure.txt"
+          "" | Set-Content -Path $out -Encoding utf8
+          function Add-Measure([string]$line) {
+            Write-Host $line
+            Add-Content -Path $out -Value $line
           }
-          if (-not $brep) { Write-Host "NO_BREP_EXE"; exit 1 }
+          $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
+          $env:W1_BENCH_OUT = $out
+          $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+          Add-Measure "MACHINE runner=$env:RUNNER_NAME os=$([Environment]::OSVersion.VersionString) cpu=$($cpu.Name) logical=$($cpu.NumberOfLogicalProcessors)"
+          Add-Measure "HEAD $(git rev-parse HEAD)"
+
+          Add-Measure "===== CLIPPY ====="
+          $clippyLog = Join-Path $env:RUNNER_TEMP "w1-clippy.txt"
+          cargo clippy -p lime-model-occt --all-targets --locked -- -D warnings *> $clippyLog
+          Add-Measure "CLIPPY_EXIT $LASTEXITCODE"
+          Get-Content $clippyLog | ForEach-Object { Add-Measure $_ }
+
+          function Invoke-Bench([string]$label, [string]$dir, [string]$target) {
+            Add-Measure "===== BENCH $label ====="
+            Push-Location $dir
+            $previous = $env:CARGO_TARGET_DIR
+            if ($target) { $env:CARGO_TARGET_DIR = $target } else { Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue }
+            $env:W1_BENCH_LABEL = $label
+            cargo test -p lime-model-occt --test mesh_speed --locked -- --ignored --nocapture --test-threads=1
+            Add-Measure "BENCH_EXIT $label $LASTEXITCODE"
+            if ($previous) { $env:CARGO_TARGET_DIR = $previous } else { Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue }
+            Pop-Location
+          }
+          Invoke-Bench "watson" (Get-Location).Path ""
+
+          $main = "7a9cdedbebc5dbfd78d8f4fd96a387344bb0d9dd"
+          $wt = Join-Path $env:RUNNER_TEMP "main-mesher"
+          git worktree add --detach $wt $main
+          if ($LASTEXITCODE -eq 0) {
+            Copy-Item crates\lime-model-occt\tests\mesh_speed.rs (Join-Path $wt "crates\lime-model-occt\tests\mesh_speed.rs") -Force
+            Add-Measure "MAIN_TREE $(git -C $wt rev-parse HEAD)"
+            Invoke-Bench "delabella" $wt (Join-Path $env:RUNNER_TEMP "target-main")
+            git worktree remove --force $wt
+          } else {
+            Add-Measure "MAIN_WORKTREE_FAILED $LASTEXITCODE"
+          }
+
           function Get-ExitHex($code) {
             if ($null -eq $code) { return "null" }
             $n = [int64]$code
@@ -82,32 +116,64 @@ jobs:
           function Test-FatalHex([string]$hex) {
             return $hex -in @('C0000005','C0000374','C0000409','C00000FD','C000001D','C0000094','C0000096')
           }
-          $times = 200
-          $crashes = 0; $passes = 0; $other = 0; $timeouts = 0
-          Write-Host "LOOP_WATSON exe=$brep runs=$times"
-          for ($i = 1; $i -le $times; $i++) {
-            $sw = [Diagnostics.Stopwatch]::StartNew()
-            $stdout = Join-Path $env:RUNNER_TEMP "stdout-$i.txt"
-            $stderr = Join-Path $env:RUNNER_TEMP "stderr-$i.txt"
-            $p = Start-Process -FilePath $brep -ArgumentList @("--nocapture") -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            $finished = $p.WaitForExit(180000)
-            $sw.Stop()
-            if (-not $finished) {
-              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-              $timeouts++
-              Write-Host "TIMEOUT iter=$i elapsed_ms=$($sw.ElapsedMilliseconds)"
-              continue
-            }
-            $hex = Get-ExitHex $p.ExitCode
-            if ($p.ExitCode -eq 0) { $passes++ }
-            elseif (Test-FatalHex $hex) {
-              $crashes++
-              Write-Host "CRASH iter=$i exit=0x$hex elapsed_ms=$($sw.ElapsedMilliseconds)"
-            } else {
-              $other++
-              Write-Host "OTHER iter=$i exit=$($p.ExitCode) (0x$hex) elapsed_ms=$($sw.ElapsedMilliseconds)"
-            }
+          $jsonLog = Join-Path $env:RUNNER_TEMP "w1-no-run.json"
+          cargo test -p lime-model-occt --locked --no-run --message-format=json | Out-File -FilePath $jsonLog -Encoding utf8NoBOM
+          $brep = $null
+          foreach ($line in Get-Content $jsonLog) {
+            try { $obj = $line | ConvertFrom-Json } catch { continue }
+            if ($obj.executable -and (Split-Path $obj.executable -Leaf) -like "brep-*.exe") { $brep = $obj.executable }
           }
-          Write-Host "RESULT watson crashes=$crashes passes=$passes other=$other timeouts=$timeouts total=$times"
+          if (-not $brep) { Add-Measure "NO_BREP_EXE" } else {
+            $times = 200
+            $crashes = 0; $passes = 0; $other = 0; $timeouts = 0
+            Add-Measure "LOOP_WATSON exe=$brep runs=$times"
+            for ($i = 1; $i -le $times; $i++) {
+              $sw = [Diagnostics.Stopwatch]::StartNew()
+              $stdout = Join-Path $env:RUNNER_TEMP "stdout-$i.txt"
+              $stderr = Join-Path $env:RUNNER_TEMP "stderr-$i.txt"
+              $p = Start-Process -FilePath $brep -ArgumentList @("--nocapture") -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+              $finished = $p.WaitForExit(180000)
+              $sw.Stop()
+              if (-not $finished) {
+                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                $timeouts++
+                Add-Measure "TIMEOUT iter=$i elapsed_ms=$($sw.ElapsedMilliseconds)"
+                continue
+              }
+              $hex = Get-ExitHex $p.ExitCode
+              if ($p.ExitCode -eq 0) { $passes++ }
+              elseif (Test-FatalHex $hex) {
+                $crashes++
+                Add-Measure "CRASH iter=$i exit=0x$hex elapsed_ms=$($sw.ElapsedMilliseconds)"
+              } else {
+                $other++
+                Add-Measure "OTHER iter=$i exit=$($p.ExitCode) (0x$hex) elapsed_ms=$($sw.ElapsedMilliseconds)"
+              }
+            }
+            Add-Measure "RESULT watson crashes=$crashes passes=$passes other=$other timeouts=$timeouts total=$times"
+          }
+
+          Add-Measure "===== GOLDEN ====="
+          $bash = "C:\Program Files\Git\bin\bash.exe"
+          if (-not (Test-Path $bash)) {
+            Add-Measure "GOLDEN_NO_BASH"
+          } else {
+            $goldenLog = Join-Path $env:RUNNER_TEMP "w1-golden.txt"
+            & $bash -c 'export PATH="/usr/bin:$PATH"; cargo build --release -p lime-slice --locked; echo CARGO_EXIT:$?; tools/golden_ab.sh 7a9cdedbebc5dbfd78d8f4fd96a387344bb0d9dd target/release/lime-slice.exe; echo GOLDEN_EXIT:$?' *> $goldenLog
+            Add-Measure "GOLDEN_WRAP_EXIT $LASTEXITCODE"
+            Get-Content $goldenLog | ForEach-Object { Add-Measure $_ }
+          }
+
+          Write-Host "===== MEASURE ====="
+          Get-Content $out | Write-Host
           # Non-zero on purpose so this measurement log is fetched. Removed with the job.
           exit 1
+
+      - name: Upload the measurement log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w1-measure
+          path: ${{ runner.temp }}/w1-measure.txt
+          if-no-files-found: ignore
+          retention-days: 14
