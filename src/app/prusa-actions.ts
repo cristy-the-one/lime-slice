@@ -21,21 +21,14 @@ import {
   gcodeFileName,
   hostProblem,
   keyProblem,
-  moonrakerConfigRequest,
   parsePrusaOrigin,
-  performPrusa,
-  readMoonrakerConfig,
-  readStatus,
-  readVersion,
-  sendGcode,
-  statusRequest,
-  transportFetch,
-  unreachable,
-  versionRequest,
   type MoonrakerConfigImport,
   type PrinterHostKind,
   type PrusaLinkResult,
 } from "../ui/prusa-link.ts";
+
+/** The HTTP client, loaded on the first Test, Send, Job, or import: every use waits on the printer anyway. */
+const net = () => import("../ui/prusa-link-net.ts");
 
 let summary = "";
 
@@ -87,23 +80,27 @@ export function rememberPrusaForm() {
 }
 
 export function testPrusaLink() {
-  void run("test", (origin, apiKey, hostType) =>
-    performPrusa(
+  void run("test", async (origin, apiKey, hostType) => {
+    const { performPrusa, readVersion, transportFetch, versionRequest } = await net();
+    return performPrusa(
       versionRequest(origin, apiKey, hostType),
       transportFetch,
       (status, text) => readVersion(status, text, hostType),
       hostType,
-    ));
+    );
+  });
 }
 
 export function refreshPrusaJob() {
-  void run("job", (origin, apiKey, hostType) =>
-    performPrusa(
+  void run("job", async (origin, apiKey, hostType) => {
+    const { performPrusa, readStatus, statusRequest, transportFetch } = await net();
+    return performPrusa(
       statusRequest(origin, apiKey, hostType),
       transportFetch,
       (status, text) => readStatus(status, text, hostType),
       hostType,
-    ));
+    );
+  });
 }
 
 export async function importMoonrakerConfig() {
@@ -123,6 +120,7 @@ export async function importMoonrakerConfig() {
     pushToast(message, "info");
     return;
   }
+  const { moonrakerConfigRequest, readMoonrakerConfig, transportFetch, unreachable } = await net();
   let status = 0;
   let text = "";
   try {
@@ -251,6 +249,7 @@ export async function uploadToPrusaLink() {
     return;
   }
   const filename = gcodeFileName(state.mesh?.name ?? "part");
+  const { sendGcode, transportFetch } = await net();
   const outcome = await sendGcode(
     {
       url: printer.host,
