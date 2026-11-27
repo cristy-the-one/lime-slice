@@ -1,6 +1,7 @@
 import { eulerOrient, type Mat3 } from "./mesh-place.ts";
 import { turnCentre, type PrimitiveSpec } from "./model-primitive.ts";
-import { IDENTITY_POSE, applyPose, inversePose, toSolidOp, type Affine } from "./model-space.ts";
+import { IDENTITY_POSE, applyPose, inversePose, type Affine } from "./model-space.ts";
+import { planePrimitive, toSolidOp } from "./model-solid-op.ts";
 import {
   CURVED_FACE,
   GLOBAL_WORKPLANE,
@@ -10,7 +11,6 @@ import {
   isIdentityFrame,
   localPoint,
   planePoint,
-  planePrimitive,
   printOrient,
   readWorkplane,
   sameWorkplane,

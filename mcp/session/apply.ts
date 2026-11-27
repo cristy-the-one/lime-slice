@@ -13,10 +13,12 @@ import { bakeCells, runCombined, runComposite, storeGroup, wantsCombine } from "
 import { labelBox } from "../../src/modeling/part-reads.ts";
 import { AnchorError, hasAnchor, resolveAnchors, type Box } from "../../src/modeling/anchors.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../../src/modeling/links.ts";
-import { applyPose, toSolidOp, typedPoseOf } from "../../src/model-space.ts";
+import { applyPose, typedPoseOf } from "../../src/model-space.ts";
+import { toSolidOp } from "../../src/model-solid-op.ts";
 import { dropped, jumped, opLabel, pathTo, rechained, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type ProfileLoop } from "../../src/model-tree.ts";
 import { groupSkipsMesh, guardReadsBefore, liteSolid, queuedGuardAt, queueableOp } from "../../src/recipe/queue.ts";import { runEndingAt } from "../../src/plugin-step.ts";
-import { workplaneOwn, planePrimitive, type Workplane } from "../../src/workplane.ts";
+import { workplaneOwn, type Workplane } from "../../src/workplane.ts";
+import { planePrimitive } from "../../src/model-solid-op.ts";
 import { ProtocolError } from "../engine.ts";
 import { expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, type ExpandContext, type Piece } from "../../src/modeling/compose.ts";
 import { stepOutOfDate, withExprs } from "../../src/modeling/params.ts";

@@ -1,5 +1,5 @@
 /** The op a panel, an edit, or a tool field stands for. */
-import { toSolidOp } from "../../model-space";
+import { toSolidOp } from "../../model-solid-op";
 import { rootSpec } from "../../model-primitive";
 import { selectedEdges, selectedFaces } from "../../model-blend";
 import { isFeatureTool } from "../../model-features";
@@ -25,7 +25,8 @@ import {
 } from "../../ui/model-chrome";
 import { holesInModel, type HoleSizes } from "../../sketch/holes.ts";
 import { transitionCardOp } from "../../ui/transition-card.ts";
-import { planePoint, planePrimitive } from "../../workplane";
+import { planePoint } from "../../workplane";
+import { planePrimitive } from "../../model-solid-op";
 import { ribNetSource } from "../../auto-ribs.ts";
 import { autoRibsPendingOp } from "./auto-ribs";
 import { S } from "./shared";

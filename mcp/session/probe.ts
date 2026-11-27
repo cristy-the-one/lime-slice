@@ -11,7 +11,8 @@ import { disjointRefusal, probeEcho, probeVerdict, solidView } from "../../src/m
 import { bakeOp, bakeTransition, type BakeContext, type Baked } from "../../src/modeling/bake.ts";
 import { thinWalls } from "../../src/modeling/thin.ts";
 import { splitCheck } from "../../src/modeling/part-reads.ts";
-import { applyPose, toSolidOp, turnDir, typedPoseOf } from "../../src/model-space.ts";
+import { applyPose, turnDir, typedPoseOf } from "../../src/model-space.ts";
+import { toSolidOp } from "../../src/model-solid-op.ts";
 import type { ModelOp, ModelTree } from "../../src/model-tree.ts";
 import { readTransitionRows, transitionSentence, transitionSkinWarns, TRANSITION_SKIN_NOTE } from "../../src/model-transition.ts";
 import { cleanOp, expand, isComposite } from "../../src/modeling/compose.ts";

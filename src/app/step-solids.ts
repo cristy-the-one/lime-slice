@@ -1,6 +1,5 @@
 /** The solids of a STEP file, each as a STEP file of its own, as the kernel's `stepSolids` writes them. */
 import { base64ToBytes, bytesToBase64Async } from "../base64";
-import { unpackModelReply } from "../model-reply";
 import type { StepSolidRow } from "../step-solids";
 import { authHeaders, currentApiTarget } from "../ui/api-base";
 
@@ -22,6 +21,8 @@ export async function treeCall(payload: Record<string, unknown>): Promise<Record
   try {
     if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       const { invoke } = await import("@tauri-apps/api/core");
+      // The reply decoder loads with Model, or here on the first STEP split; the kernel call costs far more.
+      const { unpackModelReply } = await import("../model-reply");
       return unpackModelReply(await invoke<ArrayBuffer | string>("model_tree", { payload: JSON.stringify(payload) }));
     }
     const { base, token } = currentApiTarget();

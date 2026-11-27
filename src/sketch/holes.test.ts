@@ -1,7 +1,8 @@
 /**
  * Holes from sketch points: one group, circle centres, and the panel an edit reopens.
  */
-import { IDENTITY_POSE, toSolidOp, type Affine } from "../model-space.ts";
+import { IDENTITY_POSE, type Affine } from "../model-space.ts";
+import { toSolidOp } from "../model-solid-op.ts";
 import { editPanel, editRefusal } from "../model-edit.ts";
 import { loadedTree, readSavedTree, savedTree } from "../model-tree-file.ts";
 import { newTree, opLabel, withChild, type ModelOp } from "../model-tree.ts";

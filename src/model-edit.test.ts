@@ -4,7 +4,8 @@ import { stepEdges } from "./model-request.ts";
 import { historyLayout } from "./model-history.ts";
 import { planeFor, splitBase } from "./model-plane.ts";
 import { primitiveSpec, type PrimitiveSpec } from "./model-primitive.ts";
-import { fromSolidOp, toSolidOp, type Affine } from "./model-space.ts";
+import { type Affine } from "./model-space.ts";
+import { fromSolidOp, toSolidOp } from "./model-solid-op.ts";
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
 import { childrenOf, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, rootLabel, withChild, withNode, type ModelOp, type ModelTree, type Vec3 } from "./model-tree.ts";
 

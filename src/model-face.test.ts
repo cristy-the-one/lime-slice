@@ -5,7 +5,8 @@
 import { editRefusal } from "./model-edit.ts";
 import { isProbed, probeNote } from "./model-feasibility.ts";
 import { draftOp, faceExtrudeOp, faceLoopsRequest, moveFacesOp, shellOp } from "./model-request.ts";
-import { toSolidOp, type Affine } from "./model-space.ts";
+import { type Affine } from "./model-space.ts";
+import { toSolidOp } from "./model-solid-op.ts";
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
 import { childWithOp, newTree, opLabel, withChild, type FaceRef, type ModelOp, type Vec3 } from "./model-tree.ts";
 import { eulerOrient } from "./mesh-place.ts";

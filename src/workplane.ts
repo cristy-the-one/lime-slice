@@ -10,9 +10,7 @@
 import { eulerOrient, orientEuler, type Mat3 } from "./mesh-place.ts";
 import type { FacePlane } from "./model-plane.ts";
 import { inPlaneAxes } from "./plane-axes.ts";
-import { IDENTITY_POSE, applyPose, fromSolidOp, inversePose, isIdentity, poseScale, thenPose, type Affine } from "./model-space.ts";
-import type { PrimitiveSpec } from "./model-primitive.ts";
-import type { ModelOp } from "./model-tree.ts";
+import { IDENTITY_POSE, applyPose, inversePose, isIdentity, poseScale, thenPose, type Affine } from "./model-space.ts";
 
 export type Vec3 = [number, number, number];
 
@@ -97,17 +95,6 @@ export function drillDown(plane: Workplane): Vec3 {
   if (plane.turn.every((value) => value === 0)) return [0, 0, -1];
   const w = axesOf(plane)[2];
   return [-w[0], -w[1], -w[2]];
-}
-
-/**
- * A primitive typed in the frame's U, V, W, in the frame's space. It turns about its own centre (`turnCentre`), so the
- * centre goes through the frame and the turn takes the frame's turn, as `toSolidOp` takes an op into a solid's frame.
- * An identity frame returns `spec` itself.
- */
-export function planePrimitive(spec: PrimitiveSpec, plane: Workplane): PrimitiveSpec {
-  if (isIdentityFrame(plane)) return spec;
-  const placed = fromSolidOp({ kind: "boolean", op: "fuse", ...spec }, framePose(plane)) as Extract<ModelOp, { kind: "boolean" }>;
-  return { ...spec, origin: placed.origin, turn: placed.turn };
 }
 
 /**

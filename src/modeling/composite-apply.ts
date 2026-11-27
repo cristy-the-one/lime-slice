@@ -15,7 +15,8 @@ import { repeatLabel } from "../model-repeat.ts";
 import { primitiveBox } from "../model-feasibility.ts";
 import { ribNetLabel, ribNetPlan, ribNetReport, ribNetVerify } from "./rib-net.ts";
 import { lostVolume, newTouchingEdges, touchingReason } from "./step-guard.ts";
-import { applyPose, toSolidOp, type Affine } from "../model-space.ts";
+import { applyPose, type Affine } from "../model-space.ts";
+import { toSolidOp } from "../model-solid-op.ts";
 import type { GroupOp, ModelOp, NodeId, ProfileLoop } from "../model-tree.ts";
 import { workplaneOwn, type Workplane } from "../workplane.ts";
 

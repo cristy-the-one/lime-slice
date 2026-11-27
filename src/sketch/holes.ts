@@ -6,7 +6,8 @@
  * History Edit reopens the same Hole panel. The kernel never builds `source`.
  */
 import { formatMm } from "../model-plane.ts";
-import { fromSolidOp, type Affine } from "../model-space.ts";
+import { type Affine } from "../model-space.ts";
+import { fromSolidOp } from "../model-solid-op.ts";
 import type { EditPanel } from "../model-edit.ts";
 import type { GroupOp, HoleOp, ModelOp, Vec3 } from "../model-tree.ts";
 import { frameFromWorkplane, toWorld, type SketchFrame } from "./frame.ts";

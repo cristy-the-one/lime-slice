@@ -1,7 +1,7 @@
 /** Split to print: the card's frame, its check, and the exported-part notes. */
 import { viewRequest } from "../../model-mesh-quality";
 import { base64ToBytes } from "../../base64";
-import { toSolidOp } from "../../model-space";
+import { toSolidOp } from "../../model-solid-op";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { pathTo, type ModelTree, type NodeId, type PartitionModelOp, type Vec3 } from "../../model-tree";
 import { probeRequest } from "../../model-request";

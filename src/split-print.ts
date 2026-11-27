@@ -7,7 +7,8 @@
 import { printFrame } from "./model-check.ts";
 import { boundsOf, type Mat3 } from "./mesh-place.ts";
 import { clampTilt, formatMm, splitBase, tiltedNormal, tiltOf, type FacePlane, type SplitBase } from "./model-plane.ts";
-import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model-space.ts";
+import { applyPose, turnDir, type Affine } from "./model-space.ts";
+import { fromSolidOp, toSolidOp } from "./model-solid-op.ts";
 import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
 import { clipSection, connectorNames, defaultsFor, fillPartition, fitPrinter, jointFootprint, mm, NO_FIT_SENTENCE, notBuiltYet, noRoomSentence, placeCut, profileRefusals, shapedFlats, type Flat, type PartitionDefaults, type PlacedConnector, type Profile, type ResolvedProfile, type Section, type UV, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
 import { planKey, planStep, planZigzag, sectionRuns, sliverFloor } from "./modeling/profile-shift.ts";

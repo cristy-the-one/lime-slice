@@ -1,26 +1,6 @@
 import { eulerOrient, type Mat3 } from "./mesh-place.ts";
-import {
-  IDENTITY_POSE,
-  applyPose,
-  boxUnder,
-  duplicatePose,
-  inversePose,
-  isRigid,
-  isIdentity,
-  movedPose,
-  newSolidPose,
-  placeFields,
-  poseFromPlace,
-  posedBounds,
-  relativePose,
-  steadyTurn,
-  thenPose,
-  toSolidOp,
-  turnDir,
-  typedPoseOf,
-  viewFrameOf,
-  type Affine,
-} from "./model-space.ts";
+import { IDENTITY_POSE, applyPose, boxUnder, duplicatePose, inversePose, isRigid, isIdentity, movedPose, newSolidPose, placeFields, poseFromPlace, posedBounds, relativePose, steadyTurn, thenPose, turnDir, typedPoseOf, viewFrameOf, type Affine } from "./model-space.ts";
+import { toSolidOp } from "./model-solid-op.ts";
 import { opLabel, type ModelOp, type Vec3 } from "./model-tree.ts";
 
 let failed = 0;

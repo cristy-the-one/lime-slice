@@ -4,7 +4,7 @@
  * (`buildKernelSweep`, `sketchChainToCurve3D`, `.lime` file codec, and pose transform).
  */
 import { readSavedTree } from "../model-tree-file.ts";
-import { toSolidOp } from "../model-space.ts";
+import { toSolidOp } from "../model-solid-op.ts";
 import { withoutSketch } from "../model-request.ts";
 import { evalNurbsCurve2D, sampleNurbsCurve2D } from "../modeling/nurbs-eval.ts";
 import { sketchMesh } from "./draw.ts";
