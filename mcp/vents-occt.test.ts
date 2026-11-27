@@ -242,10 +242,11 @@ if (chosen && pockets.length > 0) {
 }
 
 const small = { budgetMm3: 2500 };
-const platform = await waitJob(String((await call("ribs_plan", { object, wall: floor, process: "resin", goal: chosen?.plan ? goals.find((g) => g.name === chosen!.name)!.goal : goals[0]!.goal, baselines: false, buildAxis: [0, 0, -1] })).job));
+const platformStart = await call("ribs_plan", { object, wall: floor, process: "resin", goal: chosen?.plan ? goals.find((g) => g.name === chosen!.name)!.goal : goals[0]!.goal, baselines: false, buildAxis: [0, 0, -1] });
+const platform = platformStart.job ? await waitJob(String(platformStart.job)) : platformStart;
 const away = platform.plan?.vents as Reply | undefined;
 const awayNotes = (platform.plan?.notes ?? platform.notes ?? []) as string[];
-check("the same floor facing the platform cups nothing", platform.ok === true && Array.isArray(away?.pockets) && away.pockets.length === 0 && (away.unvented ?? []).length === 0, JSON.stringify(away).slice(0, 300));
+check("the same floor facing the platform cups nothing", platform.ok === true && Array.isArray(away?.pockets) && away.pockets.length === 0 && (away.unvented ?? []).length === 0, JSON.stringify(away ?? platform.reason ?? platform.message ?? null).slice(0, 300));
 check("the note names the given plate-frame axis", awayNotes.some((note) => note === GIVEN_AXIS), JSON.stringify(awayNotes));
 
 const tFilament = Date.now();

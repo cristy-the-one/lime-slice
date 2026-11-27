@@ -2732,17 +2732,39 @@ class Remesher {
     }
   }
 
+  /**
+   * A live triangle the shell solver would keep. Watson can leave a face whose remesh flattens one triangle to no
+   * area; the solver stops the plan on that triangle, so it is left out. A triangle with no area adds nothing.
+   */
+  private shellKeeps(t: number): boolean {
+    if (!this.alive(t)) return false;
+    const T = this.T;
+    const a = T[t * 3]!, b = T[t * 3 + 1]!, c = T[t * 3 + 2]!;
+    if (a === b || b === c || a === c) return false;
+    const P = this.P;
+    const ax = P[a * 3]!, ay = P[a * 3 + 1]!, az = P[a * 3 + 2]!;
+    const bx = P[b * 3]!, by = P[b * 3 + 1]!, bz = P[b * 3 + 2]!;
+    const cx = P[c * 3]!, cy = P[c * 3 + 1]!, cz = P[c * 3 + 2]!;
+    const abx = bx - ax, aby = by - ay, abz = bz - az;
+    const acx = cx - ax, acy = cy - ay, acz = cz - az;
+    const la = Math.hypot(abx, aby, abz);
+    const longest = Math.max(la, Math.hypot(acx, acy, acz), Math.hypot(cx - bx, cy - by, cz - bz));
+    const twice = Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx);
+    // The same test as lime-sim's `triangle`: no length, or no area against the longest edge.
+    return la > 0 && Number.isFinite(la) && Number.isFinite(twice) && twice > 1e-12 * longest * longest;
+  }
+
   /** The live mesh, vertices renumbered in order. */
   compact(): { P: V3[]; T: Tri3[]; L: number[]; N: V3[] } {
     const map = new Int32Array(this.P.length / 3).fill(-1);
     const T: Tri3[] = [];
     const L: number[] = [];
     const used: number[] = [];
-    for (let t = 0; t < this.T.length / 3; t += 1) if (this.alive(t)) for (let k = 0; k < 3; k += 1) used.push(this.T[t * 3 + k]!);
+    for (let t = 0; t < this.T.length / 3; t += 1) if (this.shellKeeps(t)) for (let k = 0; k < 3; k += 1) used.push(this.T[t * 3 + k]!);
     const sorted = [...new Set(used)].sort((a, b) => a - b);
     sorted.forEach((v, i) => (map[v] = i));
     for (let t = 0; t < this.T.length / 3; t += 1) {
-      if (!this.alive(t)) continue;
+      if (!this.shellKeeps(t)) continue;
       T.push([map[this.T[t * 3]!]!, map[this.T[t * 3 + 1]!]!, map[this.T[t * 3 + 2]!]!]);
       L.push(this.L[t]!);
     }
@@ -3732,29 +3754,118 @@ export function ribWall(solidIn: RibWallSolid, options: RibWallOptions): RibWall
     ...(options.folded ? { patches } : {}),
     ms: { select: round(tSelect - start, 1), remesh: round(tRemesh - tSelect, 1), measure: round(end - tRemesh, 1), total: round(end - start, 1) },
   };
+  // The shell sees the mid-surface rounded to 6 decimals. A triangle that still had area on the
+  // remesh can flatten in that rounding, and the vertex it was the only owner of is then on no
+  // triangle. Drop both, and renumber what shares those indices. When nothing flattens, the
+  // request is the one built above.
+  const sentV = mid.map(r3v6);
+  const sentThick = thickness.map((x) => round(x, 4));
+  const keep: number[] = [];
+  T.forEach((tri, t) => {
+    if (shellKeepsPoints(sentV[tri[0]!]!, sentV[tri[1]!]!, sentV[tri[2]!]!)) keep.push(t);
+  });
+  const seen = new Uint8Array(sentV.length);
+  for (const t of keep) for (const v of T[t]!) seen[v] = 1;
+  let unused = 0;
+  for (const s of seen) if (!s) unused += 1;
+  const flat = keep.length !== T.length || unused > 0;
+  const vMap = new Int32Array(sentV.length).fill(-1);
+  const used: number[] = [];
+  if (flat) {
+    for (let v = 0; v < seen.length; v += 1) if (seen[v]) { vMap[v] = used.length; used.push(v); }
+  }
+  const tMap = new Int32Array(T.length).fill(-1);
+  if (flat) keep.forEach((t, i) => { tMap[t] = i; });
+  const mapTris = (tris: readonly number[]) => tris.flatMap((t) => {
+    const n = tMap[t] ?? -1;
+    return n >= 0 ? [n] : [];
+  });
+  const mapSentLoad = (load: WallLoad): WallLoad | null => {
+    if (load.kind === "force") {
+      const node = vMap[load.node] ?? -1;
+      return node >= 0 ? { ...load, node } : null;
+    }
+    const triangles = mapTris(load.triangles);
+    return triangles.length ? { ...load, triangles } : null;
+  };
+  const meshVertices = flat ? used.map((v) => sentV[v]!) : sentV;
+  const meshTriangles: Tri3[] = flat
+    ? keep.map((t) => {
+        const tri = T[t]!;
+        return [vMap[tri[0]!]!, vMap[tri[1]!]!, vMap[tri[2]!]!];
+      })
+    : T;
+  const meshThickness = flat ? used.map((v) => sentThick[v]!) : sentThick;
+  const meshHolds = (flat ? [...clamped].filter((node) => (vMap[node] ?? -1) >= 0).map((node) => vMap[node]!) : [...clamped])
+    .sort((a, b) => a - b)
+    .map((node) => ({ node, dofs: [0, 0, 0, 0, 0, 0] as [0, 0, 0, 0, 0, 0] }));
+  const meshCases = flat
+    ? requestCases.map((loads) => loads.flatMap((load) => {
+        const mapped = mapSentLoad(load);
+        return mapped ? [mapped] : [];
+      }))
+    : requestCases;
+  const meshZones = flat
+    ? zones.flatMap((z) => {
+        const triangles = mapTris(z.triangles);
+        return triangles.length ? [{ ...z, triangles }] : [];
+      })
+    : zones;
+  const meshClearance = flat ? used.map((v) => clearance[v]!) : clearance;
+  const meshSkin = flat ? used.map((v) => r3v6(V[v]!)) : V.map(r3v6);
+  const meshNormals = flat ? used.map((v) => r3v6(normals[v]!)) : normals.map(r3v6);
+  const meshThick = flat ? used.map((v) => thick[v]!) : thick;
+  const meshFaces = flat ? keep.map((t) => out.L[t]!) : out.L;
+  const meshLoops = flat
+    ? loops.map((loop) => ({ ...loop, vertices: loop.vertices.flatMap((v) => { const n = vMap[v] ?? -1; return n >= 0 ? [n] : []; }) }))
+    : loops;
+  // What the wall gives back counts and numbers the same mesh the solver gets, and says what went with the triangles.
+  const sentZones = flat ? wallZones.map((z) => ({ ...z, triangles: mapTris(z.triangles) })) : wallZones;
+  if (flat) {
+    report.vertices = meshVertices.length;
+    report.triangles = meshTriangles.length;
+    report.zones = report.zones.map((row, i) => ({ ...row, triangles: sentZones[i]!.triangles.length }));
+    const lostHolds = clamped.size - meshHolds.length;
+    const lostLoads = requestCases.reduce((n, loads, i) => n + loads.length - meshCases[i]!.length, 0);
+    const lostZones = zones.length - meshZones.length;
+    const said = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+    if (lostHolds > 0) warnings.push(`${said(lostHolds, "held point was", "held points were")} on wall triangles with no area and left out of the stress model.`);
+    if (lostLoads > 0) warnings.push(`${said(lostLoads, "load was", "loads were")} only on wall triangles with no area and left out of the stress model.`);
+    if (lostZones > 0) warnings.push(`${said(lostZones, "zone was", "zones were")} only on wall triangles with no area and left out of the stress model.`);
+  }
   return {
     request: {
-      mesh: { vertices: mid.map(r3v6), triangles: T, thickness: thickness.map((x) => round(x, 4)) },
-      holds: { kind: "given", holds: [...clamped].sort((a, b) => a - b).map((node) => ({ node, dofs: [0, 0, 0, 0, 0, 0] })) },
-      loadCases: requestCases,
-      zones,
-      clearance,
+      mesh: { vertices: meshVertices, triangles: meshTriangles, thickness: meshThickness },
+      holds: { kind: "given", holds: meshHolds },
+      loadCases: meshCases,
+      zones: meshZones,
+      clearance: meshClearance,
       side: "positive",
     },
-    skin: V.map(r3v6),
-    normals: normals.map(r3v6),
-    thick,
-    faceOfTriangle: out.L,
+    skin: meshSkin,
+    normals: meshNormals,
+    thick: meshThick,
+    faceOfTriangle: meshFaces,
     faces: sel.faces,
-    loops,
+    loops: meshLoops,
     holes,
-    zones: wallZones,
+    zones: sentZones,
     report,
   };
 }
 
 const r6 = (n: number) => round(n, 6);
 const r3v6 = (p: V3): V3 => [r6(p[0]), r6(p[1]), r6(p[2])];
+
+/** The shell's area test (`lime-sim` `triangle`), on the points the solver receives. */
+function shellKeepsPoints(a: V3, b: V3, c: V3): boolean {
+  const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+  const acx = c[0] - a[0], acy = c[1] - a[1], acz = c[2] - a[2];
+  const la = Math.hypot(abx, aby, abz);
+  const longest = Math.max(la, Math.hypot(acx, acy, acz), Math.hypot(c[0] - b[0], c[1] - b[1], c[2] - b[2]));
+  const twice = Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx);
+  return la > 0 && Number.isFinite(la) && Number.isFinite(twice) && twice > 1e-12 * longest * longest;
+}
 
 /** "Load 1", "Loads 1 and 3", "Holds 1, 2 and 4", counting from one. */
 function listOf(what: string, indexes: readonly number[]): string {

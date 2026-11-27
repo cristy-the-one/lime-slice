@@ -625,6 +625,12 @@ impl ShellModel {
         let mut tris = Vec::with_capacity(mesh.triangles.len());
         let mut element_thickness = Vec::with_capacity(mesh.triangles.len());
         let mut normals = vec![[0.0; 3]; n];
+        // One incident triangle's unit normal, for a vertex whose area-weighted
+        // sum falls under `normalize`'s floor. Watson can leave such a vertex
+        // on a face the remesh nearly flattened. The vertex is still on a
+        // triangle; a vertex on none still errors below.
+        let mut face_normal = vec![[0.0; 3]; n];
+        let mut on_face = vec![false; n];
         let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(6 * mesh.triangles.len());
         for (e, t) in mesh.triangles.iter().enumerate() {
             if t.iter().any(|&v| v as usize >= n) {
@@ -638,6 +644,10 @@ impl ShellModel {
             for &v in t {
                 let w = scale(tri.frame.normal, tri.area);
                 normals[v as usize] = add(normals[v as usize], w);
+                if !on_face[v as usize] {
+                    face_normal[v as usize] = tri.frame.normal;
+                    on_face[v as usize] = true;
+                }
             }
             for a in 0..3 {
                 for b in 0..3 {
@@ -650,9 +660,9 @@ impl ShellModel {
         }
         let mut normal_unit = Vec::with_capacity(n);
         for (i, v) in normals.iter().enumerate() {
+            let unit = normalize(*v).or_else(|| on_face[i].then_some(face_normal[i]));
             normal_unit.push(
-                normalize(*v)
-                    .ok_or_else(|| SimError::new(format!("Vertex {i} is on no triangle.")))?,
+                unit.ok_or_else(|| SimError::new(format!("Vertex {i} is on no triangle.")))?,
             );
         }
         // Creases off: no vertex is a crease, so every rib end keeps the

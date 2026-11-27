@@ -105,32 +105,33 @@ fn ready() -> bool {
     true
 }
 
-/// The default mesh on origin/main at 146a5ec1 (Angle 0.5, no normals), by shape and chord: triangle count and FNV-1a
-/// hash of the positions and triangles bytes. This file's meshing run on a detached worktree of that commit, built
-/// against OCCT 7.9.2 with MSVC on Windows, printed them. The hashes are asserted on Windows, where they were made: the
-/// mesh is the same algorithm on every platform, but float rounding in another compiler's build of Open CASCADE can
-/// move a node in its last bit. Elsewhere the counts are asserted and the hashes printed.
+/// The default mesh with Watson, by shape and chord: triangle count and FNV-1a hash of the positions
+/// and triangles bytes. The counts are the ones main produced with Delabella. The hashes are Watson's,
+/// printed by the Windows OCCT job of run 45946735307 (MSVC, OCCT 7.9.2). They are asserted on Windows,
+/// where they were made: the mesh is the same algorithm on every platform, but float rounding in another
+/// compiler's build of Open CASCADE can move a node in its last bit. Elsewhere the counts are asserted
+/// and the hashes printed.
 const REFERENCE: &[(&str, f64, usize, u64)] = &[
-    ("filleted box", 0.05, 788, 0x1dff_cbee_a035_b94d),
-    ("filleted box", 0.1, 628, 0x1565_029c_a2a1_58c5),
-    ("cylinder", 0.05, 176, 0xd76b_db78_1aa0_ed1e),
-    ("cylinder", 0.1, 124, 0x0bb3_663e_be10_d455),
+    ("filleted box", 0.05, 788, 0x8d3d_9d82_2cc5_980a),
+    ("filleted box", 0.1, 628, 0x25f3_26dd_0c41_6991),
+    ("cylinder", 0.05, 176, 0xe108_dc15_a459_e926),
+    ("cylinder", 0.1, 124, 0x3546_0939_4ac6_2789),
 ];
 
 /// The same for the STEP paths (`step_meshes`): meshStep and opening a STEP file, on the filleted box as the kernel
-/// writes it to STEP.
+/// writes it to STEP. Counts unchanged from main; hashes are Watson's from the same Windows run.
 const STEP_REFERENCE: &[(&str, f64, usize, u64)] = &[
-    ("meshStep", 0.05, 788, 0xd215_5f5d_559e_ee21),
-    ("open STEP", 0.05, 788, 0xd215_5f5d_559e_ee21),
-    ("meshStep", 0.1, 628, 0x9136_8f20_a1a0_a9fc),
-    ("open STEP", 0.1, 628, 0x9136_8f20_a1a0_a9fc),
+    ("meshStep", 0.05, 788, 0x59b7_61a6_6e9f_9d17),
+    ("open STEP", 0.05, 788, 0x59b7_61a6_6e9f_9d17),
+    ("meshStep", 0.1, 628, 0xbade_cc72_093f_f841),
+    ("open STEP", 0.1, 628, 0xbade_cc72_093f_f841),
 ];
 
 fn same_as_main(what: &str, count: usize, hash: u64, expected: usize, expected_hash: u64) {
-    println!("{what}: {count} triangles, soup hash {hash:#x} (main {expected}, {expected_hash:#x})");
-    assert_eq!(count, expected, "{what}: the default mesh must be main's");
+    println!("{what}: {count} triangles, soup hash {hash:#x} (pinned {expected}, {expected_hash:#x})");
+    assert_eq!(count, expected, "{what}: the default mesh must keep main's triangle count");
     if cfg!(windows) {
-        assert_eq!(hash, expected_hash, "{what}: the default mesh must be main's, byte for byte");
+        assert_eq!(hash, expected_hash, "{what}: the default mesh must be Watson's, byte for byte");
     }
 }
 

@@ -1,10 +1,11 @@
 //! Pins the `lime_occt_tree` JSON text of open, apply, probe, and goto.
 //!
-//! The expected files are the raw replies from commit 512f6e0a (the pre-#853
-//! order), captured through `lime_occt_tree` on that OS. Open CASCADE's mesh
+//! The expected files are the raw replies on that OS. Open CASCADE's mesh
 //! differs per platform, the same way `mesh_angle` keeps separate Windows soup
 //! hashes, so each `target_os` has its own directory. A map compare would hide
-//! the `stepFaces` move, so the test matches the bytes.
+//! a key move, so the test matches the bytes. The pins were recaptured when the
+//! mesher became Watson: the triangulation's `positions` (and the triangles that
+//! follow) are not Delabella's. The key order is the order from before that.
 
 use serde_json::Value;
 use std::ffi::{CStr, CString};
@@ -91,7 +92,7 @@ fn assert_bytes(name: &str, got: &str, expected: &str) {
         text.get(start..end).unwrap_or("").to_string()
     };
     panic!(
-        "{name}: lime_occt_tree JSON is not the 512f6e0a text\n\
+        "{name}: lime_occt_tree JSON is not the pinned text\n\
          got {got_len} bytes, expected {exp_len} bytes, first difference at byte {at}\n\
          got keys: {got_keys}\n\
          expected keys: {exp_keys}\n\
