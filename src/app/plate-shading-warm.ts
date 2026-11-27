@@ -10,7 +10,7 @@
  *
  * It is a drawing nicety, so it costs the person nothing they would notice:
  * - It meshes the solid again, and the kernel serves one call at a time, with no priority: a Model call made while it
- *   runs waits for it. So a solid past the budget below is never asked (it is drawn flat, as before), and the call
+ *   runs waits for it. So a solid past the budget below is never asked (it is creased from its own triangles), and the call
  *   starts only when the app is idle, in Prepare or Pose, a while after the last input. Model draws its own mesh, and
  *   nothing is asked while it is open.
  * - Each mesh is asked once a session: by its mesh token, which every copy of it shares (a duplicate, an undo's copy),
@@ -21,7 +21,7 @@
  * 1 mm holes, 150 holes (234 kB, 16,212 triangles) 0.30 s, 200 holes (311 kB, 21,612) 0.92 s, 300 holes (468 kB,
  * 32,412) 1.37 s, 1,000 holes (1.6 MB, 108,012) 5.6 s. The time grows faster than the triangles, so the line is drawn
  * at 18,000 triangles, where the wait stays under about half a second, and at 1 MB of solid (it is sent whole, as
- * base64). A part past either is drawn flat, as before, and never asked.
+ * base64). A part past either is never asked: it is shaded from its own triangles instead (src/mesh-crease.ts).
  */
 import { bytesToBase64Async } from "../base64";
 import { decodeSolid } from "../model-reply";
@@ -31,7 +31,7 @@ import { isStepName } from "./settings";
 import { state } from "./state";
 import { treeCall } from "./step-solids";
 
-/** Past this many plate-mesh triangles a part is drawn flat, as before: meshing it again would hold the kernel too long. */
+/** Past this many plate-mesh triangles a part is not asked (it is creased from its own triangles): meshing it again would hold the kernel too long. */
 export const SHADE_MAX_TRIANGLES = 18_000;
 /** Past this many bytes of solid likewise: they are sent to the kernel whole. */
 export const SHADE_MAX_BYTES = 1_000_000;

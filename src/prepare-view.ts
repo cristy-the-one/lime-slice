@@ -313,7 +313,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let plateEntries: PlateBound[] = [];
   let plateGroup: THREE.Group | null = null;
   let plateOthers: ContextPart[] = [];
-  // Lit by each mesh's normals: a part with a solid has its exact ones (src/plate-shading-carry.ts), else its own.
+  // Lit by each mesh's normals: a part with a solid has its exact ones (src/plate-shading-carry.ts), else creased ones from its own triangles.
   const contextMat = contextMaterial(colors.context, true);
   const contextGroup = new THREE.Group();
   scene.add(contextGroup);
@@ -2213,8 +2213,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }
 
   /**
-   * A plate mesh's geometry, lit by each triangle's own normal, or by the exact corner normals when the part has them
-   * (src/plate-shading.ts). The triangles drawn, picked and painted are the plate mesh's either way.
+   * A plate mesh's geometry, lit by each triangle's own normal until the shading module loads, then by the exact corner
+   * normals when the part has them, else by creased normals from its own triangles (src/plate-shading.ts). The
+   * triangles drawn, picked and painted are the plate mesh's either way.
    */
   function plateGeometry(positions: Float32Array) {
     const geometry = new THREE.BufferGeometry();

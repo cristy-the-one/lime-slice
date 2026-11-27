@@ -19,7 +19,10 @@
  * - A part with a solid but no normals yet (a project opened, a STEP import) gets them from one stateless kernel call
  *   on that solid (src/app/plate-shading-warm.ts). The answer only ever reaches this table, keyed by the plate mesh's
  *   own array, so it cannot touch another mesh, the plate, undo or the slice.
- * - A part without a solid (an STL or 3MF mesh) has none, and is drawn as before.
+ * - A part without a solid (an STL or 3MF mesh) has none. Nor has a part past the background call's budget
+ *   (src/app/plate-shading-warm.ts), or a split piece until it is saved. Such a mesh is shaded from its own triangles
+ *   instead (src/mesh-crease.ts): smooth, but hard across an edge sharper than CREASE_DEG, the angle Pose draws its edge
+ *   lines at. Exact normals that arrive later take over in place.
  *
  * The plate mesh may not be the kernel's mesh corner for corner: the commit closes cracks between faces (which splits
  * triangles) and settles the part onto Z = 0. So the normals are carried over by place (`transferNormals`): each plate
@@ -29,6 +32,7 @@
 
 import * as THREE from "three";
 import { base64ToBytes } from "./base64.ts";
+import { creasedNormals } from "./mesh-crease.ts";
 import { plateShading } from "./plate-shading.ts";
 
 /** What a plate mesh is shaded from: a triangle soup of the same solid with the exact normal at each of its corners. */
@@ -122,27 +126,66 @@ export function shadingOf(positions: Float32Array): Float32Array | null {
   return normals;
 }
 
-/** True when `geometry` (built on `positions`) now carries the exact normals. Already shaded is true, and costs nothing. */
+/** A mesh with no exact normals is shaded smooth from its own triangles, but hard across an edge sharper than this: the angle Pose draws its edge lines at. */
+export const CREASE_DEG = 30;
+
+const creased = new WeakMap<Float32Array, Float32Array>();
+
+/** The normals `positions` is shaded with when it has no exact ones (src/mesh-crease.ts). Worked out once per array. */
+export function creaseOf(positions: Float32Array): Float32Array {
+  const plate = plateOf(positions);
+  let normals = creased.get(plate);
+  if (!normals) {
+    normals = creasedNormals(plate, CREASE_DEG);
+    creased.set(plate, normals);
+  }
+  return normals;
+}
+
+/**
+ * True when `geometry` (built on `positions`) now carries the exact normals. Already shaded is true, and costs nothing.
+ * Without exact normals it is given the creased ones (isCreased), and false: exact ones that come later replace them.
+ */
 export function shadeGeometry(geometry: THREE.BufferGeometry, positions: Float32Array): boolean {
   if (geometry.userData.plateShaded === true) return true;
   const normals = shadingOf(positions);
-  if (!normals || normals.length !== positions.length) return false;
-  geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
-  geometry.userData.plateShaded = true;
-  return true;
+  if (normals && normals.length === positions.length) {
+    geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+    geometry.userData.plateShaded = true;
+    geometry.userData.plateCreased = false;
+    return true;
+  }
+  if (geometry.userData.plateCreased !== true && positions.length >= 9) {
+    const own = creaseOf(positions);
+    if (own.length === positions.length) {
+      geometry.setAttribute("normal", new THREE.BufferAttribute(own, 3));
+      geometry.userData.plateCreased = true;
+    }
+  }
+  return false;
 }
 
-/** A new geometry on `positions`: the exact normals when the array has them, else each triangle's own as before. */
+/** A new geometry on `positions`: the exact normals when the array has them, else the creased ones from its own triangles. */
 export function plateGeometry(positions: Float32Array): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  if (!shadeGeometry(geometry, positions)) geometry.computeVertexNormals();
+  if (!shadeGeometry(geometry, positions) && !isCreased(geometry)) geometry.computeVertexNormals();
   return geometry;
 }
 
 /** True when the geometry was given the exact normals. */
 export function isShaded(geometry: THREE.BufferGeometry): boolean {
   return geometry.userData.plateShaded === true;
+}
+
+/** True when the geometry has no exact normals and is shaded from its own triangles instead. */
+export function isCreased(geometry: THREE.BufferGeometry): boolean {
+  return geometry.userData.plateShaded !== true && geometry.userData.plateCreased === true;
+}
+
+/** What a view reports for one geometry: `smooth` (exact normals), `crease` (its own triangles'), or `flat`. */
+export function shadingKind(geometry: THREE.BufferGeometry): "smooth" | "crease" | "flat" {
+  return isShaded(geometry) ? "smooth" : isCreased(geometry) ? "crease" : "flat";
 }
 
 // The first chunk's views (Prepare) hand their geometries over through src/plate-shading.ts: each new one is shaded as
@@ -155,8 +198,9 @@ function report() {
     reporting = false;
     for (const view of plateShading.views) {
       const [selected, ...others] = view.meshes();
-      view.canvas.dataset.plateShading = selected ? (isShaded(selected[1]) ? "smooth" : "flat") : "";
+      view.canvas.dataset.plateShading = selected ? shadingKind(selected[1]) : "";
       view.canvas.dataset.plateShadedOthers = String(others.filter((row) => row && isShaded(row[1])).length);
+      view.canvas.dataset.plateCreasedOthers = String(others.filter((row) => row && isCreased(row[1])).length);
     }
   });
 }
