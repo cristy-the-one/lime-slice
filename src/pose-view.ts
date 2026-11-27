@@ -173,10 +173,10 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     if (changed) publishShading();
   });
 
-  /** For the tests: how many of the parts drawn are shaded with their exact normals. */
+  /** For the tests: how many of the parts drawn (a duplicate counts apart) are shaded with their exact normals. */
   function publishShading() {
     let shaded = 0;
-    for (const positions of shown) if (held.get(positions) && isShaded(held.get(positions)!.geometry)) shaded += 1;
+    for (const node of group.children) if (node instanceof THREE.Mesh && isShaded(node.geometry as THREE.BufferGeometry)) shaded += 1;
     canvas.dataset.plateShaded = String(shaded);
   }
 

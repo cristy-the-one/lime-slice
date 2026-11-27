@@ -13,7 +13,7 @@
     "test:smoke:3": "node tools/ci/smoke-shards.mjs 3",
     "test:smoke:4": "node tools/ci/smoke-shards.mjs 4",
     "test:perf": "playwright test --grep @perf e2e/model-speed.spec.ts",
-    "test:engine":"playwright test --workers=1 e2e/model-push-real.spec.ts e2e/ironing-real.spec.ts e2e/mesh-refs.spec.ts e2e/overrides-engine.spec.ts e2e/part-frame.spec.ts e2e/plate-real.spec.ts e2e/plate-distinct-real.spec.ts e2e/support-edits.spec.ts e2e/support-paint.spec.ts e2e/belt-handedness.spec.ts e2e/belt-tip-contact.spec.ts e2e/model-sketch-real.spec.ts e2e/fit-coupon-real.spec.ts e2e/model-split-real.spec.ts e2e/big-slice-stream-real.spec.ts e2e/model-auto-ribs-real.spec.ts",
+    "test:engine":"playwright test --workers=1 e2e/plate-shading-real.spec.ts e2e/model-push-real.spec.ts e2e/ironing-real.spec.ts e2e/mesh-refs.spec.ts e2e/overrides-engine.spec.ts e2e/part-frame.spec.ts e2e/plate-real.spec.ts e2e/plate-distinct-real.spec.ts e2e/support-edits.spec.ts e2e/support-paint.spec.ts e2e/belt-handedness.spec.ts e2e/belt-tip-contact.spec.ts e2e/model-sketch-real.spec.ts e2e/fit-coupon-real.spec.ts e2e/model-split-real.spec.ts e2e/big-slice-stream-real.spec.ts e2e/model-auto-ribs-real.spec.ts",
     "lint": "eslint",
     "preview": "vite preview --port 43117",
     "shots": "playwright test",

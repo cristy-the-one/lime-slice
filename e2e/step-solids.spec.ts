@@ -53,7 +53,8 @@ async function mockEngine(page: Page) {
   });
   await page.route("**/api/model/tree", async (route) => {
     const body = route.request().postDataJSON() as { call: string; files?: boolean };
-    asked.push(body.call);
+    // Prepare asks for a solid's normals to draw it smooth (src/app/plate-shading-warm.ts): no step of the import.
+    if (body.call !== "meshStep") asked.push(body.call);
     if (body.call !== "stepSolids") return route.fulfill({ json: { error: `unexpected ${body.call}` } });
     const solids = NAMES.map((name, i) => ({
       name,
