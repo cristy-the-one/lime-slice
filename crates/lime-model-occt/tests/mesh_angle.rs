@@ -126,12 +126,18 @@ const STEP_REFERENCE: &[(&str, f64, usize, u64)] = &[
     ("open STEP", 0.1, 628, 0x9136_8f20_a1a0_a9fc),
 ];
 
-fn same_as_main(what: &str, count: usize, hash: u64, expected: usize, expected_hash: u64) {
+/// Prints every row, then returns the mismatches. One Windows failure lists every soup hash Watson
+/// moved, instead of stopping on the first.
+fn mesh_drift(what: &str, count: usize, hash: u64, expected: usize, expected_hash: u64) -> Option<String> {
     println!("{what}: {count} triangles, soup hash {hash:#x} (main {expected}, {expected_hash:#x})");
-    assert_eq!(count, expected, "{what}: the default mesh must be main's");
-    if cfg!(windows) {
-        assert_eq!(hash, expected_hash, "{what}: the default mesh must be main's, byte for byte");
+    let mut notes = Vec::new();
+    if count != expected {
+        notes.push(format!("{what}: {count} triangles, main had {expected}"));
     }
+    if cfg!(windows) && hash != expected_hash {
+        notes.push(format!("{what}: soup hash {hash:#x}, main had {expected_hash:#x}"));
+    }
+    if notes.is_empty() { None } else { Some(notes.join("; ")) }
 }
 
 #[test]
@@ -139,11 +145,14 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
     if !ready() {
         return;
     }
+    let mut drift = Vec::new();
     for &(name, chord, expected, expected_hash) in REFERENCE {
         let key = format!("angle-{name}-{chord}");
         let standard = meshed(name, &key, chord, None);
         let count = triangles(&standard);
-        same_as_main(&format!("{name} at {chord}"), count, soup_hash(&standard), expected, expected_hash);
+        if let Some(note) = mesh_drift(&format!("{name} at {chord}"), count, soup_hash(&standard), expected, expected_hash) {
+            drift.push(note);
+        }
         assert!(standard.get("normals").is_none(), "{name}: the default mesh sends no normals");
 
         assert!(standard.get("display").is_none(), "{name}: no display mesh without the flag");
@@ -154,7 +163,9 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
         let mut outside = flagged.clone();
         let display = outside.as_object_mut().expect("object").remove("display").expect("a display mesh with the flag");
         assert_eq!(outside, standard, "{name}: the plate mesh in a flagged reply is the unflagged reply");
-        same_as_main(&format!("{name} at {chord}, flagged"), triangles(&flagged), soup_hash(&flagged), expected, expected_hash);
+        if let Some(note) = mesh_drift(&format!("{name} at {chord}, flagged"), triangles(&flagged), soup_hash(&flagged), expected, expected_hash) {
+            drift.push(note);
+        }
         ok(json!({ "call": "close", "key": flagged_key }));
 
         let node = standard["id"].clone();
@@ -211,6 +222,7 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
         ok(json!({ "call": "close", "key": twin }));
         ok(json!({ "call": "close", "key": key }));
     }
+    assert!(drift.is_empty(), "{}", drift.join("\n"));
 }
 
 /// A mirrored box: every plane has an indirect placement, whose axis is the reverse of D1U x D1V. Each display normal
@@ -297,8 +309,12 @@ fn the_step_paths_mesh_as_main_did() {
     if !ready() {
         return;
     }
+    let mut drift = Vec::new();
     for ((path, chord, count, hash), &(want_path, want_chord, want_count, want_hash)) in step_meshes().into_iter().zip(STEP_REFERENCE) {
         assert_eq!((path, chord), (want_path, want_chord));
-        same_as_main(&format!("{path} at {chord}"), count, hash, want_count, want_hash);
+        if let Some(note) = mesh_drift(&format!("{path} at {chord}"), count, hash, want_count, want_hash) {
+            drift.push(note);
+        }
     }
+    assert!(drift.is_empty(), "{}", drift.join("\n"));
 }
