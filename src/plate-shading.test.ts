@@ -8,7 +8,7 @@ import { decodeSolid, encodeSolid, type ParsedSolid } from "./model-reply.ts";
 import { drawnSolid } from "./model-view/types.ts";
 import { encodeStl, scaledCanonical, settleBy } from "./mesh-place.ts";
 import { closeCracks } from "./mesh-check.ts";
-import { aliasShading, giveShading, plateNormalsOf, hasShadeSource, isShaded, onShading, plateGeometry, reachFor, shadeFromSolid, shadingOf, transferNormals } from "./plate-shading-carry.ts";
+import { aliasShading, giveShading, plateNormalsOf, hasShadeSource, isCreased, isShaded, onShading, plateGeometry, reachFor, shadeFromSolid, shadeGeometry, shadingOf, transferNormals } from "./plate-shading-carry.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -210,7 +210,15 @@ check("the STL bytes of a shaded plate mesh are the bytes of the unshaded one", 
 const geometry = plateGeometry(plate);
 check("the view draws the plate mesh's own array, with the exact normals", geometry.getAttribute("position").array === plate && geometry.getAttribute("normal").array === normals && isShaded(geometry));
 const flatGeometry = plateGeometry(stl);
-check("an imported mesh is drawn as before: flat normals worked out by three.js", !isShaded(flatGeometry) && flatGeometry.getAttribute("normal").count === stl.length / 3);
+check("an imported mesh has no exact normals: it is shaded from its own triangles", !isShaded(flatGeometry) && isCreased(flatGeometry) && flatGeometry.getAttribute("normal").count === stl.length / 3);
+check("drawing it still uses the mesh's own array", flatGeometry.getAttribute("position").array === stl);
+// Exact normals that arrive after a creased draw take over in place (a part reopened, then its kernel call answers).
+const late = ball.positions.map((value, i) => (i % 3 === 0 ? value + 100 : value));
+const lateGeometry = plateGeometry(late);
+const creasedNormalsFirst = lateGeometry.getAttribute("normal").array;
+check("a mesh with no source yet is creased first", isCreased(lateGeometry) && !isShaded(lateGeometry));
+giveShading(late, { positions: ball.positions, normals: ball.normals, reachMm: reachFor(0.1) });
+check("its exact normals replace the creased ones when they come", shadeGeometry(lateGeometry, late) && isShaded(lateGeometry) && !isCreased(lateGeometry) && lateGeometry.getAttribute("normal").array !== creasedNormalsFirst);
 
 // Paint lands where it did: a brush hit (point and face normal) is the same on the shaded and the flat geometry.
 const flatOfPlate = new THREE.BufferGeometry();

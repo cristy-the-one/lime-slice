@@ -104,6 +104,7 @@ src/base64.test.ts
 src/model-reply.test.ts
 src/model-surface.test.ts
 src/mesh-edges.test.ts
+src/mesh-crease.test.ts
 src/ui/flat-view.test.ts
 src/settings-rules.test.ts
 src/colors.test.ts

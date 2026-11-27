@@ -7,7 +7,7 @@ import { autoSliceOff } from "./auto-slice";
  * (src/plate-shading.ts), against the real kernel:
  * - a box rounded on every edge, opened as a STEP file, from one stateless `meshStep` call on that file;
  * - a cylinder made in Model, from the normals its reply carried (`display.plateNormals`), and a copy of it;
- * - an STL mesh, which has no solid, is drawn flat as before.
+ * - an STL mesh, which has no solid, is shaded from its own triangles (creased: smooth, its sharp edges kept).
  * Nothing new is saved: the project is still version 4, with no normals in it.
  *   lime-slice serve --port 43218 (with the OCCT bridge)
  *   LIME_EDIT_API=http://127.0.0.1:43218 npx playwright test plate-shading-real
@@ -73,11 +73,11 @@ test("a solid is drawn smooth in Prepare and Pose on its own plate mesh; a mesh 
   await expect(prepare(page), "the cylinder made in Model is shaded smooth").toHaveAttribute("data-plate-shading", "smooth");
   await expect(prepare(page), "and the box beside it too").toHaveAttribute("data-plate-shaded-others", "1");
 
-  // An STL mesh has no solid: drawn flat, as before.
+  // An STL mesh has no solid: shaded from its own triangles.
   await page.locator("#plateAddFile").setInputFiles("samples/calibration_cube_20mm.stl");
   await expect(rows(page)).toHaveCount(3, { timeout: 60_000 });
   await rows(page).nth(2).click();
-  await expect(prepare(page), "the STL is drawn as before").toHaveAttribute("data-plate-shading", "flat");
+  await expect(prepare(page), "the STL is shaded from its own triangles").toHaveAttribute("data-plate-shading", "crease");
   await expect(prepare(page), "while both solids beside it are smooth").toHaveAttribute("data-plate-shaded-others", "2");
 
   // A duplicate shares its source's mesh, and so its normals.
@@ -86,9 +86,10 @@ test("a solid is drawn smooth in Prepare and Pose on its own plate mesh; a mesh 
   await expect(rows(page)).toHaveCount(4);
   await expect(prepare(page), "the copy of the cylinder is smooth").toHaveAttribute("data-plate-shading", "smooth");
 
-  // Pose draws every part: the three solids smooth, the STL flat.
+  // Pose draws every part: the three solids with their exact normals, the STL creased.
   await page.locator("#tabPose").click();
   await expect(page.locator("#pose")).toHaveAttribute("data-plate-shaded", "3", { timeout: 30_000 });
+  await expect(page.locator("#pose")).toHaveAttribute("data-plate-creased", "1");
 
   // Nothing new is saved: version 4, and no normals anywhere in the file.
   await page.locator("#tabPrepare").click();

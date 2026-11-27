@@ -19,7 +19,7 @@ import { orbitGlide } from "./orbit-glide";
 import { IDLE_EDGE } from "./model-view/constants";
 import { lookOf, type PoseLook, type PoseLooks } from "./pose-look";
 import { grabDegrees } from "./viewport-grab";
-import { isShaded, onShading, plateGeometry, shadeGeometry } from "./plate-shading-carry";
+import { isCreased, isShaded, onShading, plateGeometry, shadeGeometry } from "./plate-shading-carry";
 import type { Screen } from "./place-snap";
 
 export type PoseCamera = "top" | "front" | "iso";
@@ -152,7 +152,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   function geometryOf(positions: Float32Array) {
     let entry = held.get(positions);
     if (!entry) {
-      // The exact corner normals when the part has them (src/plate-shading.ts), else each triangle's own.
+      // The exact corner normals when the part has them (src/plate-shading.ts), else creased ones from its own triangles.
       const geometry = plateGeometry(positions);
       geometry.computeBoundingSphere();
       // The segments `EdgesGeometry` draws, in its order, from integer tables in place of its string keys: about
@@ -172,11 +172,18 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     if (changed) publishShading();
   });
 
-  /** For the tests: how many of the parts drawn (a duplicate counts apart) are shaded with their exact normals. */
+  /** For the tests: how many of the parts drawn (a duplicate counts apart) are shaded with their exact normals, and how many from their own triangles. */
   function publishShading() {
     let shaded = 0;
-    for (const node of group.children) if (node instanceof THREE.Mesh && isShaded(node.geometry as THREE.BufferGeometry)) shaded += 1;
+    let creasedParts = 0;
+    for (const node of group.children) {
+      if (!(node instanceof THREE.Mesh)) continue;
+      const geometry = node.geometry as THREE.BufferGeometry;
+      if (isShaded(geometry)) shaded += 1;
+      else if (isCreased(geometry)) creasedParts += 1;
+    }
     canvas.dataset.plateShaded = String(shaded);
+    canvas.dataset.plateCreased = String(creasedParts);
   }
 
   function setScene(next: PoseScene) {

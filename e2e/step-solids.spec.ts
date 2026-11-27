@@ -167,7 +167,7 @@ test("the import makes no kernel call; one drawing-only call follows when idle, 
 
 test("a solid past the drawing budget is never sent to the kernel for its normals", async ({ page }) => {
   const asked = await mockEngine(page);
-  // Over 1 MB of STEP: drawn flat, as before.
+  // Over 1 MB of STEP: no kernel call; shaded from its own triangles instead.
   const big = Buffer.concat([stepText(1, "solid"), Buffer.from(`/* ${"x".repeat(1_100_000)} */
 `)]);
   await open(page, "big.step", big);
@@ -175,4 +175,6 @@ test("a solid past the drawing budget is never sent to the kernel for its normal
   await page.waitForTimeout(3500);
   expect(drawing.get(asked), "no drawing call").toHaveLength(0);
   expect(asked).toEqual([]);
+  await page.locator("[data-plate-id]").first().locator("[data-plate-select]").click();
+  await expect(page.locator("#prepare"), "drawn smooth from its own triangles, with no kernel call").toHaveAttribute("data-plate-shading", "crease");
 });
