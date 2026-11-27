@@ -1,0 +1,104 @@
+# Temporary: symbolize the Delabella crash on the Windows runner and loop a newer OCCT.
+# Push and pull_request on claude/w2-hole-speed only. Removed before this branch is ready.
+# Does not change any existing CI job.
+name: W2 hole speed loop
+
+on:
+  push:
+    branches: [claude/w2-hole-speed]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: w2-loop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  w2-hole-speed-loop:
+    name: W2 hole speed loop (temporary)
+    if: github.head_ref == 'claude/w2-hole-speed' || github.ref == 'refs/heads/claude/w2-hole-speed'
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      LIME_REQUIRE_OCCT: "1"
+      CARGO_BUILD_JOBS: "4"
+      W2_OCCT_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Restore OCCT 7.9.2 RelWithDebInfo
+        id: occt792
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2-rwd
+          key: occt-7.9.2-rwd-facelog-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/w2/build_occt.py') }}
+
+      - name: Build OCCT 7.9.2 RelWithDebInfo with PDBs and a face log
+        if: steps.occt792.outputs.cache-hit != 'true'
+        timeout-minutes: 180
+        run: python tools/w2/build_occt.py --prefix "${{ runner.temp }}/occt-7.9.2-rwd" --version 7.9.2 --config RelWithDebInfo --face-log
+
+      - name: Save OCCT 7.9.2 RelWithDebInfo
+        if: steps.occt792.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2-rwd
+          key: occt-7.9.2-rwd-facelog-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/w2/build_occt.py') }}
+
+      - name: Build the brep test against OCCT 7.9.2 RelWithDebInfo
+        timeout-minutes: 40
+        env:
+          OCCT_ROOT: ${{ runner.temp }}/occt-7.9.2-rwd
+        run: |
+          $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
+          cargo test -p lime-model-occt --test brep --locked --no-run
+
+      - name: Loop Delabella until a symbolized stack
+        timeout-minutes: 90
+        env:
+          OCCT_ROOT: ${{ runner.temp }}/occt-7.9.2-rwd
+        run: pwsh -File tools/w2/loop.ps1 -Phase investigate -OcctRoot "$env:OCCT_ROOT" -OutDir "${{ runner.temp }}/w2-investigate"
+
+      - name: Restore OCCT 8.0.2 Release
+        id: occt802
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/occt-8.0.2-rel
+          key: occt-8.0.2-rel-facelog-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/w2/build_occt.py') }}
+
+      - name: Build OCCT 8.0.2 Release with a face log
+        if: steps.occt802.outputs.cache-hit != 'true'
+        timeout-minutes: 180
+        run: python tools/w2/build_occt.py --prefix "${{ runner.temp }}/occt-8.0.2-rel" --version 8.0.2 --config Release --face-log
+
+      - name: Save OCCT 8.0.2 Release
+        if: steps.occt802.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/occt-8.0.2-rel
+          key: occt-8.0.2-rel-facelog-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/w2/build_occt.py') }}
+
+      - name: Loop Delabella 200 times on OCCT 8.0.2
+        timeout-minutes: 90
+        env:
+          OCCT_ROOT: ${{ runner.temp }}/occt-8.0.2-rel
+        run: pwsh -File tools/w2/loop.ps1 -Phase occt802 -OcctRoot "$env:OCCT_ROOT" -OutDir "${{ runner.temp }}/w2-occt802"
+
+      - name: Upload the loop logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w2-hole-speed-logs
+          path: |
+            ${{ runner.temp }}/w2-investigate
+            ${{ runner.temp }}/w2-occt802
+          if-no-files-found: ignore
+          retention-days: 14

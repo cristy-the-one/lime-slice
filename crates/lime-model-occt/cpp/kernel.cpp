@@ -36,6 +36,7 @@
 #include <BRepAdaptor_CompCurve.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <GeomAbs_SurfaceType.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
 #include <BRepAlgoAPI_Check.hxx>
@@ -715,6 +716,79 @@ double mesh_angle_of(double chord) {
     return 0.20 + t * (0.35 - 0.20);
 }
 
+/// Append one line when `LIME_OCCT_MESH_LOG` names a file. Unset, this does nothing.
+/// The Windows investigation job sets it; shipped and CI runs do not.
+void mesh_trace(const char* line) {
+    const char* path = std::getenv("LIME_OCCT_MESH_LOG");
+    if (path == nullptr || path[0] == '\0' || line == nullptr) {
+        return;
+    }
+    static std::mutex gate;
+    const std::lock_guard<std::mutex> lock(gate);
+    FILE* file = std::fopen(path, "a");
+    if (file == nullptr) {
+        return;
+    }
+    std::fputs(line, file);
+    std::fputc('\n', file);
+    std::fflush(file);
+    std::fclose(file);
+}
+
+const char* mesh_surface_kind(const TopoDS_Face& face) {
+    const BRepAdaptor_Surface surface(face, Standard_False);
+    switch (surface.GetType()) {
+        case GeomAbs_Plane:
+            return "plane";
+        case GeomAbs_Cylinder:
+            return "cylinder";
+        case GeomAbs_Cone:
+            return "cone";
+        case GeomAbs_Sphere:
+            return "sphere";
+        case GeomAbs_Torus:
+            return "torus";
+        case GeomAbs_BezierSurface:
+            return "bezier";
+        case GeomAbs_BSplineSurface:
+            return "bspline";
+        case GeomAbs_SurfaceOfRevolution:
+            return "revolution";
+        case GeomAbs_SurfaceOfExtrusion:
+            return "extrusion";
+        case GeomAbs_OffsetSurface:
+            return "offset";
+        case GeomAbs_OtherSurface:
+            return "other";
+        default:
+            return "unknown";
+    }
+}
+
+/// `holes` is wires minus the outer wire. Open CASCADE's face model documents the first wire as the outer one.
+void mesh_face_line(const char* tag, int map_index, const TopoDS_Face& face) {
+    int wires = 0;
+    int edges = 0;
+    for (TopExp_Explorer wire(face, TopAbs_WIRE); wire.More(); wire.Next()) {
+        wires++;
+    }
+    for (TopExp_Explorer edge(face, TopAbs_EDGE); edge.More(); edge.Next()) {
+        edges++;
+    }
+    char line[256];
+    std::snprintf(
+        line,
+        sizeof line,
+        "%s map=%d type=%s wires=%d holes=%d edges=%d",
+        tag,
+        map_index,
+        mesh_surface_kind(face),
+        wires,
+        wires > 0 ? wires - 1 : 0,
+        edges);
+    mesh_trace(line);
+}
+
 void mesh_faces(const TopoDS_Shape& shape, double chord, double angle = 0.5) {
     IMeshTools_Parameters parameters;
     parameters.Deflection = chord;
@@ -722,7 +796,81 @@ void mesh_faces(const TopoDS_Shape& shape, double chord, double angle = 0.5) {
     parameters.Relative = Standard_False;
     parameters.InParallel = Standard_True;
     parameters.MeshAlgo = IMeshTools_MeshAlgoType_Watson;
+    // Temporary investigation switches. Unset, the mesher is Watson and faces run in parallel, as above.
+    // LIME_OCCT_MESHER=delabella, LIME_OCCT_MESH_PARALLEL=0, LIME_OCCT_MESH_SPLIT=1, LIME_OCCT_MESH_LOG=<file>.
+    const char* mesher_name = std::getenv("LIME_OCCT_MESHER");
+    if (mesher_name != nullptr && std::strcmp(mesher_name, "delabella") == 0) {
+        parameters.MeshAlgo = IMeshTools_MeshAlgoType_Delabella;
+    }
+    const char* parallel = std::getenv("LIME_OCCT_MESH_PARALLEL");
+    if (parallel != nullptr && parallel[0] == '0' && parallel[1] == '\0') {
+        parameters.InParallel = Standard_False;
+    }
+    const char* split_env = std::getenv("LIME_OCCT_MESH_SPLIT");
+    const bool split = split_env != nullptr && std::strcmp(split_env, "1") == 0;
+    const char* log_path = std::getenv("LIME_OCCT_MESH_LOG");
+    const bool logging = log_path != nullptr && log_path[0] != '\0';
+
+    if (logging) {
+        static std::atomic<int> calls{0};
+        const int call = calls.fetch_add(1) + 1;
+        int face_count = 0;
+        for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+            face_count++;
+        }
+        char line[320];
+        std::snprintf(
+            line,
+            sizeof line,
+            "MESH_BEGIN call=%d faces=%d chord=%g angle=%g parallel=%d algo=%s split=%d",
+            call,
+            face_count,
+            chord,
+            angle,
+            parameters.InParallel == Standard_True ? 1 : 0,
+            parameters.MeshAlgo == IMeshTools_MeshAlgoType_Delabella ? "delabella" : "watson",
+            split ? 1 : 0);
+        mesh_trace(line);
+        if (!split) {
+            int map = 0;
+            for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+                map++;
+                mesh_face_line("MESH_FACE", map, TopoDS::Face(explorer.Current()));
+            }
+        }
+    }
+
+    if (split) {
+        int map = 0;
+        for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+            map++;
+            const TopoDS_Face face = TopoDS::Face(explorer.Current());
+            if (logging) {
+                mesh_face_line("FACE_SPLIT_BEGIN", map, face);
+            }
+            TopoDS_Compound one;
+            BRep_Builder builder;
+            builder.MakeCompound(one);
+            builder.Add(one, face);
+            const BRepMesh_IncrementalMesh one_mesher(one, parameters);
+            (void)one_mesher;
+            if (logging) {
+                char line[64];
+                std::snprintf(line, sizeof line, "FACE_SPLIT_END map=%d", map);
+                mesh_trace(line);
+            }
+        }
+        if (logging) {
+            mesh_trace("MESH_END");
+        }
+        return;
+    }
+
     const BRepMesh_IncrementalMesh mesher(shape, parameters);
+    (void)mesher;
+    if (logging) {
+        mesh_trace("MESH_END");
+    }
 }
 
 /// Mesh only the faces a step made and the faces beside them, when every other face keeps the mesh it shares with the
