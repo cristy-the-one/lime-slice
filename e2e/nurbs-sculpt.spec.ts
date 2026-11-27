@@ -387,6 +387,15 @@ test("a later Thicken is rebuilt on the dragged surface, not dropped", async ({ 
   await expect(page.locator("#modelReadout")).toContainText("Surface updated");
   await expect.poll(() => sculpt.tree.of("goto").at(-1)?.node).toBe(thicken.node);
   await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
+  // The drag is already committed, so the card has no Apply and no Cancel: one button, Done, closes the tool and
+  // sends nothing more.
+  await expect(page.locator("#modelApply")).toBeHidden();
+  await expect(page.locator("#modelCancel")).toHaveText("Done");
+  const sentBefore = sculpt.nurbsOpens().length;
+  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelNurbsOverlay")).toBeHidden();
+  expect(sculpt.nurbsOpens().length, "Done sends nothing").toBe(sentBefore);
+  await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
 });
 
 test("a later NURBS step: History Edit opens the tool on its own grid, a drag edits it with the Thicken replayed, and Undo goes back", async ({ page }) => {
