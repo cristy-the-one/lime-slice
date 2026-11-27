@@ -18,7 +18,8 @@ import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, t
 import { pushToast } from "./toasts";
 import type { ChamferChoice, EditPanel, FilletChoice } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
-import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
+import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
+import { planePrimitive } from "../model-solid-op";
 import { lastFace, selectedEdges, selectedFaces } from "../model-blend";
 import { edgeOfText, isEdgeFilter, type EdgeSource } from "../model-edge-step";
 import type { EdgeFilter } from "../model-tree";

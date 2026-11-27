@@ -2,7 +2,8 @@ import { editPanel } from "./model-edit.ts";
 import { probeKey } from "./model-feasibility.ts";
 import { SCREWS, screwOf, throughLength } from "./model-hole.ts";
 import { positionText } from "./model-history.ts";
-import { IDENTITY_POSE, placeFields, poseFromPlace, toSolidOp, type Affine } from "./model-space.ts";
+import { IDENTITY_POSE, placeFields, poseFromPlace, type Affine } from "./model-space.ts";
+import { toSolidOp } from "./model-solid-op.ts";
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
 import { newTree, opLabel, reserveId, withChild, type HoleOp, type ModelOp, type ModelTree } from "./model-tree.ts";
 

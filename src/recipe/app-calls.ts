@@ -40,7 +40,8 @@ import { applyRequest, gotoRequest, joinOp, newSolidRequest, probeRequest } from
 import { applyPose, IDENTITY_POSE, typedPoseOf, type Affine, type ObjectFrame } from "../model-space.ts";
 import { dropped, jumped, newTree, opLabel, pathTo, rechained, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type NodeId, type PartitionModelOp } from "../model-tree.ts";
 import { runEndingAt } from "../plugin-step.ts";
-import { GLOBAL_WORKPLANE, planePrimitive, type Workplane } from "../workplane.ts";
+import { GLOBAL_WORKPLANE, type Workplane } from "../workplane.ts";
+import { planePrimitive } from "../model-solid-op.ts";
 import type { RecipeCall, RecipeCallSite, RecipeReply } from "./host.ts";
 import { answerPick, sketchOutline, type PickReads } from "./picks.ts";
 import { answerTextOutline } from "./text-outline.ts";

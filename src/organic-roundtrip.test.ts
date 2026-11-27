@@ -5,7 +5,7 @@
  * NURBS curve.
  */
 import { keepSketch, withoutSketch } from "./model-request.ts";
-import { fromSolidOp, toSolidOp } from "./model-space.ts";
+import { fromSolidOp, toSolidOp } from "./model-solid-op.ts";
 import { eulerOrient } from "./mesh-place.ts";
 import { readSavedTree, savedTree } from "./model-tree-file.ts";
 import { newTree, withChild, type ModelOp } from "./model-tree.ts";

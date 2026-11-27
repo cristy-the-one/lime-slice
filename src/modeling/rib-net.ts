@@ -27,7 +27,8 @@
  */
 import { orientEuler } from "../mesh-place.ts";
 import type { LoftSection } from "../model-tree.ts";
-import { framePose, planePrimitive } from "../workplane.ts";
+import { framePose } from "../workplane.ts";
+import { planePrimitive } from "../model-solid-op.ts";
 import { MAX_SECTIONS } from "./sweep.ts";
 import { meshRays } from "./thin.ts";
 

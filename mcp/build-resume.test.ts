@@ -12,7 +12,7 @@ import { validateTool } from "./schema.ts";
 import { Session } from "./session.ts";
 import { sweepSections } from "../src/modeling/sweep.ts";
 import { eulerOrient } from "../src/mesh-place.ts";
-import { toSolidOp } from "../src/model-space.ts";
+import { toSolidOp } from "../src/model-solid-op.ts";
 import { readSavedTree, savedTree } from "../src/model-tree-file.ts";
 import type { LoftSection } from "../src/model-tree.ts";
 

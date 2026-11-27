@@ -17,12 +17,14 @@ import { gearOf, rootSpec } from "../model-primitive.ts";
 import { gearRefusal } from "../model-gear.ts";
 import { blendSurfaceOp, draftOp, extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, nurbsSurfaceOp, patchOp, replaceFaceOp, revolveOp, sewOp, sheetOp, shellOp, splitFaceOp, stepEdges, sweepOp, thickenOp, trimSplitOp, type ProfileShape } from "../model-request.ts";
 import { applyRefinements, surfaceRefusal } from "./nurbs-eval.ts";
-import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
+import { turnDir, type Affine } from "../model-space.ts";
+import { toSolidOp } from "../model-solid-op.ts";
 import { formatMm } from "../model-plane.ts";
 import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
 import type { BeltSettings } from "../belt.ts";
 import type { Curve3D, Curve3DSegment, DraftNeutral, EdgePick, FilletContinuity, LoftBoundary, LoftSection, ModelOp, ProfileLoop, ProfileSegment, SheetSpec, SurfaceBoundary, SurfaceContinuity, SweepMode, SweepTransition, ThickenDirection, TrimKeep, Vec2, Vec3 } from "../model-tree.ts";
-import { drillDown, isGlobalFrame, planePoint, planePrimitive, type Workplane } from "../workplane.ts";
+import { drillDown, isGlobalFrame, planePoint, type Workplane } from "../workplane.ts";
+import { planePrimitive } from "../model-solid-op.ts";
 
 /** A baked op: as stored, as typed with its defaults filled, and any notes. */
 export interface Baked {

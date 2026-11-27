@@ -4,7 +4,8 @@
  * plan's `ribNet` expanded as composite-apply's runCombined expands it, built as one group (one History row, undone as
  * one), and the outside checked by rays after; a network that changed the outside is taken back with Undo.
  */
-import { applyPose, inversePose, toSolidOp, turnDir, type Affine } from "../../model-space";
+import { applyPose, inversePose, turnDir, type Affine } from "../../model-space";
+import { toSolidOp } from "../../model-solid-op";
 import { buildDirection } from "../../belt";
 import { posedContext } from "../../model-features";
 import { printFrame } from "../../model-check";

@@ -2,15 +2,8 @@
 import { boundsOf, encodeStl, settleBy, type Bounds } from "../../mesh-place";
 import { shadeFromSolid } from "../../plate-shading-carry";
 import { viewRequest } from "../../model-mesh-quality";
-import {
-  boxUnder,
-  inversePose,
-  isIdentity,
-  newSolidPose,
-  fromSolidOp,
-  toSolidOp,
-  type Affine,
-} from "../../model-space";
+import { boxUnder, inversePose, isIdentity, newSolidPose, type Affine } from "../../model-space";
+import { fromSolidOp, toSolidOp } from "../../model-solid-op";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../../model-primitive";
 import { unionBox } from "../../measure";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";

@@ -6,7 +6,8 @@ import { eulerOrient } from "./mesh-place.ts";
 import { editRefusal, stepIds } from "./model-edit.ts";
 import { isProbed, probeFromBody, probeNote } from "./model-feasibility.ts";
 import { extrudeOp, probeRequest, revolveOp, shellOp, stepEdges } from "./model-request.ts";
-import { applyPose, toSolidOp, type Affine } from "./model-space.ts";
+import { applyPose, type Affine } from "./model-space.ts";
+import { toSolidOp } from "./model-solid-op.ts";
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
 import { childWithOp, newTree, opLabel, renumberedSteps, withChild, type ModelOp, type Vec2, type Vec3 } from "./model-tree.ts";
 

@@ -8,7 +8,7 @@ import { boreGhostOutline, gearGhostOutline, gearLabel, rackBack, rackGhostOutli
 import { partLabel, resolvedPart, type PartFields, type PartSpec } from "./model-part.ts";
 
 // Lives in ./model-space.ts, which loads with the app (the plate places solids with it), so it need not load this module.
-export { turnCentre } from "./model-space.ts";
+export { turnCentre } from "./model-solid-op.ts";
 
 type Vec3 = [number, number, number];
 

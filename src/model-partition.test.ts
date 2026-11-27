@@ -5,7 +5,8 @@
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
 import { dropRefusal } from "./model-history.ts";
 import { applyRequest, crossEditRequest } from "./model-request.ts";
-import { toSolidOp, type Affine } from "./model-space.ts";
+import { type Affine } from "./model-space.ts";
+import { toSolidOp } from "./model-solid-op.ts";
 import { dropped, jumped, makesParts, newTree, opLabel, partsOf, reachableTrees, withChild, type ModelOp, type ModelTree, type PartitionModelOp } from "./model-tree.ts";
 import { slicePlateFields, type PlateObject } from "./plate.ts";
 import { notBuiltYet, NUMBER_STROKE_FRACTION, partitionNumbers, PROFILE_KIND } from "./modeling/partition.ts";

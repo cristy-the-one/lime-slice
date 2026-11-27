@@ -2,7 +2,8 @@
  * --- A6. Bring a stored op up to a new parameter table: its numbers, then a sketch whose
  * driving dimensions name a parameter, then a feature or pattern whose source changed.
  */
-import { IDENTITY_POSE, toSolidOp, type Affine } from "./model-space.ts";
+import { IDENTITY_POSE, type Affine } from "./model-space.ts";
+import { toSolidOp } from "./model-solid-op.ts";
 import { replayChain } from "./model-edit.ts";
 import { expandFeature, featureSource, type FeatureSolid } from "./model-features.ts";
 import { expandRepeat, repeatSource } from "./model-repeat.ts";

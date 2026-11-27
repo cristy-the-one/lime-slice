@@ -5,7 +5,8 @@
 import { expand, type ExpandContext } from "./compose.ts";
 import { roundMiddle, type FramedSolid } from "./frames.ts";
 import { expandFeature, featureExpandContext, featurePanel, groupFromPieces, PICK_ONE_FACE, readFeatureSpec, type FeatureChoices } from "../model-features.ts";
-import { toSolidOp, type Affine } from "../model-space.ts";
+import { type Affine } from "../model-space.ts";
+import { toSolidOp } from "../model-solid-op.ts";
 import type { GroupOp, LetteringOp } from "../model-tree.ts";
 import { GLOBAL_WORKPLANE } from "../workplane.ts";
 
