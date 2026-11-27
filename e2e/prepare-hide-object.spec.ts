@@ -4,7 +4,7 @@ import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
-const SHOTS = "C:/Users/marius/AppData/Local/Temp/claude/3b29c894b02d8456/cb98bffa-53e1-40b2-8e01-f9c708602ca7/scratchpad/hide-prepare";
+const SHOTS = "test-results/hide-prepare";
 
 async function commit(page: Page, id: "#placeX" | "#placeY", value: number) {
   await page.locator(id).fill(String(value));

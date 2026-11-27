@@ -102,7 +102,7 @@ test("hiding the front part makes a click in the 3D view reach the part behind, 
   await expect(page.locator("#modelInspectShowAll")).toBeVisible();
   await ctrlClickGrey(page);
   await expect(selectedRow(page)).toHaveText(/^small.step/);
-  await page.screenshot({ path: "C:/Users/marius/AppData/Local/Temp/claude/3b29c894b02d8456/cb98bffa-53e1-40b2-8e01-f9c708602ca7/scratchpad/hide-object/hidden-dark.png" });
+  await page.screenshot({ path: "test-results/hide-object/hidden-dark.png" });
 
   // The row still works while hidden, and the plate was never touched.
   await expect(page.locator("#modelInspect [data-plate-select]")).toHaveCount(3);
