@@ -312,10 +312,39 @@ try {
 
   const resources = await call(real, "resources/list");
   const resourceUris = (resources.result?.resources ?? []).map((row) => row.uri);
+  const skillRow = (resources.result?.resources ?? []).find((row) => row.uri === "skill://lime-slice/SKILL.md") as
+    | { uri?: string; name?: string; mimeType?: string; description?: string }
+    | undefined;
   check(
-    "resources/list does not name the skill",
-    resources.error === undefined && resourceUris.every((uri) => !String(uri).startsWith("skill://")),
-    resourceUris.filter((uri) => String(uri).startsWith("skill://")).join(","),
+    "resources/list names the skill's SKILL.md once, as markdown, with the skill's name and description",
+    resources.error === undefined
+      && resourceUris.filter((uri) => String(uri).startsWith("skill://")).join(",") === "skill://lime-slice/SKILL.md"
+      && skillRow?.name === "lime-slice"
+      && skillRow.mimeType === "text/markdown"
+      && skillRow.description === entry?.frontmatter?.description,
+    JSON.stringify(skillRow ?? resourceUris.filter((uri) => String(uri).startsWith("skill://"))),
+  );
+
+  // A client that does not ask skills/list (Claude Code 2.1.312) still lists prompts, and shows each as a slash command.
+  const promptList = await call(real, "prompts/list") as unknown as { result?: { prompts?: { name?: string; description?: string; arguments?: unknown[] }[] } };
+  const skillPrompt = (promptList.result?.prompts ?? []).filter((row) => row.name === "lime-slice");
+  check(
+    "prompts/list has one lime-slice prompt, with the skill's description and no arguments",
+    skillPrompt.length === 1 && skillPrompt[0]?.description === entry?.frontmatter?.description && (skillPrompt[0]?.arguments ?? []).length === 0,
+    JSON.stringify(skillPrompt).slice(0, 300),
+  );
+  const promptGot = await call(real, "prompts/get", { name: "lime-slice" }) as unknown as {
+    error?: unknown;
+    result?: { messages?: { role?: string; content?: { type?: string; text?: string } }[] };
+  };
+  const promptText = promptGot.result?.messages?.[0]?.content?.text ?? "";
+  check(
+    "prompts/get lime-slice is one user message holding the SKILL.md as it is on disk",
+    promptGot.error === undefined
+      && promptGot.result?.messages?.length === 1
+      && promptGot.result.messages[0]?.role === "user"
+      && Buffer.from(promptText, "utf8").equals(readFileSync(join(root, "mcp", "skills", "lime-slice", "SKILL.md"))),
+    JSON.stringify(promptGot.error ?? promptText.slice(0, 120)),
   );
 
   const tools = await call(real, "tools/list", modern());
