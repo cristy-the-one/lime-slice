@@ -100,13 +100,16 @@ export function instructionsFor(groups: ReadonlySet<string> | null): string {
 }
 
 /**
- * Each served skill as a prompt with its own name and description, whose one message is the SKILL.md as it is on disk.
- * A client that does not ask skills/list still lists prompts: Claude Code 2.1.312 declares only the tasks extension,
- * never calls skills/list, and shows this prompt as the slash command /mcp__lime-slice__lime-slice.
+ * Each served skill as a prompt with the skill's description, whose one message is the SKILL.md as it is on disk.
+ * A client that does not ask skills/list still lists prompts: Claude Code 2.1.312 and 2.1.332 declare only the tasks
+ * extension, never call skills/list, and show a prompt as the slash command /mcp__<server>__<prompt>. The server's
+ * name is already in that command, so the one shipped skill is the prompt `skill` (/mcp__lime-slice__skill); with
+ * more than one skill each is `skill-<name>`.
  */
 function skillPrompts(): PromptSpec[] {
-  return listSkills().map((skill) => ({
-    name: skill.frontmatter.name,
+  const skills = listSkills();
+  return skills.map((skill) => ({
+    name: skills.length === 1 ? "skill" : `skill-${skill.frontmatter.name}`,
     description: skill.frontmatter.description,
     arguments: [],
     text: () => readSkillFile(skill.uri)?.toString("utf8") ?? "",

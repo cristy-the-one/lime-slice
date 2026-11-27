@@ -327,19 +327,19 @@ try {
 
   // A client that does not ask skills/list (Claude Code 2.1.312) still lists prompts, and shows each as a slash command.
   const promptList = await call(real, "prompts/list") as unknown as { result?: { prompts?: { name?: string; description?: string; arguments?: unknown[] }[] } };
-  const skillPrompt = (promptList.result?.prompts ?? []).filter((row) => row.name === "lime-slice");
+  const skillPrompt = (promptList.result?.prompts ?? []).filter((row) => row.name === "skill");
   check(
-    "prompts/list has one lime-slice prompt, with the skill's description and no arguments",
+    "prompts/list has one prompt named skill, with the skill's description and no arguments",
     skillPrompt.length === 1 && skillPrompt[0]?.description === entry?.frontmatter?.description && (skillPrompt[0]?.arguments ?? []).length === 0,
     JSON.stringify(skillPrompt).slice(0, 300),
   );
-  const promptGot = await call(real, "prompts/get", { name: "lime-slice" }) as unknown as {
+  const promptGot = await call(real, "prompts/get", { name: "skill" }) as unknown as {
     error?: unknown;
     result?: { messages?: { role?: string; content?: { type?: string; text?: string } }[] };
   };
   const promptText = promptGot.result?.messages?.[0]?.content?.text ?? "";
   check(
-    "prompts/get lime-slice is one user message holding the SKILL.md as it is on disk",
+    "prompts/get skill is one user message holding the SKILL.md as it is on disk",
     promptGot.error === undefined
       && promptGot.result?.messages?.length === 1
       && promptGot.result.messages[0]?.role === "user"
