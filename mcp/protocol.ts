@@ -10,7 +10,7 @@ import { GUIDES } from "./guides.ts";
 import { imagesOf } from "./inline.ts";
 import { annotationsFor, listedTools } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
-import { getSkill, listSkills, readSkillResource, SKILLS_EXTENSION } from "./skills.ts";
+import { getSkill, listSkills, readSkillFile, readSkillResource, SKILLS_EXTENSION } from "./skills.ts";
 import { appVersion } from "./version.ts";
 
 /**
@@ -97,6 +97,23 @@ export const DISCOVERY_INSTRUCTIONS = [
 export function instructionsFor(groups: ReadonlySet<string> | null): string {
   if (groups === null) return `${INSTRUCTIONS} guide {query} finds any tool by task.`;
   return groups.has("core") ? `${INSTRUCTIONS} ${GROUPS_NOTE}` : DISCOVERY_INSTRUCTIONS;
+}
+
+/**
+ * Each served skill as a prompt with the skill's description, whose one message is the SKILL.md as it is on disk.
+ * A client that does not ask skills/list still lists prompts: Claude Code 2.1.312 and 2.1.332 declare only the tasks
+ * extension, never call skills/list, and show a prompt as the slash command /mcp__<server>__<prompt>. The server's
+ * name is already in that command, so the one shipped skill is the prompt `skill` (/mcp__lime-slice__skill); with
+ * more than one skill each is `skill-<name>`.
+ */
+function skillPrompts(): PromptSpec[] {
+  const skills = listSkills();
+  return skills.map((skill) => ({
+    name: skills.length === 1 ? "skill" : `skill-${skill.frontmatter.name}`,
+    description: skill.frontmatter.description,
+    arguments: [],
+    text: () => readSkillFile(skill.uri)?.toString("utf8") ?? "",
+  }));
 }
 
 function guideText(name: "slice" | "model" | "paint" | "calibrate"): string {
@@ -525,7 +542,9 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
           "lime://gcode/latest/summary",
           ...GUIDES.map((guide) => guide.uri),
           ...session.objects.map((obj) => `lime://object/${obj.id}/history`),
-        ].map((uri) => ({ uri, name: uri, mimeType: "application/json" })),
+        ].map((uri): { uri: string; name: string; mimeType: string; description?: string } => ({ uri, name: uri, mimeType: "application/json" }))
+          // Each skill's SKILL.md, so a client that lists resources shows it; its other files are in skills/list.
+          .concat(listSkills().map((skill) => ({ uri: skill.uri, name: skill.frontmatter.name, description: skill.frontmatter.description, mimeType: "text/markdown" }))),
       }, "read");
     }
     if (method === "resources/read") {
@@ -561,12 +580,12 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
     }
     if (method === "prompts/list") {
       return result(id, {
-        prompts: PROMPTS.map((prompt) => ({ name: prompt.name, description: prompt.description, arguments: prompt.arguments })),
+        prompts: [...PROMPTS, ...skillPrompts()].map((prompt) => ({ name: prompt.name, description: prompt.description, arguments: prompt.arguments })),
       }, "list");
     }
     if (method === "prompts/get") {
       const name = String(params.name ?? "");
-      const prompt = PROMPTS.find((row) => row.name === name);
+      const prompt = PROMPTS.find((row) => row.name === name) ?? skillPrompts().find((row) => row.name === name);
       if (!prompt) return error(id, -32602, "That prompt is not on this server.");
       const args = params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments)
         ? params.arguments as Record<string, unknown>
