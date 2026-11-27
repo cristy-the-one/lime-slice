@@ -31,7 +31,6 @@ import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
 import { paintRailStage, syncSection } from "../ui/chrome";
 import { clampPartPercent } from "../gizmo-math";
-import { nudgePose } from "./pose-move";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
@@ -714,6 +713,15 @@ function applyScaleDelta(deltaPercent: number): number {
   state.poseHud = `Scale ${next}%`;
   paintGizmoReadout();
   return accepted;
+}
+
+/** A 0.1 mm design-space nudge from the rail, one undo step. Here, not in pose-move.ts, so Pose's Move card loads with Pose. */
+function nudgePose(axis: "x" | "y" | "z", sign: number): void {
+  if (!state.plate.selectedId || sign === 0) return;
+  beginEdit();
+  const moved = nudgeAssembled(axis, sign * 0.1);
+  if (!moved) cancelEdit();
+  else flushEdit();
 }
 
 /** One fine gizmo step. Move is 0.1 mm; Rotate is 1°. Hit targets stay as they are. */

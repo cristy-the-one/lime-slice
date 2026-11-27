@@ -22,7 +22,7 @@ import {
 import { meshSeat, meshToModel, modelPoseOf, withFrame, withModelPose, type PlateObject } from "../plate.ts";
 import { alignDelta, footprintOf, snapMove, ALIGN_LABELS, ALIGN_RELATIONS, type AlignRelation, type Screen } from "../place-snap.ts";
 import type { GrabAxis } from "../viewport-grab.ts";
-import { followAssemblyMove, liveAssemblies, nudgeAssembled } from "./assemblies.ts";
+import { followAssemblyMove, liveAssemblies } from "./assemblies.ts";
 import { fx } from "./fx.ts";
 import { beginEdit, cancelEdit, flushEdit, holdEdit } from "./history.ts";
 import { refreshObjectList } from "./settings.ts";
@@ -368,13 +368,4 @@ export function appendMoveCard(panel: HTMLElement): void {
   settle.dataset.tip = "While you turn the part, snap it to the flat face that touches most, near the angle you hold. Prepare's switch too.";
   card.append(settle);
   panel.append(card);
-}
-
-/** A 0.1 mm design-space nudge from the rail, one undo step. */
-export function nudgePose(axis: "x" | "y" | "z", sign: number): void {
-  if (!state.plate.selectedId || sign === 0) return;
-  beginEdit();
-  const moved = nudgeAssembled(axis, sign * 0.1);
-  if (!moved) cancelEdit();
-  else flushEdit();
 }
