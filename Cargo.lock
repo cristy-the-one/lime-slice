@@ -2817,9 +2817,11 @@ dependencies = [
  "cc",
  "lime-model-load",
  "lime-recipe",
+ "robust",
  "serde",
  "serde_json",
  "sha2",
+ "spade",
  "ttf-parser",
 ]
 

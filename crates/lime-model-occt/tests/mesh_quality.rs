@@ -1,4 +1,5 @@
-//! The bridge triangulates faces with Open CASCADE's Watson algorithm. On a set of parts this holds each mesh to
+//! The bridge triangulates faces with Open CASCADE's Watson algorithm, and a flat face with many holes with an exact
+//! constrained Delaunay triangulation (src/flat_mesh.rs). On a set of parts this holds each mesh to
 //! what a mesh is for: every face meshed, the mesh closed (no edge of only one triangle), no triangle farther from
 //! its surface than one and a half chords, and the same mesh when the same solid is meshed again from nothing.
 //! Watson also leaves a few triangles of no area, and each of those shares an edge with two other triangles:
@@ -88,6 +89,14 @@ struct Measured {
     open: usize,
     shared: usize,
     mesh: String,
+    /// Flat faces meshed by the exact triangulation (the kernel's `flatFaces`), and those it handed back to Watson.
+    flat_faces: u64,
+    flat_fallbacks: u64,
+}
+
+fn stat(name: &str) -> u64 {
+    let stats: Value = serde_json::from_str(&lime_model_occt::stats()).expect("stats");
+    stats[name].as_u64().unwrap_or(0)
 }
 
 /// What opens a part: the request's fields beside `call`, `key` and `chordMm`, then the steps applied on it in turn.
@@ -102,6 +111,7 @@ fn measure(part: &Part, key: &str) -> Measured {
     request["call"] = json!("open");
     request["key"] = json!(key);
     request["chordMm"] = json!(CHORD);
+    let (flat_faces, flat_fallbacks) = (stat("flatFaces"), stat("flatFallbacks"));
     let mut reply = ok(request);
     for (index, step) in part.steps.iter().enumerate() {
         reply = ok(json!({ "call": "apply", "key": key, "parent": index, "node": index + 1, "op": step, "chordMm": CHORD }));
@@ -120,17 +130,25 @@ fn measure(part: &Part, key: &str) -> Measured {
         open,
         shared,
         mesh: format!("{}{}", reply["positions"].as_str().unwrap_or(""), reply["triangles"].as_str().unwrap_or("")),
+        flat_faces: stat("flatFaces") - flat_faces,
+        flat_fallbacks: stat("flatFallbacks") - flat_fallbacks,
     }
 }
 
-fn hole(x: f64, y: f64) -> Value {
-    json!({ "kind": "boolean", "op": "cut", "primitive": "cylinder", "origin": [x, y, -1.0], "radius": 1.5, "height": 12.0, "merge": true })
+fn hole(x: f64, y: f64, radius: f64) -> Value {
+    json!({ "kind": "boolean", "op": "cut", "primitive": "cylinder", "origin": [x, y, -1.0], "radius": radius, "height": 12.0, "merge": true })
 }
+
+/// The parts whose two flat faces have at least `lime_model_occt::FLAT_MESHER_HOLES` holes, so the exact triangulation
+/// meshes them. Every other part here is meshed by Watson alone.
+const FLAT_PARTS: [&str; 2] = ["plate with 150 holes", "plate with 1000 holes"];
 
 fn parts() -> Vec<Part> {
     let primitive = |name: &str, spec: Value, steps: Vec<Value>| Part { name: name.into(), root: json!({ "primitive": spec }), steps };
     let plate = json!({ "primitive": "box", "origin": [0.0, 0.0, 0.0], "size": [120.0, 80.0, 8.0] });
-    let holes: Vec<Value> = (0..150).map(|i| hole(4.0 + 7.5 * f64::from(i % 15), 4.0 + 7.5 * f64::from(i / 15))).collect();
+    let holes: Vec<Value> = (0..150).map(|i| hole(4.0 + 7.5 * f64::from(i % 15), 4.0 + 7.5 * f64::from(i / 15), 1.5)).collect();
+    // The plate PR #878 timed: 40 holes to a row, 4 mm apart.
+    let thousand: Vec<Value> = (0..1000).map(|i| hole(4.0 + 4.0 * f64::from(i % 40), 4.0 + 4.0 * f64::from(i / 40), 1.0)).collect();
     let mut all = vec![
         primitive("box", json!({ "primitive": "box", "origin": [0.0, 0.0, 0.0], "size": [60.0, 40.0, 20.0] }), vec![]),
         primitive("cylinder", json!({ "primitive": "cylinder", "origin": [0.0, 0.0, 0.0], "radius": 20.0, "height": 30.0 }), vec![]),
@@ -151,6 +169,11 @@ fn parts() -> Vec<Part> {
             "plate with 150 holes",
             plate,
             vec![json!({ "kind": "group", "label": "holes", "source": { "kind": "pattern", "combine": true }, "steps": holes, "combine": "cut" })],
+        ),
+        primitive(
+            "plate with 1000 holes",
+            json!({ "primitive": "box", "origin": [0.0, 0.0, 0.0], "size": [168.0, 108.0, 8.0] }),
+            vec![json!({ "kind": "group", "label": "holes", "source": { "kind": "pattern", "combine": true }, "steps": thousand, "combine": "cut" })],
         ),
         primitive(
             "text on a cylinder",
@@ -181,15 +204,15 @@ fn watson_meshes_close_and_keep_the_chord() {
         assert!(!require(), "Open CASCADE is required: {stats}");
         return;
     }
-    eprintln!("| part | triangles | farthest from surface mm | sharpest corner deg | corners under 5 deg | open edges | edges of 3+ | faces with no triangles | triangles of no area | a face's area off by % |");
-    eprintln!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    eprintln!("| part | triangles | farthest from surface mm | sharpest corner deg | corners under 5 deg | open edges | edges of 3+ | faces with no triangles | triangles of no area | a face's area off by % | exact flat faces |");
+    eprintln!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     let mut rows = Vec::new();
     for (index, part) in parts().iter().enumerate() {
         let row = measure(part, &format!("q{index}"));
         let again = measure(part, &format!("q{index}e"));
         eprintln!(
-            "| {} | {} | {:.4} | {:.2} | {} | {} | {} | {} | {} | {:.3} |",
-            part.name, row.triangles, row.deviation, row.angle, row.slivers, row.open, row.shared, row.unmeshed, row.flat, row.area_off
+            "| {} | {} | {:.4} | {:.2} | {} | {} | {} | {} | {} | {:.3} | {} |",
+            part.name, row.triangles, row.deviation, row.angle, row.slivers, row.open, row.shared, row.unmeshed, row.flat, row.area_off, row.flat_faces
         );
         rows.push((part.name.clone(), row, again));
     }
@@ -209,5 +232,13 @@ fn watson_meshes_close_and_keep_the_chord() {
         assert!(row.shared as u64 <= row.flat,"{name}: {} edges of three triangles against {} triangles of no area", row.shared, row.flat);
         assert!(row.area_off <= 2.0, "{name}: a face's triangles are {} % off its area, against 2 %", row.area_off);
         assert_eq!(row.mesh, again.mesh, "{name}: the same solid meshed again gives the same mesh");
+        // The plates' top and bottom have 150 and 1,000 holes, past the threshold: both are meshed by the exact
+        // triangulation, and it never hands one back to Watson. No other part has a flat face with that many holes.
+        assert_eq!(row.flat_fallbacks + again.flat_fallbacks, 0, "{name}: the exact triangulation failed on a face");
+        if FLAT_PARTS.contains(&name.as_str()) {
+            assert!(row.flat_faces >= 2 && again.flat_faces >= 2, "{name}: {} faces took the exact triangulation, against 2", row.flat_faces);
+        } else {
+            assert_eq!(row.flat_faces + again.flat_faces, 0, "{name}: a face under the threshold took the exact triangulation");
+        }
     }
 }

@@ -20,6 +20,10 @@ lime-recipe = { path = "../lime-recipe" }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 sha2 = "0.10"
+# The first triangulation of a flat face with many holes (src/flat_mesh.rs), with Shewchuk's adaptive exact predicates
+# (`robust`). Both MIT OR Apache-2.0, and both already in the lock file through truck-meshalgo.
+spade = "2.15"
+robust = "1.2"
 
 [build-dependencies]
 cc = "1"
