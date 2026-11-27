@@ -14,6 +14,7 @@ import { DISPLAY_MESH_FIELD } from "../model-mesh-quality";
 import { decodeSolid } from "../model-reply";
 import type { PlateObject } from "../plate";
 import { giveShading, hasShadeSource, reachFor } from "../plate-shading";
+import { isStepName } from "./settings";
 import { treeCall } from "./step-solids";
 
 const asked = new WeakSet<Float32Array>();
@@ -25,9 +26,11 @@ let done = 0;
 export function warmShading(objects: readonly PlateObject[]): void {
   for (const obj of objects) {
     const positions = obj.sourcePos;
-    if (!obj.brep || obj.brep.byteLength === 0 || positions.length < 9 || asked.has(positions) || hasShadeSource(positions)) continue;
+    // The solid Model saved for it, or, for a STEP file added as it is, that file.
+    const solid = obj.brep && obj.brep.byteLength > 0 ? obj.brep : isStepName(obj.fileName) ? obj.bytes : undefined;
+    if (!solid || solid.byteLength === 0 || positions.length < 9 || asked.has(positions) || hasShadeSource(positions)) continue;
     asked.add(positions);
-    queue.push({ positions, brep: obj.brep, chordMm: obj.stepTolerance });
+    queue.push({ positions, brep: solid, chordMm: obj.stepTolerance });
   }
   if (!running && queue.length > 0) void drain();
 }

@@ -94,6 +94,23 @@ settleBy(settled);
 const copied = transferNormals(settled, ball.positions, ball.normals, reachFor(0.1));
 check("a mesh settled onto the bed takes the source's normals corner for corner", !!copied && copied.copied && same(copied.normals, ball.normals));
 
+// --- A normal turned over (Open CASCADE's at a sphere's pole) is not drawn: that corner takes its triangle's own.
+const turned = new Float32Array(ball.normals);
+for (let i = 0; i < 9; i += 1) turned[i] = -turned[i]!;
+const kept = transferNormals(ball.positions, ball.positions, turned, reachFor(0.1));
+const ownOfFirst = [0, 0, 0];
+{
+  const p = ball.positions;
+  const u = [p[3]! - p[0]!, p[4]! - p[1]!, p[5]! - p[2]!], v = [p[6]! - p[0]!, p[7]! - p[1]!, p[8]! - p[2]!];
+  const c = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!];
+  const len = Math.hypot(c[0]!, c[1]!, c[2]!);
+  for (let a = 0; a < 3; a += 1) ownOfFirst[a] = c[a]! / len;
+}
+check(
+  "a corner normal facing away from its triangle is replaced by the triangle's own",
+  !!kept && kept.copied && kept.matched === ball.positions.length / 3 - 3 && Math.abs(kept.normals[0]! - ownOfFirst[0]!) < 1e-6 && Math.abs(kept.normals[2]! - ownOfFirst[2]!) < 1e-6 && same(kept.normals.subarray(9), ball.normals.subarray(9)),
+);
+
 // --- Cracks closed by splitting triangles (a corner of one triangle in the middle of another's edge): carried by place.
 const split: number[] = [];
 for (let t = 0; t < ball.positions.length / 9; t += 1) {

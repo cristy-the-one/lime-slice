@@ -155,11 +155,28 @@ export function transferNormals(target: Float32Array, source: Float32Array, sour
     if (Math.abs(tBox[a + 3]! - tBox[a]! - (sBox[a + 3]! - sBox[a]!)) > reachMm) return null;
     shift[a] = tBox[a]! - sBox[a]!;
   }
-  // The same mesh, moved at most: the normals as they are.
+  // The same mesh, moved at most: the normals as they are, but for a corner whose normal faces away from its own
+  // triangle (Open CASCADE turns the normal over at a sphere's pole, where the surface has none of its own).
   if (target.length === source.length) {
     let same = true;
     for (let i = 0; i < target.length && same; i += 1) if (Math.abs(target[i]! - (source[i]! + shift[i % 3]!)) > 1e-4) same = false;
-    if (same) return { normals: Float32Array.from(sourceNormals.subarray(0, target.length)), matched: tCount * 3, copied: true };
+    if (same) {
+      const normals = Float32Array.from(sourceNormals.subarray(0, target.length));
+      const own = new Float64Array(3);
+      let matched = tCount * 3;
+      for (let t = 0; t < tCount; t += 1) {
+        faceNormal(target, t * 9, own, 0);
+        for (let k = 0; k < 3; k += 1) {
+          const at = t * 9 + k * 3;
+          if (normals[at]! * own[0]! + normals[at + 1]! * own[1]! + normals[at + 2]! * own[2]! >= 0) continue;
+          normals[at] = own[0]!;
+          normals[at + 1] = own[1]!;
+          normals[at + 2] = own[2]!;
+          matched -= 1;
+        }
+      }
+      return { normals, matched, copied: true };
+    }
   }
 
   // Source triangles, moved onto the target, with their unit normals.
