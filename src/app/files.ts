@@ -30,6 +30,7 @@ import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
 import { addedMesh, boundEntries, emptyPlate, meshTokenOf, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setMeshSeat, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
 import { bedParts } from "../model-context";
+import { plateShading } from "../plate-shading";
 import { isHidden, pruneHidden, visibleParts } from "../model-hidden";
 import { syncAssemblyView } from "./assemblies.ts";
 import { supportModeState } from "../support-source";
@@ -257,6 +258,15 @@ export function syncPlateView() {
   pruneHidden(state.plate.objects.map((obj) => obj.id), state.plate.selectedId);
   const entries = boundEntries(state.plate, bedX, bedY).filter((entry) => !isHidden(entry.id));
   fx.prepare.setPlate(entries, visibleParts(bedParts(state.plate.objects, state.plate.selectedId, bedX, bedY)));
+  warmShadingLater();
+}
+
+/**
+ * Drawing only: a part with a solid and no normals yet asks for them once, when the app is idle
+ * (src/app/plate-shading-warm.ts). That code is loaded only then, never on the way to the first draw.
+ */
+export function warmShadingLater() {
+  if (state.plate.objects.length) import("./plate-shading-warm").then((warm) => warm.warmShading(state.plate.objects), () => undefined);
 }
 
 /** Move the placed part on one axis. X/Y also slides the sliced preview. */
@@ -332,6 +342,8 @@ let canonical: { source: Float32Array; scale: number; positions: Float32Array } 
 function canonicalMesh(source: Float32Array) {
   if (canonical?.source !== source || canonical.scale !== state.partScale) {
     canonical = { source, scale: state.partScale, positions: scaledCanonical(source, state.partScale) };
+    // A uniform scale about a point turns no normal: the view shades this copy as the plate mesh.
+    plateShading.aliases.set(canonical.positions, source);
   }
   return canonical.positions;
 }

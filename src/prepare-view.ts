@@ -16,6 +16,7 @@ import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
 import { contextMaterial } from "./context-look";
+import { plateShading } from "./plate-shading";
 import { affineRows, type ContextPart } from "./model-context";
 import { shifted, snapMove, type Footprint, type Screen, type SnapAxis, type SnapHit, type SnapTarget } from "./place-snap";
 import { neighbourTargets, ownFootprint } from "./place-snap-scene";
@@ -312,7 +313,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let plateEntries: PlateBound[] = [];
   let plateGroup: THREE.Group | null = null;
   let plateOthers: ContextPart[] = [];
-  const contextMat = contextMaterial(colors.context);
+  // Lit by each mesh's normals: a part with a solid has its exact ones (src/plate-shading-carry.ts), else its own.
+  const contextMat = contextMaterial(colors.context, true);
   const contextGroup = new THREE.Group();
   scene.add(contextGroup);
   /** --- Assemblies M5. The assembly view's own meshes, one geometry per source array. */
@@ -326,7 +328,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const assembledMat = new THREE.MeshStandardMaterial({ color: hexToThree(colors.context), roughness: 0.7, metalness: 0.05 });
   const assembledPick = new THREE.MeshStandardMaterial({ color: hexToThree(colors.mesh), roughness: 0.55, metalness: 0.05 });
   const assembledClash = new THREE.MeshStandardMaterial({ color: hexToThree(colors.amber), roughness: 0.6, metalness: 0.05, emissive: hexToThree(colors.amber), emissiveIntensity: 0.25 });
-  const targetMat = contextMaterial(colors.amber);
+  const targetMat = contextMaterial(colors.amber, true);
   /** The plate object a snap or an Align to... has picked: its grey is swapped for the amber of the snap guides. */
   let markedTarget: string | null = null;
   canvas.dataset.snapTarget = "";
@@ -2210,6 +2212,26 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     frameBox(meshBounds.min, meshBounds.max);
   }
 
+  /**
+   * A plate mesh's geometry, lit by each triangle's own normal, or by the exact corner normals when the part has them
+   * (src/plate-shading.ts). The triangles drawn, picked and painted are the plate mesh's either way.
+   */
+  function plateGeometry(positions: Float32Array) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    plateShading.shade?.(geometry, positions);
+    return geometry;
+  }
+
+  // What this view draws, for exact normals that arrive later to reach it in place.
+  plateShading.views.push({
+    // The selected part's mesh first (null when there is none), then the others'.
+    meshes: () => [mesh && meshSource ? [meshSource, mesh.geometry] : null, ...assembledGeometry, ...contextGeometry],
+    canvas,
+    render: requestRender,
+  });
+
   return {
     resize() {
       requestRender();
@@ -2267,9 +2289,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
           mesh = null;
         }
         if (canonical) {
-          const geometry = new THREE.BufferGeometry();
-          geometry.setAttribute("position", new THREE.BufferAttribute(canonical, 3));
-          geometry.computeVertexNormals();
+          const geometry = plateGeometry(canonical);
           mesh = new THREE.Mesh(geometry, material);
           mesh.matrixAutoUpdate = false;
           scene.add(mesh);
@@ -2525,9 +2545,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     for (const part of parts) {
       let geometry = assembledGeometry.get(part.positions);
       if (!geometry) {
-        geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
-        geometry.computeVertexNormals();
+        geometry = plateGeometry(part.positions);
         assembledGeometry.set(part.positions, geometry);
       }
       const node = new THREE.Mesh(geometry, clashing.has(part.id) ? assembledClash : part.id === selectedId ? assembledPick : assembledMat);
@@ -2564,8 +2582,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     for (const part of plateOthers) {
       let geometry = contextGeometry.get(part.positions);
       if (!geometry) {
-        geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
+        geometry = plateGeometry(part.positions);
         contextGeometry.set(part.positions, geometry);
       }
       const node = new THREE.Mesh(geometry, contextMat);

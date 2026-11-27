@@ -31,6 +31,12 @@ use super::outcome::{BinObject, Failure};
 use super::same::{same_edge, same_face};
 use super::shape::{take_text, Mesh, Shape, SurfaceInspect};
 
+/// `lime_tree_mesh`'s kinds of mesh (cpp/tree.cpp): the plate mesh, the display mesh, and the plate mesh with the
+/// analytic normals at its corners.
+const MESH_PLATE: c_int = 0;
+const MESH_DISPLAY: c_int = 1;
+const MESH_PLATE_NORMALS: c_int = 2;
+
 impl Shape {
     pub(super) fn edge(&mut self, index: i32) -> Option<EdgeRef> {
         let mut mid = [0.0; 3];
@@ -318,7 +324,7 @@ impl Shape {
     /// The reply is one JSON object, in this order:
     /// `{"id": n, "format": "lime-solid-…", <meta: volumeMm3, solid, faces, edgeLengths, edgeSeams?, nakedEdges?>,
     ///   "fingerprint": {…}, "positions": b64 f32, "triangles": b64 u32, "edgePoints": b64 f32, "edgeOffsets": b64 u32,
-    ///   "display": {"positions": b64 f32, "normals": b64 f32, "triangles": b64 u32}?}`
+    ///   "display": {"positions": b64 f32, "normals": b64 f32, "triangles": b64 u32, "plateNormals": b64 f32}?}`
     /// - Everything outside `display` is the plate mesh: Open CASCADE's mesh at half a radian, built incrementally on the
     ///   held faces exactly as main builds it, with no normals. With `display` false the reply ends there and is byte for
     ///   byte main's reply. With `display` true it is the same bytes up to `edgeOffsets`.
@@ -327,8 +333,17 @@ impl Shape {
     ///   outward), `normals` nine f32 a triangle in the same order (the faces' analytic outward unit normals), and
     ///   `triangles` one u32 a triangle, the index of the face it lies on, as the top-level `triangles`. Edges are the
     ///   same curves in both, so `edgePoints` and `edgeOffsets` serve both meshes and are not repeated.
+    /// - `display.plateNormals` is nine f32 a triangle: the analytic outward unit normal at each corner of the top-level
+    ///   `positions`, in their order, so Prepare and Pose can shade the plate mesh smooth with its own triangles. Like
+    ///   the rest of `display` it is drawing data only, and the reply outside `display` does not change. The stateless
+    ///   `meshStep` sends it alone (`reply_with`), as `display: {"plateNormals": …}`, with no display mesh nobody draws.
     pub(super) fn reply(&mut self, id: NodeId, chord: f64, display: bool) -> Result<BinObject, Failure> {
-        let plate = self.mesh(chord, false)?;
+        self.reply_with(id, chord, display, display)
+    }
+
+    /// `reply`, with the plate mesh's corner normals (`display.plateNormals`) asked for apart from the display mesh.
+    pub(super) fn reply_with(&mut self, id: NodeId, chord: f64, display: bool, plate_normals: bool) -> Result<BinObject, Failure> {
+        let plate = self.mesh(chord, if plate_normals { MESH_PLATE_NORMALS } else { MESH_PLATE })?;
         // SAFETY: `mesh` filled `view` with the mesh's own arrays, which live until it drops.
         let arrays = unsafe {
             vec![
@@ -338,6 +353,9 @@ impl Shape {
                 ("edgeOffsets", plate.0.bytes(plate.1.edge_offsets, plate.1.edge_offsets_bytes).to_vec()),
             ]
         };
+        // SAFETY: as above.
+        let plate_normals = (plate_normals && plate.1.normals_bytes == plate.1.positions_bytes)
+            .then(|| unsafe { plate.0.bytes(plate.1.normals, plate.1.normals_bytes) }.to_vec());
         let meta = unsafe { CStr::from_ptr(plate.1.meta) }
             .to_str()
             .ok()
@@ -351,18 +369,19 @@ impl Shape {
         );
         drop(plate);
         let display_parts = if display {
-            let fine = self.mesh(chord, true)?;
+            let fine = self.mesh(chord, MESH_DISPLAY)?;
             // SAFETY: as above, for the display mesh.
-            let parts = unsafe {
+            let mut parts = unsafe {
                 vec![
                     ("positions", fine.0.bytes(fine.1.positions, fine.1.positions_bytes).to_vec()),
                     ("normals", fine.0.bytes(fine.1.normals, fine.1.normals_bytes).to_vec()),
                     ("triangles", fine.0.bytes(fine.1.triangles, fine.1.triangles_bytes).to_vec()),
                 ]
             };
+            parts.extend(plate_normals.map(|bytes| ("plateNormals", bytes)));
             Some(parts)
         } else {
-            None
+            plate_normals.map(|bytes| vec![("plateNormals", bytes)])
         };
         Ok(BinObject {
             head,
@@ -372,9 +391,10 @@ impl Shape {
         })
     }
 
-    /// One tessellation from the kernel and the view onto its arrays. `display`: the Model view's mesh (on a copy, with
-    /// normals); otherwise the plate mesh on the held faces.
-    fn mesh(&mut self, chord: f64, display: bool) -> Result<(Mesh, MeshView), Failure> {
+    /// One tessellation from the kernel and the view onto its arrays. `kind`: MESH_DISPLAY, the Model view's mesh (on a
+    /// copy, with normals); MESH_PLATE, the plate mesh on the held faces; MESH_PLATE_NORMALS, that mesh with the
+    /// normals at its corners.
+    fn mesh(&mut self, chord: f64, kind: c_int) -> Result<(Mesh, MeshView), Failure> {
         let mut view = MeshView {
             positions: std::ptr::null(),
             positions_bytes: 0,
@@ -389,7 +409,7 @@ impl Shape {
             meta: std::ptr::null(),
         };
         let mut error: *mut c_char = std::ptr::null_mut();
-        let raw = unsafe { lime_tree_mesh(self.0.as_ptr(), chord, c_int::from(display), &mut view, &mut error) };
+        let raw = unsafe { lime_tree_mesh(self.0.as_ptr(), chord, kind, &mut view, &mut error) };
         let message = take_text(error);
         let mesh = NonNull::new(raw).map(Mesh).ok_or_else(|| {
             Failure::Message(message.unwrap_or_else(|| "Open CASCADE failed".into()))

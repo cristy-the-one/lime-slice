@@ -237,7 +237,8 @@ function readDisplay(raw: unknown, faceCount: number): DisplayMesh | undefined |
   for (const face of triangles) if (face >= faceCount) return null;
   const normals = row.normals === undefined ? undefined : words(row.normals, Float32Array);
   if (normals === null || (normals && normals.length !== positions.length)) return null;
-  return { positions, triangles, ...(normals ? { normals } : {}) };
+  // `plateNormals` rides along as sent; src/plate-shading-carry.ts reads it when a commit hands it on.
+  return { positions, triangles, ...(normals ? { normals } : {}), plateNormals: row.plateNormals };
 }
 
 /** A closed face's flag and fold distances, or nothing for any other face. A distance that is not a number 0 or over is dropped. */

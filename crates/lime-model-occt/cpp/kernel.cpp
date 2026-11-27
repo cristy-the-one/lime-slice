@@ -1171,8 +1171,10 @@ const std::vector<TopoDS_Face>& display_faces(Held& held, double chord) {
     return held.display_faces;
 }
 
-Mesh tessellate(Held& held, double chord, bool display) {
+Mesh tessellate(Held& held, double chord, bool display, bool plate_normals) {
     g_stats.tessellations += 1;
+    // Normals for the display mesh always, and for the plate mesh when asked. They never change a position.
+    const bool with_normals = display || plate_normals;
     chord = chord_of(chord);
     // Open CASCADE keeps a finer mesh it already has, so a face shared with a solid meshed finer
     // since is what meshing again would leave too.
@@ -1218,9 +1220,9 @@ Mesh tessellate(Held& held, double chord, bool display) {
     }
 
     // --- Organic surfaces S1: compute exact outward analytic surface normals per triangulation node in parallel, for
-    // the display mesh only. Planar faces use their plane's normal (O(1)); curved faces evaluate BRepLProp_SLProps once
-    // per UV node.
-    OSD_Parallel::For(0, display ? static_cast<int>(pieces.size()) : 0, [&face_of, &pieces](int idx) {
+    // the display mesh, and for the plate mesh when asked. Planar faces use their plane's normal (O(1)); curved faces
+    // evaluate BRepLProp_SLProps once per UV node.
+    OSD_Parallel::For(0, with_normals ? static_cast<int>(pieces.size()) : 0, [&face_of, &pieces](int idx) {
         Piece& piece = pieces[static_cast<size_t>(idx)];
         if (piece.tri.IsNull() || piece.tri->NbTriangles() == 0) {
             return;
@@ -1277,7 +1279,7 @@ Mesh tessellate(Held& held, double chord, bool display) {
 
     Mesh out;
     out.positions.reserve(count * 9);
-    if (display) {
+    if (with_normals) {
         out.normals.reserve(count * 9);
     }
     out.triangles.reserve(count);
@@ -1304,7 +1306,7 @@ Mesh tessellate(Held& held, double chord, bool display) {
             push_point(out.positions, p3);
             out.triangles.push_back(static_cast<uint32_t>(face));
 
-            if (!display) {
+            if (!with_normals) {
                 continue;
             }
             if (piece.constant_normal) {

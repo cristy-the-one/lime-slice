@@ -4,6 +4,7 @@ import { assemblyOf, bodyOf, couplingNames, drives, freshAssemblyId, jointAt, me
 import { gearsInTree, type WorldGear } from "../gear-pair.ts";
 import { couplingLine, crossedNotes, declareCoupling, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type DeclareSpec, type GearPart, type Turned } from "../gear-train.ts";
 import { modelTrees } from "./model-trees.ts";
+import { warmShadingLater } from "./files.ts";
 import { boundsOf } from "../mesh-place.ts";
 import { applyPose, inversePose, isIdentity, poseScale, seatLift, thenPose, turnDir, type Affine } from "../model-space.ts";
 import { meshSeat, meshToModel, modelPoseOf } from "../plate.ts";
@@ -615,6 +616,8 @@ export function syncPose(): void {
     marks.push({ pivot: applyPose(sceneShift, applyPose(pose, joint.pivot)), ...(joint.kind === "hinge" ? { axis: turnDir(pose, joint.axis) } : {}) });
   }
   view.setBed(bedX, bedY, bedZ);
+  // Drawing only: a part with a solid and no normals yet asks for them once, when the app is idle.
+  warmShadingLater();
   const frame = animation?.result.frames[animation.clock.frame(performance.now())];
   const shown = frame && sceneShift ? placed.parts.map((part) => {
     const pose = frame.poses.get(part.id), object = state.plate.objects.find((item) => item.id === part.id);

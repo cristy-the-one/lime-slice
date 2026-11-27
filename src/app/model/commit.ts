@@ -9,6 +9,7 @@ import { modelTrees } from "../model-trees";
 import { syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
+import { hasShadeSource, shadeFromSolid } from "../../plate-shading-carry";
 import { S } from "./shared";
 import { isOpenSheet, sheetVerdict } from "../../model-sheet";
 import { markSheet } from "./sheet-gate";
@@ -44,6 +45,9 @@ export function commitModel() {
   tree = withNode(tree, plan.from, { keep: liveKeep() });
   state.mesh = { name: mesh.name, bytes: mesh.bytes };
   state.sourcePos = new Float32Array(mesh.sourcePos);
+  // Drawing only: a mesh the plate already held (a part opened and left without an edit) is shaded from the shown
+  // solid's normals, matched by place; a mesh that is not that solid's is left as it was (src/plate-shading.ts).
+  if (solid?.id === plan.to && !hasShadeSource(state.sourcePos)) shadeFromSolid(state.sourcePos, solid, state.stepTolerance);
   const keep = plan.keep;
   state.supportEdits = keep ? structuredClone(keep.supportEdits) : [];
   state.supportPaint = keep ? structuredClone(keep.supportPaint) as typeof state.supportPaint : [];
@@ -159,6 +163,8 @@ export function meshOf(solid: ParsedSolid, named?: string): PlateMesh {
   const name = named ?? stlName(state.mesh?.name ?? "solid");
   const bytes = encodeStl(positions, name);
   setMeshSeat(bytes, seat);
+  // Drawing only: Prepare and Pose shade these triangles with the exact normals the same reply carried.
+  shadeFromSolid(positions, solid, state.stepTolerance);
   // The kernel's sheet verdict travels with the mesh, to whichever plate object takes it (`markSheet`).
   return { name, bytes, sourcePos: positions, token: meshTokenOf(bytes), sheet: sheetVerdict(solid) };
 }

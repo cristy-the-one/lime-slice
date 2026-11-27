@@ -53,6 +53,11 @@ export interface DisplayMesh {
   normals?: Float32Array;
   /** The face of each triangle, as `ModelSolid.triangles`. */
   triangles: Uint32Array;
+  /**
+   * The exact outward unit normal at each corner of the solid's own `positions` (the plate mesh), as the kernel sent
+   * it (base64 or bytes of f32, nine a triangle). Prepare and Pose shade the plate mesh with it (src/plate-shading-carry.ts).
+   */
+  plateNormals?: unknown;
 }
 
 const drawn = new WeakMap<ModelSolid, ModelSolid>();

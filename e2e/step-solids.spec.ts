@@ -40,8 +40,13 @@ function pieceFile(i: number): Buffer {
   return Buffer.from(`ISO-10303-21;\nDATA;\n#10=MANIFOLD_SOLID_BREP('piece-${i}',#11);\nENDSEC;\nEND-ISO-10303-21;\n`);
 }
 
+/** The drawing-only `meshStep` calls Prepare makes for a solid's normals (src/app/plate-shading-warm.ts), kept apart. */
+const drawing = new WeakMap<string[], number[]>();
+
 async function mockEngine(page: Page) {
   const asked: string[] = [];
+  const meshSteps: number[] = [];
+  drawing.set(asked, meshSteps);
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) }));
   await page.route("**/api/mesh", async (route) => {
@@ -53,6 +58,11 @@ async function mockEngine(page: Page) {
   });
   await page.route("**/api/model/tree", async (route) => {
     const body = route.request().postDataJSON() as { call: string; files?: boolean };
+    // Prepare asks for a solid's normals to draw it smooth, when idle after the import: no call of the import itself.
+    if (body.call === "meshStep") {
+      meshSteps.push(Date.now());
+      return route.fulfill({ json: { error: "The mock meshes no STEP." } });
+    }
     asked.push(body.call);
     if (body.call !== "stepSolids") return route.fulfill({ json: { error: `unexpected ${body.call}` } });
     const solids = NAMES.map((name, i) => ({
@@ -136,5 +146,33 @@ test("a STEP of one solid shows no choice", async ({ page }) => {
   await page.waitForTimeout(500);
   await expect(page.locator("#toasts").getByText("solids")).toHaveCount(0);
   await expect(page.locator("#separateShells")).toBeDisabled();
+  expect(asked).toEqual([]);
+});
+
+test("the import makes no kernel call; one drawing-only call follows when idle, however many copies", async ({ page }) => {
+  const asked = await mockEngine(page);
+  await open(page, "single.step", stepText(1, "solid"));
+  const imported = Date.now();
+  expect(asked, "the import itself asks the kernel nothing").toEqual([]);
+  expect(drawing.get(asked), "and nothing for drawing while it lands").toHaveLength(0);
+  await page.locator("[data-plate-id]").first().locator("[data-plate-select]").click();
+  for (let i = 0; i < 19; i += 1) await page.keyboard.press("Control+d");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(20);
+  await expect(page.locator("body")).toHaveAttribute("data-plate-shading-asked", "1", { timeout: 15_000 });
+  await page.waitForTimeout(3000);
+  expect(drawing.get(asked), "twenty copies of one solid: one call").toHaveLength(1);
+  expect(drawing.get(asked)![0]!, "after the import was done").toBeGreaterThan(imported);
+  expect(asked).toEqual([]);
+});
+
+test("a solid past the drawing budget is never sent to the kernel for its normals", async ({ page }) => {
+  const asked = await mockEngine(page);
+  // Over 1 MB of STEP: drawn flat, as before.
+  const big = Buffer.concat([stepText(1, "solid"), Buffer.from(`/* ${"x".repeat(1_100_000)} */
+`)]);
+  await open(page, "big.step", big);
+  await expect(page.locator("body")).toHaveAttribute("data-plate-shading-skipped", "1", { timeout: 15_000 });
+  await page.waitForTimeout(3500);
+  expect(drawing.get(asked), "no drawing call").toHaveLength(0);
   expect(asked).toEqual([]);
 });

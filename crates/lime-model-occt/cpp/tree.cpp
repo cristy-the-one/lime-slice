@@ -2785,11 +2785,12 @@ int lime_tree_edge(LimeShape* shape, int index, double* mid, double* length) {
 
 /// The tessellation for the Model reply, read through `view` until lime_tree_mesh_free, and the
 /// shape's description, which lives as long as the shape. Null, and `error` set, when Open CASCADE fails.
-/// `display` non-zero: the Model view's finer mesh with normals; 0: the mesh that is committed, sliced and exported.
+/// `display` 1: the Model view's finer mesh with normals; 0: the mesh that is committed, sliced and exported; 2: that
+/// same mesh, with the analytic normals at its corners as well.
 Mesh* lime_tree_mesh(LimeShape* shape, double chord, int display, LimeMeshView* view, char** error) {
     try {
         LIME_CATCH_FAULTS;
-        auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord, display != 0));
+        auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord, display == 1, display == 2));
         if (shape->held.about.empty()) {
             shape->held.about = describe(shape->held);
         }
