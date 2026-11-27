@@ -2732,7 +2732,6 @@ class Remesher {
     }
   }
 
-  /** The live mesh, vertices renumbered in order. */
   /**
    * A live triangle the shell solver would keep. Watson can leave a face whose remesh flattens one triangle to no
    * area; the solver stops the plan on that triangle, so it is left out. A triangle with no area adds nothing.
@@ -2755,6 +2754,7 @@ class Remesher {
     return la > 0 && Number.isFinite(la) && Number.isFinite(twice) && twice > 1e-12 * longest * longest;
   }
 
+  /** The live mesh, vertices renumbered in order. */
   compact(): { P: V3[]; T: Tri3[]; L: number[]; N: V3[] } {
     const map = new Int32Array(this.P.length / 3).fill(-1);
     const T: Tri3[] = [];
@@ -3819,6 +3819,20 @@ export function ribWall(solidIn: RibWallSolid, options: RibWallOptions): RibWall
   const meshLoops = flat
     ? loops.map((loop) => ({ ...loop, vertices: loop.vertices.flatMap((v) => { const n = vMap[v] ?? -1; return n >= 0 ? [n] : []; }) }))
     : loops;
+  // What the wall gives back counts and numbers the same mesh the solver gets, and says what went with the triangles.
+  const sentZones = flat ? wallZones.map((z) => ({ ...z, triangles: mapTris(z.triangles) })) : wallZones;
+  if (flat) {
+    report.vertices = meshVertices.length;
+    report.triangles = meshTriangles.length;
+    report.zones = report.zones.map((row, i) => ({ ...row, triangles: sentZones[i]!.triangles.length }));
+    const lostHolds = clamped.size - meshHolds.length;
+    const lostLoads = requestCases.reduce((n, loads, i) => n + loads.length - meshCases[i]!.length, 0);
+    const lostZones = zones.length - meshZones.length;
+    const said = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+    if (lostHolds > 0) warnings.push(`${said(lostHolds, "held point was", "held points were")} on wall triangles with no area and left out of the stress model.`);
+    if (lostLoads > 0) warnings.push(`${said(lostLoads, "load was", "loads were")} only on wall triangles with no area and left out of the stress model.`);
+    if (lostZones > 0) warnings.push(`${said(lostZones, "zone was", "zones were")} only on wall triangles with no area and left out of the stress model.`);
+  }
   return {
     request: {
       mesh: { vertices: meshVertices, triangles: meshTriangles, thickness: meshThickness },
@@ -3835,7 +3849,7 @@ export function ribWall(solidIn: RibWallSolid, options: RibWallOptions): RibWall
     faces: sel.faces,
     loops: meshLoops,
     holes,
-    zones: wallZones,
+    zones: sentZones,
     report,
   };
 }

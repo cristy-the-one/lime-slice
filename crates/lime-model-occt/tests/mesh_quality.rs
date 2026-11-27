@@ -203,6 +203,11 @@ fn watson_meshes_close_and_keep_the_chord() {
             "{name}: {} mm from the surface, against {limit} mm",
             row.deviation
         );
+        // Watson's worst here is 4 triangles of no area (duck-plate.step), each with one edge of three triangles, and a
+        // face 1.848 % off its area. More than that is a mesh that got worse.
+        assert!(row.flat <= 4, "{name}: {} triangles of no area, against 4", row.flat);
+        assert!(row.shared <= row.flat, "{name}: {} edges of three triangles against {} triangles of no area", row.shared, row.flat);
+        assert!(row.area_off <= 2.0, "{name}: a face's triangles are {} % off its area, against 2 %", row.area_off);
         assert_eq!(row.mesh, again.mesh, "{name}: the same solid meshed again gives the same mesh");
     }
 }
