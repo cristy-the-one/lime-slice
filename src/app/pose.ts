@@ -1,5 +1,6 @@
 import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
+import { warmShading } from "./plate-shading-warm";
 import { assemblyOf, bodyOf, couplingNames, drives, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withFound, withMember, type Assembly, type DeclaredKind, type Joint, type Member } from "../assembly.ts";
 import { gearsInTree, type WorldGear } from "../gear-pair.ts";
 import { couplingLine, crossedNotes, declareCoupling, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type DeclareSpec, type GearPart, type Turned } from "../gear-train.ts";
@@ -615,6 +616,8 @@ export function syncPose(): void {
     marks.push({ pivot: applyPose(sceneShift, applyPose(pose, joint.pivot)), ...(joint.kind === "hinge" ? { axis: turnDir(pose, joint.axis) } : {}) });
   }
   view.setBed(bedX, bedY, bedZ);
+  // Drawing only: a part with a solid and no normals yet asks for them once (src/app/plate-shading-warm.ts).
+  warmShading(state.plate.objects);
   const frame = animation?.result.frames[animation.clock.frame(performance.now())];
   const shown = frame && sceneShift ? placed.parts.map((part) => {
     const pose = frame.poses.get(part.id), object = state.plate.objects.find((item) => item.id === part.id);

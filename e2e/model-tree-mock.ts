@@ -368,6 +368,12 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       await route.fulfill({ json: handlers.stepSolids?.(request) ?? { solids: [{ name: "", volumeMm3: 0 }] } });
       return;
     }
+    // Prepare and Pose ask the kernel for a solid's plate-mesh normals (src/app/plate-shading-warm.ts), stateless and
+    // for drawing only. The mock meshes no STEP: those parts are drawn as before, and the call is no step of a tree.
+    if (request.call === "meshStep") {
+      await route.fulfill({ json: { error: "The mock meshes no STEP." } });
+      return;
+    }
     // Split to print's fit coupon is stateless too: the plate and the pin as STEP files.
     if (request.call === "fitCoupon") {
       calls.push(request);

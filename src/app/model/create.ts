@@ -1,5 +1,7 @@
 /** Creating a new solid: the primitive, the feature solid, its placement, and the empty state. */
 import { boundsOf, encodeStl, settleBy, type Bounds } from "../../mesh-place";
+import { shadeFromSolid } from "../../plate-shading";
+import { viewRequest } from "../../model-mesh-quality";
 import {
   boxUnder,
   inversePose,
@@ -110,7 +112,8 @@ async function finishNewSolid(made: {
   syncUndo();
   const feature = made.root.kind === "feature" ? made.root.op : null;
   readout(feature?.kind === "nurbsSurface" ? "Building the surface…" : feature?.kind === "loft" ? (feature.drawing?.sweep ? "Sweeping…" : "Lofting…") : "Building the solid…");
-  const body = await post(made.request(key, chord));
+  // Asked as the view asks, so the reply carries the display mesh and the plate mesh's normals (src/plate-shading.ts).
+  const body = await post(viewRequest(made.request(key, chord)));
   if (mine === S.ticket) S.busy = false;
   syncUndo();
   const parsed = decodeSolid(body);
@@ -136,6 +139,7 @@ async function finishNewSolid(made: {
   const bytes = encodeStl(positions, fileName);
   setMeshSeat(bytes, seat);
   const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes), ...meshSheet(parsed) };
+  shadeFromSolid(positions, parsed, chord);
   const pose = made.pose ?? newSolidPose(others, made.bounds(positions));
   const { bedX, bedY } = state.profile;
   state.plate = addedSolid(state.plate, { name, fileName, bytes, sourcePos: positions, stepTolerance: chord }, id, key, pose, bedX, bedY);
@@ -226,6 +230,7 @@ export function addPiece(at: Opened, other: ParsedSolid, key: string, split: Nod
   const bytes = encodeStl(positions, fileName);
   setMeshSeat(bytes, seat);
   const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes), ...meshSheet(other) };
+  shadeFromSolid(positions, other, state.stepTolerance);
   const name = placePiece(key, mesh);
   if (!name) {
     flushEdit();

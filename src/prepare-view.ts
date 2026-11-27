@@ -16,6 +16,8 @@ import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
 import { contextMaterial } from "./context-look";
+import { onShading } from "./plate-shading";
+import { isShaded, plateGeometry, shadeGeometry } from "./view-shading";
 import { affineRows, type ContextPart } from "./model-context";
 import { shifted, snapMove, type Footprint, type Screen, type SnapAxis, type SnapHit, type SnapTarget } from "./place-snap";
 import { neighbourTargets, ownFootprint } from "./place-snap-scene";
@@ -313,6 +315,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let plateGroup: THREE.Group | null = null;
   let plateOthers: ContextPart[] = [];
   const contextMat = contextMaterial(colors.context);
+  /** The same look for a plate object drawn with its exact corner normals (src/plate-shading.ts). */
+  const contextSmoothMat = contextMaterial(colors.context, true);
   const contextGroup = new THREE.Group();
   scene.add(contextGroup);
   /** --- Assemblies M5. The assembly view's own meshes, one geometry per source array. */
@@ -327,6 +331,13 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const assembledPick = new THREE.MeshStandardMaterial({ color: hexToThree(colors.mesh), roughness: 0.55, metalness: 0.05 });
   const assembledClash = new THREE.MeshStandardMaterial({ color: hexToThree(colors.amber), roughness: 0.6, metalness: 0.05, emissive: hexToThree(colors.amber), emissiveIntensity: 0.25 });
   const targetMat = contextMaterial(colors.amber);
+  const targetSmoothMat = contextMaterial(colors.amber, true);
+  /** The grey look of a plate object that is not selected, or the amber of a snap target, flat or smooth as its mesh is shaded. */
+  const otherLook = (node: THREE.Mesh) => {
+    const smooth = isShaded(node.geometry);
+    if (node.userData.plateId === markedTarget) return smooth ? targetSmoothMat : targetMat;
+    return smooth ? contextSmoothMat : contextMat;
+  };
   /** The plate object a snap or an Align to... has picked: its grey is swapped for the amber of the snap guides. */
   let markedTarget: string | null = null;
   canvas.dataset.snapTarget = "";
@@ -337,7 +348,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     paintTarget();
   }
   function paintTarget() {
-    for (const node of contextGroup.children as THREE.Mesh[]) node.material = node.userData.plateId === markedTarget ? targetMat : contextMat;
+    for (const node of contextGroup.children as THREE.Mesh[]) node.material = otherLook(node);
     canvas.dataset.snapTarget = markedTarget ?? "";
     requestRender();
   }
@@ -752,7 +763,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       }
       ghosts.add(copy);
       for (const other of contextGroup.children) {
-        const otherCopy = new THREE.Mesh((other as THREE.Mesh).geometry, contextMat);
+        const otherCopy = new THREE.Mesh((other as THREE.Mesh).geometry, otherLook(other as THREE.Mesh));
         otherCopy.matrixAutoUpdate = false;
         otherCopy.matrix.copy(other.matrix);
         otherCopy.matrix.elements[14] += sign * i * stride;
@@ -2210,6 +2221,28 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     frameBox(meshBounds.min, meshBounds.max);
   }
 
+  // A part's exact normals can come after it is drawn (a project just opened, a STEP import): the geometry it is drawn
+  // with takes them in place, and nothing else about it changes.
+  onShading(() => {
+    let changed = false;
+    if (mesh && meshSource && !isShaded(mesh.geometry) && shadeGeometry(mesh.geometry, meshSource)) changed = true;
+    for (const [positions, geometry] of assembledGeometry) if (!isShaded(geometry) && shadeGeometry(geometry, positions)) changed = true;
+    for (const [positions, geometry] of contextGeometry) if (!isShaded(geometry) && shadeGeometry(geometry, positions)) changed = true;
+    if (!changed) return;
+    publishShading();
+    paintTarget();
+    if (belt) layoutBed();
+    requestRender();
+  });
+
+  /** For the tests: whether the selected part is shaded smooth, and how many of the other drawn parts are. */
+  function publishShading() {
+    canvas.dataset.plateShading = mesh ? (isShaded(mesh.geometry) ? "smooth" : "flat") : "";
+    let shaded = 0;
+    for (const node of [...contextGroup.children, ...assembledGroup.children] as THREE.Mesh[]) if (node.geometry && isShaded(node.geometry)) shaded += 1;
+    canvas.dataset.plateShadedOthers = String(shaded);
+  }
+
   return {
     resize() {
       requestRender();
@@ -2267,14 +2300,15 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
           mesh = null;
         }
         if (canonical) {
-          const geometry = new THREE.BufferGeometry();
-          geometry.setAttribute("position", new THREE.BufferAttribute(canonical, 3));
-          geometry.computeVertexNormals();
+          // The exact corner normals when the part has them (src/plate-shading.ts), else each triangle's own. The
+          // triangles drawn, picked and painted are the plate mesh's either way.
+          const geometry = plateGeometry(canonical);
           mesh = new THREE.Mesh(geometry, material);
           mesh.matrixAutoUpdate = false;
           scene.add(mesh);
           addOutline(mesh, canonical);
         }
+        publishShading();
         edgeCache = null;
         edgePick = { kind: "hover", at: null };
         lastDab = null;
@@ -2453,11 +2487,13 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       beltOutLabel.paint(colors.amber);
       copyMat.color.setHex(hexToThree(colors.mesh));
       contextMat.color.setHex(hexToThree(colors.context));
+      contextSmoothMat.color.setHex(hexToThree(colors.context));
       assembledMat.color.setHex(hexToThree(colors.context));
       assembledPick.color.setHex(hexToThree(colors.mesh));
       assembledClash.color.setHex(hexToThree(colors.amber));
       assembledClash.emissive.setHex(hexToThree(colors.amber));
       targetMat.color.setHex(hexToThree(colors.amber));
+      targetSmoothMat.color.setHex(hexToThree(colors.amber));
       snapLineMat.color.setHex(hexToThree(colors.amber));
       for (const [axis, { ringMat, moveMats }] of handles) {
         ringMat.color.setHex(axisHex(axis));
@@ -2525,9 +2561,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     for (const part of parts) {
       let geometry = assembledGeometry.get(part.positions);
       if (!geometry) {
-        geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
-        geometry.computeVertexNormals();
+        geometry = plateGeometry(part.positions);
         assembledGeometry.set(part.positions, geometry);
       }
       const node = new THREE.Mesh(geometry, clashing.has(part.id) ? assembledClash : part.id === selectedId ? assembledPick : assembledMat);
@@ -2548,6 +2582,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     canvas.dataset.clashing = [...clashing].filter((id) => parts.some((part) => part.id === id)).sort().join(" ");
     if (published.length > 0) canvas.dataset.assembled = published.join(" ");
     else delete canvas.dataset.assembled;
+    publishShading();
     requestRender();
   }
 
@@ -2566,6 +2601,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       if (!geometry) {
         geometry = new THREE.BufferGeometry();
         geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
+        // Smooth when the part has its exact normals; the flat look needs none.
+        shadeGeometry(geometry, part.positions);
         contextGeometry.set(part.positions, geometry);
       }
       const node = new THREE.Mesh(geometry, contextMat);
@@ -2574,7 +2611,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       node.renderOrder = 1;
       node.userData.plateId = part.id;
       node.raycast = () => undefined;
-      node.material = part.id === markedTarget ? targetMat : contextMat;
+      node.material = otherLook(node);
       contextGroup.add(node);
       box.setFromObject(node);
       const [x0, y0, z0] = frame.fromScene(box.min);
@@ -2582,6 +2619,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       const world = [Math.min(x0, x1), Math.min(y0, y1), Math.min(z0, z1), Math.max(x0, x1), Math.max(y0, y1), Math.max(z0, z1)];
       published.push(`${part.id}:${world.map((value) => value.toFixed(2)).join(",")}`);
     }
+    publishShading();
     canvas.dataset.plateContextCount = String(plateOthers.length);
     if (published.length > 0) canvas.dataset.plateContext = published.join(" ");
     else delete canvas.dataset.plateContext;

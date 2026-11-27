@@ -116,8 +116,8 @@ struct Held {
 struct Mesh {
     /// Nine per triangle: the corners of a triangle soup, wound outward.
     std::vector<float> positions;
-    /// Nine per triangle: exact outward unit surface normals at each corner (`BRepLProp_SLProps`). Display mesh only:
-    /// empty for the standard mesh.
+    /// Nine per triangle: exact outward unit surface normals at each corner (`BRepLProp_SLProps`). The display mesh, and
+    /// the standard mesh when its normals are asked for (`plate_normals`); otherwise empty.
     std::vector<float> normals;
     /// The face index of each triangle.
     std::vector<uint32_t> triangles;
@@ -168,8 +168,10 @@ std::string exact_volume_text(const Held& held);
 double faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& about);
 /// Mesh the faces unless they are meshed at this chord already, and read the mesh out.
 /// `display`: the Model view's finer mesh with analytic normals (mesh_angle_of), on a copy of the shape. Otherwise the
-/// mesh every commit, slice and export uses: half a radian, no normals.
-Mesh tessellate(Held& held, double chord, bool display = false);
+/// mesh every commit, slice and export uses: half a radian, no normals, unless `plate_normals` asks for the analytic
+/// normals at its corners too (Prepare and Pose shade the plate mesh with them). The positions, triangles and edges
+/// are the same either way.
+Mesh tessellate(Held& held, double chord, bool display = false, bool plate_normals = false);
 /// The last Hermite patch or blend's own measure at its stations, as JSON, for the tests.
 std::string last_fill_report();
 /// --- Organic surfaces S1: lazy curvature buffers, UV isoparms, shared-edge G0/G1/G2 continuity, and NURBS health.

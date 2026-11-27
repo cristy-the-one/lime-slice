@@ -19,6 +19,8 @@ import { orbitGlide } from "./orbit-glide";
 import { IDLE_EDGE } from "./model-view/constants";
 import { lookOf, type PoseLook, type PoseLooks } from "./pose-look";
 import { grabDegrees } from "./viewport-grab";
+import { onShading } from "./plate-shading";
+import { isShaded, plateGeometry, shadeGeometry } from "./view-shading";
 import type { Screen } from "./place-snap";
 
 export type PoseCamera = "top" | "front" | "iso";
@@ -151,9 +153,8 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   function geometryOf(positions: Float32Array) {
     let entry = held.get(positions);
     if (!entry) {
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      geometry.computeVertexNormals();
+      // The exact corner normals when the part has them (src/plate-shading.ts), else each triangle's own.
+      const geometry = plateGeometry(positions);
       geometry.computeBoundingSphere();
       // The segments `EdgesGeometry` draws, in its order, from integer tables in place of its string keys: about
       // a fifth of the time on a part of a few hundred thousand triangles, which every part pays on entering Pose.
@@ -163,6 +164,20 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       held.set(positions, entry);
     }
     return entry;
+  }
+
+  // A part's exact normals can come after it is drawn (a project just opened): its geometry takes them in place.
+  onShading(() => {
+    let changed = false;
+    for (const [positions, entry] of held) if (!isShaded(entry.geometry) && shadeGeometry(entry.geometry, positions)) changed = true;
+    if (changed) publishShading();
+  });
+
+  /** For the tests: how many of the parts drawn are shaded with their exact normals. */
+  function publishShading() {
+    let shaded = 0;
+    for (const positions of shown) if (held.get(positions) && isShaded(held.get(positions)!.geometry)) shaded += 1;
+    canvas.dataset.plateShaded = String(shaded);
   }
 
   function setScene(next: PoseScene) {
@@ -251,6 +266,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     if (published.length) canvas.dataset.posed = published.join(" ");
     else delete canvas.dataset.posed;
     canvas.dataset.looks = looks.join(" ");
+    publishShading();
     sceneParts = next.parts;
     if (next.colors?.size) canvas.dataset.animationColors = [...next.colors].map(([id, color]) => `${id}:${color}`).join(" ");
     else delete canvas.dataset.animationColors;

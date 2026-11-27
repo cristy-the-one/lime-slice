@@ -26,7 +26,10 @@ impl Store {
                     ));
                 }
                 let mut shape = root_shape(Some(data_b64), None, None, None, None)?;
-                Ok(Answer::Object(shape.reply(ROOT, chord_mm, false)?))
+                // Asked as the view asks (`meshQuality: "display"`), the reply carries the plate mesh's corner normals:
+                // Prepare and Pose shade a stored solid's plate mesh with them. The mesh itself is the same either way.
+                let plate_normals = self.display;
+                Ok(Answer::Object(shape.reply_with(ROOT, chord_mm, false, plate_normals)?))
             }
             Request::TextFonts => Ok(Answer::Plain(lettering::fonts_reply())),
             Request::TextFontAdd { data_b64, face } => Ok(Answer::Plain(

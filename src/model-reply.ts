@@ -70,6 +70,8 @@ export interface SolidArrays {
   stepFaces?: (number | null)[];
   /** --- Organic surfaces: the view's finer mesh, as the kernel sends it under `display` (a stand-in sets it to test). */
   display?: { positions: ArrayLike<number>; normals?: ArrayLike<number>; triangles: ArrayLike<number> };
+  /** The exact normal at each corner of `positions`, sent under `display` as `plateNormals` (src/plate-shading.ts). */
+  plateNormals?: ArrayLike<number>;
 }
 
 /** --- Organic surfaces S1: shared-edge G0/G1/G2 continuity and NURBS health from `surfaceInspect`. */
@@ -176,6 +178,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
   for (const face of triangles) if (face >= faceRows.length) return DAMAGED;
   const display = readDisplay(body.display, faceRows.length);
   if (display === null) return DAMAGED;
+  const plateNormals = readPlateNormals(body.display, positions.length);
   const faces: ParsedSolid["faces"] = [];
   for (const row of faceRows as { [K in keyof FaceRow]?: unknown }[]) {
     if (!row || typeof row.areaMm2 !== "number") return DAMAGED;
@@ -219,6 +222,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
     ...(nakedEdges.length > 0 ? { nakedEdges } : {}),
     ...(stepFaces ? { stepFaces } : {}),
     ...(display ? { display } : {}),
+    ...(plateNormals ? { plateNormals } : {}),
   };
 }
 
@@ -231,6 +235,8 @@ function readDisplay(raw: unknown, faceCount: number): DisplayMesh | undefined |
   if (raw === undefined) return undefined;
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Record<string, unknown>;
+  // `meshStep` sends the plate mesh's normals alone: no display mesh.
+  if (row.positions === undefined && row.triangles === undefined && row.normals === undefined && row.plateNormals !== undefined) return undefined;
   const positions = words(row.positions, Float32Array);
   const triangles = words(row.triangles, Uint32Array);
   if (!positions || !triangles || positions.length !== triangles.length * 9) return null;
@@ -238,6 +244,19 @@ function readDisplay(raw: unknown, faceCount: number): DisplayMesh | undefined |
   const normals = row.normals === undefined ? undefined : words(row.normals, Float32Array);
   if (normals === null || (normals && normals.length !== positions.length)) return null;
   return { positions, triangles, ...(normals ? { normals } : {}) };
+}
+
+/**
+ * `display.plateNormals`: the exact outward unit normal at each corner of the top-level `positions` (b64 f32, nine a
+ * triangle, in their order), for Prepare and Pose to shade the plate mesh with (src/plate-shading.ts). Drawing data
+ * only: one that is missing or of the wrong length is left out, and the reply stands.
+ */
+function readPlateNormals(raw: unknown, positionCount: number): Float32Array | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = (raw as Record<string, unknown>).plateNormals;
+  if (value === undefined) return undefined;
+  const normals = words(value, Float32Array);
+  return normals && normals.length === positionCount ? normals : undefined;
 }
 
 /** A closed face's flag and fold distances, or nothing for any other face. A distance that is not a number 0 or over is dropped. */
@@ -263,10 +282,11 @@ export type SolidWire = {
   triangles: string;
   edgePoints: string;
   edgeOffsets: string;
-  display?: { positions: string; normals?: string; triangles: string };
+  display?: { positions?: string; normals?: string; triangles?: string; plateNormals?: string };
 };
 
 export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (number | null)[] } {
+  const plateNormals = solid.plateNormals && solid.plateNormals.length === solid.positions.length ? wordsBase64(Float32Array.from(solid.plateNormals)) : undefined;
   const offsets = [0];
   const points: number[] = [];
   for (const edge of solid.edges) {
@@ -295,12 +315,17 @@ export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (numb
     edgePoints: wordsBase64(Float32Array.from(points)),
     edgeOffsets: wordsBase64(Uint32Array.from(offsets)),
     ...(solid.stepFaces && solid.stepFaces.length === solid.faces.length ? { stepFaces: solid.stepFaces } : {}),
-    ...(solid.display
+    ...(solid.display || plateNormals
       ? {
           display: {
-            positions: wordsBase64(Float32Array.from(solid.display.positions)),
-            ...(solid.display.normals ? { normals: wordsBase64(Float32Array.from(solid.display.normals)) } : {}),
-            triangles: wordsBase64(Uint32Array.from(solid.display.triangles)),
+            ...(solid.display
+              ? {
+                  positions: wordsBase64(Float32Array.from(solid.display.positions)),
+                  ...(solid.display.normals ? { normals: wordsBase64(Float32Array.from(solid.display.normals)) } : {}),
+                  triangles: wordsBase64(Uint32Array.from(solid.display.triangles)),
+                }
+              : {}),
+            ...(plateNormals ? { plateNormals } : {}),
           },
         }
       : {}),
