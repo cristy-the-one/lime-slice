@@ -1,12 +1,16 @@
-import { parseLegacyPrusaLink } from "./prusa-link.ts";
 import {
-  busyMessage,
   gcodeFileName,
   hostProblem,
-  isPrinterBusy,
   keyProblem,
-  moonrakerConfigRequest,
+  parseLegacyPrusaLink,
   parsePrusaOrigin,
+  type PrusaFetch,
+  type PrusaLinkRequest,
+} from "./prusa-link.ts";
+import {
+  busyMessage,
+  isPrinterBusy,
+  moonrakerConfigRequest,
   readMoonrakerConfig,
   readStatus,
   readUpload,
@@ -15,9 +19,7 @@ import {
   statusRequest,
   uploadRequest,
   versionRequest,
-  type PrusaFetch,
-  type PrusaLinkRequest,
-} from "./prusa-link.ts";
+} from "./prusa-link-net.ts";
 
 let failed = 0;
 
