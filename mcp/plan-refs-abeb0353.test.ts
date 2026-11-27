@@ -243,6 +243,7 @@ for (const wall of walls) {
     if (found.length) {
       failed += 1;
       console.error(`plan-refs FAIL ${name}`);
+      console.error(`W1_PLANREF ${name} ${JSON.stringify(stripClock(reply))}`);
       for (const line of found) console.error(`  ${line}`);
     } else console.log(`plan-refs: ${name} matches abeb0353 aside from the clock fields and the allowed keys printed above`);
   }

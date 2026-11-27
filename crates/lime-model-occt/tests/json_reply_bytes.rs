@@ -132,6 +132,18 @@ fn open_apply_probe_and_goto_json_matches_the_pre_binary_ipc_bytes() {
                 .is_some_and(|v| v.get("error").is_none()),
             "{name} failed: {got}"
         );
+        let expected = pinned(name);
+        if got != expected {
+            // One line, so a CI log can be copied back into the pin. Watson's triangulation is not Delabella's.
+            eprintln!("W1_PIN {} {} {}", std::env::consts::OS, name, got);
+        }
+    }
+    for (name, request) in CALLS {
+        let got = if *name == "open" {
+            open.clone()
+        } else {
+            call_tree(request)
+        };
         assert_bytes(name, &got, &pinned(name));
     }
 }

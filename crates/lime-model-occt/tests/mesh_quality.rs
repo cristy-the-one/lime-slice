@@ -180,6 +180,7 @@ fn watson_meshes_close_and_keep_the_chord() {
     }
     eprintln!("| part | triangles | farthest from surface mm | sharpest corner deg | corners under 5 deg | open edges | edges of 3+ | faces with no triangles | triangles of no area | a face's area off by % |");
     eprintln!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    let mut rows = Vec::new();
     for (index, part) in parts().iter().enumerate() {
         let row = measure(part, &format!("q{index}"));
         let again = measure(part, &format!("q{index}e"));
@@ -187,7 +188,9 @@ fn watson_meshes_close_and_keep_the_chord() {
             "| {} | {} | {:.4} | {:.2} | {} | {} | {} | {} | {} | {:.3} |",
             part.name, row.triangles, row.deviation, row.angle, row.slivers, row.open, row.shared, row.unmeshed, row.flat, row.area_off
         );
-        let name = &part.name;
+        rows.push((part.name.clone(), row, again));
+    }
+    for (name, row, again) in &rows {
         assert_eq!(row.unmeshed, 0, "{name}: every face is meshed");
         assert_eq!(row.flat, 0, "{name}: a triangle of no area");
         assert_eq!(row.open, 0, "{name}: an edge of one triangle, so two faces do not meet");
