@@ -390,30 +390,35 @@ try {
 }
 
 const conformScratch = mkdtempSync(join(tmpdir(), "lime-mcp-skills-conform-"));
-// 1. Rich YAML frontmatter (BOM, quoted values, nested metadata, lists, block scalar, comments, `...` closer)
+// 1. Flat frontmatter behind a byte-order mark, with a comment line and a blank line.
 mkdirSync(join(conformScratch, "acme", "billing", "refunds", "scripts"), { recursive: true });
 mkdirSync(join(conformScratch, "acme", "billing", "refunds", "assets"), { recursive: true });
 const richSkillBytes = Buffer.from(
   "\uFEFF---\n"
   + "# Leading YAML comment\n"
   + "name: refunds\n"
-  + "description: >-\n"
-  + "  Process customer refund requests\n"
-  + "  per company policy.\n"
-  + "license: \"Apache-2.0\"\n"
+  + "\n"
+  + "description: Process customer refund requests per company policy.\n"
+  + "license: Apache-2.0\n"
   + "compatibility: Requires Python 3.12+\n"
-  + "metadata:\n"
-  + "  author: acme-corp\n"
-  + "  version: \"2.1.0\"\n"
-  + "  retries: 3\n"
-  + "  strict: true\n"
-  + "tags:\n"
-  + "  - billing\n"
-  + "  - \"refunds\"\n"
-  + "...\n\n"
+  + "---\n\n"
   + "# Refunds\n",
   "utf8",
 );
+// Frontmatter a YAML reader would not read as flat `key: value` text. Each is skipped, not served misread.
+const notFlat: [string, string][] = [
+  ["block-scalar", "---\nname: block-scalar\ndescription: >-\n  Folded over\n  two lines.\n---\n"],
+  ["quoted", "---\nname: quoted\ndescription: \"Quoted.\"\n---\n"],
+  ["nested-map", "---\nname: nested-map\ndescription: Has a map.\nmetadata:\n  author: acme\n---\n"],
+  ["a-list", "---\nname: a-list\ndescription: Has a list.\ntags:\n  - one\n---\n"],
+  ["flow-list", "---\nname: flow-list\ndescription: Has a flow list.\ntags: [one, two]\n---\n"],
+  ["trailing-comment", "---\nname: trailing-comment\ndescription: Ends in a comment. # here\n---\n"],
+  ["dots-closer", "---\nname: dots-closer\ndescription: Closed by dots.\n...\n"],
+];
+for (const [dirName, body] of notFlat) {
+  mkdirSync(join(conformScratch, dirName), { recursive: true });
+  writeFileSync(join(conformScratch, dirName, "SKILL.md"), body);
+}
 const pyScriptBytes = Buffer.from("print('ok')\n", "utf8");
 const jsonAssetBytes = Buffer.from('{"ok":true}\n', "utf8");
 // Valid PNG header + non-UTF-8 binary bytes (0x89, 0x00, 0xff) that UTF-8 decoding would corrupt.
@@ -461,7 +466,7 @@ try {
   const skills = listed.result?.skills ?? [];
   const uris = skills.map((s) => s.uri).sort();
   check(
-    "only valid prefixed and nested skills are listed (invalid names, limits, and malformed YAML are excluded)",
+    "only valid prefixed and nested skills are listed (invalid names, limits, and frontmatter that is not flat are excluded)",
     listed.error === undefined && JSON.stringify(uris) === JSON.stringify([
       "skill://acme/billing/refunds/SKILL.md",
       "skill://outer/SKILL.md",
@@ -476,13 +481,21 @@ try {
     description: "Process customer refund requests per company policy.",
     license: "Apache-2.0",
     compatibility: "Requires Python 3.12+",
-    metadata: { author: "acme-corp", version: "2.1.0", retries: 3, strict: true },
-    tags: ["billing", "refunds"],
   };
   check(
-    "YAML frontmatter preserves quoted strings, nested metadata, typed scalars, lists, block scalars, and BOM",
+    "flat frontmatter is read behind a byte-order mark, past a comment line and a blank line",
     JSON.stringify(refunds?.frontmatter) === JSON.stringify(expectedFm),
     JSON.stringify({ got: refunds?.frontmatter, want: expectedFm }),
+  );
+
+  const bomRead = await call(conformServer, "resources/read", modern({ uri: "skill://acme/billing/refunds/SKILL.md" }));
+  const bomText = bomRead.result?.contents?.[0]?.text;
+  const bomBytes = typeof bomText === "string" ? Buffer.from(bomText, "utf8") : Buffer.alloc(0);
+  const bomManifest = refunds?.resources?.find((r) => r.uri === "skill://acme/billing/refunds/SKILL.md");
+  check(
+    "a text file that starts with a byte-order mark is served with it, so its text matches the digest and size",
+    bomBytes.equals(richSkillBytes) && bomManifest?.digest === digestOf(bomBytes) && bomManifest.size === bomBytes.length,
+    JSON.stringify({ served: bomBytes.length, file: richSkillBytes.length, manifest: bomManifest }),
   );
 
   const outer = skills.find((s) => s.uri === "skill://outer/SKILL.md");
