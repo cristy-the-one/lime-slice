@@ -23,7 +23,7 @@ import { setProjectTitle } from "./project-title";
 import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
 import { clearEditHistory, flushEdit, noteEdit } from "./history";
-import { extractForeign3mfRecipe, foreign3mfMessage, foreignRecipeOffer, foreignSlicer3mf, type ForeignRecipe } from "../foreign-3mf";
+import type { ForeignRecipe } from "../foreign-3mf";
 import { assemblyNotice, shellCount } from "../mesh-shells";
 import { solidsOffer, stepSolidHint } from "../step-solids";
 import { emptyOverrides } from "../overrides";
@@ -770,6 +770,8 @@ async function addMeshNow(name: string, bytes: ArrayBuffer, quiet: boolean) {
 
 async function offerForeignRecipe(name: string, bytes: ArrayBuffer) {
   if (!/\.3mf$/i.test(name)) return;
+  // The reader loads with the first 3MF opened; the mesh is already on the plate.
+  const { extractForeign3mfRecipe, foreign3mfMessage, foreignRecipeOffer, foreignSlicer3mf } = await import("../foreign-3mf");
   const raw = new Uint8Array(bytes);
   const vendor = foreignSlicer3mf(raw);
   if (!vendor) return;
