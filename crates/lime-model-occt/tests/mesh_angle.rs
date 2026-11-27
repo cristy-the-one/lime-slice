@@ -105,39 +105,34 @@ fn ready() -> bool {
     true
 }
 
-/// The default mesh on origin/main at 146a5ec1 (Angle 0.5, no normals), by shape and chord: triangle count and FNV-1a
-/// hash of the positions and triangles bytes. This file's meshing run on a detached worktree of that commit, built
-/// against OCCT 7.9.2 with MSVC on Windows, printed them. The hashes are asserted on Windows, where they were made: the
-/// mesh is the same algorithm on every platform, but float rounding in another compiler's build of Open CASCADE can
-/// move a node in its last bit. Elsewhere the counts are asserted and the hashes printed.
+/// The default mesh with Watson, by shape and chord: triangle count and FNV-1a hash of the positions
+/// and triangles bytes. The counts are the ones main produced with Delabella. The hashes are Watson's,
+/// printed by the Windows OCCT job of run 45946735307 (MSVC, OCCT 7.9.2). They are asserted on Windows,
+/// where they were made: the mesh is the same algorithm on every platform, but float rounding in another
+/// compiler's build of Open CASCADE can move a node in its last bit. Elsewhere the counts are asserted
+/// and the hashes printed.
 const REFERENCE: &[(&str, f64, usize, u64)] = &[
-    ("filleted box", 0.05, 788, 0x1dff_cbee_a035_b94d),
-    ("filleted box", 0.1, 628, 0x1565_029c_a2a1_58c5),
-    ("cylinder", 0.05, 176, 0xd76b_db78_1aa0_ed1e),
-    ("cylinder", 0.1, 124, 0x0bb3_663e_be10_d455),
+    ("filleted box", 0.05, 788, 0x8d3d_9d82_2cc5_980a),
+    ("filleted box", 0.1, 628, 0x25f3_26dd_0c41_6991),
+    ("cylinder", 0.05, 176, 0xe108_dc15_a459_e926),
+    ("cylinder", 0.1, 124, 0x3546_0939_4ac6_2789),
 ];
 
 /// The same for the STEP paths (`step_meshes`): meshStep and opening a STEP file, on the filleted box as the kernel
-/// writes it to STEP.
+/// writes it to STEP. Counts unchanged from main; hashes are Watson's from the same Windows run.
 const STEP_REFERENCE: &[(&str, f64, usize, u64)] = &[
-    ("meshStep", 0.05, 788, 0xd215_5f5d_559e_ee21),
-    ("open STEP", 0.05, 788, 0xd215_5f5d_559e_ee21),
-    ("meshStep", 0.1, 628, 0x9136_8f20_a1a0_a9fc),
-    ("open STEP", 0.1, 628, 0x9136_8f20_a1a0_a9fc),
+    ("meshStep", 0.05, 788, 0x59b7_61a6_6e9f_9d17),
+    ("open STEP", 0.05, 788, 0x59b7_61a6_6e9f_9d17),
+    ("meshStep", 0.1, 628, 0xbade_cc72_093f_f841),
+    ("open STEP", 0.1, 628, 0xbade_cc72_093f_f841),
 ];
 
-/// Prints every row, then returns the mismatches. One Windows failure lists every soup hash Watson
-/// moved, instead of stopping on the first.
-fn mesh_drift(what: &str, count: usize, hash: u64, expected: usize, expected_hash: u64) -> Option<String> {
-    println!("{what}: {count} triangles, soup hash {hash:#x} (main {expected}, {expected_hash:#x})");
-    let mut notes = Vec::new();
-    if count != expected {
-        notes.push(format!("{what}: {count} triangles, main had {expected}"));
+fn same_as_main(what: &str, count: usize, hash: u64, expected: usize, expected_hash: u64) {
+    println!("{what}: {count} triangles, soup hash {hash:#x} (pinned {expected}, {expected_hash:#x})");
+    assert_eq!(count, expected, "{what}: the default mesh must keep main's triangle count");
+    if cfg!(windows) {
+        assert_eq!(hash, expected_hash, "{what}: the default mesh must be Watson's, byte for byte");
     }
-    if cfg!(windows) && hash != expected_hash {
-        notes.push(format!("{what}: soup hash {hash:#x}, main had {expected_hash:#x}"));
-    }
-    if notes.is_empty() { None } else { Some(notes.join("; ")) }
 }
 
 #[test]
@@ -145,14 +140,11 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
     if !ready() {
         return;
     }
-    let mut drift = Vec::new();
     for &(name, chord, expected, expected_hash) in REFERENCE {
         let key = format!("angle-{name}-{chord}");
         let standard = meshed(name, &key, chord, None);
         let count = triangles(&standard);
-        if let Some(note) = mesh_drift(&format!("{name} at {chord}"), count, soup_hash(&standard), expected, expected_hash) {
-            drift.push(note);
-        }
+        same_as_main(&format!("{name} at {chord}"), count, soup_hash(&standard), expected, expected_hash);
         assert!(standard.get("normals").is_none(), "{name}: the default mesh sends no normals");
 
         assert!(standard.get("display").is_none(), "{name}: no display mesh without the flag");
@@ -163,9 +155,7 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
         let mut outside = flagged.clone();
         let display = outside.as_object_mut().expect("object").remove("display").expect("a display mesh with the flag");
         assert_eq!(outside, standard, "{name}: the plate mesh in a flagged reply is the unflagged reply");
-        if let Some(note) = mesh_drift(&format!("{name} at {chord}, flagged"), triangles(&flagged), soup_hash(&flagged), expected, expected_hash) {
-            drift.push(note);
-        }
+        same_as_main(&format!("{name} at {chord}, flagged"), triangles(&flagged), soup_hash(&flagged), expected, expected_hash);
         ok(json!({ "call": "close", "key": flagged_key }));
 
         let node = standard["id"].clone();
@@ -222,7 +212,6 @@ fn the_default_mesh_is_mains_and_only_the_display_mesh_is_finer() {
         ok(json!({ "call": "close", "key": twin }));
         ok(json!({ "call": "close", "key": key }));
     }
-    assert!(drift.is_empty(), "{}", drift.join("\n"));
 }
 
 /// A mirrored box: every plane has an indirect placement, whose axis is the reverse of D1U x D1V. Each display normal
@@ -309,12 +298,8 @@ fn the_step_paths_mesh_as_main_did() {
     if !ready() {
         return;
     }
-    let mut drift = Vec::new();
     for ((path, chord, count, hash), &(want_path, want_chord, want_count, want_hash)) in step_meshes().into_iter().zip(STEP_REFERENCE) {
         assert_eq!((path, chord), (want_path, want_chord));
-        if let Some(note) = mesh_drift(&format!("{path} at {chord}"), count, hash, want_count, want_hash) {
-            drift.push(note);
-        }
+        same_as_main(&format!("{path} at {chord}"), count, hash, want_count, want_hash);
     }
-    assert!(drift.is_empty(), "{}", drift.join("\n"));
 }
