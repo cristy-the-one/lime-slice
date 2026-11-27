@@ -124,7 +124,17 @@
 #include <BRepGProp_Face.hxx>
 #include <BRepGProp_Vinert.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepMesh_Context.hxx>
+#include <BRepMesh_BaseMeshAlgo.hxx>
+#include <BRepMesh_DefaultRangeSplitter.hxx>
+#include <BRepMesh_NodeInsertionMeshAlgo.hxx>
+#include <BRepMesh_FaceDiscret.hxx>
+#include <BRepMesh_MeshAlgoFactory.hxx>
+#include <IMeshData_Face.hxx>
+#include <IMeshTools_MeshAlgo.hxx>
+#include <IMeshTools_MeshAlgoFactory.hxx>
 #include <IMeshTools_Parameters.hxx>
+#include <unordered_set>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -379,6 +389,10 @@ struct Stats {
     std::atomic<long long> display_mesh_us{0};
     std::atomic<long long> readout_us{0};
     std::atomic<long long> describe_us{0};
+    /// Flat faces with many holes meshed from the exact triangulation (mesh_faces), and those it failed on, which
+    /// Watson meshed instead.
+    std::atomic<long> flat_faces{0};
+    std::atomic<long> flat_fallbacks{0};
 };
 
 Stats g_stats;
@@ -693,11 +707,14 @@ bool mesh_kept(const TopoDS_Face& face, double chord, double angle = 0.5) {
 }
 
 /// Every mesh the bridge makes: the faces of `shape` triangulated to within `chord`, half a radian between neighbouring
-/// segments, faces in parallel after their shared edges. The triangulation of each face is Open CASCADE's Watson.
-/// Watson's time on one face grows with the square of the face's holes (about 1.5 s for a plate face with 1,000 holes).
-/// The edges are cut the same either way, so the faces still meet point for point. Delabella, the sweep-line mesher
-/// used before this, died in the Windows test process on OCCT 7.9.2 (an access violation, and heap corruption, with
-/// parallel meshing on or off). Watson did not, so Watson is the mesher.
+/// segments, faces in parallel after their shared edges. The triangulation of each face is Open CASCADE's Watson,
+/// except a flat face with at least FLAT_MESHER_HOLES holes (10, src/lib.rs): that one is meshed whole by an exact
+/// constrained Delaunay triangulation (FlatBaseMeshAlgo, src/flat_mesh.rs), and by Watson again whenever that fails.
+/// Watson's time on one face grows with the square of the face's holes: the mesh of a plate with 1,000 holes took
+/// 3.03 s with Watson and 0.54 s with the exact mesh on one Windows machine (tests/mesh_speed.rs). The edges are cut
+/// the same either way, so the faces still meet point for point. Delabella, the sweep-line mesher used before this,
+/// died in the Windows test process on OCCT 7.9.2 (an access violation, and heap corruption, with parallel meshing on
+/// or off): its source decides with inexact predicates and has its asserts compiled out.
 /// `angle` is half a radian for every mesh that is committed, sliced or exported, as it always was. Only the Model
 /// view's display mesh passes mesh_angle_of(chord), on a copy of the shape (display_faces).
 ///
@@ -715,6 +732,196 @@ double mesh_angle_of(double chord) {
     return 0.20 + t * (0.35 - 0.20);
 }
 
+/// The mesh of a flat face from its points and wire segments (src/flat_mesh.rs: spade's constrained Delaunay
+/// triangulation, every test decided by Shewchuk's adaptive exact predicates): `n` x, y pairs, `nf` frontier segments
+/// (the face on one side), `ni` inner segments (the face on both sides) in; the triangles inside the face out, each
+/// counterclockwise, and their count, or -1. The Rust side hands it over before its first call into the kernel; until
+/// then every face is Watson's.
+using FlatFaceMesh = int (*)(
+    const double* xy,
+    int n,
+    const int* frontier,
+    int nf,
+    const int* inner,
+    int ni,
+    int* triangles,
+    int capacity);
+std::atomic<FlatFaceMesh> g_flat_face_mesh{nullptr};
+
+/// A flat face with at least this many holes is meshed by FlatBaseMeshAlgo; -1 sends every face to Watson. The Rust
+/// side sets its count (FLAT_MESHER_HOLES in src/lib.rs) when it hands over the mesh.
+std::atomic<long long> g_flat_mesher_holes{-1};
+
+/// A plane's mesh made whole by the exact constrained triangulation, in place of Watson's point-by-point insertion and
+/// constraint pass (BRepMesh_DelaunayBaseMeshAlgo). Open CASCADE still cuts the edges and registers the face's points
+/// and segments (initDataStructure), so the face's boundary points are the ones its neighbours have, and it still
+/// commits the triangles. Open CASCADE's own plug-in point for this, BRepMesh_CustomBaseMeshAlgo, cannot be used from
+/// outside TKMesh on Windows: its inline BRepMesh_Delaun::ProcessConstraints calls insertInternalEdges and
+/// frontierAdjust, which TKMesh.dll does not export. A plane gets no points inside it from Watson either
+/// (BRepMesh_DefaultRangeSplitter::GenerateSurfaceNodes returns none), so nothing else is left out.
+class FlatBaseMeshAlgo : public BRepMesh_BaseMeshAlgo {
+public:
+    /// The mesh was made and has triangles. When not, nothing was committed to the face.
+    bool done() const { return done_; }
+
+protected:
+    void generateMesh(const Message_ProgressRange&) override {
+        const FlatFaceMesh mesh = g_flat_face_mesh.load();
+        const Handle(BRepMesh_DataStructureOfDelaun)& structure = getStructure();
+        const int nodes = structure->NbNodes();
+        if (mesh == nullptr || nodes < 3) {
+            throw Standard_Failure("no flat face mesh");
+        }
+        std::vector<double> xy(2 * static_cast<size_t>(nodes));
+        for (int index = 0; index < nodes; ++index) {
+            const gp_XY& at = structure->GetNode(index + 1).Coord();
+            xy[2 * static_cast<size_t>(index)] = at.X();
+            xy[2 * static_cast<size_t>(index) + 1] = at.Y();
+        }
+        std::vector<int> frontier;
+        std::vector<int> inner;
+        for (int index = 1; index <= structure->NbLinks(); ++index) {
+            const BRepMesh_Edge& link = structure->GetLink(index);
+            std::vector<int>* into = link.Movability() == BRepMesh_Frontier ? &frontier
+                : link.Movability() == BRepMesh_Fixed                     ? &inner
+                                                                          : nullptr;
+            if (into == nullptr) {
+                throw Standard_Failure("the flat face has a segment that is neither boundary nor inner");
+            }
+            into->push_back(link.FirstNode() - 1);
+            into->push_back(link.LastNode() - 1);
+        }
+        const int capacity = 2 * nodes;
+        std::vector<int> triangles(3 * static_cast<size_t>(capacity));
+        const int count = mesh(
+            xy.data(),
+            nodes,
+            frontier.data(),
+            static_cast<int>(frontier.size() / 2),
+            inner.data(),
+            static_cast<int>(inner.size() / 2),
+            triangles.data(),
+            capacity);
+        if (count <= 0 || count > capacity) {
+            throw Standard_Failure("the flat face mesh failed");
+        }
+        for (int t = 0; t < count; ++t) {
+            Standard_Integer edges[3];
+            Standard_Boolean orientations[3];
+            for (int k = 0; k < 3; ++k) {
+                const int from = triangles[3 * static_cast<size_t>(t) + k];
+                const int to = triangles[3 * static_cast<size_t>(t) + (k + 1) % 3];
+                if (from < 0 || from >= nodes || to < 0 || to >= nodes) {
+                    throw Standard_Failure("the flat face mesh named a point that is not there");
+                }
+                const Standard_Integer link = structure->AddLink(BRepMesh_Edge(from + 1, to + 1, BRepMesh_Free));
+                edges[k] = std::abs(link);
+                orientations[k] = link > 0;
+            }
+            structure->AddElement(BRepMesh_Triangle(edges, orientations, BRepMesh_Free));
+        }
+        done_ = true;
+    }
+
+private:
+    bool done_ = false;
+};
+
+/// The plane's points scaled and classified as Watson's plane mesh has them (BRepMesh_MeshAlgoFactory gives a plane
+/// BRepMesh_DelaunayNodeInsertionMeshAlgo over the same range splitter).
+using FlatMeshAlgo = BRepMesh_NodeInsertionMeshAlgo<BRepMesh_DefaultRangeSplitter, FlatBaseMeshAlgo>;
+
+/// Whether the face's mesh covers it once: in the plane's (u, v), every triangle that has an area turns the same way,
+/// and no edge is crossed twice in one direction. Triangles of no area are left out, as Watson leaves a few too.
+bool flat_mesh_consistent(const Handle(Poly_Triangulation)& mesh) {
+    if (mesh.IsNull() || mesh->NbTriangles() == 0 || !mesh->HasUVNodes()) {
+        return false;
+    }
+    int sign = 0;
+    std::unordered_set<unsigned long long> edges;
+    edges.reserve(3 * static_cast<size_t>(mesh->NbTriangles()));
+    for (int t = 1; t <= mesh->NbTriangles(); ++t) {
+        int n[3];
+        mesh->Triangle(t).Get(n[0], n[1], n[2]);
+        const gp_XY a = mesh->UVNode(n[0]).XY();
+        const gp_XY b = mesh->UVNode(n[1]).XY();
+        const gp_XY c = mesh->UVNode(n[2]).XY();
+        const double cross = (b - a).Crossed(c - a);
+        const double longest = std::max({(b - a).SquareModulus(), (c - b).SquareModulus(), (a - c).SquareModulus()});
+        if (!(std::abs(cross) > 1e-9 * longest)) {
+            continue;
+        }
+        const int turn = cross > 0 ? 1 : -1;
+        if (sign == 0) {
+            sign = turn;
+        } else if (turn != sign) {
+            return false;
+        }
+        for (int k = 0; k < 3; ++k) {
+            const unsigned long long from = static_cast<unsigned int>(n[k]);
+            const unsigned long long to = static_cast<unsigned int>(n[(k + 1) % 3]);
+            if (!edges.insert((from << 32) | to).second) {
+                return false;
+            }
+        }
+    }
+    return sign != 0;
+}
+
+/// A plane's mesh: the exact triangulation when the face has at least g_flat_mesher_holes holes, Watson otherwise and
+/// whenever that fails or its mesh does not cover the face once. Watson then meshes the face from its edges again.
+class FlatOrWatsonAlgo : public IMeshTools_MeshAlgo {
+public:
+    explicit FlatOrWatsonAlgo(const Handle(IMeshTools_MeshAlgo)& watson) : watson_(watson) {}
+
+    void Perform(
+        const IMeshData::IFaceHandle& face,
+        const IMeshTools_Parameters& parameters,
+        const Message_ProgressRange& range) override {
+        const long long holes = g_flat_mesher_holes.load();
+        if (holes >= 0 && face->WiresNb() - 1 >= holes && g_flat_face_mesh.load() != nullptr) {
+            bool kept = false;
+            try {
+                TopLoc_Location location;
+                const Handle(Poly_Triangulation) before = BRep_Tool::Triangulation(face->GetFace(), location);
+                Handle(FlatMeshAlgo) flat = new FlatMeshAlgo;
+                flat->Perform(face, parameters, range);
+                const Handle(Poly_Triangulation) after = BRep_Tool::Triangulation(face->GetFace(), location);
+                kept = flat->done() && after != before && flat_mesh_consistent(after);
+            } catch (...) {
+                kept = false;
+            }
+            if (kept) {
+                g_stats.flat_faces += 1;
+                return;
+            }
+            g_stats.flat_fallbacks += 1;
+        }
+        watson_->Perform(face, parameters, range);
+    }
+
+private:
+    Handle(IMeshTools_MeshAlgo) watson_;
+};
+
+/// Watson's algorithms (BRepMesh_MeshAlgoFactory) for every surface, with a plane's wrapped in FlatOrWatsonAlgo.
+class FlatFaceAlgoFactory : public IMeshTools_MeshAlgoFactory {
+public:
+    Handle(IMeshTools_MeshAlgo) GetAlgo(
+        const GeomAbs_SurfaceType type,
+        const IMeshTools_Parameters& parameters) const override {
+        Handle(IMeshTools_MeshAlgo) watson = watson_->GetAlgo(type, parameters);
+        if (type != GeomAbs_Plane || !parameters.InternalVerticesMode ||
+            parameters.EnableControlSurfaceDeflectionAllSurfaces) {
+            return watson;
+        }
+        return new FlatOrWatsonAlgo(watson);
+    }
+
+private:
+    Handle(IMeshTools_MeshAlgoFactory) watson_ = new BRepMesh_MeshAlgoFactory;
+};
+
 void mesh_faces(const TopoDS_Shape& shape, double chord, double angle = 0.5) {
     IMeshTools_Parameters parameters;
     parameters.Deflection = chord;
@@ -722,7 +929,12 @@ void mesh_faces(const TopoDS_Shape& shape, double chord, double angle = 0.5) {
     parameters.Relative = Standard_False;
     parameters.InParallel = Standard_True;
     parameters.MeshAlgo = IMeshTools_MeshAlgoType_Watson;
-    const BRepMesh_IncrementalMesh mesher(shape, parameters);
+    Handle(BRepMesh_Context) context = new BRepMesh_Context(IMeshTools_MeshAlgoType_Watson);
+    context->SetFaceDiscret(new BRepMesh_FaceDiscret(new FlatFaceAlgoFactory));
+    BRepMesh_IncrementalMesh mesher;
+    mesher.SetShape(shape);
+    mesher.ChangeParameters() = parameters;
+    mesher.Perform(context);
 }
 
 /// Mesh only the faces a step made and the faces beside them, when every other face keeps the mesh it shares with the
@@ -13775,6 +13987,10 @@ extern "C" char* lime_model_occt_stats() {
     out += std::to_string(g_stats.display_meshes.load());
     out += ",\"fullDisplayMeshes\":";
     out += std::to_string(g_stats.full_display_meshes.load());
+    out += ",\"flatFaces\":";
+    out += std::to_string(g_stats.flat_faces.load());
+    out += ",\"flatFallbacks\":";
+    out += std::to_string(g_stats.flat_fallbacks.load());
     const std::pair<const char*, const std::atomic<long long>*> timings[] = {
         {"booleanUs", &g_stats.boolean_us},
         {"volumeUs", &g_stats.volume_us},
@@ -13809,6 +14025,13 @@ extern "C" void lime_fuse_trace_clear() { g_fuse_trace = {}; }
 
 /// Non-zero meshes every face of a solid, as before a step meshed only around the faces it made. For tests.
 extern "C" void lime_model_occt_whole_meshes(int on) { g_whole_meshes = on != 0; }
+
+/// The exact triangulation for flat faces with many holes (src/flat_mesh.rs), handed over by the Rust side.
+extern "C" void lime_model_occt_flat_triangulator(FlatFaceMesh mesh) { g_flat_face_mesh = mesh; }
+
+/// How many holes a flat face needs to start from the exact triangulation; negative meshes every face with Watson.
+/// For tests and benches.
+extern "C" void lime_model_occt_flat_mesher_holes(long long holes) { g_flat_mesher_holes = holes < 0 ? -1 : holes; }
 
 /// Reverses one blend ribbon. Debug tests only. Not an op, and not in a release build.
 #ifdef LIME_OCCT_TEST_HOOKS

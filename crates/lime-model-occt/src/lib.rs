@@ -13,6 +13,10 @@ mod tree;
 // Text from real fonts: reading and layout need no Open CASCADE, so they are built and tested without it.
 mod text;
 
+// The first triangulation of a flat face with many holes. It needs no Open CASCADE, so it is tested without it.
+mod flat_mesh;
+pub use flat_mesh::{check as flat_triangulation_check, flat_face_mesh, flat_triangulate};
+
 #[cfg(not(lime_occt))]
 const MISSING: &str = "{\"error\":\"OCCT_ROOT is not set, so Open CASCADE is not linked\"}";
 
@@ -20,6 +24,7 @@ const MISSING: &str = "{\"error\":\"OCCT_ROOT is not set, so Open CASCADE is not
 pub fn tree(request: &str) -> String {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::call(request)
     }
     #[cfg(not(lime_occt))]
@@ -34,6 +39,7 @@ pub fn tree(request: &str) -> String {
 pub fn tree_bin(request: &str) -> Vec<u8> {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::call_bin(request)
     }
     #[cfg(not(lime_occt))]
@@ -60,6 +66,7 @@ pub struct PartitionPiece {
 pub fn partition_primitive(solid: &str, planes: &[[f64; 6]]) -> Result<Vec<PartitionPiece>, String> {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::partition_primitive(solid, planes)
     }
     #[cfg(not(lime_occt))]
@@ -75,6 +82,7 @@ pub fn partition_primitive(solid: &str, planes: &[[f64; 6]]) -> Result<Vec<Parti
 pub fn partition_joints(solid: &str, op: &str) -> Result<String, String> {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::partition_joints(solid, op)
     }
     #[cfg(not(lime_occt))]
@@ -90,6 +98,7 @@ pub fn partition_joints(solid: &str, op: &str) -> Result<String, String> {
 pub fn fit_coupon(spec: &str) -> Result<String, String> {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::fit_coupon(spec)
     }
     #[cfg(not(lime_occt))]
@@ -103,6 +112,7 @@ pub fn fit_coupon(spec: &str) -> Result<String, String> {
 pub fn step_solids(step: &[u8]) -> Result<Vec<PartitionPiece>, String> {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::step_solids(step)
     }
     #[cfg(not(lime_occt))]
@@ -118,6 +128,7 @@ pub fn step_solids(step: &[u8]) -> Result<Vec<PartitionPiece>, String> {
 pub fn step_named_solids(step: &[u8]) -> Result<Vec<(String, PartitionPiece)>, String> {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::step_named_solids(step)
     }
     #[cfg(not(lime_occt))]
@@ -132,6 +143,7 @@ pub fn step_named_solids(step: &[u8]) -> Result<Vec<(String, PartitionPiece)>, S
 pub fn set_group_budget(budget: std::time::Duration) {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::set_group_budget(budget);
     }
     #[cfg(not(lime_occt))]
@@ -144,6 +156,7 @@ pub fn set_group_budget(budget: std::time::Duration) {
 pub fn set_tree_limits(shapes: usize, replies: usize) {
     #[cfg(lime_occt)]
     {
+        native::ready();
         tree::set_limits(tree::Limits { shapes, replies });
     }
     #[cfg(not(lime_occt))]
@@ -163,6 +176,7 @@ pub fn set_tree_limits(shapes: usize, replies: usize) {
 pub fn stats() -> String {
     #[cfg(lime_occt)]
     {
+        native::ready();
         native::stats()
     }
     #[cfg(not(lime_occt))]
@@ -176,11 +190,32 @@ pub fn stats() -> String {
 pub fn set_whole_meshes(on: bool) {
     #[cfg(lime_occt)]
     {
+        native::ready();
         native::set_whole_meshes(on);
     }
     #[cfg(not(lime_occt))]
     {
         let _ = on;
+    }
+}
+
+/// How many holes a flat face needs before the kernel meshes it with `flat_face_mesh` instead of Watson. From
+/// tests/mesh_speed.rs on a plate's two flat faces: the exact mesh took 1.9 ms against Watson's 2.5 ms at 5 holes,
+/// 3.1 ms against 4.9 ms at 10 and 0.54 s against 3.03 s at 1,000. From 10 holes it is a clear win; below that a
+/// face's saving is under 2 ms, and ordinary parts (a hole or a few on a face) stay on Watson and keep their meshes.
+pub const FLAT_MESHER_HOLES: u32 = 10;
+
+/// A flat face with at least `holes` holes is meshed with `flat_face_mesh` instead of Watson; `None` meshes every face
+/// with Watson. `FLAT_MESHER_HOLES` until this is called. For tests and benches that compare the two. Without the
+/// kernel this does nothing.
+pub fn set_flat_mesher_holes(holes: Option<u32>) {
+    #[cfg(lime_occt)]
+    {
+        native::set_flat_mesher_holes(holes);
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = holes;
     }
 }
 
@@ -318,10 +353,30 @@ mod native {
     use std::ffi::CStr;
     use std::os::raw::c_char;
 
+    type FlatTriangulate = unsafe extern "C" fn(*const f64, i32, *const i32, i32, *const i32, i32, *mut i32, i32) -> i32;
+
     extern "C" {
         fn lime_model_occt_stats() -> *mut c_char;
         fn lime_model_occt_string_free(text: *mut c_char);
         fn lime_model_occt_whole_meshes(on: std::os::raw::c_int);
+        fn lime_model_occt_flat_triangulator(triangulate: FlatTriangulate);
+        fn lime_model_occt_flat_mesher_holes(holes: i64);
+    }
+
+    /// Hands the kernel the triangulation for flat faces with many holes, once, before its first call. The kernel
+    /// cannot call into this crate by name (the C++ archive links before it on Linux), so it is handed a pointer.
+    /// Until then a flat face is meshed with Watson, like every other face.
+    pub fn ready() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| unsafe {
+            lime_model_occt_flat_triangulator(crate::flat_mesh::flat_face_mesh_ffi);
+            lime_model_occt_flat_mesher_holes(i64::from(crate::FLAT_MESHER_HOLES));
+        });
+    }
+
+    pub fn set_flat_mesher_holes(holes: Option<u32>) {
+        ready();
+        unsafe { lime_model_occt_flat_mesher_holes(holes.map_or(-1, i64::from)) };
     }
 
     pub fn set_whole_meshes(on: bool) {
