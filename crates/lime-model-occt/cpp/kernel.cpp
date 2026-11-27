@@ -752,6 +752,14 @@ std::atomic<FlatFaceMesh> g_flat_face_mesh{nullptr};
 /// side sets its count (FLAT_MESHER_HOLES in src/lib.rs) when it hands over the mesh.
 std::atomic<long long> g_flat_mesher_holes{-1};
 
+/// Debug tests only: 1 makes the exact mesh fail, 2 makes it commit a triangle turned over. Always 0 in a release.
+#ifdef LIME_OCCT_TEST_HOOKS
+std::atomic<int> g_flat_mesh_test_fault{0};
+int flat_mesh_test_fault() { return g_flat_mesh_test_fault.load(); }
+#else
+constexpr int flat_mesh_test_fault() { return 0; }
+#endif
+
 /// A plane's mesh made whole by the exact constrained triangulation, in place of Watson's point-by-point insertion and
 /// constraint pass (BRepMesh_DelaunayBaseMeshAlgo). Open CASCADE still cuts the edges and registers the face's points
 /// and segments (initDataStructure), so the face's boundary points are the ones its neighbours have, and it still
@@ -802,8 +810,12 @@ protected:
             static_cast<int>(inner.size() / 2),
             triangles.data(),
             capacity);
-        if (count <= 0 || count > capacity) {
+        if (count <= 0 || count > capacity || flat_mesh_test_fault() == 1) {
             throw Standard_Failure("the flat face mesh failed");
+        }
+        if (flat_mesh_test_fault() == 2) {
+            // A test's wrong answer: the first triangle turned over, which the check after the commit must catch.
+            std::swap(triangles[1], triangles[2]);
         }
         for (int t = 0; t < count; ++t) {
             Standard_Integer edges[3];
@@ -14035,6 +14047,9 @@ extern "C" void lime_model_occt_flat_mesher_holes(long long holes) { g_flat_mesh
 
 /// Reverses one blend ribbon. Debug tests only. Not an op, and not in a release build.
 #ifdef LIME_OCCT_TEST_HOOKS
+/// Makes the exact mesh of flat faces fail (1) or answer wrong (2), so a test can see Watson take the face. 0 clears it.
+extern "C" void lime_model_occt_test_flat_mesh_fault(int mode) { lime_occt::g_flat_mesh_test_fault = mode; }
+
 extern "C" void lime_model_occt_test_reverse_blend_ribbon(int side) {
     lime_occt::g_blend_reverse_side = side;
 }

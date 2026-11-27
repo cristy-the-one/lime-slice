@@ -80,7 +80,10 @@ fn plate(key: &str, holes: usize) -> Timed {
     timed
 }
 
-fn rows() -> Vec<(String, Box<dyn Fn(&str) -> Timed>)> {
+/// One timed call, given the key to open its part under.
+type Row = Box<dyn Fn(&str) -> Timed>;
+
+fn rows() -> Vec<(String, Row)> {
     vec![
         ("open box".into(), Box::new(|key| {
             let timed = time_call(open_box(key, false));
