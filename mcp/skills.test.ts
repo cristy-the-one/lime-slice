@@ -117,7 +117,7 @@ interface SkillResource {
 
 interface SkillEntry {
   uri?: string;
-  frontmatter?: Record<string, string>;
+  frontmatter?: Record<string, unknown>;
   resources?: SkillResource[];
 }
 
@@ -131,13 +131,14 @@ interface Row {
     resultType?: string;
     ttlMs?: number;
     cacheScope?: string;
+    nextCursor?: string;
     instructions?: string;
     capabilities?: { resources?: unknown; tools?: { listChanged?: boolean }; extensions?: Extensions };
     tools?: { name: string }[];
     resources?: { uri?: string }[];
     skills?: SkillEntry[];
     skill?: SkillEntry;
-    contents?: { uri?: string; mimeType?: string; text?: string }[];
+    contents?: { uri?: string; mimeType?: string; text?: string; blob?: string }[];
   };
   error?: { code?: number; message?: string };
 }
@@ -242,11 +243,22 @@ try {
     JSON.stringify(entry?.resources),
   );
 
-  const got = await call(real, "skills/get", { uri: "skill://lime-slice/SKILL.md" });
+  const got = await call(real, "skills/get", modern({ uri: "skill://lime-slice/SKILL.md" }));
   check(
-    "skills/get returns the same entry as skills/list",
-    got.error === undefined && got.result?.resultType === "complete" && JSON.stringify(got.result.skill) === JSON.stringify(entry),
-    JSON.stringify(got.error ?? got.result?.skill).slice(0, 400),
+    "skills/get returns the same entry as skills/list, with ttlMs, cacheScope, and no nextCursor",
+    got.error === undefined
+      && got.result?.resultType === "complete"
+      && got.result.ttlMs === LIST_TTL_MS
+      && got.result.cacheScope === "public"
+      && got.result.nextCursor === undefined
+      && JSON.stringify(got.result.skill) === JSON.stringify(entry),
+    JSON.stringify(got.error ?? {
+      resultType: got.result?.resultType,
+      ttlMs: got.result?.ttlMs,
+      cacheScope: got.result?.cacheScope,
+      nextCursor: got.result?.nextCursor,
+      skill: got.result?.skill,
+    }).slice(0, 400),
   );
 
   const modernList = await call(real, "skills/list", modern());
@@ -255,6 +267,20 @@ try {
     modernList.result?.resultType === "complete" && modernList.result.ttlMs === LIST_TTL_MS && modernList.result.cacheScope === "public"
       && JSON.stringify(modernList.result.skills) === JSON.stringify(listed.result?.skills),
     JSON.stringify({ resultType: modernList.result?.resultType, ttlMs: modernList.result?.ttlMs, cacheScope: modernList.result?.cacheScope, error: modernList.error }),
+  );
+
+  const badCursor = await call(real, "skills/list", modern({ cursor: "not-a-cursor" }));
+  check(
+    "skills/list rejects an unknown pagination cursor with -32602",
+    badCursor.error?.code === -32602 && badCursor.result === undefined,
+    JSON.stringify(badCursor.error ?? badCursor.result),
+  );
+
+  const dirRead = await call(real, "resources/directory/read", modern({ uri: "skill://lime-slice" }));
+  check(
+    "resources/directory/read returns -32601 when directoryRead is not declared",
+    dirRead.error?.code === -32601 && dirRead.result === undefined,
+    JSON.stringify(dirRead.error ?? dirRead.result),
   );
 
   const unknown = await call(real, "skills/get", { uri: "skill://no-such/SKILL.md" });
@@ -361,6 +387,166 @@ try {
 } finally {
   filtered.child.kill();
   rmSync(scratch, { recursive: true, force: true });
+}
+
+const conformScratch = mkdtempSync(join(tmpdir(), "lime-mcp-skills-conform-"));
+// 1. Flat frontmatter behind a byte-order mark, with a comment line and a blank line.
+mkdirSync(join(conformScratch, "acme", "billing", "refunds", "scripts"), { recursive: true });
+mkdirSync(join(conformScratch, "acme", "billing", "refunds", "assets"), { recursive: true });
+const richSkillBytes = Buffer.from(
+  "\uFEFF---\n"
+  + "# Leading YAML comment\n"
+  + "name: refunds\n"
+  + "\n"
+  + "description: Process customer refund requests per company policy.\n"
+  + "license: Apache-2.0\n"
+  + "compatibility: Requires Python 3.12+\n"
+  + "---\n\n"
+  + "# Refunds\n",
+  "utf8",
+);
+// Frontmatter a YAML reader would not read as flat `key: value` text. Each is skipped, not served misread.
+const notFlat: [string, string][] = [
+  ["block-scalar", "---\nname: block-scalar\ndescription: >-\n  Folded over\n  two lines.\n---\n"],
+  ["quoted", "---\nname: quoted\ndescription: \"Quoted.\"\n---\n"],
+  ["nested-map", "---\nname: nested-map\ndescription: Has a map.\nmetadata:\n  author: acme\n---\n"],
+  ["a-list", "---\nname: a-list\ndescription: Has a list.\ntags:\n  - one\n---\n"],
+  ["flow-list", "---\nname: flow-list\ndescription: Has a flow list.\ntags: [one, two]\n---\n"],
+  ["trailing-comment", "---\nname: trailing-comment\ndescription: Ends in a comment. # here\n---\n"],
+  ["dots-closer", "---\nname: dots-closer\ndescription: Closed by dots.\n...\n"],
+];
+for (const [dirName, body] of notFlat) {
+  mkdirSync(join(conformScratch, dirName), { recursive: true });
+  writeFileSync(join(conformScratch, dirName, "SKILL.md"), body);
+}
+const pyScriptBytes = Buffer.from("print('ok')\n", "utf8");
+const jsonAssetBytes = Buffer.from('{"ok":true}\n', "utf8");
+// Valid PNG header + non-UTF-8 binary bytes (0x89, 0x00, 0xff) that UTF-8 decoding would corrupt.
+const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe]);
+writeFileSync(join(conformScratch, "acme", "billing", "refunds", "SKILL.md"), richSkillBytes);
+writeFileSync(join(conformScratch, "acme", "billing", "refunds", "scripts", "extract.py"), pyScriptBytes);
+writeFileSync(join(conformScratch, "acme", "billing", "refunds", "assets", "policy.json"), jsonAssetBytes);
+writeFileSync(join(conformScratch, "acme", "billing", "refunds", "assets", "logo.png"), pngBytes);
+
+// 2. Nested skills: outer encloses sub/inner; outer's manifest includes inner's files, and inner is published flat.
+mkdirSync(join(conformScratch, "outer", "sub", "inner"), { recursive: true });
+writeFileSync(join(conformScratch, "outer", "SKILL.md"), "---\nname: outer\ndescription: Enclosing skill.\n---\n\n# Outer\n");
+writeFileSync(join(conformScratch, "outer", "sub", "inner", "SKILL.md"), "---\nname: inner\ndescription: Nested skill.\n---\n\n# Inner\n");
+
+// 3. Invalid Agent Skills names & field limits (must be rejected).
+const invalidSkills: [string, string][] = [
+  ["UpperCase", "---\nname: UpperCase\ndescription: Uppercase is forbidden.\n---\n"],
+  ["bad_under", "---\nname: bad_under\ndescription: Underscore is forbidden.\n---\n"],
+  ["-leading", "---\nname: -leading\ndescription: Leading hyphen is forbidden.\n---\n"],
+  ["trailing-", "---\nname: trailing-\ndescription: Trailing hyphen is forbidden.\n---\n"],
+  ["double--dash", "---\nname: double--dash\ndescription: Consecutive hyphens are forbidden.\n---\n"],
+  ["a".repeat(65), `---\nname: ${"a".repeat(65)}\ndescription: Name over 64 chars.\n---\n`],
+  ["long-desc", `---\nname: long-desc\ndescription: ${"x".repeat(1025)}\n---\n`],
+  ["long-compat", `---\nname: long-compat\ndescription: Valid.\ncompatibility: ${"y".repeat(501)}\n---\n`],
+  ["dup-key", "---\nname: dup-key\ndescription: One.\ndescription: Two.\n---\n"],
+];
+for (const [dirName, body] of invalidSkills) {
+  mkdirSync(join(conformScratch, dirName), { recursive: true });
+  writeFileSync(join(conformScratch, dirName, "SKILL.md"), body);
+}
+
+// 4. Per-skill limits: >512 entries (513 files total) and >16 MiB total size.
+mkdirSync(join(conformScratch, "too-many-files"), { recursive: true });
+writeFileSync(join(conformScratch, "too-many-files", "SKILL.md"), "---\nname: too-many-files\ndescription: Exceeds 512 entries.\n---\n");
+for (let i = 0; i < 512; i += 1) {
+  writeFileSync(join(conformScratch, "too-many-files", `f${i}.txt`), "x");
+}
+mkdirSync(join(conformScratch, "too-big"), { recursive: true });
+writeFileSync(join(conformScratch, "too-big", "SKILL.md"), "---\nname: too-big\ndescription: Exceeds 16 MiB.\n---\n");
+writeFileSync(join(conformScratch, "too-big", "blob.bin"), Buffer.alloc(16 * 1024 * 1024 + 1));
+
+const conformServer = startRaw(sourceArgs, { LIME_MCP_SKILLS: conformScratch });
+try {
+  const listed = await call(conformServer, "skills/list", modern());
+  const skills = listed.result?.skills ?? [];
+  const uris = skills.map((s) => s.uri).sort();
+  check(
+    "only valid prefixed and nested skills are listed (invalid names, limits, and frontmatter that is not flat are excluded)",
+    listed.error === undefined && JSON.stringify(uris) === JSON.stringify([
+      "skill://acme/billing/refunds/SKILL.md",
+      "skill://outer/SKILL.md",
+      "skill://outer/sub/inner/SKILL.md",
+    ]),
+    JSON.stringify(listed.error ?? uris),
+  );
+
+  const refunds = skills.find((s) => s.uri === "skill://acme/billing/refunds/SKILL.md");
+  const expectedFm = {
+    name: "refunds",
+    description: "Process customer refund requests per company policy.",
+    license: "Apache-2.0",
+    compatibility: "Requires Python 3.12+",
+  };
+  check(
+    "flat frontmatter is read behind a byte-order mark, past a comment line and a blank line",
+    JSON.stringify(refunds?.frontmatter) === JSON.stringify(expectedFm),
+    JSON.stringify({ got: refunds?.frontmatter, want: expectedFm }),
+  );
+
+  const bomRead = await call(conformServer, "resources/read", modern({ uri: "skill://acme/billing/refunds/SKILL.md" }));
+  const bomText = bomRead.result?.contents?.[0]?.text;
+  const bomBytes = typeof bomText === "string" ? Buffer.from(bomText, "utf8") : Buffer.alloc(0);
+  const bomManifest = refunds?.resources?.find((r) => r.uri === "skill://acme/billing/refunds/SKILL.md");
+  check(
+    "a text file that starts with a byte-order mark is served with it, so its text matches the digest and size",
+    bomBytes.equals(richSkillBytes) && bomManifest?.digest === digestOf(bomBytes) && bomManifest.size === bomBytes.length,
+    JSON.stringify({ served: bomBytes.length, file: richSkillBytes.length, manifest: bomManifest }),
+  );
+
+  const outer = skills.find((s) => s.uri === "skill://outer/SKILL.md");
+  const inner = skills.find((s) => s.uri === "skill://outer/sub/inner/SKILL.md");
+  const outerUris = (outer?.resources ?? []).map((r) => r.uri);
+  const innerUris = (inner?.resources ?? []).map((r) => r.uri);
+  check(
+    "nested skill files are included in the enclosing skill's manifest and published flat as their own skill",
+    outerUris[0] === "skill://outer/SKILL.md"
+      && outerUris.includes("skill://outer/sub/inner/SKILL.md")
+      && JSON.stringify(innerUris) === JSON.stringify(["skill://outer/sub/inner/SKILL.md"]),
+    JSON.stringify({ outerUris, innerUris }),
+  );
+
+  const gotInner = await call(conformServer, "skills/get", modern({ uri: "skill://outer/sub/inner/SKILL.md" }));
+  check(
+    "skills/get retrieves a nested skill with cache attributes",
+    gotInner.error === undefined
+      && gotInner.result?.ttlMs === LIST_TTL_MS
+      && gotInner.result.cacheScope === "public"
+      && gotInner.result.skill?.uri === "skill://outer/sub/inner/SKILL.md",
+    JSON.stringify(gotInner.error ?? gotInner.result),
+  );
+
+  const pyRead = await call(conformServer, "resources/read", modern({ uri: "skill://acme/billing/refunds/scripts/extract.py" }));
+  const jsonRead = await call(conformServer, "resources/read", modern({ uri: "skill://acme/billing/refunds/assets/policy.json" }));
+  const pngRead = await call(conformServer, "resources/read", modern({ uri: "skill://acme/billing/refunds/assets/logo.png" }));
+  const pngItem = pngRead.result?.contents?.[0];
+  const decodedPng = typeof pngItem?.blob === "string" ? Buffer.from(pngItem.blob, "base64") : Buffer.alloc(0);
+  const pngManifest = refunds?.resources?.find((r) => r.uri === "skill://acme/billing/refunds/assets/logo.png");
+  check(
+    "supporting files use content-appropriate MIME types and binary files return base64 blob matching digest and size",
+    pyRead.result?.contents?.[0]?.mimeType === "text/x-python"
+      && pyRead.result.contents[0]?.text === pyScriptBytes.toString("utf8")
+      && jsonRead.result?.contents?.[0]?.mimeType === "application/json"
+      && jsonRead.result.contents[0]?.text === jsonAssetBytes.toString("utf8")
+      && pngItem?.mimeType === "image/png"
+      && pngItem.text === undefined
+      && decodedPng.equals(pngBytes)
+      && pngManifest?.digest === digestOf(decodedPng)
+      && pngManifest.size === decodedPng.length,
+    JSON.stringify({
+      py: pyRead.result?.contents?.[0],
+      json: jsonRead.result?.contents?.[0],
+      png: pngItem,
+      pngManifest,
+    }),
+  );
+} finally {
+  conformServer.child.kill();
+  rmSync(conformScratch, { recursive: true, force: true });
 }
 
 const bundleDir = mkdtempSync(join(tmpdir(), "lime-mcp-skills-bundle-"));

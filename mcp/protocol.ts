@@ -10,7 +10,7 @@ import { GUIDES } from "./guides.ts";
 import { imagesOf } from "./inline.ts";
 import { annotationsFor, listedTools } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
-import { getSkill, listSkills, readSkillFile, SKILLS_EXTENSION } from "./skills.ts";
+import { getSkill, listSkills, readSkillResource, SKILLS_EXTENSION } from "./skills.ts";
 import { appVersion } from "./version.ts";
 
 /**
@@ -531,11 +531,11 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
     if (method === "resources/read") {
       const uri = String(params.uri ?? "");
       if (uri.startsWith("skill://")) {
-        // This buffer is the one skills/list hashes. The text is that buffer as UTF-8;
-        // neither side rewrites newlines.
-        const bytes = readSkillFile(uri);
-        if (!bytes) return error(id, -32602, "That resource is not on this server.");
-        return result(id, { contents: [{ uri, mimeType: "text/markdown", text: bytes.toString("utf8") }] }, "read");
+        // Served from the same raw bytes skills/list hashed; text files stay UTF-8 without newline rewrites,
+        // and binary files are base64-encoded in `blob` so digests match bit-for-bit.
+        const content = readSkillResource(uri);
+        if (!content) return error(id, -32602, `No skill resource is served at ${uri}.`);
+        return result(id, { contents: [content] }, "read");
       }
       try {
         const body = await session.resource(uri);
@@ -547,13 +547,17 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
       }
     }
     if (method === "skills/list") {
+      if (params.cursor !== undefined) return error(id, -32602, "Invalid pagination cursor.");
       return result(id, { skills: listSkills() }, "list");
     }
     if (method === "skills/get") {
       const uri = typeof params.uri === "string" ? params.uri : "";
       const skill = getSkill(uri);
-      if (!skill) return error(id, -32602, "That skill is not on this server.");
-      return result(id, { skill });
+      if (!skill) {
+        return error(id, -32602, uri ? `No skill is served at ${uri}.` : "skills/get requires a string uri.");
+      }
+      // GetSkillResult extends CacheableResult (ext-skills beta spec): ttlMs and cacheScope are required.
+      return result(id, { skill }, "list");
     }
     if (method === "prompts/list") {
       return result(id, {
