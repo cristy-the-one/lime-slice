@@ -70,6 +70,16 @@ function Show-MeshTail([string]$path) {
     Add-Summary ("CRASH_FACE " + (Get-OpenFace $path))
 }
 
+# RelWithDebInfo installs into bini/ and libi/. The bridge looks in bin/ and lib/.
+foreach ($pair in @(@("bini", "bin"), @("bind", "bin"), @("libi", "lib"), @("libd", "lib"))) {
+    $src = Join-Path $OcctRoot $pair[0]
+    $dest = Join-Path $OcctRoot $pair[1]
+    if (Test-Path -LiteralPath $src) {
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Copy-Item -Path (Join-Path $src "*") -Destination $dest -Force
+        Add-Summary "COPIED $($pair[0]) -> $($pair[1])"
+    }
+}
 $env:PATH = "$OcctRoot\bin;$OcctRoot\lib;" + $env:PATH
 $env:OCCT_ROOT = $OcctRoot
 $env:LIME_REQUIRE_OCCT = "1"

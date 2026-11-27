@@ -53,6 +53,23 @@ jobs:
           path: ${{ runner.temp }}/occt-7.9.2-rwd
           key: occt-7.9.2-rwd-facelog-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/w2/build_occt.py') }}
 
+      # RelWithDebInfo lands in bini/ and libi/. Release stays in bin/ and lib/. The bridge looks at bin/ and lib/.
+      - name: Copy the OCCT 7.9.2 libraries to bin and lib
+        shell: pwsh
+        run: |
+          $root = "${{ runner.temp }}/occt-7.9.2-rwd"
+          foreach ($pair in @(@("bini","bin"),@("bind","bin"),@("libi","lib"),@("libd","lib"))) {
+            $src = Join-Path $root $pair[0]
+            $dest = Join-Path $root $pair[1]
+            if (Test-Path -LiteralPath $src) {
+              New-Item -ItemType Directory -Force -Path $dest | Out-Null
+              Copy-Item -Path (Join-Path $src "*") -Destination $dest -Force
+              Write-Host "copied $($pair[0]) -> $($pair[1])"
+            }
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $root "bin\TKernel.dll"))) { throw "bin\TKernel.dll missing after copy" }
+          if (-not (Test-Path -LiteralPath (Join-Path $root "bin\TKMesh.pdb"))) { throw "bin\TKMesh.pdb missing after copy" }
+
       - name: Build the brep test against OCCT 7.9.2 RelWithDebInfo
         timeout-minutes: 40
         env:
@@ -85,6 +102,21 @@ jobs:
         with:
           path: ${{ runner.temp }}/occt-8.0.2-rel
           key: occt-8.0.2-rel-facelog-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/w2/build_occt.py') }}
+
+      - name: Copy the OCCT 8.0.2 libraries to bin and lib
+        shell: pwsh
+        run: |
+          $root = "${{ runner.temp }}/occt-8.0.2-rel"
+          foreach ($pair in @(@("bini","bin"),@("bind","bin"),@("libi","lib"),@("libd","lib"))) {
+            $src = Join-Path $root $pair[0]
+            $dest = Join-Path $root $pair[1]
+            if (Test-Path -LiteralPath $src) {
+              New-Item -ItemType Directory -Force -Path $dest | Out-Null
+              Copy-Item -Path (Join-Path $src "*") -Destination $dest -Force
+              Write-Host "copied $($pair[0]) -> $($pair[1])"
+            }
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $root "bin\TKernel.dll"))) { throw "bin\TKernel.dll missing after copy" }
 
       - name: Loop Delabella 200 times on OCCT 8.0.2
         timeout-minutes: 90
