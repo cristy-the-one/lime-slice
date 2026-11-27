@@ -139,6 +139,9 @@ jobs:
         timeout-minutes: 40
         run: |
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           mkdir -p ~/apt-archives/partial
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
@@ -240,6 +243,9 @@ jobs:
         run: |
           command -v gcc g++ make pkg-config cmake ninja > /dev/null && exit 0
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build
 
@@ -405,6 +411,9 @@ jobs:
         run: |
           command -v gcc g++ make pkg-config cmake ninja > /dev/null && exit 0
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build
 
@@ -501,6 +510,9 @@ jobs:
         run: |
           command -v gcc g++ make pkg-config cmake ninja > /dev/null && exit 0
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build
 
@@ -597,6 +609,9 @@ jobs:
         timeout-minutes: 40
         run: |
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           mkdir -p ~/apt-archives/partial
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
@@ -690,6 +705,9 @@ jobs:
         timeout-minutes: 40
         run: |
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           mkdir -p ~/apt-archives/partial
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
@@ -860,6 +878,9 @@ jobs:
         timeout-minutes: 18
         run: |
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           timeout 600 npx playwright install --with-deps chromium && exit 0
           echo "The system packages did not install; installing the browser without them"
           sudo pkill -x apt-get || true
@@ -918,6 +939,9 @@ jobs:
         run: |
           command -v gcc g++ make pkg-config > /dev/null && exit 0
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config
 
@@ -1353,6 +1377,9 @@ jobs:
         run: |
           command -v gcc g++ make pkg-config cmake ninja > /dev/null && exit 0
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build
 
@@ -1458,6 +1485,9 @@ jobs:
         timeout-minutes: 18
         run: |
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          # The runner image lists Microsoft's package repository, which these jobs take nothing from. When it answers
+          # 403, apt-get update fails the job before anything is installed (twice on 2026-11-27). Drop that source.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
           timeout 600 npx playwright install --with-deps chromium && exit 0
           echo "The system packages did not install; installing the browser without them"
           sudo pkill -x apt-get || true
