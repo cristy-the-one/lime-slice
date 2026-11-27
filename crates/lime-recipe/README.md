@@ -146,6 +146,12 @@ end)` returns exactly those times (before 1.17 it returned the old `round(end * 
 `k as f64 / fps as f64` is the same number, so a script that keys every `1/fps` puts each key on a frame. A plugin of an
 earlier level built against this crate gets the new times too: they are the host's. See `docs/plan-pose-animation.md`.
 
+## Keyable slides (API 1.19)
+
+`Aim::Travel(mm)` keys a slide's travel in millimetres. It encodes as a JSON number, the same shape as a hinge's degrees;
+the host reads millimetres when the joint is a slide. `Pose::set(name, Aim::Travel(mm))` is that aim. A slide driven by
+a coupling is still keyed through its lead (the pinion), as before.
+
 ## Organic surfaces (API 1.18)
 
 The ops of `docs/plan-organic-surfaces.md` (app 7.2.0), each the JSON `mcp/schema.ts` takes:

@@ -31,7 +31,7 @@ export interface AnimationFrame { time: number; assembly: Assembly; poses: Map<s
  * that says so. Present only when the check ran and a pair was named.
  */
 export interface AnimationResult { frames: AnimationFrame[]; fps: number; durationS: number; bounds: Bounds | null; keys: { t: number; line?: number; reached?: boolean; distanceMm?: number; clamped?: string[] }[]; warnings: AnimationWarning[]; interferenceChecked: boolean; ignored?: { pairs: [string, string][]; reason: string } }
-type Value = { kind: "angle"; value: number } | { kind: "rotation"; value: Quaternion } | { kind: "reach"; at: Vec3; to: Vec3; blend?: number; segment?: number };
+type Value = { kind: "angle"; value: number } | { kind: "travel"; value: number } | { kind: "rotation"; value: Quaternion } | { kind: "reach"; at: Vec3; to: Vec3; blend?: number; segment?: number };
 type Point = { time: number; until: number; ease: "linear" | "inOut"; value: Value; key: number };
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const finiteVec = (v: unknown): v is Vec3 => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
@@ -66,12 +66,12 @@ export function rigGroup(rig: readonly RigMember[], pattern: string): RigMember[
   return rig.filter((row) => match(row.name));
 }
 
-function resolveAim(member: Member, aim: Aim): Value | string {
+function resolveAim(member: Member, aim: Aim, driven = false): Value | string {
   const joint = readJoint(member.joint);
   // A root moves only on a hinge of its own, on the plate (docs/plan-gear-kinds.md).
   if (!joint || (member.parent === null && joint.kind !== "hinge")) return "This part has no movable joint.";
-  // A rack's slide moves with its pinion (docs/plan-gear-kinds.md, stage 3): key the pinion.
-  if (joint.kind === "slide") return "A slide moves with its pinion: key the pinion's angle.";
+  // A rack's slide moves with its pinion (docs/plan-gear-kinds.md, stage 3): key the pinion. An uncoupled slide is keyed in mm.
+  if (joint.kind === "slide" && driven) return "A slide moves with its pinion: key the pinion's angle.";
   if (typeof aim === "object" && aim !== null && "reach" in aim) {
     if (member.parent === null) return "A root turns on the plate; it has no chain to reach with.";
     return finiteVec(aim.reach?.at) && finiteVec(aim.reach?.to) ? { kind: "reach", at: aim.reach.at, to: aim.reach.to } : "Reach needs two finite three-number points.";
@@ -92,8 +92,14 @@ function resolveAim(member: Member, aim: Aim): Value | string {
     const limit = aim.fraction < 0 ? joint.min : joint.max;
     if (limit !== undefined) value = Math.abs(aim.fraction) * limit;
   }
+  const outside = value !== null && ((joint.min !== undefined && value < joint.min - 1e-9) || (joint.max !== undefined && value > joint.max + 1e-9));
+  if (joint.kind === "slide") {
+    if (value === null || !Number.isFinite(value)) return "This aim needs a finite travel in mm, or the named limit.";
+    if (outside) return `Travel ${value} mm is outside this slide's limits (${joint.min ?? "free"} to ${joint.max ?? "free"}).`;
+    return { kind: "travel", value };
+  }
   if (value === null || !Number.isFinite(value)) return "This aim needs a finite angle, an unambiguous alignment, or the named limit.";
-  if ((joint.min !== undefined && value < joint.min - 1e-9) || (joint.max !== undefined && value > joint.max + 1e-9)) return `Angle ${value} is outside this hinge's limits (${joint.min ?? "free"} to ${joint.max ?? "free"}).`;
+  if (outside) return `Angle ${value} is outside this hinge's limits (${joint.min ?? "free"} to ${joint.max ?? "free"}).`;
   return { kind: "angle", value };
 }
 
@@ -108,6 +114,7 @@ function atTime(points: Point[], time: number, activeTime: (time: number) => num
       if (after.ease === "inOut") f = f * f * (3 - 2 * f);
       if (after.value.kind === "reach" && before.value.kind !== "reach") return { ...after.value, blend: f, segment: after.key };
       if (before.value.kind === "angle" && after.value.kind === "angle") return { kind: "angle", value: lerp(before.value.value, after.value.value, f) };
+      if (before.value.kind === "travel" && after.value.kind === "travel") return { kind: "travel", value: lerp(before.value.value, after.value.value, f) };
       if (before.value.kind === "rotation" && after.value.kind === "rotation") return { kind: "rotation", value: slerp(before.value.value, after.value.value, f) };
       if (before.value.kind === "reach" && after.value.kind === "reach") return { kind: "reach", at: pointLerp(before.value.at, after.value.at, f), to: pointLerp(before.value.to, after.value.to, f) };
       return before.value;
@@ -307,8 +314,8 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
     const explicit = Object.entries(key.set ?? {});
     const assigned = new Set(explicit.flatMap(([pattern]) => rigGroup(rig, pattern).map((row) => row.object)));
     const items: [string, Aim][] = [];
-    // A gear train rests through its lead alone: the others follow it (docs/plan-gear-coupling.md).
-    if (key.rest) for (const row of rig) if (row.joint && row.joint.kind !== "slide" && !assigned.has(row.object) && !followers.has(row.object)) items.push([row.name, "rest"]);
+    // A gear train rests through its lead alone: the others follow it (docs/plan-gear-coupling.md). A slide at rest is travel 0, unless a coupling drives it.
+    if (key.rest) for (const row of rig) if (row.joint && !assigned.has(row.object) && !followers.has(row.object) && !(row.joint.kind === "slide" && trainOf(original, row.object).has(row.object))) items.push([row.name, "rest"]);
     items.push(...explicit);
     for (const [pattern, aim] of items) {
       const matched = rigGroup(rig, pattern);
@@ -318,7 +325,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
         // A ratchet's click is set by its wheel (docs/plan-coupling-kinds.md, stage 3): key the wheel.
         const clicked = (original.couplings ?? []).find((one) => one.click?.object === row.object);
         if (clicked) { issue(`${row.name}: a click moves with its ratchet: key the ratchet.`); continue; }
-        const value = resolveAim(member, aim);
+        const value = resolveAim(member, aim, member.joint?.kind === "slide" && trainOf(original, row.object).has(row.object));
         if (typeof value === "string") { issue(`${row.name}: ${value}`); continue; }
         if (value.kind === "reach" && !poseChain([original], row.object).size) { issue(`${row.name}: no jointed chain can reach.`); continue; }
         if (member.joint?.kind === "ball" && member.joint.cone !== undefined) {
@@ -359,7 +366,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
     for (let i = 1; i < points.length; i++) if (points[i - 1]!.until > points[i]!.time) issues.push({ ...(keys[points[i - 1]!.key]?.line !== undefined ? { line: keys[points[i - 1]!.key]!.line } : {}), reason: `${rig.find((row) => row.object === id)!.name}: a hold extends past the next key.` });
     if (points[0]!.time > 0) {
       const first = points[0]!.value;
-      const initial: Value = first.kind === "reach" ? { kind: "reach", at: first.at, to: applyPose(initialPoses.get(id) ?? memberPose(member), first.at) } : member.joint?.kind === "hinge" ? { kind: "angle", value: member.joint.angle ?? 0 } : { kind: "rotation", value: rotationQuaternion(memberPose(member).m) };
+      const initial: Value = first.kind === "reach" ? { kind: "reach", at: first.at, to: applyPose(initialPoses.get(id) ?? memberPose(member), first.at) } : member.joint?.kind === "hinge" ? { kind: "angle", value: member.joint.angle ?? 0 } : member.joint?.kind === "slide" ? { kind: "travel", value: member.joint.travel ?? 0 } : { kind: "rotation", value: rotationQuaternion(memberPose(member).m) };
       points.unshift({ time: 0, until: 0, ease: "linear", value: initial, key: -1 });
     }
   }
@@ -400,6 +407,13 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
     for (const [id, points] of tracks) {
       const value = atTime(points, time, activeTime), member = assembly.members.find((row) => row.object === id)!;
       if (value.kind === "reach") { reaches.push({ id, value }); continue; }
+      if (value.kind === "travel") {
+        const current = member.joint?.kind === "slide" ? member.joint.travel ?? 0 : 0;
+        const turned = trainTurn(assembly, id, value.value - current, { separate });
+        if ("reason" in turned) return { issues: [{ reason: `${rig.find((row) => row.object === id)!.name}: ${turned.reason}` }] };
+        assembly = turned.assembly;
+        continue;
+      }
       if (value.kind === "angle" && (trainOf(assembly, id).has(id) || member.parent === null)) {
         // A coupled hinge turns its whole gear train, and a hinged root keeps the parts hinged on it on their pins; a
         // locked train refuses the animation.
@@ -443,9 +457,9 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       if (distance > 0.05) {
         const clamped = [...poseChain([assembly], id)].flatMap((jointId) => {
           const joint = assembly.members.find((row) => row.object === jointId)?.joint;
-          if (joint?.kind !== "hinge") return [];
-          const angle = joint.angle ?? 0;
-          return ((joint.min !== undefined && Math.abs(angle - joint.min) < 1e-7) || (joint.max !== undefined && Math.abs(angle - joint.max) < 1e-7)) ? [rig.find((row) => row.object === jointId)!.name] : [];
+          if (joint?.kind !== "hinge" && joint?.kind !== "slide") return [];
+          const at = joint.kind === "hinge" ? joint.angle ?? 0 : joint.travel ?? 0;
+          return ((joint.min !== undefined && Math.abs(at - joint.min) < 1e-7) || (joint.max !== undefined && Math.abs(at - joint.max) < 1e-7)) ? [rig.find((row) => row.object === jointId)!.name] : [];
         });
         if (clamped.length) key.clamped = [...new Set([...(key.clamped ?? []), ...clamped])];
       }

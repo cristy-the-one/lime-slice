@@ -191,6 +191,43 @@ assert.ok(constrained.keys[0]!.distanceMm! > 0.05 && constrained.keys[0]!.clampe
 const reach = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Finger: { reach: { at: [10,0,0], to: [0,10,0] } } } }] }, rig, poseOf, parts);
 if ("issues" in reach) throw Error(JSON.stringify(reach.issues));
 assert.ok(reach.keys[0]!.reached && reach.keys[0]!.distanceMm! < 0.05);
+// A slide's keys are millimetres of travel: they interpolate, clamp to the joint, and rest like a hinge.
+const slideRig: Assembly = { id: "press", name: "Press", members: [
+  { object: "frame", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] },
+  { object: "ram", parent: "frame", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "slide", pivot: [0, 0, 0], axis: [1, 0, 0], travel: 4, min: 0, max: 20 } },
+] };
+const slideParts: AnimationPart[] = [{ object: "frame", name: "Frame" }, { object: "ram", name: "Ram" }];
+const travelOf = (sampled: ReturnType<typeof sampleAnimation>, frame: number) => {
+  if ("issues" in sampled) throw new Error(JSON.stringify(sampled.issues));
+  const joint = sampled.frames[frame]!.assembly.members.find((row) => row.object === "ram")!.joint;
+  if (joint?.kind !== "slide") throw new Error("ram is not a slide");
+  return joint.travel ?? 0;
+};
+const slid = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Ram: 0 } }, { t: 1, set: { Ram: 10 } }] }, slideRig, poseOf, slideParts, { interference: false });
+[0, 2.5, 5, 7.5, 10].forEach((want, frame) => assert.ok(Math.abs(travelOf(slid, frame) - want) < 1e-6, `frame ${frame} travel ${travelOf(slid, frame)} want ${want}`));
+const late = sampleAnimation({ fps: 4, keys: [{ t: 1, set: { Ram: 12 } }] }, slideRig, poseOf, slideParts, { interference: false });
+assert.ok(Math.abs(travelOf(late, 0) - 4) < 1e-6, "a track's first value is the slide's travel");
+assert.ok(Math.abs(travelOf(late, 2) - 8) < 1e-6 && Math.abs(travelOf(late, 4) - 12) < 1e-6);
+const limits = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Ram: "min" } }, { t: 0.5, set: { Ram: { fraction: 0.5 } } }, { t: 1, set: { Ram: "max" } }] }, slideRig, poseOf, slideParts, { interference: false });
+assert.ok(Math.abs(travelOf(limits, 0) - 0) < 1e-6 && Math.abs(travelOf(limits, 2) - 10) < 1e-6 && Math.abs(travelOf(limits, 4) - 20) < 1e-6);
+const rested = sampleAnimation({ fps: 4, keys: [{ t: 0, rest: true }] }, slideRig, poseOf, slideParts, { interference: false });
+assert.ok(Math.abs(travelOf(rested, 0)) < 1e-6, "rest puts a slide at travel 0");
+const over = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Ram: 30 } }] }, slideRig, poseOf, slideParts, { interference: false });
+assert.ok("issues" in over && over.issues.some((issue) => issue.reason.includes("outside this slide's limits")), JSON.stringify(over));
+const train: Assembly = { id: "rack", name: "Rack", members: [
+  { object: "frame", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] },
+  { object: "pin", parent: "frame", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1], angle: 0 } },
+  { object: "rack", parent: "frame", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "slide", pivot: [0, 0, 0], axis: [1, 0, 0], travel: 0, min: -50, max: 50 } },
+], couplings: [{ driver: "pin", driven: "rack", ratio: 0.1, kind: "ratio", names: ["Pinion", "Rack"], on: ["hinge", "slide"], rack: "driven" }] };
+const rackParts: AnimationPart[] = [{ object: "frame", name: "Frame" }, { object: "pin", name: "Pinion" }, { object: "rack", name: "Rack" }];
+const rackKey = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Rack: 5 } }] }, train, poseOf, rackParts, { interference: false });
+assert.ok("issues" in rackKey && rackKey.issues.some((issue) => issue.reason.includes("A slide moves with its pinion: key the pinion's angle.")), JSON.stringify(rackKey));
+const bothKeyed = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Pinion: 0, Rack: 5 } }, { t: 1, set: { Pinion: 10 } }] }, train, poseOf, rackParts, { interference: false });
+assert.ok("issues" in bothKeyed && bothKeyed.issues.some((issue) => issue.reason.includes("A slide moves with its pinion: key the pinion's angle.")), JSON.stringify(bothKeyed));
+const pinion = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Pinion: 0 } }, { t: 1, set: { Pinion: 10 } }] }, train, poseOf, rackParts, { interference: false });
+if ("issues" in pinion) throw new Error(JSON.stringify(pinion.issues));
+const rackTravel = pinion.frames.at(-1)!.assembly.members.find((row) => row.object === "rack")!.joint;
+assert.ok(rackTravel?.kind === "slide" && Math.abs((rackTravel.travel ?? 0) - 1) < 1e-6, JSON.stringify(rackTravel));
 console.log("pose animation: interpolation, holds, names, validation, slerp and reach ok");
 
 // --- Where frames fall (6.8.0): frame k at exactly k / fps, from 0 to the first grid time at or after the end. The

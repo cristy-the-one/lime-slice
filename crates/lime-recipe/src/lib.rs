@@ -466,7 +466,9 @@ pub struct Part {
 /// `ops::NurbsSurface` (S6: weights, degrees, knots, periodic, insert, elevate; `.op()` also feeds
 /// `solid_new {feature}`). A host before 7.2.0 does not
 /// build these steps, so a plugin that uses them records 1.18.
-pub const API: (u32, u32) = (1, 18);
+/// 1.19: a slide can be keyed. `Aim::Travel(mm)` is that travel in millimetres; `Pose::set` takes it, and the host
+/// reads the JSON number as millimetres when the joint is a slide (degrees when it is a hinge).
+pub const API: (u32, u32) = (1, 19);
 
 /// What a nested plugin run made (API 1.16): the plugin and the version that ran, the part it ended on (`done`), every
 /// part it made and left on the plate, in the order made, and the numbers it ended with. The parts are this run's from
@@ -7065,7 +7067,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 18));
+        assert_eq!(API, (1, 19));
     }
 
     #[test]
@@ -7818,16 +7820,18 @@ pub mod anim {
     use super::{Json, Refusal, Session};
 
     /// One joint target in the member's part frame, or a model-space Reach target.
+    /// A number is degrees on a hinge. `Travel` is millimetres on a slide; both encode as a JSON number, which the
+    /// host reads by the joint. `Pose::set` takes either (`set(name, mm)` is degrees; `set(name, Aim::Travel(mm))` is travel).
     #[derive(Clone, Debug, PartialEq)]
     pub enum Aim {
-        Degrees(f64), Rest, Aligned, Min, Max, Fraction(f64),
+        Degrees(f64), Travel(f64), Rest, Aligned, Min, Max, Fraction(f64),
         Rotation([f64; 4]), Reach { at: [f64; 3], to: [f64; 3] },
     }
     impl From<f64> for Aim { fn from(value: f64) -> Self { Aim::Degrees(value) } }
     impl Aim {
         fn json(&self) -> Json {
             match self {
-                Aim::Degrees(value) => Json::from(*value),
+                Aim::Degrees(value) | Aim::Travel(value) => Json::from(*value),
                 Aim::Rest => Json::from("rest"), Aim::Aligned => Json::from("aligned"),
                 Aim::Min => Json::from("min"), Aim::Max => Json::from("max"),
                 Aim::Fraction(value) => Json::obj().set("fraction", *value),
@@ -8087,6 +8091,17 @@ mod animation_tests {
         assert!(anim.to_json().at("background").is_none(), "a 1.8 animation must send the same call as before");
         anim.background("#204060");
         assert_eq!(anim.to_json().at("background").and_then(Json::as_str), Some("#204060"));
+    }
+
+    #[test]
+    fn travel_serialises_as_the_sampler_reads_it() {
+        // The host reads a JSON number on a slide as millimetres of travel (src/pose-anim.ts).
+        let mut anim = Animation::new(4);
+        anim.key(0.0, Pose::new().set("Ram", Aim::Travel(0.0)));
+        anim.key(1.0, Pose::new().set("Ram", Aim::Travel(12.5)));
+        let data = anim.to_json();
+        assert_eq!(data.at("keys.0.set.Ram").and_then(Json::as_f64), Some(0.0));
+        assert_eq!(data.at("keys.1.set.Ram").and_then(Json::as_f64), Some(12.5));
     }
 
     #[test]

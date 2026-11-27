@@ -463,7 +463,8 @@ function turn(event: TurnEvent): void {
   if (!row?.member.joint || !dragStart?.joint || dragStart.object !== row.member.object) return;
   const joint = dragStart.joint;
   const axis: Vec3 = event.axis === 0 ? [1, 0, 0] : event.axis === 1 ? [0, 1, 0] : [0, 0, 1];
-  if (joint.kind === "hinge" && dragAssembly) {
+  // A slide's delta is millimetres along its axis. trainTurn clamps it and turns a pinion a rack drives.
+  if ((joint.kind === "hinge" || joint.kind === "slide") && dragAssembly) {
     // A coupled hinge turns its gear train with it (docs/plan-gear-coupling.md); a locked one says why and stays.
     const train = trainTurn(dragAssembly, dragStart.object, event.delta);
     if ("reason" in train) { message = train.reason; renderPanel(); return; }
@@ -597,14 +598,15 @@ export function syncPose(): void {
   const clashing = lastClashes;
   const row = selected();
   const object = row && state.plate.objects.find((part) => part.id === row.member.object);
-  let gizmo: { pivot: Vec3; axes: Vec3[]; radius: number } | undefined;
-  // A slide has no ring: a rack moves with its pinion's ring, or by its Travel field.
-  if (tool === "turn" && (row?.member.parent || turnsOnPlate(row?.member)) && row?.member.joint && row.member.joint.kind !== "slide" && object && sceneShift) {
+  let gizmo: { pivot: Vec3; axes: Vec3[]; radius: number; slide?: boolean } | undefined;
+  // A slide shows an arrow along its axis. A hinge shows its ring, a ball its three rings.
+  if (tool === "turn" && (row?.member.parent || turnsOnPlate(row?.member)) && row?.member.joint && object && sceneShift) {
     const pose = modelPoseOf(object), joint = row.member.joint;
     const pivot = applyPose(sceneShift, applyPose(pose, joint.pivot));
-    const axes: Vec3[] = joint.kind === "hinge" ? [turnDir(pose, joint.axis)] : [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((axis) => turnDir(pose, axis));
+    const slide = joint.kind === "slide";
+    const axes: Vec3[] = joint.kind === "ball" ? [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((axis) => turnDir(pose, axis)) : [turnDir(pose, joint.axis)];
     const b = boundsOf(object.sourcePos);
-    gizmo = { pivot, axes, radius: Math.max(8, Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) * 0.55) };
+    gizmo = { pivot, axes, radius: Math.max(8, Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) * 0.55), ...(slide ? { slide: true } : {}) };
   }
   const chain = poseChain(assemblies, state.plate.selectedId);
   const marks: { pivot: Vec3; axis?: Vec3 }[] = [];
