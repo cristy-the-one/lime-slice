@@ -17,7 +17,7 @@ import { renderChrome } from "./settings.ts";
 import { setSettingsLevel } from "../ui/settings-panel.ts";
 import { session, state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
 import { fx } from "./fx.ts";
-import { dropProjectFonts } from "./user-fonts.ts";
+import { dropProjectFonts } from "./user-fonts-hook.ts";
 import { dropShownPreview, setStage, stopPlay } from "./viewer.ts";
 import { clearStressCells } from "../sim/stress-cells.ts";
 

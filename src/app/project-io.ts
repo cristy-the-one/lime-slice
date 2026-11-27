@@ -38,7 +38,7 @@ import { customGcodeNotice } from "../layer-actions.ts";
 import { setProjectTitle } from "./project-title.ts";
 import { projectFileName } from "../project-file-name.ts";
 import { session, state } from "./state.ts";
-import { dropProjectFonts, shelf } from "./user-fonts.ts";
+import { dropProjectFonts } from "./user-fonts-hook.ts";
 import { clearStressCells } from "../sim/stress-cells.ts";
 
 /** A picture opened with the file. Kept when a later save cannot draw and the geometry is unchanged. */
@@ -89,6 +89,7 @@ export async function saveCurrentProject() {
   if (plugins) project.plugins = plugins;
   // --- Text milestone 4 (D5): the fonts of the person's that texts use go in the project, whole, or as the outlines of the
   // letters used when the font's licence forbids embedding it.
+  const { shelf } = await import("./user-fonts.ts");
   const fonts = await shelf.recordsFor(project, session.fonts);
   if (fonts) project.fonts = fonts;
   if (Object.keys(session.parameters).length > 0) project.parameters = { ...session.parameters };
@@ -206,6 +207,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   // --- Text milestone 4: the project's fonts go to the engine before its history is rebuilt from them.
   session.fonts = project.fonts;
   dropProjectFonts();
+  const { shelf } = await import("./user-fonts.ts");
   const fontNotes = await shelf.adopt(project.fonts);
   session.parameters = project.parameters ? { ...project.parameters } : {};
   session.assemblies = project.assemblies ? structuredClone(project.assemblies) : [];
