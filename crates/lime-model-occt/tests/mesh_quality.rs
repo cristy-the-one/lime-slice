@@ -1,11 +1,9 @@
-//! The bridge triangulates faces with Open CASCADE's Delabella algorithm. On a set of parts this meshes each with it
-//! and with the Watson algorithm it replaced, at the same chord, and holds Delabella to what a mesh is for: every
-//! face meshed, no triangle of no area, the mesh closed (every edge of a triangle used by exactly two, corner for
-//! corner, before any crack is mended), no more edges of three triangles than Watson leaves, no triangle farther from
-//! its surface than one and a half chords, and the same mesh when the same solid is meshed again from nothing. The
-//! numbers of both are printed, a row a part. Open CASCADE checks a face's triangles against the chord at its own
-//! sample points, so on a free-form surface either algorithm's worst triangle lies a little past it: on the duck plate
-//! 0.061 mm with Watson and 0.069 mm with Delabella, at a chord of 0.05.
+//! The bridge triangulates faces with Open CASCADE's Watson algorithm. On a set of parts this holds each mesh to
+//! what a mesh is for: every face meshed, no triangle of no area, the mesh closed (every edge of a triangle used by
+//! exactly two, corner for corner, before any crack is mended), no triangle farther from its surface than one and a
+//! half chords, and the same mesh when the same solid is meshed again from nothing. The numbers are printed, a row a
+//! part. Open CASCADE checks a face's triangles against the chord at its own sample points, so on a free-form surface
+//! the worst triangle lies a little past it.
 //!
 //! `LIME_MESH_QUALITY_STEP` adds STEP files from outside the repository, by path, separated by `;`: they are measured
 //! and printed the same way, and nothing of them is kept.
@@ -174,43 +172,31 @@ fn parts() -> Vec<Part> {
 }
 
 #[test]
-fn delabella_meshes_close_and_keep_the_chord() {
+fn watson_meshes_close_and_keep_the_chord() {
     let stats: Value = serde_json::from_str(&lime_model_occt::stats()).expect("stats");
     if stats.get("error").is_some() {
         assert!(!require(), "Open CASCADE is required: {stats}");
         return;
     }
-    eprintln!("| part | mesher | triangles | farthest from surface mm | sharpest corner deg | corners under 5 deg | open edges | edges of 3+ | faces with no triangles | a face's area off by % |");
-    eprintln!("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+    eprintln!("| part | triangles | farthest from surface mm | sharpest corner deg | corners under 5 deg | open edges | edges of 3+ | faces with no triangles | triangles of no area | a face's area off by % |");
+    eprintln!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for (index, part) in parts().iter().enumerate() {
-        lime_model_occt::set_watson_mesher(true);
-        let watson = measure(part, &format!("q{index}w"));
-        lime_model_occt::set_watson_mesher(false);
-        let delabella = measure(part, &format!("q{index}d"));
+        let row = measure(part, &format!("q{index}"));
         let again = measure(part, &format!("q{index}e"));
-        for (name, row) in [("Watson", &watson), ("Delabella", &delabella)] {
-            eprintln!(
-                "| {} | {name} | {} | {:.4} | {:.2} | {} | {} | {} | {} | {:.3} |",
-                part.name, row.triangles, row.deviation, row.angle, row.slivers, row.open, row.shared, row.unmeshed, row.area_off
-            );
-        }
+        eprintln!(
+            "| {} | {} | {:.4} | {:.2} | {} | {} | {} | {} | {} | {:.3} |",
+            part.name, row.triangles, row.deviation, row.angle, row.slivers, row.open, row.shared, row.unmeshed, row.flat, row.area_off
+        );
         let name = &part.name;
-        assert_eq!(delabella.unmeshed, 0, "{name}: every face is meshed");
-        assert_eq!(delabella.flat, watson.flat.min(delabella.flat), "{name}: no more triangles of no area than Watson's {}", watson.flat);
-        assert!(delabella.open <= watson.open, "{name}: {} open edges against Watson's {}", delabella.open, watson.open);
-        assert!(delabella.shared <= watson.shared, "{name}: {} edges of three triangles against Watson's {}", delabella.shared, watson.shared);
+        assert_eq!(row.unmeshed, 0, "{name}: every face is meshed");
+        assert_eq!(row.flat, 0, "{name}: a triangle of no area");
+        assert_eq!(row.open, 0, "{name}: an edge of one triangle, so two faces do not meet");
+        assert_eq!(row.shared, 0, "{name}: an edge of three triangles");
         assert!(
-            delabella.deviation <= CHORD * 1.5,
-            "{name}: {} mm from the surface against Watson's {} and a chord of {CHORD}",
-            delabella.deviation,
-            watson.deviation
+            row.deviation <= CHORD * 1.5,
+            "{name}: {} mm from the surface, against a chord of {CHORD}",
+            row.deviation
         );
-        assert!(
-            delabella.area_off <= watson.area_off.max(1.0) * 1.5,
-            "{name}: a face's triangles are {} % off its area against Watson's {} %",
-            delabella.area_off,
-            watson.area_off
-        );
-        assert!(delabella.mesh == again.mesh, "{name}: the same solid meshed again gives the same mesh");
+        assert_eq!(row.mesh, again.mesh, "{name}: the same solid meshed again gives the same mesh");
     }
 }

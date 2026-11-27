@@ -1,8 +1,7 @@
-# Temporary: reproduce the Windows brep access violation and print a native stack.
-# One loop runs the same brep binary 100 times three ways: baseline Delabella,
-# LIME_OCCT_MESHER=watson, and LIME_OCCT_MESH_PARALLEL=0. Removed before this
-# PR is ready for review. Push / pull_request on claude/w1-brep-windows-crash
-# only. Does not change any existing CI job.
+# Temporary: 200 runs of tests/brep.rs after the mesher is Watson.
+# Removed in a later commit on this branch, before the PR is ready.
+# Push / pull_request on claude/w1-brep-windows-crash only.
+# Does not change any existing CI job.
 name: W1 brep crash loop
 
 on:
@@ -20,7 +19,7 @@ jobs:
     name: W1 brep crash loop (temporary)
     if: github.head_ref == 'claude/w1-brep-windows-crash' || github.ref == 'refs/heads/claude/w1-brep-windows-crash'
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
     env:
       LIME_REQUIRE_OCCT: "1"
       CARGO_BUILD_JOBS: "4"
@@ -58,114 +57,22 @@ jobs:
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Build the lime-model-occt tests once
-        env:
-          CC_ENABLE_DEBUG_OUTPUT: "1"
-        run: cargo test -p lime-model-occt --locked --no-run -vv
+        run: cargo test -p lime-model-occt --locked --no-run
 
-      - name: Print which C runtime the bridge and OCCT load
+      - name: Loop the brep binary 200 times
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
           $PSNativeCommandUseErrorActionPreference = $false
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin.exe$' } | Select-Object -First 1 -ExpandProperty FullName
-          Write-Host "DUMPBIN=$dumpbin"
-          $out = Join-Path $env:RUNNER_TEMP "w1-crt.txt"
-          function Show-Deps([string]$path) {
-            $lines = @("===== DEPENDENTS $path =====")
-            if (-not (Test-Path -LiteralPath $path)) { $lines += "MISSING"; $lines | Tee-Object -FilePath $out -Append | Write-Host; return }
-            $dep = & $dumpbin /nologo /dependents $path
-            $lines += $dep | Select-String -Pattern "Dump of file|Image has the following dependencies|vcruntime|msvcp|ucrtbase|VCRUNTIME|MSVCP|UCRT|api-ms-win-crt|concrt" | ForEach-Object { $_.Line }
-            $lines += "===== DIRECTIVES $path ====="
-            $dir = & $dumpbin /nologo /directives $path
-            $hit = @($dir | Select-String -Pattern "DEFAULTLIB|msvcr|vcruntime|ucrt|libcmtd|libcmt|msvcrt")
-            if ($hit.Count -eq 0) { $lines += "(no CRT directive)" } else { $lines += $hit | ForEach-Object { $_.Line } }
-            $lines | Tee-Object -FilePath $out -Append | Write-Host
-          }
-          "" | Set-Content -Path $out -Encoding utf8
-          Write-Host "===== SCRIPT CRT FLAGS ====="
-          @(
-            "cc 1.11.2 (Cargo.lock) passes -MD to MSVC unless crt-static or Build::static_crt(true). It does not pass -MDd.",
-            "build.rs adds /EHa on MSVC and does not pass /MD, /MDd, /MT, or /MTd.",
-            "tools/occt/install.py builds with the Visual Studio generator and cmake --build --config Release, which is /MD."
-          ) | Tee-Object -FilePath $out -Append | Write-Host
-          Select-String -Path tools\occt\install.py,crates\lime-model-occt\build.rs -Pattern "Release|CMAKE_CXX_FLAGS|/MD|/MT|EHa|static_crt" | ForEach-Object { "$($_.Filename):$($_.LineNumber): $($_.Line.Trim())" } | Tee-Object -FilePath $out -Append | Write-Host
-          $bins = @()
-          $bins += @(Get-ChildItem -Path target\debug,target\debug\deps -Filter brep-*.exe -ErrorAction SilentlyContinue)
-          $bins += @(Get-ChildItem -Path target\debug,target\debug\deps -Filter lime_model_occt.dll -ErrorAction SilentlyContinue)
-          $bins += @(Get-ChildItem -Path target\debug\build -Recurse -Include lime_occt_kernel.lib,*.obj -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'lime-model-occt|lime_occt' } | Select-Object -First 8)
-          foreach ($bin in $bins) { if ($bin) { Show-Deps $bin.FullName } }
-          foreach ($dll in @("TKernel.dll","TKBRep.dll","TKMesh.dll","TKBO.dll","TKDESTEP.dll","TKPrim.dll")) {
-            foreach ($dir in @("$env:OCCT_ROOT\bin","$env:OCCT_ROOT\lib")) {
-              $p = Join-Path $dir $dll
-              if (Test-Path -LiteralPath $p) { Show-Deps $p }
-            }
-          }
-          $cc = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Directory -Filter "cc-1.11.2*" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($cc) {
-            Write-Host "===== cc $($cc.FullName) crt_flag ====="
-            Select-String -Path (Join-Path $cc.FullName "src\lib.rs") -Pattern "let crt_flag" -Context 0,14 | ForEach-Object { $_.Line; $_.Context.PostContext } | Tee-Object -FilePath $out -Append | Write-Host
-          } else {
-            "cc-1.11.2 source not in the cargo registry" | Tee-Object -FilePath $out -Append | Write-Host
-          }
-          "CRT_REPORT=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Loop the brep binary and the other test binaries
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          $PSNativeCommandUseErrorActionPreference = $false
-          $dumpDir = Join-Path $env:RUNNER_TEMP "w1-dumps"
-          $pdbDir = Join-Path $env:RUNNER_TEMP "w1-pdbs"
-          New-Item -ItemType Directory -Force -Path $dumpDir, $pdbDir | Out-Null
-          "DUMP_DIR=$dumpDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "PDB_DIR=$pdbDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
           $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
-          $env:RUST_BACKTRACE = "1"
-          Write-Host "OCCT_ROOT=$env:OCCT_ROOT"
-          Write-Host "CPU=$((Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum)"
-          Get-ChildItem "$env:OCCT_ROOT\bin\*.dll","$env:OCCT_ROOT\lib\*.dll" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name | Sort-Object -Unique | Write-Host
-
-          function Set-DumpKey([string]$name) {
-            $key = if ($name) { "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$name" } else { "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" }
-            reg add $key /v DumpFolder /t REG_SZ /d $dumpDir /f | Out-Null
-            reg add $key /v DumpType /t REG_DWORD /d 2 /f | Out-Null
-            reg add $key /v DumpCount /t REG_DWORD /d 4 /f | Out-Null
-          }
-          reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting" /v DontShowUI /t REG_DWORD /d 1 /f | Out-Null
-          reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting" /v Disabled /t REG_DWORD /d 0 /f | Out-Null
-          Set-DumpKey ""
-
           $jsonLog = Join-Path $env:RUNNER_TEMP "w1-no-run.json"
-          # Already built. --no-run only prints the executable paths.
           cargo test -p lime-model-occt --locked --no-run --message-format=json | Out-File -FilePath $jsonLog -Encoding utf8NoBOM
-          $exes = @()
+          $brep = $null
           foreach ($line in Get-Content $jsonLog) {
             try { $obj = $line | ConvertFrom-Json } catch { continue }
-            if ($obj.executable -and (Test-Path -LiteralPath $obj.executable)) {
-              $exes += (Resolve-Path -LiteralPath $obj.executable).Path
-            }
+            if ($obj.executable -and (Split-Path $obj.executable -Leaf) -like "brep-*.exe") { $brep = $obj.executable }
           }
-          $exes = $exes | Sort-Object -Unique
-          Write-Host "TEST_BINARIES $($exes.Count)"
-          $exes | ForEach-Object { Write-Host "BIN $_" }
-          foreach ($exe in $exes) { Set-DumpKey (Split-Path $exe -Leaf) }
-
-          $cdb = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe"
-          if (-not (Test-Path -LiteralPath $cdb)) {
-            $found = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) { $cdb = $found.FullName }
-          }
-          Write-Host "CDB=$cdb exists=$(Test-Path -LiteralPath $cdb)"
-
-          $summary = Join-Path $dumpDir "summary.txt"
-          function Add-Summary([string]$line) {
-            Write-Host $line
-            Add-Content -Path $summary -Value $line
-          }
-
+          if (-not $brep) { Write-Host "NO_BREP_EXE"; exit 1 }
           function Get-ExitHex($code) {
             if ($null -eq $code) { return "null" }
             $n = [int64]$code
@@ -175,188 +82,32 @@ jobs:
           function Test-FatalHex([string]$hex) {
             return $hex -in @('C0000005','C0000374','C0000409','C00000FD','C000001D','C0000094','C0000096')
           }
-
-          $dumpsKept = 0
-          function Invoke-Loop([string]$exe, [int]$times, [string]$label, [string[]]$extraArgs, [int]$timeoutSec) {
-            $crashes = 0; $passes = 0; $other = 0; $timeouts = 0
-            $ms = @()
-            for ($i = 1; $i -le $times; $i++) {
-              $before = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
-              $sw = [Diagnostics.Stopwatch]::StartNew()
-              $argList = @("--nocapture") + $extraArgs
-              $stdout = Join-Path $dumpDir "stdout-$label-$i.txt"
-              $stderr = Join-Path $dumpDir "stderr-$label-$i.txt"
-              $p = Start-Process -FilePath $exe -ArgumentList $argList -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-              $finished = $p.WaitForExit($timeoutSec * 1000)
-              $sw.Stop()
-              if (-not $finished) {
-                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-                $timeouts++
-                Add-Summary "TIMEOUT $label iter=$i elapsed_ms=$($sw.ElapsedMilliseconds)"
-                continue
-              }
-              $code = $p.ExitCode
-              $hex = Get-ExitHex $code
-              $ms += $sw.ElapsedMilliseconds
-              $body = ""
-              if (Test-Path $stdout) { $body = (Get-Content $stdout -Raw -ErrorAction SilentlyContinue) }
-              $afterOk = $body -match "test result: ok"
-              if ($code -eq 0) {
-                $passes++
-                Remove-Item -LiteralPath $stdout, $stderr -ErrorAction SilentlyContinue
-              }
-              elseif (Test-FatalHex $hex) {
-                $crashes++
-                $script:dumpsKept++
-                $when = if ($afterOk) { "after-ok" } else { "during-test" }
-                Add-Summary "CRASH $label iter=$i exit=0x$hex when=$when elapsed_ms=$($sw.ElapsedMilliseconds)"
-                if ($body) { ($body -split "`n" | Select-Object -First 12) | ForEach-Object { Add-Summary "STDOUT $label $_" } }
-                $deadline = (Get-Date).AddSeconds(30)
-                do {
-                  $now = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
-                  if ($now.Count -gt $before.Count) { break }
-                  Start-Sleep -Seconds 1
-                } while ((Get-Date) -lt $deadline)
-                if ($script:dumpsKept -eq 2) {
-                  reg delete "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" /f | Out-Null
-                  Add-Summary "WER_DUMPS_STOPPED after 2 fatal exits so later iterations only count"
-                }
-              } else {
-                $other++
-                Add-Summary "OTHER $label iter=$i exit=$code (0x$hex) elapsed_ms=$($sw.ElapsedMilliseconds)"
-                if ($body) { ($body -split "`n" | Select-Object -First 12) | ForEach-Object { Add-Summary "STDOUT $label $_" } }
-                if (Test-Path $stderr) { Get-Content $stderr -Tail 20 | ForEach-Object { Add-Summary "STDERR $label $_" } }
-              }
+          $times = 200
+          $crashes = 0; $passes = 0; $other = 0; $timeouts = 0
+          Write-Host "LOOP_WATSON exe=$brep runs=$times"
+          for ($i = 1; $i -le $times; $i++) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $stdout = Join-Path $env:RUNNER_TEMP "stdout-$i.txt"
+            $stderr = Join-Path $env:RUNNER_TEMP "stderr-$i.txt"
+            $p = Start-Process -FilePath $brep -ArgumentList @("--nocapture") -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $finished = $p.WaitForExit(180000)
+            $sw.Stop()
+            if (-not $finished) {
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              $timeouts++
+              Write-Host "TIMEOUT iter=$i elapsed_ms=$($sw.ElapsedMilliseconds)"
+              continue
             }
-            $avg = if ($ms.Count) { [int](($ms | Measure-Object -Average).Average) } else { 0 }
-            Add-Summary "RESULT $label crashes=$crashes passes=$passes other=$other timeouts=$timeouts total=$times avg_ms=$avg"
-            return [pscustomobject]@{ crashes = $crashes; passes = $passes; other = $other; timeouts = $timeouts }
-          }
-
-          function Invoke-CdbDumps([string]$reason) {
-            if (-not (Test-Path -LiteralPath $cdb)) {
-              Add-Summary "CDB_MISSING $reason"
-              return
-            }
-            $dumps = @(Get-ChildItem $dumpDir -Filter *.dmp -ErrorAction SilentlyContinue)
-            if ($dumps.Count -eq 0) { Add-Summary "NO_DUMPS $reason"; return }
-            foreach ($dump in $dumps) {
-              $log = Join-Path $dumpDir ("cdb-" + $dump.BaseName + ".txt")
-              if (Test-Path -LiteralPath $log) { continue }
-              Add-Summary "CDB_ANALYZE $reason $($dump.Name) bytes=$($dump.Length)"
-              $cmds = "lm; !analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; q"
-              $err = Join-Path $dumpDir ("cdb-" + $dump.BaseName + ".err.txt")
-              $p = Start-Process -FilePath $cdb -ArgumentList @("-z",$dump.FullName,"-y",$pdbDir,"-c",$cmds) -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
-              if (-not $p.WaitForExit(240000)) {
-                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-                Add-Summary "CDB_TIMEOUT $($dump.Name)"
-              } else {
-                Add-Summary "CDB_DONE $($dump.Name) exit=$($p.ExitCode)"
-              }
-              if (Test-Path $log) { Get-Content $log | Write-Host }
-              if (Test-Path $err) { Get-Content $err | Write-Host }
+            $hex = Get-ExitHex $p.ExitCode
+            if ($p.ExitCode -eq 0) { $passes++ }
+            elseif (Test-FatalHex $hex) {
+              $crashes++
+              Write-Host "CRASH iter=$i exit=0x$hex elapsed_ms=$($sw.ElapsedMilliseconds)"
+            } else {
+              $other++
+              Write-Host "OTHER iter=$i exit=$($p.ExitCode) (0x$hex) elapsed_ms=$($sw.ElapsedMilliseconds)"
             }
           }
-
-          $brep = $exes | Where-Object { (Split-Path $_ -Leaf) -like "brep-*.exe" } | Select-Object -First 1
-          if (-not $brep) { Add-Summary "NO_BREP_EXE"; exit 1 }
-          $brepPdb = [IO.Path]::ChangeExtension($brep, ".pdb")
-          if (Test-Path -LiteralPath $brepPdb) { Copy-Item -LiteralPath $brepPdb -Destination $pdbDir -Force }
-          Copy-Item -LiteralPath $brep -Destination $pdbDir -Force
-          Get-ChildItem $env:OCCT_ROOT -Recurse -Include *.pdb -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item -LiteralPath $_.FullName -Destination $pdbDir -Force
-            Add-Summary "OCCT_PDB $($_.FullName)"
-          }
-
-          function Invoke-CdbUntilCrash([string]$label, [int]$times) {
-            if (-not (Test-Path -LiteralPath $cdb)) { Add-Summary "CDB_MISSING $label"; return $false }
-            $deps = Split-Path $brep
-            $cdbScript = Join-Path $dumpDir "catch-$label.txt"
-            Set-Content -Path $cdbScript -Encoding ascii -Value @(
-              '.echo CDB_READY',
-              'sxe -c "!analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; qd" av',
-              'sxe -c "!analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; qd" c0000374',
-              'sxe -c "!analyze -v; .echo ---KB---; kb; .echo ---ALLTHREADS---; ~*kb; qd" c0000409',
-              'g',
-              'q'
-            )
-            for ($i = 1; $i -le $times; $i++) {
-              $log = Join-Path $dumpDir "cdb-$label-$i.txt"
-              $cmd = '$<' + $cdbScript
-              $p = Start-Process -FilePath $cdb -ArgumentList @('-g','-G','-lines','-logo',$log,'-y',$deps,'-c',$cmd,$brep,'--nocapture') -PassThru
-              if (-not $p.WaitForExit(90000)) {
-                taskkill /F /T /PID $p.Id | Out-Null
-                Add-Summary "CDB_TIMEOUT $label iter=$i"
-                continue
-              }
-              $text = ""
-              if (Test-Path $log) { $text = [string](Get-Content $log -Raw -ErrorAction SilentlyContinue) }
-              $hex = Get-ExitHex $p.ExitCode
-              if ($text -match '---KB---') {
-                Add-Summary "CDB_HIT $label iter=$i exit=0x$hex"
-                Get-Content $log | Write-Host
-                return $true
-              }
-              Add-Summary "CDB_MISS $label iter=$i exit=0x$hex"
-            }
-            return $false
-          }
-
-          function Clear-MeshEnv {
-            Remove-Item Env:LIME_OCCT_MESHER -ErrorAction SilentlyContinue
-            Remove-Item Env:LIME_OCCT_MESH_PARALLEL -ErrorAction SilentlyContinue
-          }
-          Add-Summary "READ A only -> Delabella under the thread pool. A and C, not B -> Delabella on a face. B as well -> not Delabella."
-          Clear-MeshEnv
-          Add-Summary "VARIANT A baseline Delabella InParallel=true exe=$brep MESHER='$($env:LIME_OCCT_MESHER)' PARALLEL='$($env:LIME_OCCT_MESH_PARALLEL)'"
-          Invoke-Loop $brep 100 "A-baseline" @() 180 | Out-Null
-          Invoke-CdbDumps "after-A"
-
-          $env:LIME_OCCT_MESHER = "watson"
-          Add-Summary "VARIANT B LIME_OCCT_MESHER=watson InParallel=true (parallel meshing, Watson) MESHER='$($env:LIME_OCCT_MESHER)' PARALLEL='$($env:LIME_OCCT_MESH_PARALLEL)'"
-          Invoke-Loop $brep 100 "B-watson" @() 180 | Out-Null
-          Clear-MeshEnv
-
-          $env:LIME_OCCT_MESH_PARALLEL = "0"
-          Add-Summary "VARIANT C Delabella LIME_OCCT_MESH_PARALLEL=0 (InParallel false). Temporary switch. MESHER='$($env:LIME_OCCT_MESHER)' PARALLEL='$($env:LIME_OCCT_MESH_PARALLEL)'"
-          Invoke-Loop $brep 100 "C-serial" @() 180 | Out-Null
-          Clear-MeshEnv
-          Add-Summary "MESH_ENV_CLEARED before cdb MESHER='$($env:LIME_OCCT_MESHER)' PARALLEL='$($env:LIME_OCCT_MESH_PARALLEL)'"
-
-          Add-Summary "CDB_LIVE natural second-process, baseline env, up to 40 tries"
-          $hit = Invoke-CdbUntilCrash "natural" 40
-          if (-not $hit) { Add-Summary "CDB_NATURAL_NO_HIT" }
-
-          $gflags = Join-Path (Split-Path $cdb) "gflags.exe"
-          if (Test-Path -LiteralPath $gflags) {
-            $image = Split-Path $brep -Leaf
-            & $gflags /p /enable $image /full
-            Add-Summary "PAGEHEAP enable $image exit=$LASTEXITCODE"
-            Add-Summary "CDB_LIVE pageheap, up to 20 tries"
-            Invoke-CdbUntilCrash "pageheap" 20 | Out-Null
-            & $gflags /p /disable $image
-            Add-Summary "PAGEHEAP disable $image exit=$LASTEXITCODE"
-          } else {
-            Add-Summary "GFLAGS_MISSING $gflags"
-          }
-
-          Add-Summary "OTHER_BINARIES not repeated this run; previous run 45888256265 looped each other lime-model-occt binary 3 times with no fatal exit (gear iter 3 was a 120s timeout, not a crash)"
-
-          Write-Host "===== SUMMARY ====="
-          if (Test-Path $summary) { Get-Content $summary | Write-Host }
-          # Non-zero on purpose: this job is a measurement, and a repeated green
-          # check is not delivered. The fatal counts and the cdb log are the result.
-          Add-Summary "DIAGNOSTIC_EXIT 1"
+          Write-Host "RESULT watson crashes=$crashes passes=$passes other=$other timeouts=$timeouts total=$times"
+          # Non-zero on purpose so this measurement log is fetched. Removed with the job.
           exit 1
-
-      - name: Upload dumps, PDBs, and debugger logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: w1-brep-dumps
-          path: |
-            ${{ runner.temp }}/w1-dumps
-            ${{ runner.temp }}/w1-pdbs
-            ${{ runner.temp }}/w1-crt.txt
-          if-no-files-found: ignore
-          retention-days: 14
