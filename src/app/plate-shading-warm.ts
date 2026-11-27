@@ -24,10 +24,9 @@
  * base64). A part past either is drawn flat, as before, and never asked.
  */
 import { bytesToBase64Async } from "../base64";
-import { DISPLAY_MESH_FIELD } from "../model-mesh-quality";
 import { decodeSolid } from "../model-reply";
 import { meshTokenOf, type PlateObject } from "../plate";
-import { giveShading, hasShadeSource, reachFor } from "../plate-shading";
+import { giveShading, hasShadeSource, plateNormalsOf, reachFor } from "../plate-shading-carry";
 import { isStepName } from "./settings";
 import { state } from "./state";
 import { treeCall } from "./step-solids";
@@ -122,9 +121,14 @@ async function shadeOne(job: Job) {
   // The kernel meshes STEP from 0.01 to 2 mm.
   const chordMm = Math.min(2, Math.max(0.01, Number.isFinite(job.chordMm) ? job.chordMm : 0.1));
   const dataB64 = await bytesToBase64Async(new Uint8Array(job.solid));
-  const reply = await treeCall({ call: "meshStep", dataB64, chordMm, [DISPLAY_MESH_FIELD[0]]: DISPLAY_MESH_FIELD[1] });
+  // Asked as the view asks (DISPLAY_MESH_FIELD in src/model-mesh-quality.ts), so the reply carries the normals.
+  const reply = await treeCall({ call: "meshStep", dataB64, chordMm, meshQuality: "display" });
   if (typeof reply.error === "string") return;
-  const solid = decodeSolid(reply);
-  if (typeof solid === "string" || !solid.plateNormals) return;
-  giveShading(job.positions, { positions: solid.positions, normals: solid.plateNormals, reachMm: reachFor(chordMm) });
+  // meshStep sends the normals alone under `display`, which holds no display mesh: decoded apart from the solid.
+  const normals = (reply.display as { plateNormals?: unknown } | undefined)?.plateNormals;
+  delete reply.display;
+  const decoded = decodeSolid(reply);
+  if (typeof decoded === "string") return;
+  const plateNormals = plateNormalsOf(normals, decoded.positions.length);
+  if (plateNormals) giveShading(job.positions, { positions: decoded.positions, normals: plateNormals, reachMm: reachFor(chordMm) });
 }

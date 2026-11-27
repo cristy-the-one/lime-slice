@@ -8,8 +8,7 @@ import { decodeSolid, encodeSolid, type ParsedSolid } from "./model-reply.ts";
 import { drawnSolid } from "./model-view/types.ts";
 import { encodeStl, scaledCanonical, settleBy } from "./mesh-place.ts";
 import { closeCracks } from "./mesh-check.ts";
-import { aliasShading, giveShading, hasShadeSource, onShading, reachFor, shadeFromSolid, shadingOf, transferNormals } from "./plate-shading.ts";
-import { isShaded, plateGeometry } from "./view-shading.ts";
+import { aliasShading, giveShading, plateNormalsOf, hasShadeSource, isShaded, onShading, plateGeometry, reachFor, shadeFromSolid, shadingOf, transferNormals } from "./plate-shading-carry.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -171,7 +170,7 @@ stop();
 
 // --- From a reply: only when it carried the plate mesh's normals.
 const quiet = new Float32Array(ball.positions);
-shadeFromSolid(quiet, { positions: ball.positions }, 0.1);
+shadeFromSolid(quiet, { positions: ball.positions, display: {} }, 0.1);
 check("a reply without plate normals gives no shading", !hasShadeSource(quiet));
 
 // --- The wire: `display.plateNormals` is drawing data; the plate mesh decodes the same with or without it.
@@ -183,24 +182,25 @@ const solidBase = {
   edges: [{ lengthMm: 20, points: [0, 0, 0, 20, 0, 0] }],
 };
 const fp = { volumeMm3: 4188, faces: 6, edges: 1 };
-const bare = decodeSolid({ id: 1, ...encodeSolid(solidBase), fingerprint: fp }) as ParsedSolid;
-const step = decodeSolid({ id: 1, ...encodeSolid({ ...solidBase, plateNormals: Array.from(plain.normals) }), fingerprint: fp }) as ParsedSolid;
-const view = decodeSolid({ id: 1, ...encodeSolid({ ...solidBase, plateNormals: Array.from(plain.normals), display: { positions: solidBase.positions, normals: Array.from(plain.normals), triangles: solidBase.triangles } }), fingerprint: fp }) as ParsedSolid;
-check("replies with and without plate normals decode", typeof bare !== "string" && typeof step !== "string" && typeof view !== "string");
-check("the plate mesh, faces and edges are the same bytes with or without plate normals", same(bare.positions, step.positions) && same(bare.triangles, step.triangles) && same(bare.positions, view.positions) && same(bare.edges[0]!.points, view.edges[0]!.points));
-check("meshStep's plate normals alone are no display mesh", !step.display && !!step.plateNormals && same(step.plateNormals, plain.normals));
-check("beside a display mesh they decode too", !!view.display && !!view.plateNormals && same(view.plateNormals, plain.normals));
-check("the Model view's drawn solid carries no plate normals", drawnSolid(view).plateNormals === undefined && drawnSolid(view).positions === view.display!.positions);
-const short = encodeSolid({ ...solidBase, plateNormals: Array.from(plain.normals) });
-short.display = { plateNormals: Buffer.from(new Float32Array(9).buffer).toString("base64") };
-const shortReply = decodeSolid({ id: 1, ...short, fingerprint: fp });
-check("plate normals of the wrong length are left out and the reply stands", typeof shortReply !== "string" && !shortReply.plateNormals && same(shortReply.positions, bare.positions));
+const b64 = (values: ArrayLike<number>) => Buffer.from(Float32Array.from(values).buffer).toString("base64");
+const wire = encodeSolid(solidBase);
+const withDisplay = encodeSolid({ ...solidBase, display: { positions: solidBase.positions, normals: Array.from(plain.normals), triangles: solidBase.triangles } });
+const bare = decodeSolid({ id: 1, ...wire, fingerprint: fp }) as ParsedSolid;
+// As a view reply sends them: beside the display mesh.
+const view = decodeSolid({ id: 1, ...withDisplay, display: { ...withDisplay.display, plateNormals: b64(plain.normals) }, fingerprint: fp }) as ParsedSolid;
+check("replies with and without plate normals decode", typeof bare !== "string" && typeof view !== "string");
+check("the plate mesh, faces and edges are the same bytes with or without plate normals", same(bare.positions, view.positions) && same(bare.triangles, view.triangles) && same(bare.edges[0]!.points, view.edges[0]!.points));
+const viewNormals = plateNormalsOf(view.display?.plateNormals, view.positions.length);
+check("beside a display mesh they ride along and read back", !!viewNormals && same(viewNormals, plain.normals));
+check("the Model view draws the display mesh as before", drawnSolid(view).positions === view.display!.positions && drawnSolid(view).display === undefined);
+const shortReply = decodeSolid({ id: 1, ...withDisplay, display: { ...withDisplay.display, plateNormals: b64(new Float32Array(9)) }, fingerprint: fp });
+check("plate normals of the wrong length are left out and the reply stands", typeof shortReply !== "string" && plateNormalsOf(shortReply.display?.plateNormals, shortReply.positions.length) === null && same(shortReply.positions, bare.positions));
 
 // --- A commit's bytes: what is sliced and saved is the same whether the mesh is shaded or not.
 const committed = closeCracks(ball.positions);
 const seat = settleBy(committed);
 const bytesBefore = new Uint8Array(encodeStl(committed, "part.stl"));
-shadeFromSolid(committed, { positions: ball.positions, plateNormals: ball.normals }, 0.1);
+shadeFromSolid(committed, { positions: ball.positions, display: { plateNormals: b64(ball.normals) } }, 0.1);
 const drawn = shadingOf(committed);
 const bytesAfter = new Uint8Array(encodeStl(committed, "part.stl"));
 check("a committed plate mesh is shaded from its reply's normals", !!drawn && seat !== 0);

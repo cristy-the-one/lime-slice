@@ -1,5 +1,9 @@
 /**
- * Smooth shading for the plate mesh in Prepare and Pose.
+ * Smooth shading for the plate mesh in Prepare and Pose: where the normals come from, and how they are carried onto the
+ * plate mesh, and the views' side: a geometry takes the exact normals in place. This module loads with Model's code,
+ * Pose's, or the background call (src/app/plate-shading-warm.ts); the first chunk holds only the hooks it fills
+ * (src/plate-shading.ts). Only the `normal` attribute of a drawn geometry changes: `position`, the triangles, picking
+ * (three.js works the face normal of a hit out of the positions) and everything drawn on the surface stay as they were.
  *
  * A part made in Model (or read from STEP) is drawn there from its plate mesh: the mesh that is committed, sliced,
  * exported and read by Stress, Auto ribs, the checks, picking and paint. Lit as a triangle soup, each of its triangles
@@ -22,6 +26,10 @@
  * corner takes the normal of the nearest source triangle that faces the same way, interpolated across that triangle.
  * Where the two meshes are the same corner for corner, the normals are copied as they are.
  */
+
+import * as THREE from "three";
+import { base64ToBytes } from "./base64.ts";
+import { plateShading } from "./plate-shading.ts";
 
 /** What a plate mesh is shaded from: a triangle soup of the same solid with the exact normal at each of its corners. */
 export interface ShadeSource {
@@ -47,15 +55,9 @@ const MATCHED_SHARE = 0.98;
 
 const sources = new WeakMap<Float32Array, ShadeSource>();
 const derived = new WeakMap<Float32Array, Float32Array | null>();
-/** A uniformly scaled copy of a plate mesh (Prepare draws `scaledCanonical`), and the plate mesh it was made from. */
-const aliases = new WeakMap<Float32Array, Float32Array>();
-/**
- * The plate meshes given a source lately. A plate mesh is copied as it travels (the commit, an undo pin, a duplicate
- * restored), and a copy with the same numbers is the same mesh: it finds its source here.
- */
+const listeners = new Set<() => void>();
 const recent: { positions: Float32Array; source: ShadeSource }[] = [];
 const RECENT = 64;
-const listeners = new Set<() => void>();
 
 /** Plate mesh `positions` is shaded from `source`. Nothing else about the mesh changes. */
 export function giveShading(positions: Float32Array, source: ShadeSource): void {
@@ -73,19 +75,30 @@ export function giveShading(positions: Float32Array, source: ShadeSource): void 
  * Plate mesh `plate`, made from `solid`'s plate mesh (cracks closed, settled), is shaded from the normals the same
  * reply carried. Nothing when the reply had none (a request that did not ask, an older kernel, a stand-in).
  */
-export function shadeFromSolid(plate: Float32Array, solid: { positions: Float32Array; plateNormals?: Float32Array }, chordMm: number): void {
-  if (!solid.plateNormals || solid.plateNormals.length !== solid.positions.length) return;
-  giveShading(plate, { positions: solid.positions, normals: solid.plateNormals, reachMm: reachFor(chordMm) });
+export function shadeFromSolid(plate: Float32Array, solid: { positions: Float32Array; display?: { plateNormals?: unknown } }, chordMm: number): void {
+  const normals = plateNormalsOf(solid.display?.plateNormals, solid.positions.length);
+  if (normals) giveShading(plate, { positions: solid.positions, normals, reachMm: reachFor(chordMm) });
 }
 
-/** `copy` is `of` scaled uniformly about a point (or the same numbers): it is shaded with the same normals. */
-export function aliasShading(copy: Float32Array, of: Float32Array): void {
-  if (copy !== of) aliases.set(copy, of);
+/** `display.plateNormals` as the kernel sent it (base64, or bytes from a binary reply): `count` f32, or null. */
+export function plateNormalsOf(raw: unknown, count: number): Float32Array | null {
+  const bytes = typeof raw === "string" ? base64ToBytes(raw) : raw instanceof Uint8Array ? raw : null;
+  return bytes && bytes.byteLength === count * 4 ? new Float32Array(bytes.slice().buffer) : null;
 }
 
 /** True when `positions` has a source to be shaded from, as given or as a copy of a mesh that has one. */
 export function hasShadeSource(positions: Float32Array): boolean {
-  return sourceOf(aliases.get(positions) ?? positions) !== null;
+  return sourceOf(plateOf(positions)) !== null;
+}
+
+/** The plate mesh `positions` stands for: itself, or the mesh it is a uniformly scaled copy of. */
+function plateOf(positions: Float32Array): Float32Array {
+  return plateShading.aliases.get(positions) ?? positions;
+}
+
+/** `copy` is `of` scaled uniformly about a point (or the same numbers): it is shaded with the same normals. */
+export function aliasShading(copy: Float32Array, of: Float32Array): void {
+  if (copy !== of) plateShading.aliases.set(copy, of);
 }
 
 /** Called after a plate mesh gets a source, so a view can shade a mesh it already draws. Returns the unsubscribe. */
@@ -99,7 +112,7 @@ export function onShading(listener: () => void): () => void {
  * no source, or the source is not this shape. Worked out once per array.
  */
 export function shadingOf(positions: Float32Array): Float32Array | null {
-  const plate = aliases.get(positions) ?? positions;
+  const plate = plateOf(positions);
   if (derived.has(plate)) return derived.get(plate) ?? null;
   const source = sourceOf(plate);
   if (!source) return null;
@@ -108,6 +121,58 @@ export function shadingOf(positions: Float32Array): Float32Array | null {
   derived.set(plate, normals);
   return normals;
 }
+
+/** True when `geometry` (built on `positions`) now carries the exact normals. Already shaded is true, and costs nothing. */
+export function shadeGeometry(geometry: THREE.BufferGeometry, positions: Float32Array): boolean {
+  if (geometry.userData.plateShaded === true) return true;
+  const normals = shadingOf(positions);
+  if (!normals || normals.length !== positions.length) return false;
+  geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  geometry.userData.plateShaded = true;
+  return true;
+}
+
+/** A new geometry on `positions`: the exact normals when the array has them, else each triangle's own as before. */
+export function plateGeometry(positions: Float32Array): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  if (!shadeGeometry(geometry, positions)) geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** True when the geometry was given the exact normals. */
+export function isShaded(geometry: THREE.BufferGeometry): boolean {
+  return geometry.userData.plateShaded === true;
+}
+
+// The first chunk's views (Prepare) hand their geometries over through src/plate-shading.ts: each new one is shaded as
+// it is made, those drawn already are shaded now and whenever normals arrive, and each view reports what it shows.
+let reporting = false;
+function report() {
+  if (reporting) return;
+  reporting = true;
+  queueMicrotask(() => {
+    reporting = false;
+    for (const view of plateShading.views) {
+      const [selected, ...others] = view.meshes();
+      view.canvas.dataset.plateShading = selected ? (isShaded(selected[1]) ? "smooth" : "flat") : "";
+      view.canvas.dataset.plateShadedOthers = String(others.filter((row) => row && isShaded(row[1])).length);
+    }
+  });
+}
+function refreshViews() {
+  for (const view of plateShading.views) {
+    for (const row of view.meshes()) if (row) shadeGeometry(row[1], row[0]);
+    view.render();
+  }
+  report();
+}
+plateShading.shade = (geometry, positions) => {
+  shadeGeometry(geometry, positions);
+  report();
+};
+onShading(refreshViews);
+if (typeof window !== "undefined") refreshViews();
 
 function sourceOf(positions: Float32Array): ShadeSource | null {
   const known = sources.get(positions);

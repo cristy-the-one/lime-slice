@@ -9,7 +9,7 @@ import { modelTrees } from "../model-trees";
 import { syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
 import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
-import { hasShadeSource, shadeFromSolid } from "../../plate-shading";
+import { hasShadeSource, shadeFromSolid } from "../../plate-shading-carry";
 import { S } from "./shared";
 import { isOpenSheet, sheetVerdict } from "../../model-sheet";
 import { markSheet } from "./sheet-gate";

@@ -19,8 +19,7 @@ import { orbitGlide } from "./orbit-glide";
 import { IDLE_EDGE } from "./model-view/constants";
 import { lookOf, type PoseLook, type PoseLooks } from "./pose-look";
 import { grabDegrees } from "./viewport-grab";
-import { onShading } from "./plate-shading";
-import { isShaded, plateGeometry, shadeGeometry } from "./view-shading";
+import { isShaded, onShading, plateGeometry, shadeGeometry } from "./plate-shading-carry";
 import type { Screen } from "./place-snap";
 
 export type PoseCamera = "top" | "front" | "iso";

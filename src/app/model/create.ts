@@ -1,6 +1,6 @@
 /** Creating a new solid: the primitive, the feature solid, its placement, and the empty state. */
 import { boundsOf, encodeStl, settleBy, type Bounds } from "../../mesh-place";
-import { shadeFromSolid } from "../../plate-shading";
+import { shadeFromSolid } from "../../plate-shading-carry";
 import { viewRequest } from "../../model-mesh-quality";
 import {
   boxUnder,

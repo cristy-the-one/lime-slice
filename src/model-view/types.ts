@@ -44,11 +44,6 @@ export interface ModelSolid {
    * `positions`, the plate mesh. Its `triangles` are face indices like the top-level ones; edges serve both meshes.
    */
   display?: DisplayMesh;
-  /**
-   * The exact outward unit normal at each corner of `positions` (nine a triangle, in the same order), sent beside the
-   * display mesh. Prepare and Pose shade the plate mesh with it (src/plate-shading.ts); nothing else reads it.
-   */
-  plateNormals?: Float32Array;
 }
 
 /** A finer mesh of the same faces, for drawing only. */
@@ -58,6 +53,11 @@ export interface DisplayMesh {
   normals?: Float32Array;
   /** The face of each triangle, as `ModelSolid.triangles`. */
   triangles: Uint32Array;
+  /**
+   * The exact outward unit normal at each corner of the solid's own `positions` (the plate mesh), as the kernel sent
+   * it (base64 or bytes of f32, nine a triangle). Prepare and Pose shade the plate mesh with it (src/plate-shading-carry.ts).
+   */
+  plateNormals?: unknown;
 }
 
 const drawn = new WeakMap<ModelSolid, ModelSolid>();
@@ -71,7 +71,7 @@ export function drawnSolid<T extends ModelSolid>(solid: T): T {
   if (!display) return solid;
   const known = drawn.get(solid);
   if (known) return known as T;
-  const { display: _display, normals: _normals, plateNormals: _plateNormals, ...rest } = solid;
+  const { display: _display, normals: _normals, ...rest } = solid;
   const made = { ...rest, positions: display.positions, triangles: display.triangles, ...(display.normals ? { normals: display.normals } : {}) } as T;
   drawn.set(solid, made);
   return made;
