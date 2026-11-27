@@ -25,7 +25,7 @@ import { fixedReply } from "../line-diff.ts";
 import { lineMap, lineText, locate, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
 import { presetProblem, readPreset } from "../nuggets.ts";
 import { queueSummary, RecipeQueue, type QueuedOp } from "../../src/recipe/queue.ts";
-import { isStrictOptOut, STRICT_OPT_OUT_NOTE, unreadQueuedReason } from "../../src/recipe/strict.ts";
+import { hasStrictFalse, STRICT_FALSE_REMOVED_NOTE, unreadQueuedReason } from "../../src/recipe/strict.ts";
 import type { Resolved } from "../../src/recipe/ingredients.ts";
 import { builtText, unreadKeys } from "../../src/recipe/host.ts";
 import { budgetOf } from "./plugin.ts";
@@ -295,9 +295,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const key = replacing?.name ?? name;
   const source = rerun ? rerun.stored.source : lfOnly(typed!);
   // Strict is the default from 7.4.0 (docs/plan-agent-ergonomics.md decision 1). A refused queued step the recipe never
-  // reads fails the run. `//! strict: false` opts out for this release; `//! strict: true` still means strict.
-  const strictOptOut = isStrictOptOut(source);
-  const strict = !strictOptOut;
+  // reads fails the run. `//! strict: false` was removed after 7.5.1: the run is strict and carries one note.
+  const strictFalse = hasStrictFalse(source);
   const params = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}), ...presetParams, ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
   if (typeof input.object === "string" && input.params === undefined) {
     const fromRun = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}) };
@@ -375,7 +374,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const touched = new Map<string, number | null>();
   const notes: string[] = [...(checkpoint?.notes ?? [])];
   // One note for the run, not one per dropped step. A resumed run already carried it in the checkpoint.
-  if (strictOptOut && !notes.includes(STRICT_OPT_OUT_NOTE)) notes.push(STRICT_OPT_OUT_NOTE);
+  if (strictFalse && !notes.includes(STRICT_FALSE_REMOVED_NOTE)) notes.push(STRICT_FALSE_REMOVED_NOTE);
   const warnings: (string | { line: number; tool: string; reason: string })[] = [];
   if (reusedWarning) warnings.push(reusedWarning);
   /** --- R-A. Recipe data the run read, by name: kept with the recipe so a rerun builds the same elsewhere. */
@@ -751,7 +750,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   if (replaying) notes.push(`Built one by one: the tool at line ${replayedAt} was refused inside a queued boolean (${replaying.reason}).`);
   const dropped = queue.unreported().map((row) => ({ line: locate(map, row.line).line, tool: row.tool, reason: row.reason }));
   for (const row of dropped) warnings.push(row);
-  if (dropped.length && strict) {
+  if (dropped.length) {
     out.ok = false;
     out.reason = unreadQueuedReason(dropped[0]!);
   }
