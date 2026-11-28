@@ -296,6 +296,8 @@ export function installEvents(ctx: ViewCtx): void {
     ev.preventDefault();
     ev.stopImmediatePropagation();
     ctx.grabHooks.frame(grey);
+    // The second click of the double-click was a Ctrl-click on the open solid, which picked a face: the chord selects the object only.
+    ctx.pickCb(null, false, { x: ev.clientX, y: ev.clientY });
   }, { capture: true });
 
   // --- S2: zoom along the normal while the sketch view is locked. OrbitControls would dolly in screen space. ---

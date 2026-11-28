@@ -177,6 +177,9 @@ test("Ctrl+double-click in Model selects the grey object and frames it", async (
   const view = (await canvas(page).boundingBox())!;
   expect(x! >= 0 && y! >= 0 && x! + w! <= view.width && y! + h! <= view.height, "the framed solid is inside the view").toBe(true);
   expect(Math.max(w! / view.width, h! / view.height), "and it fills a good part of it").toBeGreaterThan(0.2);
+  // Only the object is selected: the second click's face pick is taken back.
+  await expect(page.locator("#modelReadout")).toContainText("Pick a face or an edge");
+  await expect(page.locator("#modelReadout")).not.toContainText(/^Face/);
 });
 
 test("an object added to the plate that is out of view brings the camera back just far enough; one in view leaves it", async ({ page }) => {
