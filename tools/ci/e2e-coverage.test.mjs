@@ -11,6 +11,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 /** Specs no npm script runs, with the reason. Local probes (e2e/scratch/, e2e/zz-*) are not here: they are git-ignored. */
 export const NOT_IN_A_SCRIPT = {
   "e2e/perf.spec.ts": "opt-in: needs a running engine and a mesh (LIME_PERF_API, LIME_PERF_MESH) and skips without them, so no runner can use it",
+  "e2e/preview-orbit.spec.ts": "opt-in: needs a running engine (LIME_PERF_API) and skips without it, so no runner can use it",
 };
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
