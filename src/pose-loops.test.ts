@@ -6,7 +6,7 @@ import { jointAt, readAssemblies, type Assembly, type Closure, type Member } fro
 import { applyPose, IDENTITY_POSE } from "./model-space.ts";
 import { moveSlide, turnHinge } from "./pose.ts";
 import { trainTurn } from "./gear-train.ts";
-import { closureGapMm, closeLoop, removeLoop } from "./pose-loops.ts";
+import { closureGapMm, closeLoop, loopKeyRefusals, removeLoop } from "./pose-loops.ts";
 import { sampleAnimation, type AnimationPart } from "./pose-anim.ts";
 import { prepareMotion } from "./motion.ts";
 import { solveAssembly } from "./assembly.ts";
@@ -251,6 +251,19 @@ function zrOf(theta: number): number {
   const follower = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { "the lever": 180, "Link L": 10 } }] }, assembly, poseOf, parts);
   const followerReason = "issues" in follower ? follower.issues.map((issue) => issue.reason).join(" ") : "";
   check("keying a follower is refused", followerReason.includes("Link L follows the loop through Ram: key the lever."), followerReason);
+  // A second pin, the can press's other link. Its equations are not this loop's, so the crank still drives.
+  const link = memberOf(assembly, "Link L");
+  const twin: Assembly = {
+    ...assembly,
+    members: [...assembly.members, { ...link, object: "Link R" }],
+    closures: [...(assembly.closures ?? []), { id: "loop_2", kind: "pin", a: { member: "Link R", at: [110, 0, 0] }, b: { member: "Ram", at: [0, 0, 0] } }],
+  };
+  const twinParts: AnimationPart[] = [...parts, { object: "Link R", name: "Link R" }];
+  const twinPlayed = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { "the lever": 180 } }, { t: 1, set: { "the lever": 200 } }] }, twin, poseOf, twinParts);
+  const twinReason = "issues" in twinPlayed ? twinPlayed.issues.map((issue) => issue.reason).join(" ") : "";
+  check("a second pin still lets the lever be keyed", !("issues" in twinPlayed), twinReason);
+  const twinFollower = loopKeyRefusals(twin, new Set(["crank", "Link L"]), names, poseOf).join(" ");
+  check("a second pin still refuses keying the link", twinFollower.includes("Link L follows the loop through Ram"), twinFollower);
   const atLink = jointAt(memberOf(assembly, "Link L").joint);
   const limited: Assembly = { ...assembly, members: assembly.members.map((row) => row.object === "Link L" && row.joint?.kind === "hinge" ? { ...row, joint: { ...row.joint, min: atLink - 1, max: atLink + 1 } } : row) };
   const stuck = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { "the lever": 180 } }, { t: 1, set: { "the lever": 140 } }] }, limited, poseOf, parts);

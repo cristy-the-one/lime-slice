@@ -462,10 +462,26 @@ export function removeLoop(assembly: Assembly, which: string, other?: string): {
   return { assembly: withClosures(assembly, rows.filter((row) => row !== hit)) };
 }
 
-function mobility(assembly: Assembly, joints: readonly string[], poseOf: PoseOf): number {
-  const dofs = joints.flatMap((id) => dofsOf(assembly, id));
+/** A pin is three error rows; a line with a direction is two. Matches `closureError`. */
+function errorWidth(closure: Closure): number {
+  return closure.kind === "line" && closure.b.along ? 2 : 3;
+}
+
+/**
+ * How many of this loop's joints can be keyed. The rank uses only this closure's rows: the other loops'
+ * equations are carried by joints that are not in this set, and counting them makes a second pin look locked.
+ */
+function mobility(assembly: Assembly, closure: Closure, poseOf: PoseOf): number {
+  const dofs = loopJointIds(assembly, closure).flatMap((id) => dofsOf(assembly, id));
   if (!dofs.length) return 0;
-  return Math.max(0, dofs.length - rankOf(jacobian(assembly, dofs, poseOf, () => undefined)));
+  let start = 0;
+  for (const row of assembly.closures ?? []) {
+    if (row === closure) break;
+    start += errorWidth(row);
+  }
+  const width = errorWidth(closure);
+  const columns = jacobian(assembly, dofs, poseOf, () => undefined).map((column) => column.slice(start, start + width));
+  return Math.max(0, dofs.length - rankOf(columns));
 }
 
 /**
@@ -476,7 +492,7 @@ export function loopKeyRefusals(assembly: Assembly, keyed: ReadonlySet<string>, 
   const issues: string[] = [];
   for (const closure of assembly.closures ?? []) {
     const joints = loopJointIds(assembly, closure);
-    const slots = mobility(assembly, joints, poseOf);
+    const slots = mobility(assembly, closure, poseOf);
     const keyedHere = joints.filter((id) => keyed.has(id)).sort((a, b) => depth(assembly, a) - depth(assembly, b));
     let used = 0;
     const kept: string[] = [];
@@ -496,7 +512,7 @@ export function loopFollowerIds(assembly: Assembly, poseOf: PoseOf = () => undef
   const out = new Set<string>();
   for (const closure of assembly.closures ?? []) {
     const joints = loopJointIds(assembly, closure);
-    const slots = mobility(assembly, joints, poseOf);
+    const slots = mobility(assembly, closure, poseOf);
     const kept = [...joints].sort((a, b) => depth(assembly, a) - depth(assembly, b)).slice(0, slots);
     for (const id of joints) if (!kept.includes(id)) out.add(id);
   }
