@@ -52,7 +52,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     const framed = source.startsWith("//! ---") ? parsePlugin(source) : null;
     if (framed && !("reason" in framed) && framed.header.kind === "animation") header = framed.header;
   }
-  const keep = input.keep === undefined ? undefined : (input.keep && typeof input.keep === "object" ? input.keep : {}) as { title?: unknown; description?: unknown; members?: unknown };
+  const keep = input.keep === undefined ? undefined : (input.keep && typeof input.keep === "object" ? input.keep : {}) as { title?: unknown; description?: unknown; members?: unknown; name?: unknown };
   const name = slugOf(typeof input.name === "string" ? input.name : defaultName);
   if (!name) return refuse("bad-argument", "Give the animation a name with letters or digits.");
   if (api) {
@@ -328,8 +328,10 @@ function partsBox(sampled: AnimationResult, parts: readonly AnimationPart[], ids
  * plugin by `pluginSave` (its versions, its title clash note), with the member names the run used. A refused keep is a
  * sentence in the reply; the run stands.
  */
-async function keepAnimation(this: Session, keep: { title?: unknown; description?: unknown; members?: unknown }, source: string, name: string | undefined, used: readonly string[] | undefined, values: Record<string, unknown>, idAsked?: string, colourOnly?: readonly string[]): Promise<Record<string, unknown>> {
-  const saved = await this.pluginSave({ source, title: keep.title, description: keep.description, ...(name ? { name } : {}), ...(idAsked ? { idAsked } : {}), animation: { ...(used ? { used } : {}), ...(colourOnly ? { colourOnly } : {}), values, ...(keep.members !== undefined ? { members: keep.members } : {}) } });
+async function keepAnimation(this: Session, keep: { title?: unknown; description?: unknown; members?: unknown; name?: unknown }, source: string, name: string | undefined, used: readonly string[] | undefined, values: Record<string, unknown>, idAsked?: string, colourOnly?: readonly string[]): Promise<Record<string, unknown>> {
+  // keep.name is the plugin to add a version to, as the call's own name is.
+  const named = typeof keep.name === "string" && slugOf(keep.name) ? slugOf(keep.name) : undefined;
+  const saved = await this.pluginSave({ source, title: keep.title, description: keep.description, ...((named ?? name) ? { name: named ?? name } : {}), ...((named ?? idAsked) ? { idAsked: named ?? idAsked } : {}), animation: { ...(used ? { used } : {}), ...(colourOnly ? { colourOnly } : {}), values, ...(keep.members !== undefined ? { members: keep.members } : {}) } });
   return "reason" in saved ? { keepRefused: saved.reason } : { kept: saved };
 }
 

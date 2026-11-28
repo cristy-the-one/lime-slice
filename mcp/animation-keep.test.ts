@@ -128,10 +128,26 @@ const next = await call("pose_animate", { object: first, source: edited, name: "
 assert.equal((next.kept as { id: string; version: number }).id, "escapement-motion", JSON.stringify(next));
 assert.equal((next.kept as { version: number }).version, 2);
 assert.ok(readPlugin("escapement-motion", library, 1), "version 1 is kept beside");
+// Exactly one animation plugin holds the title: a keep with only the title is its next version, and the reply says so.
 const beside = await call("pose_animate", { object: first, source: edited.replace("#888888", "#777777"), keep: { title: "Escapement motion" } });
-const kb = beside.kept as { id: string; note?: string };
-assert.equal(kb.id, "escapement-motion-2", JSON.stringify(beside));
-assert.match(String(kb.note), /already exists as "escapement-motion"/);
+const kb = beside.kept as { id: string; version: number; note?: string };
+assert.equal(kb.id, "escapement-motion", JSON.stringify(beside));
+assert.equal(kb.version, 3);
+assert.match(String(kb.note), /Added version 3 to the animation plugin "escapement-motion", the one plugin titled "Escapement motion"/);
+assert.equal(readPlugin("escapement-motion-2", library), null, "no duplicate plugin was made");
+// keep.name picks the plugin, as the call's own name does; another plugin under the same title makes the title ambiguous.
+const twin = await call("pose_animate", { object: first, source: edited.replace("#888888", "#666666"), keep: { title: "Escapement motion", name: "escapement-twin" } });
+assert.equal((twin.kept as { id: string; version: number }).id, "escapement-twin", JSON.stringify(twin));
+const twinNext = await call("pose_animate", { object: first, source: edited.replace("#888888", "#555555"), keep: { title: "Escapement motion", name: "escapement-twin" } });
+assert.equal((twinNext.kept as { id: string; version: number }).version, 2, JSON.stringify(twinNext));
+const several = await call("pose_animate", { object: first, source: edited.replace("#888888", "#444444"), keep: { title: "Escapement motion" } });
+const ks = several.kept as { id: string; note?: string };
+assert.equal(ks.id, "escapement-motion-2", JSON.stringify(several));
+assert.match(String(ks.note), /already exists as "escapement-motion"/);
+assert.match(String(ks.note), /2 animation plugins hold this title \(escapement-motion, escapement-twin\)/);
+const none = await call("pose_animate", { object: first, source: edited.replace("#888888", "#333333"), keep: { title: "A title nobody holds" } });
+assert.equal((none.kept as { id: string; version: number }).version, 1, JSON.stringify(none));
+assert.equal((none.kept as { note?: string }).note, undefined);
 // A name the caller gave is the id (a valid slug); the title stays the title. Naming an existing id adds a version.
 const named = await call("pose_animate", { object: first, source: edited, name: "escape-rocker", keep: { title: "Rocking escapement" } });
 const kn = named.kept as { id: string; version: number };

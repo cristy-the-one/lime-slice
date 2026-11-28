@@ -184,17 +184,26 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   let version = 1;
   let note: string | undefined;
   const same = (found: ReturnType<typeof readPlugin>) => !!found && !("reason" in found) && found.sha256 === sha256;
+  // An animation kept with only a title: when exactly one animation plugin holds that title, this is its next version,
+  // and the reply says so. With several, the rest of this function saves a new plugin and the note names them.
+  const sameTitle = (text: string) => text.trim().toLowerCase() === title.toLowerCase();
+  const titled = animation && !asked ? listLibrary(dir).filter((file) => file.header.kind === "animation" && sameTitle(file.header.title)) : [];
+  const viaTitle = titled.length === 1 && opts.name === undefined ? titled[0]!.header : undefined;
+  if (viaTitle) id = viaTitle.plugin;
   const existing = readPlugin(id, dir);
   if (existing && !("reason" in existing)) {
     if (same(existing)) version = existing.header.version;
-    else if (opts.name !== undefined && opts.name === id) version = existing.header.version + 1;
+    else if (viaTitle) {
+      version = existing.header.version + 1;
+      note = `Added version ${version} to the animation plugin "${id}", the one plugin titled "${title}"; name: "${id}" says so in the call.`;
+    } else if (opts.name !== undefined && opts.name === id) version = existing.header.version + 1;
     else {
       for (let n = 2; ; n += 1) {
         const candidate = `${id.slice(0, 45).replace(/-+$/, "")}-${n}`;
         const there = readPlugin(candidate, dir);
         if (!there || "reason" in there || same(there)) {
           // Never silent: the run asked for no version of the plugin that holds this title.
-          if (!there || "reason" in there) note = `A plugin titled "${title}" already exists as "${existing.header.plugin}" (version ${existing.header.version}), so this was saved as the new plugin "${candidate}"; run with name: "${existing.header.plugin}" to add a version to "${existing.header.plugin}" instead.`;
+          if (!there || "reason" in there) note = `A plugin titled "${title}" already exists as "${existing.header.plugin}" (version ${existing.header.version}), so this was saved as the new plugin "${candidate}"; run with name: "${existing.header.plugin}" to add a version to "${existing.header.plugin}" instead.${titled.length > 1 ? ` ${titled.length} animation plugins hold this title (${titled.map((file) => file.header.plugin).join(", ")}); keep.name picks the one to add a version to.` : ""}`;
           id = candidate;
           version = there && !("reason" in there) ? there.header.version : 1;
           break;

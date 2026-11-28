@@ -362,6 +362,77 @@ function zrOf(theta: number): number {
   }
 }
 
+// The can press (mcp/fixtures/can-press): a lever, two links hinged on it, a slide ram on the frame, each link pinned to the
+// ram pin. The ram needs 66.87 of its 68.87 mm at 150°, near the toggle. A coarse frame rate must reach it, on the same branch
+// as a fine one, and a loop that truly cannot close is still refused with its reason.
+{
+  const zp = 280, throwMm = 35, linkMm = 110, th0 = 100;
+  const ramZ = (deg: number) => { const t = deg * RAD; return zp + throwMm * Math.sin(t) - Math.sqrt(linkMm ** 2 - (throwMm * Math.cos(t)) ** 2); };
+  const zr0 = ramZ(th0);
+  const c0: [number, number, number] = [throwMm * Math.cos(th0 * RAD), 0, zp + throwMm * Math.sin(th0 * RAD)];
+  const axis: [number, number, number] = [0, -1, 0];
+  const canPress = (limits: { ramMax?: number; linkMin?: number } = {}): Assembly => {
+    const link = (object: string): Member => ({ object, parent: "Lever", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: c0, axis, angle: 0, min: limits.linkMin ?? -180, max: 180 } });
+    return {
+      id: "press", name: "Press",
+      members: [
+        frame,
+        { object: "Lever", parent: "frame", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, zp], axis, angle: 0, min: -5, max: 155 } },
+        link("Link L"), link("Link R"),
+        { object: "Ram", parent: "frame", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "slide", pivot: [0, 0, zr0], axis: [0, 0, -1], travel: 0, min: -1, max: limits.ramMax ?? 68.87 } },
+      ],
+      closures: ["Link L", "Link R"].map((object, i) => ({ id: `loop_${i + 1}`, kind: "pin" as const, a: { member: object, at: [0, 0, zr0] as [number, number, number] }, b: { member: "Ram", at: [0, 0, zr0] as [number, number, number] } })),
+    };
+  };
+  const parts: AnimationPart[] = ["frame", "Lever", "Link L", "Link R", "Ram"].map((object) => ({ object, name: object }));
+  const press = canPress();
+  check("the can press builds closed", gap(press) <= 1e-4, String(gap(press)));
+  const want = ramZ(th0) - ramZ(th0 + 150);
+  const stroke = (fps: number, press: Assembly, end = 150) => sampleAnimation({ fps, keys: [{ t: 0, set: { Lever: 0 } }, { t: 1.6, set: { Lever: end }, ease: "inOut", hold: 0.4 }] }, press, poseOf, parts);
+  const ends = new Map<number, { ram: number; link: number; gap: number }>();
+  for (const fps of [24, 12, 6, 4]) {
+    const played = stroke(fps, press);
+    if ("issues" in played) { check(`the can press stroke at ${fps} fps`, false, played.issues.map((issue) => issue.reason).join(" ")); continue; }
+    let worst = 0, ramOut = false;
+    for (const row of played.frames) {
+      worst = Math.max(worst, gap(row.assembly));
+      const ram = jointAt(memberOf(row.assembly, "Ram").joint);
+      if (ram < -1 || ram > 68.87) ramOut = true;
+    }
+    const last = played.frames[played.frames.length - 1]!.assembly;
+    ends.set(fps, { ram: jointAt(memberOf(last, "Ram").joint), link: jointAt(memberOf(last, "Link L").joint), gap: worst });
+    check(`the can press stroke at ${fps} fps closes every frame to 1e-4 mm`, worst <= 1e-4, String(worst));
+    check(`the can press stroke at ${fps} fps keeps the ram within its limits`, !ramOut);
+    check(`the can press stroke at ${fps} fps ends at 150° with the ram at ${want.toFixed(3)} mm`, Math.abs(ends.get(fps)!.ram - want) <= 1e-3, String(ends.get(fps)!.ram));
+  }
+  const fine = ends.get(24);
+  for (const fps of [12, 6, 4]) {
+    const row = ends.get(fps);
+    check(`the ${fps} fps stroke keeps the 24 fps branch`, !!fine && !!row && Math.abs(row.link - fine.link) <= 1e-2 && Math.abs(row.ram - fine.ram) <= 1e-3, JSON.stringify([fine, row]));
+  }
+  // A key straight to the end, 0° to 150° in one frame, is walked there on the same branch.
+  const jump = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Lever: 0 } }, { t: 0.25, set: { Lever: 150 } }] }, press, poseOf, parts);
+  if ("issues" in jump) check("a one-frame 0° to 150° key closes", false, jump.issues.map((issue) => issue.reason).join(" "));
+  else {
+    const last = jump.frames[jump.frames.length - 1]!.assembly;
+    check("a one-frame 0° to 150° key closes to 1e-4 mm", gap(last) <= 1e-4, String(gap(last)));
+    check("a one-frame 0° to 150° key keeps the branch", !!fine && Math.abs(jointAt(memberOf(last, "Link L").joint) - fine.link) <= 1e-2, String(jointAt(memberOf(last, "Link L").joint)));
+  }
+  // The drag does the same in one turn.
+  const dragged = trainTurn(press, "Lever", 150, { names });
+  if ("reason" in dragged) check("a 150° lever turn closes", false, dragged.reason);
+  else check("a 150° lever turn closes to 1e-4 mm", gap(dragged.assembly) <= 1e-4 && !dragged.stopped, String(gap(dragged.assembly)));
+  // Genuine refusals keep their reasons, at any frame rate.
+  for (const fps of [24, 6]) {
+    const low = stroke(fps, canPress({ ramMax: 60 }));
+    const lowReason = "issues" in low ? low.issues.map((issue) => issue.reason).join(" ") : "";
+    check(`a ram that stops short is refused at ${fps} fps, with the frame and the limit`, /^frame \d+: The loop between Link [LR] and Ram cannot close past \d+\.\d°: Ram is at its limit\.$/.test(lowReason), lowReason);
+    const tight = stroke(fps, canPress({ linkMin: -120 }));
+    const tightReason = "issues" in tight ? tight.issues.map((issue) => issue.reason).join(" ") : "";
+    check(`a link at its limit is refused at ${fps} fps, naming the link`, /^frame \d+: The loop between Link [LR] and Ram cannot close past \d+\.\d°: Link [LR] is at its limit\.$/.test(tightReason), tightReason);
+  }
+}
+
 if (failed) {
   console.error(`${failed} pose-loop checks failed`);
   process.exit(1);

@@ -1,12 +1,12 @@
 /** Shared, side-effect-free sampling of named assembly poses. Times and angles are seconds and degrees. */
-import { memberPose, readJoint, rotationQuaternion, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
+import { jointAt, memberPose, readJoint, rotationQuaternion, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
 import { boundsOf, type Bounds } from "./mesh-place.ts";
 import { applyPose, boxUnder, inversePose, thenPose, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { alignedHinge, poseChain, solvePose, turnBall, turnHinge } from "./pose.ts";
 import { interference, MESH_TOLERANCE_MM } from "./interference.ts";
 import { trainOf, trainTurn } from "./gear-train.ts";
-import { loopFollowerIds, loopKeyRefusals, loopSentence, solveLoops } from "./pose-loops.ts";
+import { loopFollowerIds, loopKeyRefusals, loopSentence, solveLoops, walkLoops } from "./pose-loops.ts";
 import { memberNamesOf, nameMatcher } from "./anim-members.ts";
 
 export type Quaternion = [number, number, number, number];
@@ -407,6 +407,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
     while (colorIndex < colorEvents.length && colorEvents[colorIndex]!.time <= time) {
       const event = colorEvents[colorIndex++]!; colors.set(event.id, event.color);
     }
+    const settled = assembly;
     const reaches: { id: string; value: Extract<Value, { kind: "reach" }> }[] = [];
     for (const [id, points] of tracks) {
       const value = atTime(points, time, activeTime), member = assembly.members.find((row) => row.object === id)!;
@@ -456,7 +457,26 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
         for (const other of trainOf(assembly, id)) driven.add(other);
       }
       for (const reach of reaches) for (const id of poseChain([assembly], reach.id)) driven.add(id);
-      const solved = solveLoops(assembly, { poseOf, driven, names: rigName, centreOf: centre });
+      const loopOptions = { poseOf, driven, names: rigName, centreOf: centre };
+      let solved = solveLoops(assembly, loopOptions);
+      // A step too long for one solve (a coarse frame rate, a key far from the last) is walked from the last closed pose
+      // in shares of the step. Only keyed hinges and slides can be walked; a reach or a ball turn is solved as it stands.
+      if (!solved.closed && reaches.length === 0) {
+        const drivers: { id: string; delta: number }[] = [];
+        let walkable = true;
+        for (const id of tracks.keys()) {
+          const was = settled.members.find((row) => row.object === id)?.joint, now = assembly.members.find((row) => row.object === id)?.joint;
+          if ((now?.kind !== "hinge" && now?.kind !== "slide") || was?.kind !== now.kind) { walkable = false; break; }
+          const delta = jointAt(now) - jointAt(was);
+          if (Math.abs(delta) > 1e-9) drivers.push({ id, delta });
+        }
+        if (walkable && drivers.length) {
+          solved = walkLoops(settled, drivers, (from, id, delta) => {
+            const moved = trainTurn(from, id, delta, { separate, followLoops: false, poseOf, names: rigName });
+            return "reason" in moved ? moved : moved.assembly;
+          }, loopOptions);
+        }
+      }
       if (!solved.closed) {
         const frame = (frameNumbers.get(time) ?? 0) + 1;
         const driver = [...driven][0] ?? original.closures[0]!.a.member;
