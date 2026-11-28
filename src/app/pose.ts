@@ -12,7 +12,8 @@ import { aboutAxis, bodyOf as massBodyOf, movingBody, partIntegrals, swing, type
 import { poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
 import { createPoseView, type MoveEvent, type PoseCamera, type PoseHit, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
 import { cylinderJoint } from "../pose-cylinder.ts";
-import { closeLoop, removeLoop } from "../pose-loops.ts";
+import { coaxialPinAt, loopPickStatus, pickLoopFace } from "../pose-loop-pick.ts";
+import { closeLoop, closureGapMm, removeLoop } from "../pose-loops.ts";
 import { loadModel } from "./workspaces.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import type { Vec3 } from "../model-tree.ts";
@@ -550,15 +551,25 @@ async function pickLoopPoint(id: string, hit: PoseHit): Promise<void> {
       const material = new THREE.MeshBasicMaterial();
       const mesh = new THREE.Mesh(geometry, material);
       const ray = new THREE.Raycaster(new THREE.Vector3(...origin), new THREE.Vector3(...direction));
-      const faceIndex = ray.intersectObject(mesh, false)[0]?.faceIndex;
+      const hitOnSolid = ray.intersectObject(mesh, false)[0];
+      const faceIndex = hitOnSolid?.faceIndex;
       geometry.dispose(); material.dispose();
       const pickedFace = faceIndex == null ? undefined : solid.triangles[faceIndex];
       const canvas = document.querySelector<HTMLCanvasElement>("#pose");
       if (canvas) canvas.dataset.jointFace = pickedFace === undefined ? "" : String(pickedFace);
-      const picked = pickedFace === undefined ? null : cylinderJoint(solid, pickedFace);
-      if (!picked) { message = "Click a cylindrical face, or a mesh."; renderPanel(); return; }
-      at = picked.pivot;
+      const hitAt: Vec3 | null = hitOnSolid ? [hitOnSolid.point.x, hitOnSolid.point.y, hitOnSolid.point.z] : null;
+      const picked = pickedFace === undefined || !hitAt ? null : pickLoopFace(solid, pickedFace, hitAt);
+      if (!picked) {
+        if (canvas) delete canvas.dataset.loopStatus;
+        message = "Click a cylindrical face, or a mesh.";
+        renderPanel();
+        return;
+      }
+      at = picked.at;
       axis = picked.axis;
+      const label = loopPickStatus(picked.kind, picked.diameterMm, loopNames(id));
+      if (canvas) canvas.dataset.loopStatus = label;
+      message = label;
     } else if (hit.shift) {
       const vertices = hit.triangle.map(localPoint);
       const candidates = [...vertices, ...vertices.map((v, i) => v.map((n, k) => (n + vertices[(i + 1) % vertices.length]![k]!) / 2) as Vec3), centre(id)];
@@ -571,7 +582,10 @@ async function pickLoopPoint(id: string, hit: PoseHit): Promise<void> {
     else loopDraft = { ...loopDraft, other: id, toAt: at, axisB: axis ?? (loopDraft.other === id ? loopDraft.axisB : null), arm: null };
     const marked = document.querySelector<HTMLCanvasElement>("#pose");
     if (marked) marked.dataset.loopPoint = `${arm}:${id}`;
-    message = arm === "a" ? "Point on this part." : `Point on ${loopNames(id)}.`;
+    if (!axis) {
+      if (marked) delete marked.dataset.loopStatus;
+      message = arm === "a" ? "Point on this part." : `Point on ${loopNames(id)}.`;
+    }
     renderPanel();
   } catch (error) {
     if (serial === pickSerial) { message = `Could not read the point: ${error instanceof Error ? error.message : String(error)}`; renderPanel(); }
@@ -755,6 +769,18 @@ export function syncPose(): void {
     if (!part || !joint) continue;
     const pose = modelPoseOf(part);
     marks.push({ pivot: applyPose(sceneShift, applyPose(pose, joint.pivot)), ...(joint.kind === "hinge" ? { axis: turnDir(pose, joint.axis) } : {}) });
+  }
+  const poseCanvas = document.querySelector<HTMLCanvasElement>("#pose");
+  if (poseCanvas) {
+    let gap = 0;
+    let any = false;
+    for (const assembly of assemblies) {
+      if (!assembly.closures?.length) continue;
+      any = true;
+      gap = Math.max(gap, closureGapMm(assembly, poseOf));
+    }
+    if (any) poseCanvas.dataset.loopGap = gap.toFixed(6);
+    else delete poseCanvas.dataset.loopGap;
   }
   view.setBed(bedX, bedY, bedZ);
   // Drawing only: a part with a solid and no normals yet asks for them once, when the app is idle.
@@ -1076,7 +1102,16 @@ function commitLoop(): void {
   if (!row || !draft || draft.forId !== row.member.object || !draft.at || !draft.other || !draft.toAt) return;
   const along = draft.kind === "line" ? lineDirection(draft) : null;
   if (draft.kind === "line" && !along) { message = "A line needs a direction."; renderPanel(); return; }
-  const result = closeLoop(row.assembly, { member: row.member.object, at: draft.at, to: draft.other, toAt: draft.toAt, ...(along ? { along } : {}) }, loopNames, poseOf);
+  let toAt = draft.toAt;
+  if (draft.axisA && draft.axisB) {
+    const aPose = poseOf(draft.forId);
+    const bPose = poseOf(draft.other);
+    if (aPose && bPose) {
+      const foot = coaxialPinAt({ at: draft.at, axis: draft.axisA }, aPose, { at: draft.toAt, axis: draft.axisB }, bPose);
+      if (foot) toAt = foot;
+    }
+  }
+  const result = closeLoop(row.assembly, { member: row.member.object, at: draft.at, to: draft.other, toAt, ...(along ? { along } : {}) }, loopNames, poseOf);
   if ("reason" in result) { message = result.reason; renderPanel(); return; }
   message = "Loop closed.";
   loopDraft = { ...draft, arm: null };

@@ -375,13 +375,18 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     const size = Math.max(target.max[0] - target.min[0], target.max[1] - target.min[1], target.max[2] - target.min[2], 1);
     const radius = (size * Math.sqrt(3)) / 2;
     const dist = (radius / Math.sin((camera.fov * Math.PI) / 360)) * 1.35;
+    placeCamera(look, from, dist);
+  }
+
+  /** The camera `dist` mm from `at`, toward `from`, looking at `at`. A test uses it to click a face the whole-press frame draws thinner than a pixel. */
+  function placeCamera(at: THREE.Vector3, from: THREE.Vector3, dist: number) {
     camera.near = Math.max(0.01, dist / 200);
     camera.far = dist * 20;
     controls.enableDamping = false;
     controls.update();
     camera.up.set(0, 0, 1);
-    camera.position.copy(look).add(from.clone().normalize().multiplyScalar(dist));
-    controls.target.copy(look);
+    camera.position.copy(at).add(from.clone().normalize().multiplyScalar(dist));
+    controls.target.copy(at);
     camera.updateProjectionMatrix();
     controls.update();
     controls.enableDamping = true;
@@ -436,6 +441,24 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
           return `${mesh.userData.id}:${(rect.left + (point.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - point.y) * rect.height / 2).toFixed(1)}`;
         }).join(" ");
       } else delete canvas.dataset.reachPoints;
+      // A test names a direction (`x,y,z`) so a flat face that faces away from Front can be clicked.
+      const lookFrom = canvas.dataset.lookFrom;
+      if (lookFrom && box) {
+        const [x, y, z] = lookFrom.split(",").map(Number);
+        if (x !== undefined && y !== undefined && z !== undefined && [x, y, z].every(Number.isFinite) && Math.hypot(x, y, z) > 1e-6) {
+          delete canvas.dataset.lookFrom;
+          const from = new THREE.Vector3(x, y, z);
+          const lookLocal = canvas.dataset.lookLocal;
+          const lookDist = Number(canvas.dataset.lookDist);
+          const split = lookLocal?.indexOf(":") ?? -1;
+          const [lx, ly, lz] = split >= 0 ? lookLocal!.slice(split + 1).split(",").map(Number) : [];
+          const mesh = split >= 0 ? group.children.find((part) => part instanceof THREE.Mesh && part.userData.id === lookLocal!.slice(0, split)) : undefined;
+          if (mesh && lx !== undefined && ly !== undefined && lz !== undefined && [lx, ly, lz].every(Number.isFinite) && lookDist > 1) {
+            placeCamera(new THREE.Vector3(lx, ly, lz).applyMatrix4(mesh.matrixWorld), from, lookDist);
+          } else aim(box, from);
+          canvas.dataset.cameraFrom = `${x},${y},${z}`;
+        }
+      }
       // A test names a part-local point (`id:x,y,z`). Project it with this camera so a click can land on a known hole.
       const projectSpec = canvas.dataset.projectLocal;
       if (projectSpec) {
@@ -481,6 +504,8 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     };
     requestAnimationFrame(loop);
   }
+  // A test sets data-look-from after the view has settled. The loop has already stopped, so wake it.
+  new MutationObserver(() => { if (canvas.dataset.lookFrom || canvas.dataset.projectLocal) kick(); }).observe(canvas, { attributes: true, attributeFilter: ["data-look-from", "data-project-local"] });
   controls.addEventListener("change", kick);
   controls.addEventListener("start", kick);
   new ResizeObserver(() => resize()).observe(canvas);

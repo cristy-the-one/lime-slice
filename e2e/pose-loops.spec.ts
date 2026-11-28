@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type MockSolid } from "./model-tree-mock";
@@ -7,8 +6,6 @@ import { solveAssembly, type Closure, type Member } from "../src/assembly.ts";
 import type { Affine } from "../src/model-space.ts";
 import { moveSlide, turnHinge } from "../src/pose.ts";
 import { closureGapMm } from "../src/pose-loops.ts";
-
-const shots = path.join("docs", "screenshots", "l3-loops");
 
 interface TestObject { id: string; name: string; modelPose?: Affine; placement: unknown; [key: string]: unknown }
 interface TestDocument { objects: TestObject[]; assemblies: { id: string; name: string; members: Member[]; closures?: Closure[] }[]; [key: string]: unknown }
@@ -80,7 +77,6 @@ test("dragging the crank's ring moves the ram, and Ctrl+Z restores both", async 
   await loadCrank(page, 140);
   const panel = page.locator("#posePanel");
   await page.locator("[data-pose-view='top']").click();
-  await page.screenshot({ path: path.join(shots, "mid-stroke.png") });
   await panel.locator("[data-object='crank']").click();
   await page.locator("[data-pose-tool='turn']").click();
   await page.locator("[data-pose-view='top']").click();
@@ -103,7 +99,6 @@ test("dragging the crank's ring moves the ram, and Ctrl+Z restores both", async 
   const ramAfter = boxOf(await posed(), "ram");
   expect(Math.abs(ramAfter[1]! - ramBefore[1]!)).toBeGreaterThan(0.5);
   expect(Math.hypot(ramAfter[1]! - ramBefore[1]!, ramAfter[4]! - ramBefore[4]!)).toBeGreaterThan(0.5);
-  await page.screenshot({ path: path.join(shots, "lever-drag.png") });
   const angleAfter = Number(await panel.getByLabel("Angle °").inputValue());
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("Control+z");
@@ -168,8 +163,6 @@ test("Close a loop stays disabled with the reason, and removing one is one undo 
   await expect(section).toContainText("Close a loop");
   await expect(section).toContainText("Pin to Ram");
   await expect(close).toHaveAttribute("data-tip", /One member picked\./);
-  await section.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: path.join(shots, "close-a-loop.png") });
 
   const centres = await partCentres(page);
   await panel.locator("[data-pose-action='loop-arm'][data-loop-arm='a']").click();
