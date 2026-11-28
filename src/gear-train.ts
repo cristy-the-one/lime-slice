@@ -11,6 +11,7 @@ import { gearReach, worldPair, type GearVerdict, type WorldGear } from "./gear-p
 import { applyPose, inversePose, poseScale, relativePose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { turnInAssembly } from "./pose.ts";
+import { followTurn, setLoopTurn } from "./pose-loops.ts";
 import { clickGeometry, clickLift, clickRefusal, faceMiddle } from "./ratchet-click.ts";
 
 /** A gear's centre may sit this far from its hinge's line, mm. */
@@ -310,6 +311,14 @@ export interface TrainOptions {
    * side holds one of them slips (docs/plan-coupling-kinds.md, stage 4).
    */
   separate?: ReadonlySet<string>;
+  /**
+   * When false, a closed loop is left for the caller (an animation solves once, after every key). Default: solve it,
+   * and clamp this turn back to the last value that closed.
+   */
+  followLoops?: boolean;
+  poseOf?: (id: string) => Affine | undefined;
+  names?: (id: string) => string;
+  centreOf?: (id: string) => Vec3 | undefined;
 }
 
 export interface Scales {
@@ -682,7 +691,9 @@ export function trainTurn(assembly: Assembly, object: string, delta: number, opt
     if (id !== object && jointAt(now.joint) === jointAt(was?.joint)) continue;
     angles.push(now.joint.kind === "slide" ? { object: id, travel: jointAt(now.joint) } : { object: id, angle: jointAt(now.joint) });
   }
-  return { assembly: next, angles, clamped: clamped || Math.abs(remaining) > 1e-9, ...(slipped.size ? { slipped: [...slipped] } : {}), ...(stopped ? { stopped } : {}) };
+  const turned: Turned = { assembly: next, angles, clamped: clamped || Math.abs(remaining) > 1e-9, ...(slipped.size ? { slipped: [...slipped] } : {}), ...(stopped ? { stopped } : {}) };
+  if (options.followLoops !== false && (assembly.closures?.length ?? 0) > 0) return followTurn(assembly, turned, object, delta, options);
+  return turned;
 }
 
 /**
@@ -1137,3 +1148,11 @@ export function preparedLines(prepared: Prepared, nameOf: (id: string) => string
   }
   return [...lines, ...prepared.refused];
 }
+
+setLoopTurn(
+  (assembly, id, delta, options) => trainTurn(assembly, id, delta, { ...options, followLoops: false }),
+  (assembly, id, delta) => {
+    const turned = trainTurn(assembly, id, delta, { followLoops: false });
+    return "reason" in turned ? turned : turned.assembly;
+  },
+);

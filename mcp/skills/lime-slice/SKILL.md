@@ -143,6 +143,7 @@ Animation = a lust script `//! kind: animation`, `//! api: 1.17`: `let rig = s.r
   Iterate params until warnings are empty, then export `out:{gif, frames}`, `fit:{min,max}`, `longEdge`.
 - Keep with `keep:{title, description}`. Member names written literally become required members — take them as text params.
 - From 7.7.0 a slide can be keyed (mm), dragged and reached.
+- From 7.7.0 a loop is `model_place {loop}` (or `close_loop`): a pin, or a line with `along`. Turning one joint moves the others.
 - MP4: `ffmpeg -framerate 20 -i frames/frame-%03d.png -c:v libx264 -pix_fmt yuv420p out.mp4` (ffmpeg via winget).
 
 ## 8. Render, export, slice

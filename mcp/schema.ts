@@ -2077,6 +2077,19 @@ export const TOOLS: ToolSpec[] = [
         },
         root: { const: true, description: "Make this member the fixed root; poses and joints are kept." },
         gears: { enum: ["couple", "list", "uncouple"], description: "Gear train of this member's assembly. couple: find every pair of spur gears the mesh check calls meshing and couple them, so turning one gear (angle) turns the wheel, pinion and every gear of its train at the tooth ratio; replies couplings, notCoupled (each with its reason), locked trains and checked (a turn sampled for crossing teeth). list: the same rows, nothing changed. uncouple: drop them. A meshing gear with no joint is given a hinge about its own axis (hinged in the reply), and gears in no assembly become one, Gear train, whose first gear turns on the plate (madeAssembly); joint {kind:\"held\"} keeps a gear fixed on purpose. A pinion inside a ring gear (internal) turns the same way; a planet on a carrier couples through the carrier (carrier and carrierRatio in the row), and the carrier of gears meshing a ring is given its hinge; hold one of sun, ring or carrier." },
+        loop: {
+          type: "object",
+          additionalProperties: false,
+          required: ["to", "at", "toAt"],
+          description: "Close a loop: this part's at meets to's toAt. along keeps at on that line.",
+          properties: {
+            to: { type: "string", minLength: 1, maxLength: 64, description: "The other member." },
+            at: { ...vec3, description: "Point in this part's frame." },
+            toAt: { ...vec3, description: "Point in to's frame." },
+            along: { ...vec3, description: "Line direction in to's frame." },
+          },
+        },
+        unloop: { type: "string", minLength: 1, maxLength: 64, description: "Drop this loop id, or the loop with this member." },
         couple: {
           type: "object",
           additionalProperties: false,

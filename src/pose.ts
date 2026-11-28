@@ -172,6 +172,13 @@ export interface ReachResult {
 const minus = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const length = (v: Vec3): number => Math.hypot(...v);
 
+/** Pose's loop solver after a reach, registered when that chunk loads. Absent, a reach is unchanged. */
+type ReachSettle = (assembly: Assembly, poseOf: PoseOf, driven: ReadonlySet<string>, centreOf: (id: string) => Vec3 | undefined) => Assembly | { reason: string };
+let reachSettle: ReachSettle | null = null;
+export function setReachSettle(fn: ReachSettle | null): void {
+  reachSettle = fn;
+}
+
 /**
  * Cyclic coordinate descent from the grabbed member toward its first fixed ancestor. The point `at` is in the
  * grabbed member's part frame; `target` is in model space. Inputs are never mutated, so a drag can solve from its
@@ -240,6 +247,12 @@ export function solvePose(
       poses = solveAssembly(assembly, poseOf).poses;
     }
     if (!changed) { sweeps++; break; }
+  }
+  if (original.closures?.length && reachSettle) {
+    const settled = reachSettle(assembly, poseOf, new Set(chain), centreOf);
+    if ("reason" in settled) return settled;
+    assembly = settled;
+    poses = solveAssembly(assembly, poseOf).poses;
   }
   const point = applyPose(poses.get(object)!, at);
   const distance = length(minus(point, target));

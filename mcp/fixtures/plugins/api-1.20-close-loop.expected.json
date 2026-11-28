@@ -1,0 +1,153 @@
+{
+  "run": {},
+  "api": "1.20",
+  "calls": [
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 40,
+        "dy": 10,
+        "dz": 10
+      }
+    },
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 20,
+        "dy": 10,
+        "dz": 10
+      }
+    },
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 20,
+        "dy": 10,
+        "dz": 10
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_2",
+        "to": "obj_1",
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "turnX": 0,
+        "turnY": 0,
+        "turnZ": 0
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_3",
+        "to": "obj_1",
+        "x": 20,
+        "y": 0,
+        "z": 0,
+        "turnX": 0,
+        "turnY": 0,
+        "turnZ": 0
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_2",
+        "joint": {
+          "kind": "hinge",
+          "pivot": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_3",
+        "joint": {
+          "kind": "hinge",
+          "pivot": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_2",
+        "loop": {
+          "to": "obj_3",
+          "at": [
+            20,
+            0,
+            0
+          ],
+          "toAt": [
+            0,
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_2",
+        "loop": {
+          "to": "obj_3",
+          "at": [
+            20,
+            0,
+            0
+          ],
+          "toAt": [
+            0,
+            0,
+            0
+          ],
+          "along": [
+            0,
+            0,
+            1
+          ]
+        }
+      }
+    }
+  ],
+  "ops": [
+    "{\"primitive\":\"box\",\"origin\":[-20,-5,0],\"size\":[40,10,10],\"radius\":0,\"height\":0,\"turn\":[0,0,0]}",
+    "null"
+  ],
+  "fingerprint": {
+    "volumeMm3": 4000,
+    "faces": 6,
+    "edges": 12
+  },
+  "metrics": {
+    "closed": 1
+  },
+  "log": []
+}

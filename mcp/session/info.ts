@@ -111,7 +111,7 @@ async function sessionInfo(this: Session, verbose = false): Promise<Record<strin
     printer: this.printer().name,
     filament: this.filament().name,
     ...(this.objects.some((obj) => obj.sheet) ? { openSheets: this.objects.filter((obj) => obj.sheet).map((obj) => obj.id) } : {}),
-    ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object), ...(row.members.some((member) => member.joint) ? { joints: row.members.filter((member) => member.joint).map((member) => ({ object: member.object, joint: structuredClone(member.joint) })) } : {}) })) } : {}),
+    ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object), ...(row.members.some((member) => member.joint) ? { joints: row.members.filter((member) => member.joint).map((member) => ({ object: member.object, joint: structuredClone(member.joint) })) } : {}), ...(row.closures?.length ? { closures: row.closures.map((closure) => structuredClone(closure)) } : {}) })) } : {}),
     printerSend: false,
     plugins: this.pluginsLine(),
     nuggets: this.nuggetsLine(),

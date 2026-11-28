@@ -468,7 +468,9 @@ pub struct Part {
 /// build these steps, so a plugin that uses them records 1.18.
 /// 1.19: a slide can be keyed. `Aim::Travel(mm)` is that travel in millimetres; `Pose::set` takes it, and the host
 /// reads the JSON number as millimetres when the joint is a slide (degrees when it is a hinge).
-pub const API: (u32, u32) = (1, 19);
+/// 1.20: a closed loop. `Session::close_loop` and `Session::close_loop_on_line` send `model_place {loop}`: two
+/// part-frame points meet, or, with a direction, the first stays on the line through the second.
+pub const API: (u32, u32) = (1, 20);
 
 /// What a nested plugin run made (API 1.16): the plugin and the version that ran, the part it ended on (`done`), every
 /// part it made and left on the plate, in the order made, and the numbers it ended with. The parts are this run's from
@@ -1103,6 +1105,21 @@ fn hold(v: f64, min: Option<f64>, max: Option<f64>) -> f64 {
     v
 }
 
+/// `model_place {object, loop}` as `close_loop` and `close_loop_on_line` send it. `along` makes the loop a line.
+fn close_loop_place(
+    a: &str,
+    at: [f64; 3],
+    b: &str,
+    at_b: [f64; 3],
+    along: Option<[f64; 3]>,
+) -> Json {
+    let mut pin = Json::obj().set("to", b).set("at", at).set("toAt", at_b);
+    if let Some(along) = along {
+        pin = pin.set("along", along);
+    }
+    Json::obj().set("object", a).set("loop", pin)
+}
+
 impl Session {
     /// Reads the start line: `{"v":1,"params":{...},"context":{...}}`, with `"describe":true` for describe mode.
     pub fn start() -> Session {
@@ -1558,6 +1575,33 @@ impl Session {
     #[track_caller]
     pub fn turn_joint(&mut self, part: &Part, angle: f64) -> Result<Json, Refusal> {
         self.call("model_place", Json::obj().set("object", part.object.as_str()).set("angle", angle))
+    }
+
+    /// Closes a pin loop (API 1.20): `a`'s point `at` meets `b`'s point `at_b`, both in that part's own frame.
+    /// `model_place {object, loop:{to, at, toAt}}`. A part and its own parent are a joint, and are refused.
+    #[track_caller]
+    pub fn close_loop(
+        &mut self,
+        a: &Part,
+        at: [f64; 3],
+        b: &Part,
+        at_b: [f64; 3],
+    ) -> Result<(), Refusal> {
+        self.call("model_place", close_loop_place(a.object.as_str(), at, b.object.as_str(), at_b, None)).map(|_| ())
+    }
+
+    /// Closes a line loop (API 1.20): `a`'s point stays on the line through `b`'s point in the direction `along`
+    /// (`b`'s frame). `model_place {object, loop:{to, at, toAt, along}}`.
+    #[track_caller]
+    pub fn close_loop_on_line(
+        &mut self,
+        a: &Part,
+        at: [f64; 3],
+        b: &Part,
+        at_b: [f64; 3],
+        along: [f64; 3],
+    ) -> Result<(), Refusal> {
+        self.call("model_place", close_loop_place(a.object.as_str(), at, b.object.as_str(), at_b, Some(along))).map(|_| ())
     }
 
     /// Couples the gears of `part`'s assembly that mesh (API 1.16): `model_place {object, gears: "couple"}`, with the
@@ -7067,7 +7111,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 19));
+        assert_eq!(API, (1, 20));
     }
 
     #[test]
@@ -8091,6 +8135,18 @@ mod animation_tests {
         assert!(anim.to_json().at("background").is_none(), "a 1.8 animation must send the same call as before");
         anim.background("#204060");
         assert_eq!(anim.to_json().at("background").and_then(Json::as_str), Some("#204060"));
+    }
+
+    #[test]
+    fn close_loop_serialises_as_model_place_expects() {
+        let pin = super::close_loop_place("link", [110.0, 0.0, 0.0], "ram", [0.0, 0.0, 0.0], None);
+        assert_eq!(pin.at("object").and_then(Json::as_str), Some("link"));
+        assert_eq!(pin.at("loop.to").and_then(Json::as_str), Some("ram"));
+        assert_eq!(pin.at("loop.at").and_then(Json::as_f64s), Some(vec![110.0, 0.0, 0.0]));
+        assert_eq!(pin.at("loop.toAt").and_then(Json::as_f64s), Some(vec![0.0, 0.0, 0.0]));
+        assert!(pin.at("loop.along").is_none());
+        let line = super::close_loop_place("link", [90.0, 0.0, 0.0], "slot", [0.0, 0.0, 0.0], Some([0.0, 0.0, 1.0]));
+        assert_eq!(line.at("loop.along").and_then(Json::as_f64s), Some(vec![0.0, 0.0, 1.0]));
     }
 
     #[test]
