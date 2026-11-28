@@ -1,3 +1,5 @@
+import type { ColorMode } from "./colors.ts";
+import { readsStress } from "./colors.ts";
 import { KIND_SHIFT, STYLE_WORDS, type PointRun } from "./preview-geom.ts";
 
 /** Interior infill drawn only near the slider while the camera is moving. */
@@ -9,6 +11,26 @@ export const LINE_PX = 1.5;
 const LINE_HYST_PX = 0.35;
 
 const INTERIOR_INFILL = new Set(["sparse", "infill", "solid"]);
+
+/** The outside perimeter. `outer` when features have their own speeds, `wall` when they do not. */
+const OUTER_WALL_KINDS = ["outer", "wall"];
+
+/** A bead of one of these closes the part from the side. */
+const WALL_KINDS = new Set(["outer", "inner", "wall", "thin-wall"]);
+
+/**
+ * Beads that belong to the part rather than a skirt, a support, or ironing.
+ * Ironing sits on the top skin, so it does not move the part's top layer.
+ */
+const PART_KINDS = new Set([...WALL_KINDS, "sparse", "infill", "solid", "top", "gap-fill", "bridge"]);
+
+/**
+ * How far from the part's top or bottom a skin bead still counts as that shell.
+ * Top skin is at most 1.2 mm and the thinnest layer is 0.05 mm, so 24 layers,
+ * plus a couple for a bead that lands beside the skin. A `top` kind farther
+ * in is a step or a floor, not the shell that closes this end.
+ */
+export const SHELL_BAND_LAYERS = 26;
 
 export interface KindLayout {
   /** Kind slot in the preview's kind table. */
@@ -108,11 +130,14 @@ export function layoutBeads(run: PointRun): BeadLayout {
   return { xyz, style, layouts, nominalWidth: nominal, center, radius };
 }
 
+/** Inclusive layer ranges of interior infill. Null draws those kinds across the whole `lo..hi` window. */
+export type InteriorWindow = readonly (readonly [number, number])[] | null;
+
 /**
  * Instanced ranges for layers `lo..hi`. A hidden kind is omitted. Adjacent visible kinds that share
- * a layer window become one range. `interiorFrom` is the first layer of sparse and internal infill
- * while the camera moves; null draws those kinds across the whole window. The shader mask still
- * covers a run that was not split.
+ * a buffer range become one draw. `interior` limits sparse, infill, and solid to those layer ranges
+ * (a moving frame passes the top band; a resting frame passes both ends). Null draws them across
+ * the whole window. The shader mask still covers a run that was not split.
  */
 export function visibleSpans(
   layouts: readonly KindLayout[],
@@ -120,7 +145,7 @@ export function visibleSpans(
   lo: number,
   hi: number,
   hidden: ReadonlySet<string>,
-  interiorFrom: number | null,
+  interior: InteriorWindow,
 ): DrawSpan[] {
   if (layouts.length === 0 || lo > hi) return [];
   const layers = layouts[0].at.length - 1;
@@ -130,20 +155,11 @@ export function visibleSpans(
   const spans: DrawSpan[] = [];
   let open: DrawSpan | null = null;
   let openEnd = -1;
-  for (const layout of layouts) {
-    const name = kindNames[layout.slot] ?? "";
-    const interior = INTERIOR_INFILL.has(name);
-    const spanLo = interior && interiorFrom != null ? Math.max(loC, interiorFrom) : loC;
-    if (hidden.has(name) || spanLo > hiC) {
-      open = null;
-      continue;
-    }
-    const from = layout.at[spanLo];
-    const end = layout.at[hiC + 1];
+  const push = (from: number, end: number) => {
     const count = end - from - 1;
     if (count <= 0) {
       open = null;
-      continue;
+      return;
     }
     if (open && from === openEnd) {
       open.count = end - open.from - 1;
@@ -153,8 +169,140 @@ export function visibleSpans(
       openEnd = end;
       spans.push(open);
     }
+  };
+  for (const layout of layouts) {
+    const name = kindNames[layout.slot] ?? "";
+    if (hidden.has(name)) {
+      open = null;
+      continue;
+    }
+    const ranges = INTERIOR_INFILL.has(name) && interior != null ? mergedRanges(loC, hiC, interior) : [[loC, hiC] as [number, number]];
+    if (ranges.length === 0) {
+      open = null;
+      continue;
+    }
+    for (const [start, end] of ranges) push(layout.at[start], layout.at[end + 1]);
   }
   return spans;
+}
+
+/** Clip `ranges` to `lo..hi` and join ones that touch or overlap. */
+function mergedRanges(lo: number, hi: number, ranges: readonly (readonly [number, number])[]): [number, number][] {
+  const clipped: [number, number][] = [];
+  for (const [start, end] of ranges) {
+    const from = Math.max(lo, Math.min(start, end));
+    const to = Math.min(hi, Math.max(start, end));
+    if (from <= to) clipped.push([from, to]);
+  }
+  clipped.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: [number, number][] = [];
+  for (const range of clipped) {
+    const prev = merged.length > 0 ? merged[merged.length - 1] : undefined;
+    if (prev && range[0] <= prev[1] + 1) prev[1] = Math.max(prev[1], range[1]);
+    else merged.push([range[0], range[1]]);
+  }
+  return merged;
+}
+
+/**
+ * While the camera moves, interior infill is the top band only (V1). At rest both ends of
+ * `low..high` stay open, unless `reveal` asks for the whole interior.
+ */
+export function interiorWindow(moving: boolean, low: number, high: number, reveal: boolean): InteriorWindow {
+  const reach = TOP_INFILL_LAYERS - 1;
+  if (moving) return [[high - reach, high]];
+  if (reveal) return null;
+  return [[low, low + reach], [high - reach, high]];
+}
+
+export interface ShellFacts {
+  /** Any perimeter bead: outer, inner, wall, or thin wall. */
+  hasWalls: boolean;
+  /** Kind `top` on the part's highest layers. */
+  hasTopSkin: boolean;
+  /** Kind `solid` (bottom skin, when features have their own speeds) on the lowest layers. */
+  hasBottomSkin: boolean;
+}
+
+/** One layer of one object, and the kind names that have a bead on it. */
+export interface LayerKinds {
+  layer: number;
+  kinds: ReadonlySet<string>;
+}
+
+/**
+ * Whether this object's beads close the interior. Read from per-layer kind counts, not from
+ * slice settings: skin depth is an engine constant (0.6 mm on speed, 1.2 mm on toughness) and
+ * a modifier can change the walls in one region, so the beads are what the picture has.
+ * Bottom skin is kind `solid` and top skin is kind `top` when features have their own speeds.
+ * A slice that labels every bead `infill` has neither, and the caller draws the whole interior.
+ */
+export function shellFromLayerKinds(layers: readonly LayerKinds[]): ShellFacts {
+  let hasWalls = false;
+  let min = Infinity;
+  let max = -Infinity;
+  const topLayers: number[] = [];
+  const solidLayers: number[] = [];
+  for (const row of layers) {
+    let part = false;
+    for (const name of row.kinds) {
+      if (WALL_KINDS.has(name)) hasWalls = true;
+      if (PART_KINDS.has(name)) part = true;
+      if (name === "top") topLayers.push(row.layer);
+      if (name === "solid") solidLayers.push(row.layer);
+    }
+    if (!part) continue;
+    if (row.layer < min) min = row.layer;
+    if (row.layer > max) max = row.layer;
+  }
+  if (min === Infinity) return { hasWalls, hasTopSkin: false, hasBottomSkin: false };
+  const nearTop = (layer: number) => layer <= max && layer >= max - (SHELL_BAND_LAYERS - 1);
+  const nearBottom = (layer: number) => layer >= min && layer <= min + (SHELL_BAND_LAYERS - 1);
+  return {
+    hasWalls,
+    hasTopSkin: topLayers.some(nearTop),
+    hasBottomSkin: solidLayers.some(nearBottom) || topLayers.some(nearBottom),
+  };
+}
+
+/** Kinds present on each layer of one chunk. `first` is that chunk's first layer in its object. */
+export function layerKindsOf(first: number, layouts: readonly KindLayout[], kindNames: readonly string[]): LayerKinds[] {
+  let layers = 0;
+  for (const layout of layouts) layers = Math.max(layers, layout.at.length - 1);
+  const out: LayerKinds[] = [];
+  for (let layer = 0; layer < layers; layer++) {
+    const kinds = new Set<string>();
+    for (const layout of layouts) {
+      if (layer + 1 >= layout.at.length) continue;
+      if (layout.at[layer + 1] > layout.at[layer]) kinds.add(kindNames[layout.slot] ?? "");
+    }
+    if (kinds.size > 0) out.push({ layer: first + layer, kinds });
+  }
+  return out;
+}
+
+/** Every object that has beads is closed. An empty list is not. */
+export function shellEnclosed(parts: readonly ShellFacts[]): boolean {
+  return parts.length > 0 && parts.every((part) => part.hasWalls && part.hasTopSkin && part.hasBottomSkin);
+}
+
+/**
+ * Draw every interior bead. The outside no longer hides it, or the colour is there to show
+ * the inside. Weight and speed stay on the shell: they colour a bead by its flow or its feed,
+ * and the walls already show that. Stress and safety colour the load through the volume.
+ */
+export function revealInterior(input: {
+  hidden: ReadonlySet<string>;
+  kindNames: readonly string[];
+  section: boolean;
+  cut: boolean;
+  colorMode: ColorMode;
+  enclosed: boolean;
+}): boolean {
+  if (input.section || input.cut) return true;
+  if (readsStress(input.colorMode)) return true;
+  if (OUTER_WALL_KINDS.some((kind) => input.hidden.has(kind) && input.kindNames.includes(kind))) return true;
+  return !input.enclosed;
 }
 
 /** Screen pixels a bead of `widthMm` covers at `distanceMm` from the camera. */

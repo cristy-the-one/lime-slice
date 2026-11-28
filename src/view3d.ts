@@ -8,7 +8,7 @@ import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-pla
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
 import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, layerUp, MARGIN_SHADE, MAX_KINDS, meshCenter, ODD_LAYER_BIT, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
-import { TOP_INFILL_LAYERS, beadWidthPx, layoutBeads, lineMode, visibleSpans, type KindLayout } from "./preview-draw";
+import { beadWidthPx, interiorWindow, layerKindsOf, layoutBeads, lineMode, revealInterior, shellEnclosed, shellFromLayerKinds, visibleSpans, type InteriorWindow, type KindLayout, type LayerKinds } from "./preview-draw";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { planeLean } from "./belt-scene";
@@ -257,6 +257,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let showTravel = false;
   let kinds: string[] = [];
   let hidden: ReadonlySet<string> = new Set();
+  let colorMode: ColorMode = "feature";
   const pathUniforms = {
     palette: { value: new Float32Array(MAX_KINDS * 3) },
     hiddenKinds: { value: new Float32Array(MAX_KINDS) },
@@ -322,7 +323,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     if (coarse !== lowRes) {
       lowRes = coarse;
       applyPixelRatio(renderer, lowRes);
-      // The sharp frame after the camera settles draws every kind. While moving, interior infill is the top layers only.
+      // The sharp frame after the camera settles uses the resting window. While moving, interior infill is the top layers only.
       applyFocus();
     }
     updateLineModes();
@@ -408,8 +409,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   /** One instanced draw per visible kind span. Hidden kinds are not submitted; the shader mask stays as a fallback. */
-  function showBeads(draw: BeadDraw, lo: number, hi: number, interiorFrom: number | null) {
-    const spans = visibleSpans(draw.layouts, kinds, lo, hi, hidden, interiorFrom);
+  function showBeads(draw: BeadDraw, lo: number, hi: number, interior: InteriorWindow) {
+    const spans = visibleSpans(draw.layouts, kinds, lo, hi, hidden, interior);
     ensureBeads(draw, spans.length);
     for (let i = 0; i < draw.box.length; i++) {
       const span = spans[i];
@@ -459,12 +460,34 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     if (flipped) applyFocus();
   }
 
+  /** True when every object that has beads is closed by walls and by top and bottom skin. */
+  function shellIsEnclosed(): boolean {
+    const byObject = new Map<number, LayerKinds[]>();
+    for (const c of chunks) {
+      const rows = layerKindsOf(c.first, c.beads.layouts, kinds);
+      if (rows.length === 0) continue;
+      const list = byObject.get(c.chunk.object);
+      if (list) list.push(...rows);
+      else byObject.set(c.chunk.object, rows);
+    }
+    return shellEnclosed([...byObject.values()].map(shellFromLayerKinds));
+  }
+
   function applyFocus() {
-    const movingInfill = lowRes ? high - (TOP_INFILL_LAYERS - 1) : null;
+    const reveal = !lowRes && revealInterior({
+      hidden,
+      kindNames: kinds,
+      section: section != null,
+      cut: planeSpec != null,
+      colorMode,
+      enclosed: shellIsEnclosed(),
+    });
+    const bands = interiorWindow(lowRes, low, high, reveal);
     for (const c of chunks) {
       const lo = Math.max(low, c.first) - c.first;
       const hi = Math.min(high, c.first + c.chunk.indices.length - 1) - c.first;
-      showBeads(c.beads, lo, hi, movingInfill == null ? null : movingInfill - c.first);
+      const local = bands?.map(([start, end]) => [start - c.first, end - c.first] as const) ?? null;
+      showBeads(c.beads, lo, hi, local);
       showLayers(c.travel, c.chunk.travel, showTravel ? lo : 1, showTravel ? hi : 0);
     }
     placePlane();
@@ -975,6 +998,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     },
     setColorMode(mode) {
       pathUniforms.mode.value = mode === "weight" ? 1 : mode === "speed" ? 2 : mode === "stress" ? 3 : mode === "safety" ? 4 : 0;
+      colorMode = mode;
+      applyFocus();
       requestRender();
     },
     setStressField(cells, studied) {
@@ -990,7 +1015,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     },
     setPlane(spec) {
       planeSpec = spec;
-      placePlane();
+      applyFocus();
     },
     onPlane(cb) {
       planeCb = cb;
@@ -1004,6 +1029,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       const next = spec ? { normal: normalize(spec.normal), offset: clampOffset(spec.offset, reach()) } : null;
       if (sameSection(section, next)) return;
       section = next;
+      applyFocus();
       placeSection();
     },
     onSection(cb) {
