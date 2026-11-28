@@ -8,7 +8,7 @@ import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-pla
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
 import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, layerUp, MARGIN_SHADE, MAX_KINDS, meshCenter, ODD_LAYER_BIT, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
-import { layoutBeads, visibleSpans, type KindLayout } from "./preview-draw";
+import { TOP_INFILL_LAYERS, layoutBeads, visibleSpans, type KindLayout } from "./preview-draw";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { planeLean } from "./belt-scene";
@@ -317,6 +317,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     if (coarse !== lowRes) {
       lowRes = coarse;
       applyPixelRatio(renderer, lowRes);
+      // The first sharp frame after the camera settles draws every kind. While moving, interior infill is only the top layers.
+      applyFocus();
     }
     fitSection();
     renderer.render(scene, camera);
@@ -413,10 +415,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function applyFocus() {
+    const movingInfill = lowRes ? high - (TOP_INFILL_LAYERS - 1) : null;
     for (const c of chunks) {
       const lo = Math.max(low, c.first) - c.first;
       const hi = Math.min(high, c.first + c.chunk.indices.length - 1) - c.first;
-      showBeads(c.beads, lo, hi, null);
+      showBeads(c.beads, lo, hi, movingInfill == null ? null : movingInfill - c.first);
       showLayers(c.travel, c.chunk.travel, showTravel ? lo : 1, showTravel ? hi : 0);
     }
     placePlane();
