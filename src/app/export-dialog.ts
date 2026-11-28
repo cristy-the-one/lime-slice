@@ -536,6 +536,7 @@ export function showExport(preset: ExportPreset = {}): void {
           (id) => meshByPartKey.get(partKeyOf(id)) ?? new Float32Array(0),
           (id) => poses.get(id),
           (id) => colors.get(id),
+          (id) => byId.get(id)?.glass === true,
         );
         if (!ordered.members.length) {
           status.textContent = "This assembly has no parts on the plate.";

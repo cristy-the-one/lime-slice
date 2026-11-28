@@ -38,6 +38,8 @@ export interface PoseExportMember {
   pose: Affine;
   /** Optional `#rrggbb` sRGB colour. */
   color?: string;
+  /** See-through, at the same 0.28 opacity Pose draws. Absent is opaque. */
+  glass?: true;
 }
 
 export interface OrderedPoseExport {
@@ -52,6 +54,9 @@ export interface GlbAnimationInput {
 }
 
 const DEFAULT_COLOR = "#b8c0cc";
+/** Pose draws a glass part at this opacity (`GLASS_OPACITY` in src/pose-view.ts). */
+const GLASS_ALPHA = 0.28;
+const GLASS_ALPHA_HEX = Math.round(GLASS_ALPHA * 255).toString(16).padStart(2, "0").toUpperCase();
 
 const MEMBER_PALETTE = [
   "#78a0d8",
@@ -99,6 +104,7 @@ export function orderExportMembers(
   positionsOf: (object: string) => Float32Array,
   poseOf: (object: string) => Affine | undefined,
   colorOf?: (object: string) => string | undefined,
+  glassOf?: (object: string) => boolean,
 ): OrderedPoseExport {
   const ordered = exportParts(assembly, (id) => partStem(nameOf(id)));
   const memberById = new Map(assembly.members.map((m) => [m.object, m] as const));
@@ -118,6 +124,7 @@ export function orderExportMembers(
     }
     const parentIndex = member.parent !== null ? (indexById.get(member.parent) ?? -1) : -1;
     const color = normalizeHex(colorOf?.(row.object));
+    const glass = glassOf?.(row.object) === true;
     members.push({
       object: row.object,
       name: row.name,
@@ -129,6 +136,7 @@ export function orderExportMembers(
       member,
       pose: poseOf(row.object) ?? IDENTITY_POSE,
       ...(color ? { color } : {}),
+      ...(glass ? { glass: true as const } : {}),
     });
   }
   return { assemblyName: assembly.name, parts, members };
@@ -407,34 +415,37 @@ export function encodePoseGlb(ordered: OrderedPoseExport, animation?: GlbAnimati
     return { pos, norm };
   });
 
-  // One material per distinct colour.
-  const materialByColor = new Map<string, number>();
+  // One material per distinct (colour, glass). Opaque materials stay alpha 1 with no alphaMode.
+  const materialByKey = new Map<string, number>();
   const materials: Record<string, unknown>[] = [];
-  const materialFor = (hex: string | undefined): number => {
+  const materialFor = (hex: string | undefined, glass: boolean): number => {
     const key = hex ?? DEFAULT_COLOR;
-    const existing = materialByColor.get(key);
+    const mapKey = glass ? `${key}|glass` : key;
+    const existing = materialByKey.get(mapKey);
     if (existing !== undefined) return existing;
     const [r, g, b] = hexToSrgb(key);
     const idx = materials.length;
-    materialByColor.set(key, idx);
-    materials.push({
-      name: `color_${key.slice(1)}`,
+    materialByKey.set(mapKey, idx);
+    const material: Record<string, unknown> = {
+      name: glass ? `color_${key.slice(1)}_glass` : `color_${key.slice(1)}`,
       pbrMetallicRoughness: {
-        baseColorFactor: [srgbToLinear(r), srgbToLinear(g), srgbToLinear(b), 1],
+        baseColorFactor: [srgbToLinear(r), srgbToLinear(g), srgbToLinear(b), glass ? GLASS_ALPHA : 1],
         metallicFactor: 0.05,
         roughnessFactor: 0.55,
       },
-    });
+    };
+    if (glass) material.alphaMode = "BLEND";
+    materials.push(material);
     return idx;
   };
 
   // One glTF mesh per distinct (partIndex, materialIndex).
   const meshByKey = new Map<string, number>();
   const meshes: Record<string, unknown>[] = [];
-  const meshFor = (partIndex: number, color: string | undefined): number | undefined => {
+  const meshFor = (partIndex: number, color: string | undefined, glass: boolean): number | undefined => {
     const acc = partAccessors[partIndex];
     if (!acc) return undefined;
-    const matIdx = materialFor(color);
+    const matIdx = materialFor(color, glass);
     const key = `${partIndex}:${matIdx}`;
     const existing = meshByKey.get(key);
     if (existing !== undefined) return existing;
@@ -469,7 +480,7 @@ export function encodePoseGlb(ordered: OrderedPoseExport, animation?: GlbAnimati
     const row = ordered.members[i]!;
     const localPose = row.parentIndex >= 0 ? relativePose(ordered.members[row.parentIndex]!.pose, row.pose) : row.pose;
     const trs = affineToTrs(localPose);
-    const meshIdx = meshFor(row.partIndex, row.color);
+    const meshIdx = meshFor(row.partIndex, row.color, row.glass === true);
     const kids = childrenOf[i]!;
     const node: Record<string, unknown> = {
       name: row.name,
@@ -604,18 +615,19 @@ function format3mfTransform(pose: Affine): string {
 
 /**
  * Writes a 3MF assembly at the posed transforms (not print layout): one `<object>` per distinct part/colour in its
- * own frame, `<basematerials>` for colours, and one `<item objectid transform>` per member.
+ * own frame, `<basematerials>` for colours (a glass part keeps its alpha), and one `<item objectid transform>` per member.
  */
 export function encodePose3mf(ordered: OrderedPoseExport): Uint8Array {
-  const colorList: string[] = [];
+  const colorList: { rgb: string; glass: boolean }[] = [];
   const colorIndex = new Map<string, number>();
-  const colorIdOf = (hex: string | undefined): number => {
-    const key = (hex ?? DEFAULT_COLOR).toUpperCase();
+  const colorIdOf = (hex: string | undefined, glass: boolean): number => {
+    const rgb = (hex ?? DEFAULT_COLOR).toUpperCase();
+    const key = glass ? `${rgb}|glass` : rgb;
     const existing = colorIndex.get(key);
     if (existing !== undefined) return existing;
     const idx = colorList.length;
     colorIndex.set(key, idx);
-    colorList.push(key);
+    colorList.push({ rgb, glass });
     return idx;
   };
 
@@ -654,7 +666,7 @@ export function encodePose3mf(ordered: OrderedPoseExport): Uint8Array {
   for (const row of ordered.members) {
     const meshXml = meshXmlByPart[row.partIndex];
     if (!meshXml) continue;
-    const cIdx = colorIdOf(row.color);
+    const cIdx = colorIdOf(row.color, row.glass === true);
     const key = `${row.partIndex}:${cIdx}`;
     let objId = objectIdByKey.get(key);
     if (objId === undefined) {
@@ -665,7 +677,7 @@ export function encodePose3mf(ordered: OrderedPoseExport): Uint8Array {
     itemsXml.push(`<item objectid="${objId}" transform="${format3mfTransform(row.pose)}" />`);
   }
 
-  const basesXml = colorList.map((hex, i) => `<base name="color_${i + 1}" displaycolor="${hex}FF" />`).join("");
+  const basesXml = colorList.map((entry, i) => `<base name="color_${i + 1}" displaycolor="${entry.rgb}${entry.glass ? GLASS_ALPHA_HEX : "FF"}" />`).join("");
   const materialsXml = colorList.length ? `<basematerials id="1">${basesXml}</basematerials>` : "";
   const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
@@ -735,12 +747,13 @@ export function encodePoseObjMtl(
 ): { obj: Uint8Array; mtl: Uint8Array; triangles: number } {
   const matByColor = new Map<string, string>();
   const mtlLines: string[] = [`# Materials for ${ordered.assemblyName}`];
-  const materialOf = (hex: string | undefined): string => {
+  const materialOf = (hex: string | undefined, glass: boolean): string => {
     const key = hex ?? DEFAULT_COLOR;
-    const existing = matByColor.get(key);
+    const mapKey = glass ? `${key}|glass` : key;
+    const existing = matByColor.get(mapKey);
     if (existing) return existing;
-    const name = `mat_${key.slice(1)}`;
-    matByColor.set(key, name);
+    const name = glass ? `mat_${key.slice(1)}_glass` : `mat_${key.slice(1)}`;
+    matByColor.set(mapKey, name);
     const [r, g, b] = hexToSrgb(key);
     mtlLines.push(
       `newmtl ${name}`,
@@ -748,6 +761,7 @@ export function encodePoseObjMtl(
       `Kd ${r.toFixed(4)} ${g.toFixed(4)} ${b.toFixed(4)}`,
       `Ks 0.2 0.2 0.2`,
       `Ns 32`,
+      ...(glass ? [`d ${GLASS_ALPHA.toFixed(2)}`, `Tr ${(1 - GLASS_ALPHA).toFixed(2)}`] : []),
       "",
     );
     return name;
@@ -764,7 +778,7 @@ export function encodePoseObjMtl(
     const part = ordered.parts[row.partIndex];
     if (!part || part.positions.length < 9) continue;
     const posed = transformSoup(part.positions, row.pose);
-    const mat = materialOf(row.color);
+    const mat = materialOf(row.color, row.glass === true);
     objLines.push(`g ${sanitizeObjToken(row.name)}`, `usemtl ${mat}`);
     const vertIndex = new Map<string, number>();
     let localCount = 0;
