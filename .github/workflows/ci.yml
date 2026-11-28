@@ -5,9 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A manual run is the Open CASCADE 8 preview alone (docs/plan-occt-8.md D5): "what changed" says so below.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  # The Open CASCADE every OCCT job builds against: its install folder, its cache key and install.py --version.
+  # 8.0.2 runs only in the non-required "Open CASCADE 8 preview" job until docs/plan-occt-8.md's O4 switches this.
+  # Each OCCT cache restore also lists restore-keys: a cache of this version from an earlier install.py is restored,
+  # and install.py keeps it only when its stamp's build fingerprint is this version's (a change to how it builds
+  # this version rebuilds), so a change that leaves this version's build alone costs no 25-35 minute cold build.
+  OCCT_VERSION: "7.9.2"
 
 jobs:
   # A change to docs/ or Markdown alone builds and tests nothing. Every other job
@@ -22,6 +30,7 @@ jobs:
       macos: ${{ steps.diff.outputs.macos }}
       bump: ${{ steps.diff.outputs.bump }}
       recipes: ${{ steps.diff.outputs.recipes }}
+      occt8: ${{ steps.diff.outputs.occt8 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,11 +41,21 @@ jobs:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "recipes=false" >> "$GITHUB_OUTPUT"
+            echo "occt8=true" >> "$GITHUB_OUTPUT"
+            echo "Manual run: the Open CASCADE 8 preview only"
+            exit 0
+          fi
           if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "macos=true" >> "$GITHUB_OUTPUT"
             echo "bump=false" >> "$GITHUB_OUTPUT"
             echo "recipes=true" >> "$GITHUB_OUTPUT"
+            echo "occt8=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           code=false
@@ -48,6 +67,9 @@ jobs:
           # or runs against changed: lust's pin, the lime-recipe crate, the recipe host, the op JSON the session and
           # src/modeling answer with, or the corpus itself. About 15 s in the MCP jobs, which already build lust.
           recipes=false
+          # The Open CASCADE 8 preview (docs/plan-occt-8.md D5) runs when something that builds or links OCCT changed:
+          # install.py, the two OCCT crates, or a workflow. It builds 8.0.2 cold, 25+ minutes per platform.
+          occt8=false
           while IFS= read -r file; do
             # tools/readme-media makes the README's pictures by hand (docs/readme-media.md). No job runs it and the
             # typecheck covers src/ only, so a change there is documentation, like the pictures it writes.
@@ -61,6 +83,9 @@ jobs:
             case "$file" in
               tools/lust/*|crates/lime-recipe*|tools/mcp/bundle.mjs|mcp/fixtures/plugins/*|mcp/recipe*|mcp/plugin*|mcp/session.ts|mcp/session/*|mcp/refusals.ts|src/recipe/*|src/modeling/*|src/model-tree*|src/plugin-step*|.github/workflows/ci.yml) recipes=true ;;
             esac
+            case "$file" in
+              tools/occt/*|crates/lime-model-occt/*|crates/lime-model/*|.github/workflows/ci.yml|.github/workflows/release.yml) occt8=true ;;
+            esac
           done < <(git diff --name-only "$BASE...$HEAD")
           # A version bump and nothing else: skip every heavy job. Anything the script doubts is not a bump.
           bump=false
@@ -69,12 +94,14 @@ jobs:
             code=false
             macos=false
             recipes=false
+            occt8=false
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "macos=$macos" >> "$GITHUB_OUTPUT"
           echo "bump=$bump" >> "$GITHUB_OUTPUT"
           echo "recipes=$recipes" >> "$GITHUB_OUTPUT"
-          echo "Code changed: $code, macOS-relevant: $macos, version bump only: $bump, plugin corpus: $recipes"
+          echo "occt8=$occt8" >> "$GITHUB_OUTPUT"
+          echo "Code changed: $code, macOS-relevant: $macos, version bump only: $bump, plugin corpus: $recipes, OCCT 8 preview: $occt8"
 
   # The one check a bump-only change runs. It builds nothing; it makes sure the bump is complete: every version
   # agrees, and Cargo.lock is current (--locked fails if Cargo.toml would change the lock).
@@ -122,8 +149,8 @@ jobs:
       # runner.temp is not available in a job-level env block.
       - name: Point at the OCCT install
         run: |
-          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}/lib" >> "$GITHUB_ENV"
 
       # The packages download in about 30 s, but a crawling mirror has taken
       # 29 minutes and a silent one over an hour. The downloaded packages are
@@ -170,20 +197,21 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 180
-        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+        run: python3 tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Wait for the disk space
         run: |
@@ -233,8 +261,8 @@ jobs:
       # runner.temp is not available in a job-level env block.
       - name: Point at the OCCT install
         run: |
-          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}/lib" >> "$GITHUB_ENV"
 
       # CMake and Ninja build OCCT when the cache misses. The runner image already has the toolchain, so apt
       # runs only when one is missing.
@@ -260,20 +288,21 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 180
-        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+        run: python3 tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - uses: actions/setup-node@v7
         with:
@@ -416,8 +445,8 @@ jobs:
 
       - name: Point at the OCCT install
         run: |
-          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}/lib" >> "$GITHUB_ENV"
 
       - name: Install the C++ toolchain Clipper2 links against
         timeout-minutes: 10
@@ -440,20 +469,21 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 180
-        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+        run: python3 tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - uses: actions/setup-node@v7
         with:
@@ -515,8 +545,8 @@ jobs:
 
       - name: Point at the OCCT install
         run: |
-          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}/lib" >> "$GITHUB_ENV"
 
       - name: Install the C++ toolchain Clipper2 links against
         timeout-minutes: 10
@@ -539,20 +569,21 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 180
-        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+        run: python3 tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - uses: actions/setup-node@v7
         with:
@@ -605,8 +636,8 @@ jobs:
       # runner.temp is not available in a job-level env block.
       - name: Point at the OCCT install
         run: |
-          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}/lib" >> "$GITHUB_ENV"
 
       # The packages download in about 30 s, but a crawling mirror has taken
       # 29 minutes and a silent one over an hour. The downloaded packages are
@@ -655,20 +686,21 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 180
-        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+        run: python3 tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -701,8 +733,8 @@ jobs:
       # runner.temp is not available in a job-level env block.
       - name: Point at the OCCT install
         run: |
-          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}/lib" >> "$GITHUB_ENV"
 
       # The packages download in about 30 s, but a crawling mirror has taken
       # 29 minutes and a silent one over an hour. The downloaded packages are
@@ -749,20 +781,21 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 180
-        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+        run: python3 tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Build the Tauri crate
         run: cargo build -p lime-slice-desktop --locked
@@ -1381,7 +1414,7 @@ jobs:
       # The Model specs in test:engine need the OCCT bridge. runner.temp is not
       # available in a job-level env block.
       - name: Point at the OCCT install
-        run: echo "OCCT_LIBS=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+        run: echo "OCCT_LIBS=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" >> "$GITHUB_ENV"
 
       # CMake and Ninja build OCCT when the cache misses. The runner image
       # already has the toolchain, so apt runs only when one is missing.
@@ -1412,20 +1445,21 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 180
-        run: python3 tools/occt/install.py --prefix "$OCCT_LIBS"
+        run: python3 tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$OCCT_LIBS"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       # OCCT_ROOT only for this step, so the CLI above stays the plain build.
       # The bridge lands in target/release next to lime-slice, where the engine looks.
@@ -1537,7 +1571,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Point at the OCCT install
-        run: Add-Content -Path $env:GITHUB_ENV -Value "OCCT_ROOT=${{ runner.temp }}\occt-7.9.2"
+        run: Add-Content -Path $env:GITHUB_ENV -Value "OCCT_ROOT=${{ runner.temp }}\occt-${{ env.OCCT_VERSION }}"
 
       - uses: actions/setup-python@v7
         with:
@@ -1551,20 +1585,21 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 300
-        run: python tools/occt/install.py --prefix "$env:OCCT_ROOT"
+        run: python tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$env:OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Test the dynamic link
         run: |
@@ -1610,8 +1645,8 @@ jobs:
 
       - name: Point at the OCCT install
         run: |
-          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}/lib" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1628,20 +1663,130 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 300
-        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+        run: python3 tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Test the dynamic link
         run: cargo test -p lime-model -p lime-model-occt --locked -- --nocapture
+
+  # docs/plan-occt-8.md O1: build and cache Open CASCADE 8.0.2 beside the OCCT_VERSION every other job uses. Not required,
+  # and no gate needs it (D5); a docs-only or bump-only change skips it with the rest. It builds no bridge yet (O2).
+  # The summary and the occt8-preview-* artifact give the build minutes and the install size.
+  occt8-preview:
+    name: Open CASCADE 8 preview (${{ matrix.label }})
+    needs: changes
+    if: needs.changes.outputs.occt8 == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux
+            os: ubuntu-24.04
+          - label: Windows
+            os: windows-latest
+          - label: macOS arm64
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    env:
+      OCCT_PREVIEW_VERSION: "8.0.2"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Point at the OCCT install
+        run: echo "OCCT_PREVIEW_ROOT=${{ runner.temp }}/occt-${{ env.OCCT_PREVIEW_VERSION }}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # The OCCT_VERSION jobs build with Ninja on Linux (from apt) and with the Visual Studio generator on Windows.
+      - name: Install CMake and Ninja (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null | xargs -r sudo rm -f || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - name: Install CMake (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+          cmake --version
+
+      - name: Restore the OCCT 8 shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_PREVIEW_VERSION }}
+          key: occt-${{ env.OCCT_PREVIEW_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_PREVIEW_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build OCCT 8 shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 300
+        run: |
+          start=$(date +%s)
+          python tools/occt/install.py --version "$OCCT_PREVIEW_VERSION" --prefix "$OCCT_PREVIEW_ROOT"
+          echo "OCCT_PREVIEW_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      - name: Save the OCCT 8 shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_PREVIEW_VERSION }}
+          key: occt-${{ env.OCCT_PREVIEW_VERSION }}-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      # "cold" is a full build, "restored" a cache of an earlier install.py that install.py kept, "cached" an exact hit.
+      - name: Report the build time and install size
+        env:
+          CACHE_HIT: ${{ steps.occt-cache.outputs.cache-hit }}
+          RESTORED_KEY: ${{ steps.occt-cache.outputs.cache-matched-key }}
+          PLATFORM: ${{ matrix.label }}
+        run: |
+          set -euo pipefail
+          seconds="${OCCT_PREVIEW_SECONDS:-0}"
+          if [ "$CACHE_HIT" = true ]; then
+            source=cached
+          elif [ -n "$RESTORED_KEY" ] && [ "$seconds" -lt 120 ]; then
+            source=restored
+          else
+            source=cold
+          fi
+          mb=$(du -sm "$OCCT_PREVIEW_ROOT" | cut -f1)
+          files=$(find "$OCCT_PREVIEW_ROOT" -type f | wc -l | tr -d ' ')
+          headers=$(find "$OCCT_PREVIEW_ROOT/include/opencascade" -type f | wc -l | tr -d ' ')
+          libs=$(find "$OCCT_PREVIEW_ROOT/lib" "$OCCT_PREVIEW_ROOT/bin" -type f \( -name 'libTK*.so*' -o -name 'libTK*.dylib' -o -name 'TK*.dll' \) 2>/dev/null | wc -l | tr -d ' ')
+          head -2 "$OCCT_PREVIEW_ROOT/lime-occt-version.txt"
+          line="OCCT $OCCT_PREVIEW_VERSION on $PLATFORM: $source, build $((seconds / 60)) min $((seconds % 60)) s, install $mb MB ($files files, $headers headers, $libs TK libraries)"
+          echo "$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$RUNNER_TEMP/occt8-report"
+          printf '{"version":"%s","platform":"%s","source":"%s","build_seconds":%s,"install_mb":%s,"files":%s,"headers":%s,"tk_libraries":%s}\n' \
+            "$OCCT_PREVIEW_VERSION" "$PLATFORM" "$source" "$seconds" "$mb" "$files" "$headers" "$libs" > "$RUNNER_TEMP/occt8-report/report.json"
+          cat "$RUNNER_TEMP/occt8-report/report.json"
+
+      - name: Upload the report
+        uses: actions/upload-artifact@v7
+        with:
+          name: occt8-preview-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/occt8-report/report.json
