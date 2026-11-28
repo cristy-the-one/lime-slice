@@ -149,8 +149,10 @@ export interface HandleDrag {
  */
 export interface ModelGrabHooks {
   ready(): boolean;
-  /** Ctrl-click on a grey object: it becomes the open one. */
+  /** Ctrl-click on a grey object: it becomes the open one, and the camera stays. */
   select(id: string): void;
+  /** Ctrl+double-click: frame that object (opened first when it is grey), or with null the open one. */
+  frame(id: string | null): void;
   /** The pointer has moved past the slop: open Place and begin one step. False refuses, and the press does nothing. */
   start(): boolean;
   move(pose: Affine): void;
@@ -197,6 +199,8 @@ export interface ModelView {
   setPose(pose: Affine): void;
   /** Look at `box`, a model-space box, from the direction Model opens with. */
   frame(box: Box): void;
+  /** Make `box` visible with the least camera move that keeps what is in view in view: a dolly out, or nothing when it is already in. */
+  reveal(box: Box): void;
   /** Whether every corner of `box`, a model-space box, is on screen. */
   inView(box: Bounds): boolean;
   /** The faint bed and build volume, a size reference only. */
@@ -211,7 +215,7 @@ export interface ModelView {
   setPreview(shape: ModelSolid | null): void;
   /** The other plate objects, drawn grey behind the open solid. They are never picked, framed, or measured. */
   setContext(parts: ContextPart[]): void;
-  /** Ctrl-drag on the open solid moves it, Ctrl-right-drag turns it, and Ctrl-click on a grey object opens that one. Null turns it off. */
+  /** Ctrl-drag on the open solid moves it, Ctrl-right-drag turns it, Ctrl-click on a grey object opens that one without moving the camera, and Ctrl+double-click frames it. Null turns it off. */
   onGrab(hooks: ModelGrabHooks | null): void;
   /** Tints the grey object Align to... has picked, or clears it with null. A snap in a drag tints its own target meanwhile. */
   markAlignTarget(id: string | null): void;

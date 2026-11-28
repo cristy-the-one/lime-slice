@@ -66,6 +66,7 @@ export function installContext(ctx: ViewCtx): void {
     if (published.length > 0) canvas.dataset.context = published.join(" ");
     else delete canvas.dataset.context;
     if (ctx.grabHooks && parts.length > 0) ctx.warmSnap();
+    ctx.hoverRefresh();
     ctx.kick();
   }
 

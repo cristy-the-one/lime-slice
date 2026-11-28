@@ -139,6 +139,8 @@ export interface PlateFileObject {
   jointLimits?: JointLimits;
   /** --- Organic surfaces S4: an open sheet (`PlateObject.sheet`). Omitted for a solid. Such a project is version 5. */
   sheet?: true;
+  /** A part of glass, drawn see-through in Pose (`PlateObject.glass`). Omitted otherwise; an older app ignores it and drops it on the next save. */
+  glass?: true;
 }
 
 /** One solid on the plate. Geometry stays in the session, not in the undo JSON. */
@@ -185,6 +187,8 @@ export interface PlateObject {
    * clears it only when no edge is left open. Saved with the project.
    */
   sheet?: true;
+  /** This part is glass: Pose draws it see-through. Drawing only, the slice never reads it. Absent is opaque. Saved with the project. */
+  glass?: true;
 }
 
 export interface PlateState {
@@ -217,6 +221,7 @@ export interface PlateSnapObject {
   chain?: ChainLink;
   jointLimits?: JointLimits;
   sheet?: true;
+  glass?: true;
 }
 
 export interface PlateSnap {
@@ -445,6 +450,7 @@ export function plateFileIsVersion2(objects: {
   workplane?: Workplane;
   sim?: unknown;
   sheet?: true;
+  glass?: true;
 }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
@@ -461,7 +467,8 @@ export function plateFileIsVersion2(objects: {
     one?.workplane != null ||
     one?.sim != null ||
     // --- Organic surfaces S4: a lone object marked an open sheet keeps the mark (a version 1 file has no object row).
-    one?.sheet === true
+    one?.sheet === true ||
+    one?.glass === true
   );
 }
 
@@ -642,6 +649,7 @@ export function addedCopy(plate: PlateState): PlateState | null {
     brep: source.brep ? source.brep.slice(0) : undefined,
     modelPose: duplicatePose(modelPoseOf(source), boxUnder(boundsOf(source.sourcePos), meshToModel(source))),
     ...(source.pivot ? { pivot: [...source.pivot] as [number, number, number] } : {}),
+    ...(source.glass ? { glass: true as const } : {}),
     ...(source.jointLimits ? { jointLimits: copyLimits(source.jointLimits) } : {}),
     ...(source.frame ? { frame: source.frame } : {}),
     // Kept in the part's own frame, the workplane moves over with the copy's pose.
@@ -912,6 +920,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       ...(obj.chain ? { chain: { parent: obj.chain.parent, offset: [...obj.chain.offset] as [number, number, number], turn: [...obj.chain.turn] as Mat3 } } : {}),
       ...(obj.jointLimits ? { jointLimits: { ...(obj.jointLimits.x ? { x: [...obj.jointLimits.x] as [number, number] } : {}), ...(obj.jointLimits.y ? { y: [...obj.jointLimits.y] as [number, number] } : {}), ...(obj.jointLimits.z ? { z: [...obj.jointLimits.z] as [number, number] } : {}) } } : {}),
       ...(obj.sheet ? { sheet: true as const } : {}),
+      ...(obj.glass ? { glass: true as const } : {}),
     })),
   };
 }
@@ -948,6 +957,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       ...(row.chain ? { chain: { parent: row.chain.parent, offset: [...row.chain.offset] as [number, number, number], turn: [...row.chain.turn] as Mat3 } } : {}),
       ...(row.jointLimits ? { jointLimits: copyLimits(row.jointLimits) } : {}),
       ...(row.sheet ? { sheet: true as const } : {}),
+      ...(row.glass ? { glass: true as const } : {}),
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;
@@ -982,6 +992,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       ...(row.chain ? { chain: { parent: row.chain.parent, offset: [...row.chain.offset] as [number, number, number], turn: [...row.chain.turn] as Mat3 } } : {}),
       ...(row.jointLimits ? { jointLimits: copyLimits(row.jointLimits) } : {}),
       ...(row.sheet ? { sheet: true as const } : {}),
+      ...(row.glass ? { glass: true as const } : {}),
     };
     if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
     // A Model step's mesh was saved as an STL already lowered, so reading it says 0; from a file before seats, Model learns it again.

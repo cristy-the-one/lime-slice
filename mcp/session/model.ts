@@ -57,7 +57,11 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
       return compact;
     };
     // Contact in poses (docs/plan-contact-poses.md): drive the joint until it touches. It may ask the kernel, so it waits.
-    if (input.until !== undefined) return s.placeUntil(obj, input).then(compacted);
+    if (input.until !== undefined) {
+      if (input.glass !== undefined) return refuse("conflicting-arguments", "Give until on its own: it drives the part's joint and sets nothing else.");
+      return s.placeUntil(obj, input).then(compacted);
+    }
+    if (input.glass !== undefined) return compacted(placeGlass(s, obj, input));
     return compacted(s.modelPlace(obj, input));
   },
   model_probe: (s, obj, input) => {
@@ -89,6 +93,25 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   measure: (s, obj, input) => s.measure(obj, input),
   model_mass: (s, obj, input) => modelMass(s, obj, input),
 };
+
+/**
+ * `model_place {glass}`: the part is drawn see-through in Pose (or opaque again). Alone it is one Undo step; with the
+ * pose's own numbers the pose is placed first, and its step takes the glass back too.
+ */
+function placeGlass(s: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  if (typeof input.glass !== "boolean") return refuse("bad-argument", "glass is true or false.");
+  const { glass, ...rest } = input;
+  const others = Object.keys(rest).filter((key) => key !== "object" && key !== "reply" && key !== "compact" && rest[key] !== undefined);
+  let reply: Record<string, unknown> = { ok: true, object: obj.id };
+  if (others.length > 0) {
+    reply = s.modelPlace(obj, rest);
+    if (reply.ok !== true) return reply;
+  } else if ((obj.glass === true) !== glass) s.remember("Glass");
+  if (glass) obj.glass = true;
+  else delete obj.glass;
+  s.autosaveDirty = true;
+  return { ...reply, glass, ...(others.length === 0 ? { note: glass ? "Drawn see-through in Pose. Printing is not changed." : "Drawn opaque in Pose." } : {}) };
+}
 
 /**
  * --- Assemblies M6. Every pair of parts in `obj`'s assembly, at their assembled poses: the mesh pass's answer, clear,

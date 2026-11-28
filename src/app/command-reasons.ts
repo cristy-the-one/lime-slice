@@ -113,6 +113,10 @@ export function actionReason(id: string): string | null {
       return state.stage === "prepare" ? null : "Calibrate is in Prepare.";
     case "measure-points":
       return state.stage === "prepare" ? null : "Measure between points is in Prepare.";
+    case "pose-glass":
+      if (state.stage !== "pose") return "Glass is in Pose.";
+      if (!state.plate.selectedId) return "Select a part.";
+      return null;
     case "pose-close-loop":
       if (state.stage !== "pose") return "Close loop is in Pose.";
       if (!loopFacts.jointTool) return "Close loop is in the Joint tool.";

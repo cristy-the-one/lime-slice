@@ -1,7 +1,8 @@
 /**
  * The Pose stage's viewport (`docs/plan-pose.md`, section 4). Every object stands at its assembled pose, drawn the way
  * Model draws its open solid: one shaded, opaque material with outline edges. Unlike Model's grey context, no part here
- * turns transparent, so a design of many parts stays readable. The selected part is drawn in the pose colour, the rest
+ * turns transparent unless it is glass (`PlateObject.glass`): a glass part is drawn see-through, faint and cool, with its
+ * outline kept, so a design of many parts stays readable. The selected part is drawn in the pose colour, the rest
  * of its chain in the quieter chain colour, and parts that cross in amber, as the Assembly view tints them.
  *
  * The view draws and picks. It changes nothing: what a click selects is the app's call (`src/app/pose.ts`).
@@ -21,11 +22,14 @@ import { lookOf, type PoseLook, type PoseLooks } from "./pose-look";
 import { grabDegrees } from "./viewport-grab";
 import { isCreased, isShaded, onShading, plateGeometry, shadeGeometry } from "./plate-shading-carry";
 import type { Screen } from "./place-snap";
+import { hoverDrawer, mountHover } from "./hover";
 
 export type PoseCamera = "top" | "front" | "iso";
 
 export interface PoseScene extends PoseLooks {
   parts: ContextPart[];
+  /** Parts of glass: drawn see-through, after the opaque ones, and still picked. */
+  glass?: ReadonlySet<string>;
   /** Per-part colours for animation frames; no selection tint while playing. */
   colors?: ReadonlyMap<string, string>;
   /** An animation's background, #rrggbb. It replaces the stage colour and hides the bed, so the colour is the whole backdrop. */
@@ -81,6 +85,10 @@ const EDGE_ANGLE_DEG = 30;
 const CLICK_PX = 4;
 /** Frames drawn with nothing changing before the loop stops, as Model's frame loop does. */
 const STILL_FRAMES = 3;
+/** A glass part's opacity, and the cool tint laid over its own colour. */
+const GLASS_OPACITY = 0.28;
+const GLASS_TINT = 0xa8d8ff;
+const GLASS_TINT_MIX = 0.3;
 
 export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -122,7 +130,27 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     chain: solid(colors.poseChain, 0.06),
     clash: solid(colors.amber, 0.25),
   };
+  /** A part's look as glass: its colour toward a cool tint, see-through, and no depth written so what is behind shows. */
+  const paintGlass = (material: THREE.MeshStandardMaterial, color: string) => {
+    material.color.setHex(hexToThree(color)).lerp(new THREE.Color(GLASS_TINT), GLASS_TINT_MIX);
+    material.emissive.copy(material.color);
+  };
+  const glassOf = (color: string, emissive = 0) => {
+    const material = solid(color, emissive);
+    paintGlass(material, color);
+    material.transparent = true;
+    material.opacity = GLASS_OPACITY;
+    material.depthWrite = false;
+    return material;
+  };
+  const glassMaterials: Record<PoseLook, THREE.MeshStandardMaterial> = {
+    part: glassOf(colors.context),
+    selected: glassOf(colors.pose, 0.12),
+    chain: glassOf(colors.poseChain, 0.06),
+    clash: glassOf(colors.amber, 0.25),
+  };
   const animationMaterials = new Map<string, THREE.MeshStandardMaterial>();
+  const animationGlass = new Map<string, THREE.MeshStandardMaterial>();
   const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
 
   const group = new THREE.Group();
@@ -140,6 +168,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   let moveCb: ((event: MoveEvent) => void) | null = null;
   let moveEnabled = false;
   let sceneParts: ContextPart[] = [];
+  let sceneSelected: string | null = null;
   const gizmos = new THREE.Group();
   const marks = new THREE.Group();
   scene.add(gizmos, marks);
@@ -220,6 +249,8 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     else delete canvas.dataset.animationBackground;
     const colorsInFrame = new Set(next.colors?.values() ?? []);
     for (const [color, material] of animationMaterials) if (!colorsInFrame.has(color)) { material.dispose(); animationMaterials.delete(color); }
+    for (const [color, material] of animationGlass) if (!colorsInFrame.has(color)) { material.dispose(); animationGlass.delete(color); }
+    const glassIds: string[] = [];
     const published: string[] = [];
     const looks: string[] = [];
     let union: Bounds | null = null;
@@ -229,13 +260,17 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       const look = lookOf(part.id, next);
       const matrix = new THREE.Matrix4().set(...(affineRows(part.matrix) as [number, number, number, number, number, number, number, number, number, number, number, number]), 0, 0, 0, 1);
       const color = next.colors?.get(part.id);
-      let material = materials[look];
+      const glass = next.glass?.has(part.id) === true;
+      let material = glass ? glassMaterials[look] : materials[look];
       if (color) {
-        let custom = animationMaterials.get(color);
-        if (!custom) { custom = solid(color); animationMaterials.set(color, custom); }
+        const held = glass ? animationGlass : animationMaterials;
+        let custom = held.get(color);
+        if (!custom) { custom = glass ? glassOf(color) : solid(color); held.set(color, custom); }
         material = custom;
       }
       const mesh = new THREE.Mesh(entry.geometry, material);
+      // Transparent parts draw after the opaque ones (three sorts them so); the order here puts them after each other too.
+      if (glass) { mesh.renderOrder = 2; glassIds.push(part.id); }
       mesh.matrixAutoUpdate = false;
       mesh.matrix.copy(matrix);
       mesh.userData.id = part.id;
@@ -347,9 +382,13 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     sceneParts = next.parts;
     if (next.colors?.size) canvas.dataset.animationColors = [...next.colors].map(([id, color]) => `${id}:${color}`).join(" ");
     else delete canvas.dataset.animationColors;
-    canvas.dataset.opaque = String(Object.values(materials).every((material) => !material.transparent && material.opacity === 1 && material.depthWrite));
+    canvas.dataset.opaque = String(glassIds.length === 0 && Object.values(materials).every((material) => !material.transparent && material.opacity === 1 && material.depthWrite));
+    if (glassIds.length) canvas.dataset.glass = glassIds.join(" ");
+    else delete canvas.dataset.glass;
+    sceneSelected = next.selectedId;
     if (next.selectedId) canvas.dataset.selected = next.selectedId;
     else delete canvas.dataset.selected;
+    hover.refresh();
     if (!framed && box && canvas.clientWidth > 0) {
       framed = true;
       frameAll();
@@ -411,6 +450,11 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       const moved = glide(now);
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
+      outline.paint(renderer, camera);
+      // For a test: where the camera stands, to a tenth of a millimetre, so a select can be shown to leave it alone.
+      const eye = camera.position, look = controls.target;
+      const where = `${[eye.x, eye.y, eye.z].map((value) => value.toFixed(1)).join(",")};${[look.x, look.y, look.z].map((value) => value.toFixed(1)).join(",")}`;
+      if (canvas.dataset.camera !== where) canvas.dataset.camera = where;
       if (moveEnabled && sceneParts.length) {
         const rect = canvas.getBoundingClientRect();
         const project = (point: THREE.Vector3) => {
@@ -493,6 +537,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     camera.updateProjectionMatrix();
     renderer.setPixelRatio(window.devicePixelRatio || 1);
     renderer.setSize(width, height, false);
+    outline.resize();
     if (!framed && box && rect.width > 0) {
       framed = true;
       frameAll();
@@ -756,6 +801,21 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     pickCb?.(id, hit ? { point: hit.point.toArray() as [number, number, number], ray: { origin: raycaster.ray.origin.toArray() as [number, number, number], direction: raycaster.ray.direction.toArray() as [number, number, number] }, shift: ev.shiftKey, triangle } : undefined);
   });
 
+  /** The part under the pointer that a click would select, but for the selected one: its outline is drawn over everything. */
+  const outline = hoverDrawer(scene, canvas, () => colors.hover, kick);
+  const hover = mountHover({
+    canvas,
+    pick(x, y) {
+      rayAt(x, y);
+      const hit = raycaster.intersectObjects(group.children, false).find((row) => typeof row.object.userData.id === "string");
+      const id = hit ? (hit.object.userData.id as string) : null;
+      if (!hit || id === null || id === sceneSelected) return null;
+      const part = sceneParts.find((row) => row.id === id);
+      return part ? { id, positions: part.positions, matrixWorld: hit.object.matrixWorld } : null;
+    },
+    draw: outline.draw,
+  });
+
   function setTheme() {
     colors = themeColors();
     renderer.setClearColor(clearColor(), 1);
@@ -768,6 +828,11 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     paint(materials.selected, colors.pose);
     paint(materials.chain, colors.poseChain);
     paint(materials.clash, colors.amber);
+    paintGlass(glassMaterials.part, colors.context);
+    paintGlass(glassMaterials.selected, colors.pose);
+    paintGlass(glassMaterials.chain, colors.poseChain);
+    paintGlass(glassMaterials.clash, colors.amber);
+    outline.recolor();
     ringMaterial.color.setHex(hexToThree(colors.pose));
     slideMaterial.color.setHex(hexToThree(slideHot ? colors.gizmoHot : colors.pose));
     markLine.color.setHex(hexToThree(colors.pose));

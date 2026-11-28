@@ -287,6 +287,7 @@ function frameSelection() {
 
 // --- A7 model check --- model.ts asks for a selection change without importing this module back.
 fx.selectPlateObject = selectPlateObject;
+fx.framePlateObject = framePlateObject;
 
 function frameBounds(bounds: Bounds) {
   fx.prepare?.frameBounds?.(bounds);

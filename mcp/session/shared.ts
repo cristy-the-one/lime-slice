@@ -257,6 +257,8 @@ export interface PlateObject {
   commitWarning?: string;
   /** --- Organic surfaces S4: the committed shape is an open sheet (mcp/session/sheet.ts). Slice and the exports stop on it. */
   sheet?: true;
+  /** A part of glass: Pose draws it see-through (`PlateObject.glass` in the app). `model_place {glass}` sets it; saved with the project. */
+  glass?: true;
   solid: SolidView | null;
   probes: Map<string, true>;
   supportEdits: EditEntry[];
@@ -487,6 +489,7 @@ export interface SnapObject {
   modelPose: Affine;
   frame?: ObjectFrame;
   workplane: Workplane;
+  glass?: true;
   supportEdits: EditEntry[];
   supportPaint: PaintDisk[];
   seamPaint: SeamDisk[];
