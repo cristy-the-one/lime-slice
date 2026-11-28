@@ -23,7 +23,7 @@ export type { ModelPick, ModelSolid, ModelGhost, FacePointer, HandleDrag, ModelG
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const ctx = { canvas } as ViewCtx;
   // The hover outline is set up with the picking; what runs before that finds nothing to do.
-  ctx.hoverRefresh = ctx.hoverTheme = ctx.hoverResize = () => {};
+  ctx.hoverRefresh = ctx.hoverTheme = ctx.hoverResize = ctx.hoverPaint = () => {};
   installScene(ctx);
   installState(ctx);
   installMesh(ctx);

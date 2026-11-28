@@ -330,4 +330,5 @@ export function installPicking(ctx: ViewCtx): void {
   ctx.hoverRefresh = () => hover.refresh();
   ctx.hoverTheme = outline.recolor;
   ctx.hoverResize = outline.resize;
+  ctx.hoverPaint = outline.paint;
 }

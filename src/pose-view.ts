@@ -450,6 +450,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       const moved = glide(now);
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
+      outline.paint(renderer, camera);
       // For a test: where the camera stands, to a tenth of a millimetre, so a select can be shown to leave it alone.
       const eye = camera.position, look = controls.target;
       const where = `${[eye.x, eye.y, eye.z].map((value) => value.toFixed(1)).join(",")};${[look.x, look.y, look.z].map((value) => value.toFixed(1)).join(",")}`;
@@ -877,7 +878,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       return {
         async frame(png = true) {
           offscreen.setClearColor(clearColor(), 1);
-          outline.quiet(() => offscreen.render(scene, fixedCamera));
+          offscreen.render(scene, fixedCamera);
           context.drawImage(offscreen.domElement, 0, 0);
           const rgba = context.getImageData(0, 0, size, size).data, rgb = new Uint8Array(size * size * 3);
           for (let i = 0; i < size * size; i++) { rgb[i * 3] = rgba[i * 4]!; rgb[i * 3 + 1] = rgba[i * 4 + 1]!; rgb[i * 3 + 2] = rgba[i * 4 + 2]!; }

@@ -6,7 +6,7 @@
  * the outline goes when the pointer leaves the canvas. Each view says what is under a point (`pick`) and how to draw it
  * (`draw`, `src/hover-outline.ts`). The canvas publishes the hovered object's id in `data-hover-object`, empty for none.
  */
-import type { Matrix4, Scene } from "three";
+import type { Camera, Matrix4, Scene, WebGLRenderer } from "three";
 import type { HoverOutline } from "./hover-outline";
 
 /** What the pointer is over: the object's id, its source triangles (a cache key and the outline's source) and where it stands. */
@@ -63,15 +63,9 @@ export function hoverDrawer(scene: Scene, canvas: HTMLCanvasElement, color: () =
     resize() {
       outline?.resize();
     },
-    /** Run `render` with the outline off, for a picture the person keeps. */
-    quiet(render: () => void) {
-      const was = outline?.visible ?? false;
-      if (was) outline!.hide();
-      try {
-        render();
-      } finally {
-        if (was && wanted) outline!.show(wanted);
-      }
+    /** Lay the outline over the picture `renderer` has just drawn. */
+    paint(renderer: WebGLRenderer, camera: Camera) {
+      outline?.paint(renderer, camera);
     },
   };
 }

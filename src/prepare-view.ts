@@ -600,6 +600,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       renderer.render(scene, camera);
       for (const node of hidden) node.visible = true;
     } else renderer.render(scene, camera);
+    outline.paint(renderer, camera);
     publishContextScreen();
     publishModifierMarker();
     publishReinforceVolMarker();

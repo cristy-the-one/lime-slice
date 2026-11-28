@@ -190,6 +190,7 @@ export function installFrame(ctx: ViewCtx): void {
       ctx.sizeHandles();
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
+      ctx.hoverPaint(renderer, camera);
       renderViewHelper(renderer, viewHelper);
       ctx.drawMeasure();
       ctx.paintFit();

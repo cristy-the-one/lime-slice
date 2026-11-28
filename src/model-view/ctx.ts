@@ -224,6 +224,7 @@ export interface ViewCtx {
   /** The hover outline takes the theme's colour, and the canvas's size. */
   hoverTheme: () => void;
   hoverResize: () => void;
+  hoverPaint: (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => void;
   publishStressClip: () => void;
   applyStress: (draw: StressDraw | null) => void;
   stressArrowHit: (x: number, y: number) => boolean;

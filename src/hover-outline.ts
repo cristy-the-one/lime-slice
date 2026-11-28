@@ -1,91 +1,126 @@
 /**
- * The hover outline (`src/hover.ts`): one thick line object per view, bright, drawn over everything else so a part
- * behind another is still plainly marked. It outlines the part's sharp edges, as the views' own outlines do; a smooth
- * solid with none gets its box. Loaded on the first hover, so the line shader is not in the first chunk.
+ * The hover outline (`src/hover.ts`): the contour of the object under the pointer, as seen on screen. The object is drawn
+ * flat white into an off-screen mask, with nothing in front of it, and a full-screen pass lays a thick bright line over
+ * the main picture where the mask's edge is. So the line is the silhouette only, never an interior edge, and it shows in
+ * full even where another object stands in front. Loaded on the first hover, so none of it is in the first chunk.
  */
 import * as THREE from "three";
-import { LineMaterial } from "three/addons/lines/LineMaterial.js";
-import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
-import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
-import { sharpEdges } from "./mesh-edges";
-import { boundsOf } from "./mesh-place";
 import { hexToThree } from "./theme";
 import type { HoverHit } from "./hover";
 
-/** Edges sharper than this crease are outlined, as in Pose and Model. */
-const EDGE_ANGLE_DEG = 30;
-/** Line width in screen pixels: thick enough to read at a glance on a part's far side. */
+/** Line width in CSS pixels, centred on the contour. */
 const WIDTH_PX = 4;
-/** Outlines kept, so GPU buffers stay few. */
+/** Mask geometries kept, newest last. */
 const KEPT = 6;
 
 export interface HoverOutline {
   show(hit: HoverHit): void;
   hide(): void;
   setColor(hex: string): void;
-  /** The canvas changed size: the line's width is in pixels. */
   resize(): void;
-  /** The outline is on screen. */
+  /** Lay the outline over the picture the renderer has just drawn. Nothing when none is shown. */
+  paint(renderer: THREE.WebGLRenderer, camera: THREE.Camera): void;
   readonly visible: boolean;
 }
 
-function boxSegments(positions: Float32Array): Float32Array {
-  const box = boundsOf(positions);
-  const c = (x: number, y: number, z: number) => [box.min[0] * (1 - x) + box.max[0] * x, box.min[1] * (1 - y) + box.max[1] * y, box.min[2] * (1 - z) + box.max[2] * z];
-  const out: number[] = [];
-  const pairs: [number[], number[]][] = [];
-  for (const a of [0, 1]) for (const b of [0, 1]) {
-    pairs.push([c(0, a, b), c(1, a, b)], [c(a, 0, b), c(a, 1, b)], [c(a, b, 0), c(a, b, 1)]);
+const VERTEX = `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+const FRAGMENT = `
+uniform sampler2D mask;
+uniform vec2 texel;
+uniform float radius;
+uniform vec3 tint;
+varying vec2 vUv;
+void main() {
+  float centre = texture2D(mask, vUv).r;
+  float lo = centre, hi = centre;
+  for (int i = 0; i < 16; i++) {
+    float a = float(i) * 0.39269908;
+    vec2 d = vec2(cos(a), sin(a)) * texel * radius;
+    float m = texture2D(mask, vUv + d).r;
+    lo = min(lo, m);
+    hi = max(hi, m);
+    float m2 = texture2D(mask, vUv + d * 0.5).r;
+    lo = min(lo, m2);
+    hi = max(hi, m2);
   }
-  for (const [p, q] of pairs) out.push(...p!, ...q!);
-  return new Float32Array(out);
-}
+  if (hi < 0.5 || lo > 0.5) discard;
+  gl_FragColor = vec4(tint, 1.0);
+  #include <colorspace_fragment>
+}`;
 
-export function createHoverOutline(scene: THREE.Scene, canvas: HTMLCanvasElement, color: string): HoverOutline {
-  const material = new LineMaterial({ color: hexToThree(color), linewidth: WIDTH_PX, depthTest: false, depthWrite: false, transparent: true });
-  /** The last few parts' outlines, newest last: a pointer going back and forth over two parts builds each once. */
-  const held = new Map<Float32Array, LineSegmentsGeometry>();
-  const line = new LineSegments2(new LineSegmentsGeometry(), material);
-  line.matrixAutoUpdate = false;
-  line.frustumCulled = false;
-  line.renderOrder = 1000;
-  line.visible = false;
-  line.raycast = () => undefined;
-  scene.add(line);
+export function createHoverOutline(_scene: THREE.Scene, _canvas: HTMLCanvasElement, color: string): HoverOutline {
+  const target = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
+  const maskScene = new THREE.Scene();
+  const maskMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, depthTest: false });
+  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), maskMaterial);
+  mesh.matrixAutoUpdate = false;
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  maskScene.add(mesh);
+  const held = new Map<Float32Array, THREE.BufferGeometry>();
 
-  function resize() {
-    material.resolution.set(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
-  }
-  resize();
+  const pass = new THREE.ShaderMaterial({
+    uniforms: { mask: { value: target.texture }, texel: { value: new THREE.Vector2(1, 1) }, radius: { value: WIDTH_PX }, tint: { value: new THREE.Color(hexToThree(color)) } },
+    vertexShader: VERTEX,
+    fragmentShader: FRAGMENT,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+  });
+  const quadScene = new THREE.Scene();
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), pass);
+  quad.frustumCulled = false;
+  quadScene.add(quad);
+  const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
   return {
     show(hit) {
       let geometry = held.get(hit.positions);
       if (!geometry) {
-        geometry = new LineSegmentsGeometry();
-        const edges = sharpEdges(hit.positions, EDGE_ANGLE_DEG);
-        geometry.setPositions(edges.length >= 6 ? edges : boxSegments(hit.positions));
+        geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(hit.positions, 3));
         held.set(hit.positions, geometry);
         for (const [positions, old] of held) {
           if (held.size <= KEPT) break;
           if (old !== geometry) { old.dispose(); held.delete(positions); }
         }
       }
-      line.geometry = geometry;
-      line.matrix.copy(hit.matrixWorld);
-      line.matrixWorld.copy(hit.matrixWorld);
-      line.visible = true;
-      resize();
+      mesh.geometry = geometry;
+      mesh.matrix.copy(hit.matrixWorld);
+      mesh.matrixWorld.copy(hit.matrixWorld);
+      mesh.visible = true;
     },
     hide() {
-      line.visible = false;
+      mesh.visible = false;
     },
     setColor(hex) {
-      material.color.setHex(hexToThree(hex));
+      (pass.uniforms.tint!.value as THREE.Color).setHex(hexToThree(hex));
     },
-    resize,
+    resize() {
+      /* The mask follows the drawing buffer each time it is painted. */
+    },
+    paint(renderer, camera) {
+      if (!mesh.visible) return;
+      const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+      if (target.width !== size.x || target.height !== size.y) target.setSize(size.x, size.y);
+      (pass.uniforms.texel!.value as THREE.Vector2).set(1 / size.x, 1 / size.y);
+      pass.uniforms.radius!.value = (WIDTH_PX / 2) * renderer.getPixelRatio();
+      const before = renderer.getRenderTarget();
+      const clear = renderer.getClearColor(new THREE.Color());
+      const clearAlpha = renderer.getClearAlpha();
+      const auto = renderer.autoClear;
+      renderer.setRenderTarget(target);
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear();
+      renderer.render(maskScene, camera);
+      renderer.setRenderTarget(before);
+      renderer.setClearColor(clear, clearAlpha);
+      renderer.autoClear = false;
+      renderer.render(quadScene, quadCamera);
+      renderer.autoClear = auto;
+    },
     get visible() {
-      return line.visible;
+      return mesh.visible;
     },
   };
 }

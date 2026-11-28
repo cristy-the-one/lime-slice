@@ -264,3 +264,69 @@ test("Prepare outlines the grey object a Ctrl-click would select, and clears it 
   await frames(page);
   await expect(canvas).toHaveAttribute("data-hover-object", "");
 });
+
+/** The project as saved, for a test to edit and open again. */
+type SavedDoc = { objects: { id: string; glass?: boolean; modelPose?: { m: number[]; t: number[] } }[] };
+
+test("glass behind an opaque part is hidden by it; glass in front of it shows", async ({ page }) => {
+  fs.mkdirSync(shots, { recursive: true });
+  const ledge = await cubeAndLedge(page);
+  await page.locator(`[data-plate-select='${ledge}']`).click();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const doc = JSON.parse(fs.readFileSync((await download.path())!).toString("utf8")) as SavedDoc;
+
+  /** The cube's face in the Front view, with the ledge `y` mm along the line of sight, glass or not. */
+  async function middle(y: number, glass: boolean): Promise<Buffer> {
+    const edited: SavedDoc = JSON.parse(JSON.stringify(doc));
+    const row = edited.objects.find((item) => item.id === ledge)!;
+    row.modelPose = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, y, 0] };
+    if (glass) row.glass = true;
+    else delete row.glass;
+    await page.reload();
+    await page.locator("#projectFile").setInputFiles({ name: "depth.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(edited)) });
+    await expect(page.locator("#objectList .obj")).toHaveCount(2);
+    await openPose(page);
+    await page.locator("[data-pose-action='select'][data-object='part']").click();
+    await page.keyboard.press("y");
+    await expect(page.locator("#pose")).toHaveAttribute("data-camera-preset", "front");
+    const box = (await page.locator("#pose").boundingBox())!;
+    await page.mouse.move(box.x + 8, box.y + box.height - 8);
+    await page.waitForTimeout(600);
+    if (glass) await page.screenshot({ path: path.join(shots, `pose-glass-${y > 0 ? "behind" : "front"}.png`) });
+    // The cube's face in the 1440 x 900 view: inside it, away from its edges and from the ledge beside it.
+    return page.screenshot({ clip: { x: 806, y: 450, width: 30, height: 36 } });
+  }
+
+  // Seen from the front (-Y), +Y is behind the cube. The glass ledge there must not show through its face.
+  const behindOn = await middle(60, true);
+  const behindOff = await middle(60, false);
+  expect(behindOn.equals(behindOff), "glass behind an opaque part does not show through it").toBe(true);
+  // In front it does: the same clip differs once the ledge is glass.
+  const frontOn = await middle(-60, true);
+  const frontOff = await middle(-60, false);
+  expect(frontOn.equals(frontOff), "glass in front of an opaque part is seen over it").toBe(false);
+});
+
+test("the hover outline of a part with many edges is its contour, not a cage", async ({ page }) => {
+  fs.mkdirSync(shots, { recursive: true });
+  await cubeAndLedge(page);
+  await page.locator("#plateAddFile").setInputFiles("samples/dragon_2_5.stl");
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  const dragon = await page.locator("#prepare").getAttribute("data-plate-selected");
+  await page.locator("[data-plate-select='part']").click();
+  await openPose(page);
+  const pose = page.locator("#pose");
+  const box = (await pose.boundingBox())!;
+  let found = false;
+  for (let y = 0.2; y <= 0.9 && !found; y += 0.05) {
+    for (let x = 0.2; x <= 0.8 && !found; x += 0.04) {
+      await page.mouse.move(box.x + box.width * x, box.y + box.height * y);
+      await frames(page);
+      found = (await pose.getAttribute("data-hover-object")) === dragon;
+    }
+  }
+  expect(found).toBe(true);
+  await expect(pose).toHaveAttribute("data-hover-drawn", "true");
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: path.join(shots, "hover-pose-many-edges.png") });
+});
