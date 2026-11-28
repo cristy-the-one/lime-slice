@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { frameStats, previewFrames, watchGl, type FrameSample } from "./gl-frame";
+import { ORBIT_WARMUP_FRAMES, frameStats, orbitFrames, previewFrames, watchGl, type FrameSample } from "./gl-frame";
 
 /**
  * Orbit cost of a heavy preview, per strategy. Needs a running engine:
@@ -10,6 +10,9 @@ import { frameStats, previewFrames, watchGl, type FrameSample } from "./gl-frame
  * LIME_PERF_MM is the box edge (default 30). A 60 mm Toughness slice does not finish a
  * frame on SwiftShader. LIME_SHOT_PREFIX writes
  * docs/screenshots/v1-preview/<prefix>-{rest,orbit,infill-hidden}.png for Toughness.
+ * The mid-orbit window drops the first frame drawn while the camera is moving
+ * ({@link ORBIT_WARMUP_FRAMES}): its delta still includes the idle gap. A second
+ * orbit is taken after dollying out far enough that beads switch to lines.
  */
 const api = process.env.LIME_PERF_API;
 const edge = Number(process.env.LIME_PERF_MM ?? "30");
@@ -20,6 +23,9 @@ test.describe.configure({ mode: "serial" });
 test.setTimeout(1_800_000);
 
 const INFILL = ["sparse", "infill", "solid"];
+/** Dolly steps that take the framed 30 mm view past the line threshold and leave the orbit there. */
+const ZOOM_OUT_STEPS = 12;
+const ZOOM_OUT_DELTA = 150;
 
 function boxStl(size: number): string {
   const p = [
@@ -48,6 +54,45 @@ function boxStl(size: number): string {
 
 async function settle(page: Page) {
   await page.waitForTimeout(3000);
+}
+
+async function readOrbit(page: Page) {
+  const samples = await page.evaluate(() => {
+    const w = window as unknown as { __previewPerf: FrameSample[] };
+    const taken = w.__previewPerf;
+    w.__previewPerf = [];
+    return taken;
+  });
+  return { ...frameStats(orbitFrames(samples)), warmupDropped: ORBIT_WARMUP_FRAMES };
+}
+
+async function beginOrbit(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as { __previewPerf: FrameSample[]; __gl: { draws: number; instances: number }; __previewPump: boolean };
+    w.__gl.draws = 0;
+    w.__gl.instances = 0;
+    w.__previewPerf = [];
+    w.__previewPump = false;
+  });
+}
+
+/** Come in close enough that a chunk left on lines switches back to boxes, then the caller reframes. */
+async function dollyIn(page: Page) {
+  const box = await page.locator("#view3d").boundingBox();
+  if (!box) throw new Error("preview canvas has no box");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  for (let i = 0; i < 14; i++) await page.mouse.wheel(0, -200);
+  await page.waitForTimeout(300);
+}
+
+async function dollyOut(page: Page) {
+  await page.evaluate(() => (window as unknown as { __previewReframe?: () => void }).__previewReframe?.());
+  await page.waitForTimeout(400);
+  const box = await page.locator("#view3d").boundingBox();
+  if (!box) throw new Error("preview canvas has no box");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  for (let i = 0; i < ZOOM_OUT_STEPS; i++) await page.mouse.wheel(0, ZOOM_OUT_DELTA);
+  await page.waitForTimeout(400);
 }
 
 async function orbit(page: Page, ms: number) {
@@ -113,30 +158,29 @@ test("orbit frame cost of Speed, Efficiency and Toughness @perf", async ({ page 
     await page.getByRole("tab", { name: "Preview", exact: true }).click();
     await page.getByRole("button", { name: "3D", exact: true }).click();
     await settle(page);
+    // A zoomed orbit leaves chunks on lines. Come in past the hysteresis band so they switch back, then frame.
+    await dollyIn(page);
+    await page.evaluate(() => (window as unknown as { __previewReframe?: () => void }).__previewReframe?.());
+    await settle(page);
     const layers = Number(await page.locator("#rangeHigh").getAttribute("max")) + 1;
     const rest = frameStats(await previewFrames(page, 3000, true));
 
-    await page.evaluate(() => {
-      const w = window as unknown as { __previewPerf: FrameSample[]; __gl: { draws: number; instances: number }; __previewPump: boolean };
-      w.__gl.draws = 0;
-      w.__gl.instances = 0;
-      w.__previewPerf = [];
-      w.__previewPump = false;
-    });
+    await beginOrbit(page);
     await orbit(page, 3000);
-    const moving = frameStats(await page.evaluate(() => {
-      const w = window as unknown as { __previewPerf: FrameSample[] };
-      const samples = w.__previewPerf.filter((sample) => sample.calls > 0 && sample.ms > 0);
-      w.__previewPerf = [];
-      return samples;
-    }));
+    const moving = await readOrbit(page);
 
     await settle(page);
     await setKinds(page, INFILL, false);
     const hidden = frameStats(await previewFrames(page, 3000, true));
     await setKinds(page, INFILL, true);
 
+    await dollyOut(page);
+    await beginOrbit(page);
+    await orbit(page, 3000);
+    const zoomed = await readOrbit(page);
+
     if (shotPrefix && card === "toughness") {
+      await dollyIn(page);
       await page.evaluate(() => (window as unknown as { __previewReframe?: () => void }).__previewReframe?.());
       await settle(page);
       await shot(page, "rest");
@@ -157,7 +201,7 @@ test("orbit frame cost of Speed, Efficiency and Toughness @perf", async ({ page 
       await setKinds(page, INFILL, true);
     }
 
-    out[card] = { layers, rest, orbit: moving, infillHidden: hidden };
+    out[card] = { layers, rest, orbit: moving, orbitZoomed: zoomed, infillHidden: hidden, zoomOutSteps: ZOOM_OUT_STEPS };
     console.log(`PREVIEW_ORBIT ${card} ${JSON.stringify(out[card])}`);
   }
   console.log(`PREVIEW_ORBIT ${JSON.stringify(out)}`);

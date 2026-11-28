@@ -330,12 +330,12 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     renderer.render(scene, camera);
     drawMeasure();
     const host = window as unknown as {
-      __previewPerf?: { ms: number; calls: number; instances: number }[];
+      __previewPerf?: { ms: number; calls: number; instances: number; low: boolean }[];
       __gl?: { draws: number; instances: number };
       __previewPump?: boolean;
     };
     if (host.__previewPerf && host.__gl) {
-      host.__previewPerf.push({ ms: frameMs, calls: host.__gl.draws, instances: host.__gl.instances });
+      host.__previewPerf.push({ ms: frameMs, calls: host.__gl.draws, instances: host.__gl.instances, low: lowRes });
       host.__gl.draws = 0;
       host.__gl.instances = 0;
     }

@@ -4,7 +4,21 @@ export interface FrameSample {
   ms: number;
   calls: number;
   instances: number;
+  /** True when the frame was drawn with the moving-camera path. */
+  low?: boolean;
 }
+
+/**
+ * Mid-orbit frames. The first frame drawn with the camera moving still carries the idle gap
+ * since the view settled, so that one warm-up frame is dropped. Every later moving frame is kept.
+ */
+export function orbitFrames(samples: FrameSample[]): FrameSample[] {
+  const moving = samples.filter((sample) => sample.calls > 0 && sample.ms > 0 && sample.low === true);
+  return moving.slice(1);
+}
+
+/** How many warm-up frames {@link orbitFrames} drops. The idle gap is that one first moving frame. */
+export const ORBIT_WARMUP_FRAMES = 1;
 
 /** Counts WebGL draws in the preview frames `view3d` records while `__previewPerf` is set. */
 export async function watchGl(page: Page) {
