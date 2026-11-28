@@ -266,7 +266,7 @@ export function appendMoveCard(panel: HTMLElement): void {
   const card = document.createElement("div");
   card.id = "poseMove";
   card.className = "pose-move";
-  if (id) card.dataset.object = id;
+  if (id) card.dataset.moveFor = id;
   if (!obj) {
     const note = document.createElement("p");
     note.textContent = "Select a part to move it in design space.";
@@ -376,7 +376,7 @@ export function heldMoveCard(panel: HTMLElement): HTMLElement | null {
   const focused = document.activeElement;
   if (!(focused instanceof HTMLInputElement) || !Object.values(FIELD_ID).includes(focused.id)) return null;
   const card = focused.closest<HTMLElement>("#poseMove");
-  return card?.parentElement === panel && card.dataset.object === state.plate.selectedId ? card : null;
+  return card?.parentElement === panel && card.dataset.moveFor === state.plate.selectedId ? card : null;
 }
 
 /**
