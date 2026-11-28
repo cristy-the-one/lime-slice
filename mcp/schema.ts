@@ -2477,7 +2477,8 @@ export const TOOLS: ToolSpec[] = [
       plugin: { type: "string", description: "Plugin name." },
       params: { type: "object", description: "Parameter values; a member parameter takes a member name or pattern of this assembly." },
       keep: { type: "object", additionalProperties: false, description: "Keep the script as an animation plugin when the run succeeds.", required: ["title"], properties: {
-        title: { type: "string", minLength: 1, maxLength: 60, description: "One line; its slug is the plugin id." },
+        title: { type: "string", minLength: 1, maxLength: 60, description: "One line; its slug is the plugin id. The one animation plugin with this title gets a new version." },
+        name: { type: "string", minLength: 1, maxLength: 80, description: "A plugin id to add a version to." },
         description: { type: "string", maxLength: 280, description: "What it animates and on what." },
         members: { type: "array", maxItems: 64, items: { type: "string" }, description: "Text parameters that name members, when the run did not use them." },
       } },

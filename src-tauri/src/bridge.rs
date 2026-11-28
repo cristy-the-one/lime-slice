@@ -8,7 +8,9 @@
 //! bundled MCP server reads the same file, so neither side needs the token typed.
 //! The token is never logged and never sent anywhere but that file and the page.
 //! The listener is `127.0.0.1` only (`LIME_BRIDGE_PORT`, default
-//! 43119). Every request, including health, must send `Authorization: Bearer`.
+//! 43119). 43119 is the preferred port, not a promise: Windows can reserve it (Hyper-V, WinNAT) and a second
+//! instance can hold it, so unless `LIME_BRIDGE_PORT` names a port, the app falls back to a free loopback port
+//! and writes the port it got into the token file, which the bundled MCP server reads. Every request, including health, must send `Authorization: Bearer`.
 //! A matching POST body is emitted as the `lime-bridge` event after any token
 //! field is removed. A body `{"open": "<path>"}` is not mirrored: the window
 //! requests that the page open that file the way File > Open does. It answers 204
@@ -167,13 +169,10 @@ pub fn bridge_status(app: AppHandle) -> Value {
 pub fn bridge_enable(app: AppHandle) -> Result<Value, String> {
     let running = RUNNING.lock().map(|run| run.is_some()).unwrap_or(false);
     if !running {
+        // `listen` keeps the token file with the port it actually bound.
         let token = match read_token_file(&app) {
             Some(token) => token,
-            None => {
-                let token = new_token()?;
-                write_token_file(&app, &token, default_port(&app))?;
-                token
-            }
+            None => new_token()?,
         };
         listen(app.clone(), token, default_port(&app), "app")?;
     }
@@ -204,11 +203,16 @@ pub fn bridge_setup(app: AppHandle) -> Option<Value> {
     Some(serde_json::json!({ "url": format!("http://127.0.0.1:{port}/"), "token": token, "file": file }))
 }
 
-fn default_port(app: &AppHandle) -> u16 {
+/// The port the person asked for with `LIME_BRIDGE_PORT`, if any.
+fn explicit_port() -> Option<u16> {
     std::env::var("LIME_BRIDGE_PORT")
         .ok()
         .and_then(|text| text.trim().parse::<u16>().ok())
         .filter(|port| *port != 0)
+}
+
+fn default_port(app: &AppHandle) -> u16 {
+    explicit_port()
         .unwrap_or(
             if app.config().identifier == "com.limeslice.slicer.tandem-beta" {
                 TANDEM_BETA_PORT
@@ -239,6 +243,10 @@ fn token_from_file(text: &str) -> Option<String> {
 
 fn write_token_file(app: &AppHandle, token: &str, port: u16) -> Result<(), String> {
     let path = token_path(app).ok_or("The app has no config folder for the bridge token.")?;
+    write_token_at(&path, token, port)
+}
+
+fn write_token_at(path: &std::path::Path, token: &str, port: u16) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|err| format!("The bridge token could not be kept: {err}"))?;
@@ -252,7 +260,7 @@ fn write_token_file(app: &AppHandle, token: &str, port: u16) -> Result<(), Strin
         options.mode(0o600);
     }
     let mut file = options
-        .open(&path)
+        .open(path)
         .map_err(|err| format!("The bridge token could not be kept: {err}"))?;
     file.write_all(body.as_bytes())
         .map_err(|err| format!("The bridge token could not be kept: {err}"))
@@ -367,23 +375,56 @@ pub fn start(app: AppHandle) {
     }
 }
 
-/// Bind loopback `port` and serve on a thread of its own until `stop_listener`.
-fn listen(app: AppHandle, token: String, port: u16, source: &'static str) -> Result<(), String> {
+/// Whether a failed bind is the kind another port can cure: the port is reserved (Windows 10013, `PermissionDenied`)
+/// or taken (10048, `AddrInUse`).
+fn port_unavailable(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::AddrInUse
+    ) || matches!(err.raw_os_error(), Some(10013) | Some(10048))
+}
+
+/// Bind loopback `port`. When the port is not the person's choice (`explicit` false) and it is reserved or taken,
+/// bind a port the system picks instead. An explicit port that fails says so and names the way out.
+fn bind_with_fallback(port: u16, explicit: bool) -> Result<TcpListener, String> {
     let addr = listen_addr(port);
-    let listener = TcpListener::bind(addr)
-        .map_err(|err| format!("the live bridge could not listen on {addr}: {err}"))?;
+    match TcpListener::bind(addr) {
+        Ok(listener) => Ok(listener),
+        Err(err) if explicit => Err(format!(
+            "port {port}, set by LIME_BRIDGE_PORT, is not available ({err}); pick another port or remove LIME_BRIDGE_PORT so the app can choose one."
+        )),
+        Err(err) if port_unavailable(&err) => TcpListener::bind(listen_addr(0)).map_err(|second| {
+            format!(
+                "no local port could be opened ({second}); close other copies of Lime Slice and any security tool that blocks local ports, then try again."
+            )
+        }),
+        Err(err) => Err(format!("the live bridge could not listen on {addr}: {err}")),
+    }
+}
+
+/// Bind loopback and serve on a thread of its own until `stop_listener`. Returns the port bound, which is not
+/// `port` when that one was reserved. The app's token file is written with the bound port.
+fn listen(app: AppHandle, token: String, port: u16, source: &'static str) -> Result<u16, String> {
+    let listener = bind_with_fallback(port, explicit_port().is_some())?;
+    let bound = listener
+        .local_addr()
+        .map_err(|err| format!("the live bridge could not read its port: {err}"))?
+        .port();
+    if source == "app" {
+        write_token_file(&app, &token, bound)?;
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let thread = std::thread::spawn(move || serve(listener, token, app, flag));
     if let Ok(mut running) = RUNNING.lock() {
         *running = Some(Running {
-            port,
+            port: bound,
             source,
             stop,
             thread: Some(thread),
         });
     }
-    Ok(())
+    Ok(bound)
 }
 
 /// Stop the listener and wait for its thread, so the port is free for the next `listen`.
@@ -656,6 +697,34 @@ mod tests {
         let addr = listen_addr(43119);
         assert!(addr.ip().is_loopback());
         assert_eq!(addr.port(), 43119);
+    }
+
+    #[test]
+    fn a_reserved_or_taken_default_port_falls_back_to_a_free_loopback_port() {
+        let held = TcpListener::bind(listen_addr(0)).unwrap();
+        let taken = held.local_addr().unwrap().port();
+        let listener = bind_with_fallback(taken, false).expect("falls back");
+        let bound = listener.local_addr().unwrap();
+        assert!(bound.ip().is_loopback());
+        assert_ne!(bound.port(), taken);
+        let dir = std::env::temp_dir().join(format!("lime-bridge-test-{}", bound.port()));
+        let path = dir.join(TOKEN_FILE);
+        write_token_at(&path, &"ab".repeat(32), bound.port()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["url"], format!("http://127.0.0.1:{}/", bound.port()));
+        let _ = std::fs::remove_dir_all(dir);
+        assert!(port_unavailable(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+        assert!(port_unavailable(&std::io::Error::from(std::io::ErrorKind::AddrInUse)));
+        assert!(!port_unavailable(&std::io::Error::from(std::io::ErrorKind::InvalidInput)));
+    }
+
+    #[test]
+    fn an_explicit_port_that_cannot_bind_still_fails() {
+        let held = TcpListener::bind(listen_addr(0)).unwrap();
+        let taken = held.local_addr().unwrap().port();
+        let err = bind_with_fallback(taken, true).unwrap_err();
+        assert!(err.contains("LIME_BRIDGE_PORT"), "{err}");
+        assert!(err.contains(&taken.to_string()), "{err}");
     }
 
     #[test]

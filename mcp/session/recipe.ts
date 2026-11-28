@@ -35,7 +35,7 @@ import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRe
 import type { Session } from "../session.ts";
 import { nestedLimits, nestedRefusal, nestedResult, nestingRefusal, pickPluginCode, pinsOf, readPluginRun, type PluginCode } from "../../src/recipe/nested.ts";
 import type { PluginPins } from "../../src/model-tree.ts";
-import { rerunAssemblies } from "../../src/recipe/rerun-assembly.ts";
+import { rerunAssembliesReport } from "../../src/recipe/rerun-assembly.ts";
 import { SESSION_URL } from "../session-url.ts";
 import { NEXT, refuse } from "../refusals.ts";
 import { checkpointJson, checkpointSignature, CHECKPOINT_MAX_BYTES, type CheckpointEvent, type RecipeCheckpoint } from "../recipe-checkpoint.ts";
@@ -924,7 +924,12 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   }
   // --- API 1.16. The assemblies the new run built take the place of the old run's, under the old handles, with their
   // joints and couplings (src/recipe/rerun-assembly.ts).
-  if (handed.size) this.assemblies = rerunAssemblies(this.assemblies, handed);
+  const loopWarnings: string[] = [];
+  if (handed.size) {
+    const carried = rerunAssembliesReport(this.assemblies, handed);
+    this.assemblies = carried.assemblies;
+    for (const row of carried.dropped) loopWarnings.push(`The rerun dropped the loop ${row}: a part it names is no longer on the assembly.`);
+  }
   // A replaced part can have a new assembled pose. Refresh its stored parent offset (and its children's offsets)
   // after all replacements, so a later solve does not put it back at the previous recipe's pose.
   if (repositioned.size) {
@@ -1027,6 +1032,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     ...(stamped ? { step: { run: stamped.id, steps: stamped.ids.length } } : {}),
     ...(rebuilt ? { rebuilt } : {}),
     ...report,
+    ...(loopWarnings.length ? { warnings: [...(report.warnings ?? []), ...loopWarnings] } : {}),
     ...(nuggets.length && input.keep === undefined ? { nuggets } : {}),
     ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used, objectArg !== undefined ? touched.get(objectArg) ?? null : null, data, proof)),
   };

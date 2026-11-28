@@ -166,6 +166,7 @@ src/cut-trace.test.ts
 src/fan.test.ts
 src/bridge.test.ts
 mcp/bridge-context.test.ts
+mcp/bridge-port-change.test.ts
 mcp/tandem-receipt.test.ts
 mcp/tandem-pull.test.ts
 mcp/tandem-live.test.ts

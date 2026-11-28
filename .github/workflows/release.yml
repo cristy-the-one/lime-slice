@@ -251,7 +251,7 @@ jobs:
         run: touch src-tauri/resources/mcp/tandem-beta.identity
 
       # The release's own server mirrors into the release app once the person turns its Tandem light on: it reads that
-      # app's bridge token file (com.limeslice.slicer, port 43119), as the beta's reads only the beta's
+      # app's bridge token file (com.limeslice.slicer, preferred port 43119, the file holds the bound one), as the beta's reads only the beta's
       # (mcp/bridge-client.ts). A checkout's server and an unmarked bundle read none.
       - name: Mark the release's MCP server
         if: "!(github.ref_type == 'tag' && contains(github.ref_name, '-tandem-beta.'))"

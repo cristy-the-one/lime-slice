@@ -4,7 +4,7 @@
  * kinds must come through a rerun under the old handles.
  */
 import type { Assembly, Coupling } from "../assembly.ts";
-import { rerunAssemblies, rerunSet } from "./rerun-assembly.ts";
+import { rerunAssemblies, rerunAssembliesReport, rerunSet } from "./rerun-assembly.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -44,6 +44,20 @@ eq("a ratchet's click names the old handle", rows[2]!.click?.object, "o4");
   eq("a set that grew is refused with both counts", rerunSet(["o0", "o1"], ["n0", "n1", "n2"], [old], [clash]), { made: 3, had: 2 });
   const none = rerunSet(["o0", "o1", "o2", "o3", "o4"], ["n0", "n1", "n2", "n3", "n4"], [], [built]);
   eq("with no old assembly, the new one comes in under the old handles", "renamed" in none ? none.assemblies.map((row) => [row.id, row.members[0]!.object]) : none, [["a_new", "o0"]]);
+}
+
+// --- Loops (docs/plan-pose-loops.md): the new run's pins come through under the old handles, a loop to a part from
+// outside the run is kept, and one that cannot be carried is reported, never dropped without a word.
+{
+  const pin = (id: string, a: string, b: string) => ({ id, kind: "pin" as const, a: { member: a, at: [0, 0, 0] as [number, number, number] }, b: { member: b, at: [0, 0, 0] as [number, number, number] } });
+  const oldLoops: Assembly = { ...old, members: [...old.members, member("hand", "o0")], closures: [pin("loop_1", "o1", "o2"), pin("loop_2", "o3", "hand"), pin("loop_3", "o4", "gone")] } as unknown as Assembly;
+  const builtLoops: Assembly = { ...built, couplings: [], closures: [pin("loop_1", "n1", "n2"), pin("loop_2", "n3", "n2")] } as unknown as Assembly;
+  const report = rerunAssembliesReport([oldLoops, builtLoops], renamed);
+  const rows = report.assemblies[0]!.closures ?? [];
+  eq("a rerun keeps the new run's loops, on the old handles", rows.slice(0, 2).map((row) => [row.id, row.a.member, row.b.member]), [["loop_1", "o1", "o2"], ["loop_2", "o3", "o2"]]);
+  eq("a loop from a run part to an outside part is kept, renumbered when its id is taken", rows.slice(2).map((row) => [row.id, row.a.member, row.b.member]), [["loop_2_1", "o3", "hand"]]);
+  eq("a loop that names a part no longer there is reported", report.dropped, ["loop_3 (o4 to gone)"]);
+  eq("rerunAssemblies gives the same assemblies", rerunAssemblies([oldLoops, builtLoops], renamed).map((row) => row.closures?.length), [3]);
 }
 
 if (failed > 0) {

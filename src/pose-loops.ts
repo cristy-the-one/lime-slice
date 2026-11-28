@@ -283,8 +283,78 @@ export interface LoopSolve { assembly: Assembly; closed: boolean; gap: number; c
  * Move the free joints so every closure is within 1e-4 mm, starting from the pose the assembly already has.
  * A joint that a step clamps to its limit is left out of the next step. A step that would throw a joint onto the
  * other branch of a toggle is refused, so the warm pose keeps its branch.
+ *
+ * Limits are judged on the pose the solve ends on, not on the steps it takes: a solve that cannot close with the
+ * limits holding runs again with the free joints' limits lifted, and its closed pose counts only if every free joint
+ * ends inside its own. (A long step near a toggle can throw one iterate past a limit that the closed pose respects.)
  */
 export function solveLoops(assembly: Assembly, options: LoopDriver = {}): LoopSolve {
+  const first = solveClamped(assembly, options);
+  if (first.closed || !assembly.closures?.length) return first;
+  const free = freeJoints(assembly, options.driven ?? new Set<string>());
+  const limits = new Map<string, { min?: number; max?: number }>();
+  for (const id of free) {
+    const joint = memberOf(assembly, id)?.joint;
+    if ((joint?.kind === "hinge" || joint?.kind === "slide") && (joint.min !== undefined || joint.max !== undefined)) limits.set(id, { min: joint.min, max: joint.max });
+  }
+  if (!limits.size) return first;
+  const lifted: Assembly = { ...assembly, members: assembly.members.map((row) => {
+    const joint = row.joint;
+    if (!limits.has(row.object) || (joint?.kind !== "hinge" && joint?.kind !== "slide")) return row;
+    const { min: _min, max: _max, ...rest } = joint;
+    return { ...row, joint: rest as typeof joint };
+  }) };
+  const second = solveClamped(lifted, options);
+  if (!second.closed) return first;
+  let inside = true;
+  const members = second.assembly.members.map((row) => {
+    const keep = limits.get(row.object);
+    const joint = row.joint;
+    if (!keep || (joint?.kind !== "hinge" && joint?.kind !== "slide")) return row;
+    const at = jointAt(joint);
+    if ((keep.min !== undefined && at < keep.min - 1e-6) || (keep.max !== undefined && at > keep.max + 1e-6)) inside = false;
+    return { ...row, joint: { ...joint, ...(keep.min !== undefined ? { min: keep.min } : {}), ...(keep.max !== undefined ? { max: keep.max } : {}) } };
+  });
+  return inside ? { ...second, assembly: { ...second.assembly, members } } : first;
+}
+
+/** The smallest share of a driver step `walkLoops` tries before it says the loop cannot close. */
+const WALK_FLOOR = 1 / 1024;
+
+/**
+ * Close the loops after a driver step that the plain solve could not take at once (a frame of a coarse animation, a
+ * lever keyed straight to the end). Starts from `from`, a closed pose, and moves each driver by its share of `drivers`
+ * (`move` turns one joint and what a coupling carries with it), solving from the last closed pose each time. A share
+ * that does not close is halved, down to `WALK_FLOOR`; the joints keep to the branch they were on, as in a drag. The
+ * result is the pose at the full step when every share closed, else the failing solve just past the last closed pose.
+ */
+export function walkLoops(from: Assembly, drivers: readonly { id: string; delta: number }[], move: (assembly: Assembly, id: string, delta: number) => Assembly | { reason: string }, options: LoopDriver): LoopSolve {
+  let current = from;
+  let done = 0;
+  let share = 0.5;
+  let last: LoopSolve = { assembly: from, closed: false, gap: Infinity, cause: { gap: Infinity } };
+  while (done < 1 - 1e-12) {
+    const next = Math.min(1, done + share);
+    let trial: Assembly | { reason: string } = current;
+    for (const { id, delta } of drivers) {
+      if (typeof trial !== "object" || "reason" in trial) break;
+      trial = move(trial, id, delta * (next - done));
+    }
+    const solved = "reason" in trial ? null : solveLoops(trial, options);
+    if (solved?.closed) {
+      current = solved.assembly;
+      done = next;
+      last = solved;
+      continue;
+    }
+    if (solved) last = solved;
+    share /= 2;
+    if (share < WALK_FLOOR) return solved ?? last;
+  }
+  return last;
+}
+
+function solveClamped(assembly: Assembly, options: LoopDriver): LoopSolve {
   const poseOf = options.poseOf ?? (() => undefined);
   const centreOf = options.centreOf ?? (() => undefined);
   const driven = options.driven ?? new Set<string>();

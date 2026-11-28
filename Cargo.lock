@@ -2779,7 +2779,7 @@ dependencies = [
 
 [[package]]
 name = "lime-mcp-engine"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "base64 0.22.1",
  "lime-model-load",
@@ -2792,14 +2792,14 @@ dependencies = [
 
 [[package]]
 name = "lime-model"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "lime-model-load"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "base64 0.22.1",
  "libloading 0.8.9",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "lime-model-occt"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "base64 0.22.1",
  "cc",
@@ -2827,21 +2827,21 @@ dependencies = [
 
 [[package]]
 name = "lime-preview"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "ryu",
 ]
 
 [[package]]
 name = "lime-recipe"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "lime-model-occt",
 ]
 
 [[package]]
 name = "lime-recipe-runner"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "serde_json",
  "windows-sys 0.61.2",
@@ -2849,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "lime-shell"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "lime-preview",
  "windows 0.61.3",
@@ -2858,7 +2858,7 @@ dependencies = [
 
 [[package]]
 name = "lime-sim"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "faer",
  "pollster",
@@ -2870,7 +2870,7 @@ dependencies = [
 
 [[package]]
 name = "lime-sim-bridge"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "base64 0.22.1",
  "lime-sim",
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2896,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-core"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "base64 0.22.1",
  "clipper2",
@@ -2915,7 +2915,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-desktop"
-version = "7.7.0"
+version = "7.7.1"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
