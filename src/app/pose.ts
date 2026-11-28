@@ -16,7 +16,7 @@ import { loadModel } from "./workspaces.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import type { Vec3 } from "../model-tree.ts";
 import { assembledParts, assemblyClashes, liveAssemblies, measureClashes, syncAssemblyView } from "./assemblies.ts";
-import { alignMove, appendMoveCard, highlightAlign, moveFieldChanged, onPoseMove, poseSettleChanged, setMoveFrame } from "./pose-move.ts";
+import { alignMove, appendMoveCard, heldMoveCard, highlightAlign, keepMoveCard, moveFieldChanged, onPoseMove, poseSettleChanged, setMoveFrame } from "./pose-move.ts";
 import { isAlignRelation } from "../place-snap.ts";
 import { fx } from "./fx.ts";
 import { cancelEdit, holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
@@ -725,7 +725,14 @@ function renderPanel(): void {
   publishAnimationFacts();
   const panel = document.querySelector<HTMLElement>("#posePanel");
   if (!panel || state.stage !== "pose") return;
-  panel.replaceChildren();
+  // A Move field being typed in stays where it is: a rebuild that lands mid-typing (a late library read) keeps the number.
+  const held = heldMoveCard(panel);
+  if (held) for (const node of [...panel.childNodes]) { if (node !== held) node.remove(); }
+  else panel.replaceChildren();
+  fillPanel(panel);
+  if (held) keepMoveCard(held);
+}
+function fillPanel(panel: HTMLElement): void {
   addText(panel, "h3", "Parts");
   addText(panel, "p", "Link two parts to pose them together.");
   const tree = document.createElement("div"); tree.className = "pose-tree"; panel.append(tree);
