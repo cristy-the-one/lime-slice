@@ -325,6 +325,11 @@ function zrOf(theta: number): number {
   const closure: Closure = { id: "loop_1", kind: "pin", a: { member: "j7", at: [15, 0, 0] }, b: { member: "anchor", at: [0, 0, 0] } };
   const base: Assembly = { id: "long", name: "Long", members, closures: [closure] };
   const bent = turned(base, "j1", 1);
+  // The limit is about solves during a drag, when the code is warm: 20 solves warm it before the 100 that are timed.
+  for (let n = 0; n < 20; n += 1) {
+    const warm = trainTurn(bent, "j1", -1, { names });
+    if ("reason" in warm) throw new Error(warm.reason);
+  }
   const samples: number[] = [];
   for (let n = 0; n < 100; n += 1) {
     const t0 = performance.now();
