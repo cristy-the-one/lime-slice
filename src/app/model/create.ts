@@ -31,7 +31,7 @@ import { fx } from "../fx";
 import { freshTreeKey, modelTrees } from "../model-trees";
 import { applySelectedToState, syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
-import { S } from "./shared";
+import { S, takeKeepView } from "./shared";
 import { keepSolid } from "./apply";
 import { commitModel } from "./commit";
 import { post } from "./engine";
@@ -202,7 +202,13 @@ export function showEmpty(mesh: boolean, meshStep = false) {
   if (card) card.hidden = false;
   S.framedFor = null;
   const boxes = plateBoxes();
-  if (boxes.length > 0) fx.model?.frame(unionBox(boxes)!);
+  // A Ctrl-click that selected a mesh keeps the camera where it was; so does a new object that is already in view.
+  const keep = takeKeepView(state.plate.selectedId);
+  const added = S.addedIds.delete(state.plate.selectedId ?? "");
+  if (boxes.length > 0 && !keep) {
+    if (added) fx.model?.reveal(unionBox(boxes)!);
+    else fx.model?.frame(unionBox(boxes)!);
+  }
   // --- A7 model check ---
   if (S.checkQueued) openQueuedCheck();
   else if (openModelTool() === "check") refreshModelCheck();

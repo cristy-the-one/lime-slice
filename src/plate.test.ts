@@ -35,6 +35,7 @@ import {
   withWorkplane,
   type IncomingMesh,
   type PlateObject,
+  type PlateState,
 } from "./plate.ts";
 
 let failed = 0;
@@ -168,6 +169,17 @@ const snap = snapPlate({ objects: arranged, selectedId: arranged[1]!.id });
 const revived = revivePlate(snap);
 check("undo can restore the arranged plate", revived?.objects.length === 2 && revived.selectedId === arranged[1]!.id);
 check("the restored offset matches", near(revived!.objects[1]!.offset.x, arranged[1]!.offset.x));
+
+// A glass part (drawn see-through in Pose): undo restores it, a copy keeps it, and an object without the field is not glass.
+{
+  const glassy: PlateState = { objects: arranged.map((obj, i) => (i === 1 ? { ...obj, glass: true as const } : obj)), selectedId: arranged[1]!.id };
+  const back = revivePlate(snapPlate(glassy));
+  check("undo restores a glass part", back?.objects[1]?.glass === true && back.objects[0]?.glass === undefined);
+  check("a plate without the field reads as not glass", revivePlate(snapPlate({ objects: arranged, selectedId: arranged[1]!.id }))!.objects.every((obj) => obj.glass === undefined));
+  check("a copy of a glass part is glass", addedCopy(glassy)!.objects.at(-1)!.glass === true);
+  check("a lone glass object is saved as an object row, so the mark has a place", plateFileIsVersion2([{ name: "left", mesh: { name: "left" }, glass: true }]));
+  check("a lone plain object is not", !plateFileIsVersion2([{ name: "left", mesh: { name: "left" } }]));
+}
 
 check("one object without settings sends today's body", !plateListed(plate));
 check("two objects send objects", plateListed(copied!));

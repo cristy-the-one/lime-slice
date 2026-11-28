@@ -201,6 +201,8 @@ export interface ViewCtx {
   measureSolid: (positions: Float32Array) => void;
   setPosedMatrix: (next: Affine) => void;
   frameBox: (box: Box) => void;
+  /** Move the camera as little as it takes for `box` to be in view along with what is. Not at all when it is. */
+  revealBox: (box: Box) => void;
   publishCamera: () => void;
   kick: () => void;
   resize: () => void;
@@ -214,7 +216,15 @@ export interface ViewCtx {
   sectionHit: (x: number, y: number) => boolean;
   sectionTravel: (origin: THREE.Vector3, normal: THREE.Vector3, x: number, y: number) => number | null;
   setHover: (next: ModelPick | null) => void;
-  objectAt: (ev: PointerEvent) => string | null;
+  objectAt: (ev: { clientX: number; clientY: number }) => string | null;
+  /** The open solid is what the pointer is over, with no grey object in front of it. */
+  solidAt: (x: number, y: number) => boolean;
+  /** Look again at what the pointer is over, and draw its outline (`src/hover.ts`). */
+  hoverRefresh: () => void;
+  /** The hover outline takes the theme's colour, and the canvas's size. */
+  hoverTheme: () => void;
+  hoverResize: () => void;
+  hoverPaint: (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => void;
   publishStressClip: () => void;
   applyStress: (draw: StressDraw | null) => void;
   stressArrowHit: (x: number, y: number) => boolean;

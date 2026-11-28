@@ -535,6 +535,8 @@ async function syncLinked(this: Session, obj: PlateObject): Promise<void> {
     copy.commitWarning = obj.commitWarning;
     if (obj.sheet) copy.sheet = true;
     else delete copy.sheet;
+    if (obj.glass) copy.glass = true;
+    else delete copy.glass;
     if (obj.brep) copy.brep = obj.brep;
     else delete copy.brep;
     if (obj.buildLog) copy.buildLog = structuredClone(obj.buildLog);

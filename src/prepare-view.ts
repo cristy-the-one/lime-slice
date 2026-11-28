@@ -27,6 +27,7 @@ import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
 import { beltArrowRun, beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { arrowHeading, beltArrowGeometry, planeLean } from "./belt-scene";
 import { hexToThree, themeColors } from "./theme";
+import { hoverDrawer, mountHover } from "./hover";
 import { frameFactor, frameGizmoPx, frameLookShift, framePanPx } from "./frame-fit";
 import { unionBox } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
@@ -599,6 +600,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       renderer.render(scene, camera);
       for (const node of hidden) node.visible = true;
     } else renderer.render(scene, camera);
+    outline.paint(renderer, camera);
     publishContextScreen();
     publishModifierMarker();
     publishReinforceVolMarker();
@@ -1708,6 +1710,22 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return grabTarget() !== null;
   }
 
+  // The grey object a Ctrl-click would select is outlined while the pointer is over it (src/hover.ts).
+  const outline = hoverDrawer(scene, canvas, () => colors.hover, requestRender);
+  const objectHover = mountHover({
+    canvas,
+    pick(x, y) {
+      if (!grabHooks || !meshBounds || assembled !== null || grabPointer !== null) return null;
+      ndc({ clientX: x, clientY: y });
+      const target = grabTarget();
+      if (target === null || target === "selected") return null;
+      const part = plateOthers.find((row) => row.id === target);
+      const node = contextGroup.children.find((child) => child.userData.plateId === target);
+      return part && node ? { id: target, positions: part.positions, matrixWorld: node.matrixWorld } : null;
+    },
+    draw: outline.draw,
+  });
+
   canvas.addEventListener("pointermove", (ev) => {
     lastPointer = { clientX: ev.clientX, clientY: ev.clientY };
   });
@@ -2241,6 +2259,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       const next = dpr();
       if (renderer.getPixelRatio() !== next) renderer.setPixelRatio(next);
       renderer.setSize(rect.width, rect.height, false);
+      outline.resize();
       camera.aspect = rect.width / rect.height;
       camera.updateProjectionMatrix();
       edgeLineMat.resolution.set(canvas.width, canvas.height);
@@ -2433,6 +2452,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       pointMeasure?.clear();
       plateEntries = entries;
       plateOthers = others;
+      objectHover.refresh();
       syncContext();
       if (belt) layoutBed();
       syncPlateBounds();
@@ -2462,6 +2482,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     },
     setTheme() {
       colors = themeColors();
+      outline.recolor();
       renderer.setClearColor(hexToThree(colors.stage), 1);
       plateMat.color.setHex(hexToThree(colors.bed));
       material.color.setHex(hexToThree(colors.mesh));

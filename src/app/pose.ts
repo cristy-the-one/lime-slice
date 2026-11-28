@@ -792,7 +792,8 @@ export function syncPose(): void {
     const seated = thenPose(seatLift(meshSeat(object.bytes) ?? 0), pose);
     return { ...part, matrix: thenPose(seated, sceneShift!) };
   }) : placed.parts;
-  view.setScene({ parts: shown, selectedId: frame ? null : state.plate.selectedId, chain: frame ? new Set() : chain, clashing: frame ? new Set() : clashing, marks: frame ? [] : marks, ...(frame ? { colors: animation?.swatches ?? frame.colors, ...(animation?.background ? { background: animation.background } : {}) } : {}), ...(!frame && gizmo ? { gizmo } : {}) });
+  const glass = new Set(state.plate.objects.filter((item) => item.glass).map((item) => item.id));
+  view.setScene({ parts: shown, ...(glass.size ? { glass } : {}), selectedId: frame ? null : state.plate.selectedId, chain: frame ? new Set() : chain, clashing: frame ? new Set() : clashing, marks: frame ? [] : marks, ...(frame ? { colors: animation?.swatches ?? frame.colors, ...(animation?.background ? { background: animation.background } : {}) } : {}), ...(!frame && gizmo ? { gizmo } : {}) });
   const empty = document.querySelector<HTMLElement>("#poseEmpty");
   if (empty) empty.hidden = placed.parts.length > 0;
   if (!dragging && !animation) renderPanel();
@@ -929,6 +930,7 @@ function fillPanel(panel: HTMLElement): void {
     addText(tree, "p", "Free parts", "pose-free");
     for (const part of free) addPart(part.id, 0);
   }
+  glassCard(panel);
   if (tool === "move") appendMoveCard(panel);
   const clashRows = assemblyClashes();
   if (clashRows.length) {
@@ -1989,8 +1991,37 @@ function panelClick(event: Event): void {
   }
   editAssembly(assembly);
 }
+/** The selected part's look: a part of glass is drawn see-through in this view. Drawing only; the slice never reads it. */
+function glassCard(panel: HTMLElement): void {
+  const part = state.plate.objects.find((item) => item.id === state.plate.selectedId);
+  if (!part) return;
+  const label = document.createElement("label"); label.className = "pose-field pose-glass";
+  addText(label, "span", "Glass");
+  const input = document.createElement("input"); input.type = "checkbox"; input.dataset.poseGlass = part.id; input.checked = part.glass === true;
+  input.setAttribute("aria-label", `Glass: ${part.name}`);
+  label.dataset.tip = "Draw this part see-through here, as a part of glass looks. Its outline stays. The print is not changed.";
+  label.append(input); panel.append(label);
+}
+/** One Undo step: the part's glass flag, on or off. */
+function setGlass(id: string, on: boolean): void {
+  const part = state.plate.objects.find((item) => item.id === id);
+  if (!part || (part.glass === true) === on) return;
+  noteEdit();
+  state.plate = { ...state.plate, objects: state.plate.objects.map((item) => {
+    if (item.id !== id) return item;
+    const { glass: _was, ...rest } = item;
+    return on ? { ...rest, glass: true as const } : rest;
+  }) };
+  markProjectDirty();
+  flushEdit();
+  syncPose();
+}
 function panelChange(event: Event): void {
   const input = event.target as HTMLInputElement | HTMLSelectElement;
+  if (input.dataset.poseGlass && input instanceof HTMLInputElement) {
+    setGlass(input.dataset.poseGlass, input.checked);
+    return;
+  }
   if (input.id.startsWith("poseMove") && input instanceof HTMLInputElement && input.type === "number") {
     moveFieldChanged(input);
     return;

@@ -107,6 +107,7 @@ function snapObject(this: Session, obj: PlateObject): SnapObject {
     stepTolerance: obj.stepTolerance,
     ...(obj.note ? { note: obj.note } : {}),
     ...(obj.frame ? { frame: obj.frame } : {}),
+    ...(obj.glass ? { glass: true as const } : {}),
     modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] },
     workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] },
     supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
@@ -166,6 +167,8 @@ function install(this: Session, snap: PlateSnap): void {
       kept.orient = [...row.orient] as Mat3;
       kept.modelPose = structuredClone(row.modelPose);
       kept.frame = row.frame;
+      if (row.glass) kept.glass = true;
+      else delete kept.glass;
       kept.scale = row.scale;
       kept.centered = row.centered;
       kept.offset = { ...row.offset };
@@ -380,6 +383,7 @@ function plateList(this: Session, input: Record<string, unknown>): Record<string
       ...(aligned !== null ? { aligned } : {}),
       ...((group?.closures ?? []).some((closure) => closure.a.member === obj.id || closure.b.member === obj.id) ? { loops: (group?.closures ?? []).filter((closure) => closure.a.member === obj.id || closure.b.member === obj.id).map((closure) => structuredClone(closure)) } : {}),
       scalePercent: obj.scale * 100,
+      ...(obj.glass ? { glass: true } : {}),
       ...(obj.sheet ? { sheet: true, sheetNote: "Open sheet: not printed. Thicken it or sew it shut to make a solid." } : {}),
       notes: this.plateNotes(obj, placed.bounds),
     };
@@ -647,6 +651,7 @@ function objectDuplicate(this: Session, input: Record<string, unknown>): Record<
       objectSettings: { ...source.objectSettings },
       ...(source.sim ? { sim: cloneStudy(source.sim) } : {}),
       ...(source.pivot ? { pivot: [...source.pivot] as Vec3 } : {}),
+      ...(source.glass ? { glass: true as const } : {}),
       ...(source.jointLimits ? { jointLimits: structuredClone(source.jointLimits) } : {}),
     };
     delete copy.chain;

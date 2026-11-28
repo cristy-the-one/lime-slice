@@ -267,7 +267,17 @@ export function bindChrome() {
     grabMove,
     grabEnd,
     grabCancel,
-    openObject: (id) => fx.selectPlateObject?.(id),
+    // Ctrl-click: the camera stays. Selecting here would frame the object it opens, as a first look does.
+    openObject: (id) => {
+      S.keepViewFor = id;
+      fx.selectPlateObject?.(id);
+    },
+    frameObject: (id) => {
+      const target = id ?? S.open?.objectId ?? state.plate.selectedId;
+      // The first click of the double-click kept the camera; this one asks for the frame.
+      S.keepViewFor = null;
+      if (target) fx.framePlateObject?.(target);
+    },
     alignChoices() {
       const at = S.open;
       return at ? livePlate().filter((obj) => obj.id !== at.objectId && obj.sourcePos.length >= 9).map((obj) => ({ id: obj.id, name: obj.name })) : [];

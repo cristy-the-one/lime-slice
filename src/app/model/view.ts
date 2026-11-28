@@ -47,9 +47,9 @@ import { assemblyOfObject } from "../assemblies.ts";
 import { chooseStudyMesh } from "../../sim/study-mesh.ts";
 import { closeSplitPrint } from "../../ui/split-print.ts";
 import { closeTransitionCard } from "../../ui/transition-card.ts";
-import { S } from "./shared";
+import { S, takeKeepView } from "./shared";
 import { warmMesh } from "./commit";
-import { hideEmpty } from "./create";
+import { hideEmpty, plateBoxes } from "./create";
 import { treeOf } from "./edges";
 import { mm, treeCall } from "./engine";
 import { readout } from "./pick";
@@ -188,9 +188,18 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   const isSheet = !view && isOpenSheet(parsed, treeOf(S.open)?.root, parsed.id, marked);
   fx.model?.setSolid(parsed, openPose(), isSheet);
   setInspectVolume(parsed.editable ? `${mm(shownVolumeMm3(parsed))} mm³` : "—");
+  // The first look at an object frames it, but for one a Ctrl-click selected (the camera stays) and one just added (the
+  // camera moves only as far as it takes to show it, and what was in view stays in view).
+  const keepView = takeKeepView(S.open?.objectId);
   if (S.open && S.framedFor !== S.open.objectId) {
+    const added = S.addedIds.delete(S.open.objectId);
     S.framedFor = S.open.objectId;
-    frameModel(false);
+    if (keepView) {
+      // Where it is, and nothing else.
+    } else if (added) {
+      const box = openBox();
+      if (box) fx.model?.reveal(box);
+    } else frameModel(false);
   }
   syncPlaceFields();
   syncWorkplaneFields();
@@ -269,6 +278,7 @@ export function refreshModelContext() {
     refreshingContext = false;
   }
   S.ghosted = ghostId();
+  noteAdded();
   // Hidden objects are never built into the view, so nothing can draw, hover, pick, measure or snap to them. The open one is always shown.
   pruneHidden(livePlate().map((obj) => obj.id), S.open?.objectId ?? null);
   const parts = visibleParts(contextParts(livePlate(), S.open?.objectId ?? null)).filter((part) => part.id !== S.ghosted);
@@ -288,6 +298,29 @@ export function refreshModelContext() {
   if (canvas && obj) canvas.dataset.plateMesh = meshTokenOf(obj.bytes);
   // --- E3. Inspect lists the plate; it repaints only when the plate or the open object changed.
   paintModelInspect();
+}
+
+/**
+ * An object that was not on the plate when Model last listed it is new: the camera shows it, moving as little as it
+ * takes, and not at all when it is already in view. The first object, and a plate that was just opened, are not additions.
+ */
+function noteAdded() {
+  const plate = livePlate();
+  const before = S.seenIds;
+  S.seenIds = new Set(plate.map((obj) => obj.id));
+  if (!before || before.size === 0 || state.stage !== "model") return;
+  const fresh = plate.filter((obj) => !before.has(obj.id));
+  if (fresh.length === 0) return;
+  const boxes = plateBoxes();
+  const shown: Bounds[] = [];
+  plate.forEach((obj, i) => {
+    if (!before.has(obj.id)) {
+      S.addedIds.add(obj.id);
+      if (!isHidden(obj.id) && boxes[i]) shown.push(boxes[i]!);
+    }
+  });
+  const union = unionBox(shown);
+  if (union) fx.model?.reveal(union);
 }
 
 /** The plate object drawn as the ghost rather than grey: Boolean's picked tool, or the tool of a join being edited. */

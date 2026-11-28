@@ -138,6 +138,7 @@ export function buildApi(ctx: ViewCtx): ModelView {
       ctx.kick();
     },
     frame: ctx.frameBox,
+    reveal: ctx.revealBox,
     setCameraPreset(preset) {
       const box = ctx.solidBox
         ? { min: [ctx.solidBox.min[0], ctx.solidBox.min[1], ctx.solidBox.min[2]] as Vec3, max: [ctx.solidBox.max[0], ctx.solidBox.max[1], ctx.solidBox.max[2]] as Vec3 }
@@ -256,6 +257,7 @@ export function buildApi(ctx: ViewCtx): ModelView {
       targetMat.color.setHex(hexToThree(ctx.colors.amber));
       snapLineMat.color.setHex(hexToThree(ctx.colors.amber));
       renderer.setClearColor(hexToThree(ctx.colors.stage), 1);
+      ctx.hoverTheme();
       ctx.paintFaces();
       ctx.paintLines();
       if (ctx.preview) ctx.showPreview(ctx.preview.shape);

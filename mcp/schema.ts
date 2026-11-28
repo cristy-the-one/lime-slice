@@ -2060,6 +2060,7 @@ export const TOOLS: ToolSpec[] = [
         frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default part for a member, else model." },
         joint: { oneOf: [{ type: "object" }, { enum: [null] }], description: "Joint or null. guide {kind:\"pose\"}." },
         angle: { type: "number", description: "Hinge angle in degrees." },
+        glass: { type: "boolean", description: "A part of glass: Pose draws it see-through. false: opaque. Drawing only." },
         travel: { type: "number", description: "A slide's travel in mm (a rack's joint, docs/plan-gear-kinds.md): a rack and pinion move together." },
         reach: { type: "object", additionalProperties: false, required: ["at", "to"], properties: { at: { ...vec3, description: "Part-frame point." }, to: { ...vec3, description: "Model-space target." } }, description: "Reach a point." },
         until: {

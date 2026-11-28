@@ -247,6 +247,9 @@ check("a wrong tool field gets no op hint", !String(validateTool("nugget", { act
   console.log(`guide {tool:model_apply, schema}: ~${tokens(JSON.stringify(doc))} tokens, against ~${tokens(JSON.stringify({ ...doc, schema: apply.inputSchema, shapes: undefined }))} written out`);
 }
 
+check("model_place takes glass as a boolean", validateTool("model_place", { object: "obj_1", glass: true }) === null && validateTool("model_place", { object: "obj_1", glass: false }) === null);
+check("model_place refuses a glass that is not a boolean", validateTool("model_place", { object: "obj_1", glass: "yes" }) !== null);
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
