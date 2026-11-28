@@ -242,24 +242,21 @@ test("closing a loop between two cylinders is one undo step", async ({ page }) =
   const panel = page.locator("#posePanel");
   await panel.locator(`[data-object='${slider}']`).click();
   await page.locator("[data-pose-tool='joint']").click();
-  const centres = await partCentres(page);
   const canvas = page.locator("#pose");
-  const clickCylinder = async (at: [number, number], arm: string, id: string): Promise<boolean> => {
-    for (const dy of [0, -30, -60, -90, -120, 30, 60]) {
-      for (const dx of [0, -20, 20, -40, 40]) {
-        await canvas.evaluate((el) => { delete el.dataset.loopPoint; delete el.dataset.jointFace; });
-        await page.mouse.click(at[0] + dx, at[1] + dy);
-        if ((await canvas.getAttribute("data-picked")) !== id) continue;
-        await expect.poll(() => canvas.getAttribute("data-joint-face"), { timeout: 5000 }).not.toBeNull();
-        if ((await canvas.getAttribute("data-loop-point")) === `${arm}:${id}`) return true;
-      }
-    }
-    return false;
+  // The hole axis is Z, so Front looks at it from the side. The point is the axis centre, not a pixel search.
+  const clickHole = async (id: string, arm: string): Promise<void> => {
+    await canvas.evaluate((el, spec) => { delete el.dataset.loopPoint; delete el.dataset.jointFace; el.dataset.projectLocal = spec; }, `${id}:0,0,25`);
+    await page.locator("[data-pose-view='front']").click();
+    await expect(canvas).toHaveAttribute("data-projected", new RegExp(`(?:^| )${id}:`));
+    const row = (await canvas.getAttribute("data-projected"))!.split(" ").find((part) => part.startsWith(`${id}:`))!;
+    const [x, y] = row.slice(id.length + 1).split(",").map(Number);
+    await page.mouse.click(x!, y!);
+    await expect(canvas).toHaveAttribute("data-loop-point", `${arm}:${id}`);
   };
   await panel.locator("[data-pose-action='loop-arm'][data-loop-arm='a']").click();
-  expect(await clickCylinder(centres.get(slider)!, "a", slider)).toBe(true);
+  await clickHole(slider, "a");
   await panel.locator("[data-pose-action='loop-arm'][data-loop-arm='b']").click();
-  expect(await clickCylinder(centres.get(anchor)!, "b", anchor)).toBe(true);
+  await clickHole(anchor, "b");
   const close = panel.locator("[data-pose-action='close-loop']");
   await expect(close).not.toHaveAttribute("aria-disabled", "true");
   await close.click();

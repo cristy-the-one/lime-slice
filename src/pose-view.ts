@@ -436,6 +436,24 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
           return `${mesh.userData.id}:${(rect.left + (point.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - point.y) * rect.height / 2).toFixed(1)}`;
         }).join(" ");
       } else delete canvas.dataset.reachPoints;
+      // A test names a part-local point (`id:x,y,z`). Project it with this camera so a click can land on a known hole.
+      const projectSpec = canvas.dataset.projectLocal;
+      if (projectSpec) {
+        const rect = canvas.getBoundingClientRect();
+        const meshes = new Map(group.children.filter((part) => part instanceof THREE.Mesh && typeof part.userData.id === "string").map((part) => [(part as THREE.Mesh).userData.id as string, part as THREE.Mesh]));
+        const projected: string[] = [];
+        for (const item of projectSpec.split(" ")) {
+          const split = item.indexOf(":");
+          if (split < 0) continue;
+          const id = item.slice(0, split);
+          const [x, y, z] = item.slice(split + 1).split(",").map(Number);
+          const mesh = meshes.get(id);
+          if (!mesh || x === undefined || y === undefined || z === undefined || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+          const point = new THREE.Vector3(x, y, z).applyMatrix4(mesh.matrixWorld).project(camera);
+          projected.push(`${id}:${(rect.left + (point.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - point.y) * rect.height / 2).toFixed(1)}`);
+        }
+        canvas.dataset.projected = projected.join(" ");
+      } else delete canvas.dataset.projected;
       if (gizmos.children.length) {
         const rect = canvas.getBoundingClientRect();
         const radius = ringGeometry?.parameters.radius ?? 0;

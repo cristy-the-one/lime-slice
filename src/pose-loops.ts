@@ -214,28 +214,6 @@ function solveLinear(A: number[][], b: number[]): number[] | null {
   return M.map((row) => row[n]!);
 }
 
-function rankOf(columns: number[][]): number {
-  if (!columns.length || !columns[0]?.length) return 0;
-  const rows = columns[0].map((_, i) => columns.map((col) => col[i]!));
-  const m = rows.length, n = columns.length;
-  let rank = 0;
-  for (let col = 0; col < n && rank < m; col += 1) {
-    let best = rank;
-    for (let r = rank + 1; r < m; r += 1) if (Math.abs(rows[r]![col]!) > Math.abs(rows[best]![col]!)) best = r;
-    if (Math.abs(rows[best]![col]!) < 1e-4) continue;
-    [rows[rank], rows[best]] = [rows[best]!, rows[rank]!];
-    const lead = rows[rank]![col]!;
-    for (let c = col; c < n; c += 1) rows[rank]![c]! /= lead;
-    for (let r = 0; r < m; r += 1) {
-      if (r === rank) continue;
-      const f = rows[r]![col]!;
-      if (f !== 0) for (let c = col; c < n; c += 1) rows[r]![c]! -= f * rows[rank]![c]!;
-    }
-    rank += 1;
-  }
-  return rank;
-}
-
 function jacobian(assembly: Assembly, dofs: Dof[], poseOf: PoseOf, centreOf: (id: string) => Vec3 | undefined): number[][] {
   const base = errorsOf(assembly, poseOf);
   return dofs.map((dof) => {
@@ -462,46 +440,123 @@ export function removeLoop(assembly: Assembly, which: string, other?: string): {
   return { assembly: withClosures(assembly, rows.filter((row) => row !== hit)) };
 }
 
-/** A pin is three error rows; a line with a direction is two. Matches `closureError`. */
-function errorWidth(closure: Closure): number {
-  return closure.kind === "line" && closure.b.along ? 2 : 3;
-}
+/** Relative residual below which a driven column counts as lying in the free columns' span. */
+const DRIVE_SPAN = 1e-6;
 
-/**
- * How many of this loop's joints can be keyed. The rank uses only this closure's rows: the other loops'
- * equations are carried by joints that are not in this set, and counting them makes a second pin look locked.
- */
-function mobility(assembly: Assembly, closure: Closure, poseOf: PoseOf): number {
-  const dofs = loopJointIds(assembly, closure).flatMap((id) => dofsOf(assembly, id));
-  if (!dofs.length) return 0;
-  let start = 0;
-  for (const row of assembly.closures ?? []) {
-    if (row === closure) break;
-    start += errorWidth(row);
+/** Closures that share a loop joint. Both pins of the can press are one group: they share the ram. */
+function closureGroups(assembly: Assembly): Closure[][] {
+  const rows = assembly.closures ?? [];
+  const parent = rows.map((_, i) => i);
+  const find = (i: number): number => {
+    let at = i;
+    while (parent[at] !== at) at = parent[at]!;
+    parent[i] = at;
+    return at;
+  };
+  const joints = rows.map((row) => loopJointIds(assembly, row));
+  for (let i = 0; i < rows.length; i += 1) for (let k = i + 1; k < rows.length; k += 1) {
+    if (joints[i]!.some((id) => joints[k]!.includes(id))) parent[find(i)] = find(k);
   }
-  const width = errorWidth(closure);
-  const columns = jacobian(assembly, dofs, poseOf, () => undefined).map((column) => column.slice(start, start + width));
-  return Math.max(0, dofs.length - rankOf(columns));
+  const buckets = new Map<number, Closure[]>();
+  rows.forEach((row, i) => {
+    const key = find(i);
+    const list = buckets.get(key) ?? [];
+    list.push(row);
+    buckets.set(key, list);
+  });
+  return [...buckets.values()];
+}
+
+interface GroupSpan { joints: string[]; dofs: Dof[]; columns: number[][] }
+
+/** J over this group's closures. The same forward-difference columns the damped solve builds, on these rows only. */
+function groupSpan(assembly: Assembly, group: Closure[], poseOf: PoseOf): GroupSpan {
+  const joints: string[] = [];
+  for (const closure of group) for (const id of loopJointIds(assembly, closure)) if (!joints.includes(id)) joints.push(id);
+  const dofs = joints.flatMap((id) => dofsOf(assembly, id));
+  const columns = jacobian({ ...assembly, closures: group }, dofs, poseOf, () => undefined);
+  return { joints, dofs, columns };
+}
+
+function normOf(column: number[]): number {
+  let sum = 0;
+  for (const value of column) sum += value * value;
+  return Math.sqrt(sum);
+}
+
+/** ||J x + column|| / |column|. Zero when the column is already in the column space, or is itself zero. */
+function relativeResidual(free: number[][], column: number[]): number {
+  const scale = normOf(column);
+  if (!(scale > 1e-15)) return 0;
+  const resid = column.slice();
+  if (free.length) {
+    const basis: number[][] = [];
+    let biggest = scale;
+    for (const col of free) biggest = Math.max(biggest, normOf(col));
+    const drop = biggest * 1e-8;
+    for (const source of free) {
+      const v = source.slice();
+      for (const q of basis) {
+        let dot = 0;
+        for (let i = 0; i < v.length; i += 1) dot += v[i]! * q[i]!;
+        for (let i = 0; i < v.length; i += 1) v[i]! -= dot * q[i]!;
+      }
+      const vn = normOf(v);
+      if (vn < drop) continue;
+      for (let i = 0; i < v.length; i += 1) v[i]! /= vn;
+      basis.push(v);
+    }
+    for (const q of basis) {
+      let dot = 0;
+      for (let i = 0; i < resid.length; i += 1) dot += resid[i]! * q[i]!;
+      for (let i = 0; i < resid.length; i += 1) resid[i]! -= dot * q[i]!;
+    }
+  }
+  return normOf(resid) / scale;
+}
+
+function columnsOf(span: GroupSpan, ids: ReadonlySet<string>): number[][] {
+  const out: number[][] = [];
+  span.dofs.forEach((dof, i) => { if (ids.has(dof.id)) out.push(span.columns[i]!); });
+  return out;
 }
 
 /**
- * Keying a joint the loop already sets. The shallowest keyed joints, up to the loop's mobility, drive; the rest follow.
- * Two drivers that the loop can accept are not refused here: a frame that cannot close is.
+ * The driven joint can move when each of its columns lies in the span of the joints that are still free.
+ * Joints already accepted as drivers are not free: the lever is tested against the links and the ram,
+ * and a link tested afterwards is not.
+ */
+function driverInSpan(span: GroupSpan, held: readonly string[], id: string): boolean {
+  const blocked = new Set<string>(held);
+  blocked.add(id);
+  const free = columnsOf(span, new Set(span.joints.filter((joint) => !blocked.has(joint))));
+  const driver = columnsOf(span, new Set([id]));
+  if (!driver.length) return false;
+  return driver.every((column) => relativeResidual(free, column) <= DRIVE_SPAN);
+}
+
+function otherEnd(group: Closure[], id: string): string {
+  const closure = group.find((row) => row.a.member === id || row.b.member === id) ?? group[0];
+  if (!closure) return id;
+  return id === closure.a.member ? closure.b.member : closure.a.member;
+}
+
+/**
+ * Keying a joint the loop already sets. Closures that share a joint are one group, so two pins on one ram
+ * are tested together. The shallowest keyed joint that can still move is the driver; the rest follow.
+ * Failing here means the pose is locked. A toggle's dead point can fail the same test while a move is
+ * in progress: that stays the solve's "cannot close past" clamp, and is not decided here.
  */
 export function loopKeyRefusals(assembly: Assembly, keyed: ReadonlySet<string>, names: (id: string) => string, poseOf: PoseOf = () => undefined): string[] {
   const issues: string[] = [];
-  for (const closure of assembly.closures ?? []) {
-    const joints = loopJointIds(assembly, closure);
-    const slots = mobility(assembly, closure, poseOf);
-    const keyedHere = joints.filter((id) => keyed.has(id)).sort((a, b) => depth(assembly, a) - depth(assembly, b));
-    let used = 0;
-    const kept: string[] = [];
+  for (const group of closureGroups(assembly)) {
+    const span = groupSpan(assembly, group, poseOf);
+    const keyedHere = span.joints.filter((id) => keyed.has(id)).sort((a, b) => depth(assembly, a) - depth(assembly, b));
+    const held: string[] = [];
     for (const id of keyedHere) {
-      const count = Math.max(1, dofsOf(assembly, id).length);
-      if (used + count <= slots) { used += count; kept.push(id); continue; }
-      const through = id === closure.a.member ? closure.b.member : closure.a.member;
-      const driver = kept[0] ?? joints.find((other) => other !== id) ?? id;
-      issues.push(`${names(id)} follows the loop through ${names(through)}: key ${names(driver)}.`);
+      if (driverInSpan(span, held, id)) { held.push(id); continue; }
+      const driver = held[0] ?? span.joints.find((other) => other !== id) ?? id;
+      issues.push(`${names(id)} follows the loop through ${names(otherEnd(group, id))}: key ${names(driver)}.`);
     }
   }
   return issues;
@@ -510,11 +565,13 @@ export function loopKeyRefusals(assembly: Assembly, keyed: ReadonlySet<string>, 
 /** Joints a rest key should leave alone: the loop sets them from the joints it keeps. */
 export function loopFollowerIds(assembly: Assembly, poseOf: PoseOf = () => undefined): Set<string> {
   const out = new Set<string>();
-  for (const closure of assembly.closures ?? []) {
-    const joints = loopJointIds(assembly, closure);
-    const slots = mobility(assembly, closure, poseOf);
-    const kept = [...joints].sort((a, b) => depth(assembly, a) - depth(assembly, b)).slice(0, slots);
-    for (const id of joints) if (!kept.includes(id)) out.add(id);
+  for (const group of closureGroups(assembly)) {
+    const span = groupSpan(assembly, group, poseOf);
+    const held: string[] = [];
+    for (const id of [...span.joints].sort((a, b) => depth(assembly, a) - depth(assembly, b))) {
+      if (driverInSpan(span, held, id)) held.push(id);
+      else out.add(id);
+    }
   }
   return out;
 }
