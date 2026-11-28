@@ -6,7 +6,7 @@
  * after the run (a frame the train was mounted on), stays where it was, and so does the link that mounts a part of the
  * run on it.
  */
-import { freshAssemblyId, withCouplings, type Assembly, type Coupling, type GearRef, type Member } from "../assembly.ts";
+import { freshAssemblyId, withClosures, withCouplings, type Assembly, type Closure, type Coupling, type GearRef, type Member } from "../assembly.ts";
 
 /** `coupling` with every object it names passed through `to`. */
 function renamedCoupling(coupling: Coupling, to: (id: string) => string): Coupling {
@@ -27,31 +27,60 @@ function names(coupling: Coupling, ids: ReadonlySet<string>): boolean {
   return [coupling.driver, coupling.driven, ...(coupling.gears ?? []).map((gear) => gear.object), ...(coupling.click ? [coupling.click.object] : []), ...(coupling.carrier ? [coupling.carrier.body] : [])].some((id) => ids.has(id));
 }
 
+/** `closure` with both of its members passed through `to`. */
+function renamedClosure(closure: Closure, to: (id: string) => string): Closure {
+  return { ...closure, a: { ...closure.a, member: to(closure.a.member) }, b: { ...closure.b, member: to(closure.b.member) } };
+}
+
 /**
  * The assemblies after a rerun handed each new part (`renamed`'s keys) the handle of the old one it replaces (its
- * values). Unchanged when the run built no assembly of its own.
+ * values). Unchanged when the run built no assembly of its own. `dropped` names each loop of the old assembly that
+ * the new one could not carry (a member it names is gone), so the caller can say so: no loop goes silently.
  */
-export function rerunAssemblies(assemblies: readonly Assembly[], renamed: ReadonlyMap<string, string>): Assembly[] {
+export function rerunAssembliesReport(assemblies: readonly Assembly[], renamed: ReadonlyMap<string, string>): { assemblies: Assembly[]; dropped: string[] } {
   const to = (id: string) => renamed.get(id) ?? id;
+  const dropped: string[] = [];
   const fresh = new Set(assemblies.filter((row) => row.members.some((member) => renamed.has(member.object))));
-  if (fresh.size === 0) return [...assemblies];
+  if (fresh.size === 0) return { assemblies: [...assemblies], dropped };
   let out = assemblies.filter((row) => !fresh.has(row));
   for (const built of fresh) {
     const members: Member[] = built.members.map((member) => ({ ...member, object: to(member.object), parent: member.parent === null ? null : to(member.parent) }));
     const ids = new Set(members.map((member) => member.object));
     const couplings = (built.couplings ?? []).map((row) => renamedCoupling(row, to));
+    const closures = (built.closures ?? []).map((row) => renamedClosure(row, to));
     const old = out.filter((row) => row.members.some((member) => ids.has(member.object)));
-    let next: Assembly = withCouplings({ id: old[0]?.id ?? built.id, name: old[0]?.name ?? built.name, members }, couplings);
+    let next: Assembly = withClosures(withCouplings({ id: old[0]?.id ?? built.id, name: old[0]?.name ?? built.name, members }, couplings), closures);
     for (const row of old) {
       // A part of the run that hung on a part from outside it keeps that link; the outside parts stay as they were.
       const kept = new Map(row.members.filter((member) => ids.has(member.object) && member.parent !== null && !ids.has(member.parent)).map((member) => [member.object, member]));
       const others = row.members.filter((member) => !ids.has(member.object));
-      next = withCouplings({ ...next, members: [...next.members.map((member) => kept.get(member.object) ?? member), ...others] }, [...(next.couplings ?? []), ...(row.couplings ?? []).filter((coupling) => !names(coupling, ids))]);
+      // A loop the run did not make again stays when both of its members are still there: one between outside parts, or
+      // from a part of the run to an outside part. A loop between two parts of the run is the new run's to close.
+      const have = new Set([...next.members.map((member) => member.object), ...others.map((member) => member.object)]);
+      const taken = new Set((next.closures ?? []).map((closure) => closure.id));
+      const carried: Closure[] = [];
+      for (const closure of row.closures ?? []) {
+        if (ids.has(closure.a.member) && ids.has(closure.b.member)) continue;
+        if (!have.has(closure.a.member) || !have.has(closure.b.member)) {
+          dropped.push(`${closure.id} (${closure.a.member} to ${closure.b.member})`);
+          continue;
+        }
+        let id = closure.id;
+        for (let n = 1; taken.has(id); n += 1) id = `${closure.id}_${n}`;
+        taken.add(id);
+        carried.push({ ...closure, id });
+      }
+      next = withClosures(withCouplings({ ...next, members: [...next.members.map((member) => kept.get(member.object) ?? member), ...others] }, [...(next.couplings ?? []), ...(row.couplings ?? []).filter((coupling) => !names(coupling, ids))]), [...(next.closures ?? []), ...carried]);
     }
     const at = old.length ? out.indexOf(old[0]!) : out.length;
     out = [...out.slice(0, at).filter((row) => !old.includes(row)), next, ...out.slice(at).filter((row) => !old.includes(row))];
   }
-  return out;
+  return { assemblies: out, dropped };
+}
+
+/** `rerunAssembliesReport`'s assemblies, for a caller with nowhere to say what was dropped. */
+export function rerunAssemblies(assemblies: readonly Assembly[], renamed: ReadonlyMap<string, string>): Assembly[] {
+  return rerunAssembliesReport(assemblies, renamed).assemblies;
 }
 
 /**

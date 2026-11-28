@@ -153,6 +153,44 @@ for (const object of session.objects) dragPoses.set(object.id, object.modelPose)
 for (const closure of moved.closures ?? []) dragPin = Math.max(dragPin, pinError(dragPoses, closure));
 check("the pins stay closed after the lever turns", dragPin <= 0.01, dragPin);
 
+// A coarse frame rate: 6 fps steps the lever about 25° a frame near mid-stroke, and the loop solve has to follow.
+const coarse = await runAnimation(session.recipeHost, strokeSource, {}, assembly, poseOf, parts, { fps: 6 });
+check("lever-press-stroke runs at 6 fps", coarse.ok === true, coarse.ok ? "" : coarse.reason);
+if (coarse.ok) {
+  let worstCoarse = 0;
+  for (const frame of coarse.result.frames) for (const closure of frame.assembly.closures ?? []) worstCoarse = Math.max(worstCoarse, pinError(frame.poses, closure));
+  check("every 6 fps frame keeps each link pin within 0.01 mm of the ram pin", worstCoarse <= 0.01, worstCoarse);
+  const leverAt = (frame: (typeof coarse.result.frames)[number]) => jointAt(frame.assembly.members.find((member) => member.object === leverId)?.joint);
+  const bottom = coarse.result.frames.reduce((best, frame) => leverAt(frame) > leverAt(best) ? frame : best);
+  const bottomRam = jointAt(bottom.assembly.members.find((member) => member.object === ramId)?.joint);
+  check("the 6 fps stroke reaches the bottom with the ram where the press puts it", Math.abs(bottomRam - (ramZ(TH0) - ramZ(TH0 + leverAt(bottom)))) <= 0.01 && leverAt(bottom) > 140, [leverAt(bottom), bottomRam]);
+}
+
+// Run the recipe again over the part it made (recipe_run {object}): the new parts take the old handles, and the loops
+// come with them. Before the fix the assembly kept its joints but lost both loops, with no word in the reply.
+const rerun = await session.call("recipe_run", { source: buildSource, name: "lever-can-press", object: idOf("Frame") });
+check("recipe_run {object} reruns the press in place", rerun.ok === true, rerun.reason ?? rerun.diagnostics ?? rerun);
+check("the rerun replaced the parts under their old handles", Array.isArray(rerun.replaced) && rerun.replaced.includes(leverId) && rerun.replaced.includes(ramId), rerun.replaced);
+const again = session.assemblies[0];
+check("the rerun leaves one assembly", session.assemblies.length === 1, session.assemblies.length);
+const againLoops = again?.closures ?? [];
+check("both loops survive the rerun", againLoops.length === 2, againLoops);
+check("the rerun's loops name the old handles", againLoops.length === 2 && againLoops.every((closure) => [closure.a.member, closure.b.member].every((member) => [leverId, ramId, ...linkIds].includes(member))), againLoops);
+check("the rerun's ram is still a slide", again?.members.find((member) => member.object === ramId)?.joint?.kind === "slide");
+check("the rerun's reply carries no loop warning", !JSON.stringify(rerun.warnings ?? []).includes("loop"), rerun.warnings);
+const listed = JSON.stringify(await session.call("plate_list", {}));
+check("plate_list shows the loops after the rerun", listed.includes("loop_1") && listed.includes("loop_2"), listed.slice(0, 300));
+const ramBeforeRerunTurn = jointAt(again?.members.find((member) => member.object === ramId)?.joint);
+const turnedAgain = await session.call("model_place", { object: leverId, angle: 75 });
+check("model_place {angle} on the lever works after the rerun", turnedAgain.ok === true, turnedAgain.reason ?? turnedAgain.stopped ?? turnedAgain);
+const ramAfterRerunTurn = jointAt(session.assemblies[0]?.members.find((member) => member.object === ramId)?.joint);
+check("turning the lever after the rerun moves the ram", Math.abs(ramAfterRerunTurn - ramBeforeRerunTurn) > 0.5, [ramBeforeRerunTurn, ramAfterRerunTurn]);
+let rerunPin = 0;
+const rerunPoses = new Map<string, Affine>();
+for (const object of session.objects) rerunPoses.set(object.id, object.modelPose);
+for (const closure of session.assemblies[0]?.closures ?? []) rerunPin = Math.max(rerunPin, pinError(rerunPoses, closure));
+check("the pins stay closed after the rerun and a lever turn", rerunPin <= 0.01, rerunPin);
+
 if (failed) {
   console.error(`can-press: ${failed} failed`);
   process.exit(1);
