@@ -266,6 +266,7 @@ export function appendMoveCard(panel: HTMLElement): void {
   const card = document.createElement("div");
   card.id = "poseMove";
   card.className = "pose-move";
+  if (id) card.dataset.moveFor = id;
   if (!obj) {
     const note = document.createElement("p");
     note.textContent = "Select a part to move it in design space.";
@@ -368,4 +369,39 @@ export function appendMoveCard(panel: HTMLElement): void {
   settle.dataset.tip = "While you turn the part, snap it to the flat face that touches most, near the angle you hold. Prepare's switch too.";
   card.append(settle);
   panel.append(card);
+}
+
+/** The Move card whose number field has focus, for the selected part, or null: a panel rebuild keeps it in place. */
+export function heldMoveCard(panel: HTMLElement): HTMLElement | null {
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLInputElement) || !Object.values(FIELD_ID).includes(focused.id)) return null;
+  const card = focused.closest<HTMLElement>("#poseMove");
+  return card?.parentElement === panel && card.dataset.moveFor === state.plate.selectedId ? card : null;
+}
+
+/**
+ * After a rebuild around a held Move card: the new panel's order is kept, and the new card's content replaces the held
+ * one's, all but the focused field, which keeps its typed text and its focus. A card that no longer fits gives way.
+ */
+export function keepMoveCard(held: HTMLElement): void {
+  const fresh = [...(held.parentElement?.children ?? [])].find((node): node is HTMLElement => node !== held && node.id === "poseMove");
+  if (!fresh) {
+    held.remove();
+    return;
+  }
+  while (held.nextSibling && held.nextSibling !== fresh) held.before(held.nextSibling);
+  const focused = document.activeElement;
+  if (focused && adopt(held, fresh, focused)) fresh.remove();
+  else held.replaceWith(fresh);
+}
+
+/** Moves `fresh`'s nodes into `old`, the branch down to `focused` kept in place; false, changing nothing, when they differ. */
+function adopt(old: Element, fresh: Element, focused: Element): boolean {
+  if (old === focused) return fresh.id === focused.id;
+  if (old.tagName !== fresh.tagName || old.childNodes.length !== fresh.childNodes.length) return false;
+  const pairs = [...old.childNodes].map((node, i) => [node, fresh.childNodes[i]!] as const);
+  const path = pairs.find(([node]) => node.contains(focused));
+  if (!path || !(path[1] instanceof Element) || !adopt(path[0] as Element, path[1], focused)) return false;
+  for (const [was, now] of pairs) if (was !== path[0]) was.replaceWith(now);
+  return true;
 }
