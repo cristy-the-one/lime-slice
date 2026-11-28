@@ -6,7 +6,7 @@ import { jointAt, readAssemblies, type Assembly, type Closure, type Member } fro
 import { applyPose, IDENTITY_POSE } from "./model-space.ts";
 import { moveSlide, turnHinge } from "./pose.ts";
 import { trainTurn } from "./gear-train.ts";
-import { closureGapMm, closeLoop, removeLoop } from "./pose-loops.ts";
+import { closureGapMm, closeLoop, loopKeyRefusals, removeLoop } from "./pose-loops.ts";
 import { sampleAnimation, type AnimationPart } from "./pose-anim.ts";
 import { prepareMotion } from "./motion.ts";
 import { solveAssembly } from "./assembly.ts";
@@ -251,6 +251,54 @@ function zrOf(theta: number): number {
   const follower = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { "the lever": 180, "Link L": 10 } }] }, assembly, poseOf, parts);
   const followerReason = "issues" in follower ? follower.issues.map((issue) => issue.reason).join(" ") : "";
   check("keying a follower is refused", followerReason.includes("Link L follows the loop through Ram: key the lever."), followerReason);
+  // Two parallel links meeting one ram pin, the can press. Keying the lever drives both.
+  const link = memberOf(assembly, "Link L");
+  const y = 30;
+  const twinLink: Member = { ...link, object: "Link R", offset: [link.offset[0], link.offset[1] + y, link.offset[2]], joint: link.joint ? { ...link.joint } : undefined };
+  const pin = assembly.closures![0]!;
+  const press: Assembly = {
+    ...assembly,
+    members: [...assembly.members, twinLink],
+    closures: [pin, { id: "loop_2", kind: "pin", a: { member: "Link R", at: [pin.a.at[0], pin.a.at[1] - y, pin.a.at[2]] }, b: { member: "Ram", at: [0, 0, 0] } }],
+  };
+  check("the parallel press builds closed", closureGapMm(press, poseOf) <= 1e-4, String(closureGapMm(press, poseOf)));
+  const pressParts: AnimationPart[] = [...parts, { object: "Link R", name: "Link R" }];
+  const pressPlayed = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { "the lever": 180 } }, { t: 1, set: { "the lever": 200 } }] }, press, poseOf, pressParts);
+  const pressReason = "issues" in pressPlayed ? pressPlayed.issues.map((issue) => issue.reason).join(" ") : "";
+  let pressWorst = Infinity;
+  if (!("issues" in pressPlayed)) {
+    pressWorst = 0;
+    for (const frame of pressPlayed.frames) pressWorst = Math.max(pressWorst, closureGapMm(frame.assembly, poseOf));
+  }
+  console.log(`can-press parallel: ${"issues" in pressPlayed ? `REFUSED ${pressReason}` : `ACCEPTED worstGapMm=${pressWorst}`}`);
+  check("a parallel press keyed on the lever is accepted", !("issues" in pressPlayed), pressReason);
+  check("a parallel press keyed on the lever closes to 0.01 mm", pressWorst <= 0.01, String(pressWorst));
+  const pressFollower = loopKeyRefusals(press, new Set(["crank", "Link L"]), names, poseOf).join(" ");
+  check("a parallel press still refuses keying the link", pressFollower.includes("Link L follows the loop through Ram"), pressFollower);
+  // Three links pinned into a triangle. Nothing can drive.
+  const side = 40;
+  const base: Member = { object: "Link C", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] };
+  const hingeZ = (object: string, angle: number, offset: [number, number, number]): Member => {
+    const rest: Member = { object, parent: "Link C", offset, turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1], angle: 0, min: -360, max: 360 } };
+    const moved = turnHinge(rest, angle);
+    if ("reason" in moved) throw new Error(moved.reason);
+    return moved;
+  };
+  const triangle: Assembly = {
+    id: "tri", name: "Triangle",
+    members: [base, hingeZ("Link A", 60, [0, 0, 0]), hingeZ("Link B", 120, [side, 0, 0])],
+    closures: [{ id: "loop_1", kind: "pin", a: { member: "Link A", at: [side, 0, 0] }, b: { member: "Link B", at: [side, 0, 0] } }],
+  };
+  const triParts: AnimationPart[] = [
+    { object: "Link C", name: "Link C" },
+    { object: "Link A", name: "Link A" },
+    { object: "Link B", name: "Link B" },
+  ];
+  check("the locked triangle builds closed", closureGapMm(triangle, poseOf) <= 1e-4, String(closureGapMm(triangle, poseOf)));
+  const triPlayed = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { "Link A": 60 } }, { t: 1, set: { "Link A": 70 } }] }, triangle, poseOf, triParts);
+  const triReason = "issues" in triPlayed ? triPlayed.issues.map((issue) => issue.reason).join(" ") : "";
+  console.log(`locked triangle: ${triReason || "ACCEPTED"}`);
+  check("a locked triangle keyed on one hinge is refused", triReason.includes("Link A follows the loop"), triReason);
   const atLink = jointAt(memberOf(assembly, "Link L").joint);
   const limited: Assembly = { ...assembly, members: assembly.members.map((row) => row.object === "Link L" && row.joint?.kind === "hinge" ? { ...row, joint: { ...row.joint, min: atLink - 1, max: atLink + 1 } } : row) };
   const stuck = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { "the lever": 180 } }, { t: 1, set: { "the lever": 140 } }] }, limited, poseOf, parts);

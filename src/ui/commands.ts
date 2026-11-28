@@ -228,6 +228,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "pose-turn", label: "Turn joint", group: "Tools", keys: ["R"], when: ["pose"], target: '#toolRail [data-pose-tool="turn"]', layouts: ["desktop"], keywords: "pose hinge ring forward kinematics angle" },
   { id: "pose-reach", label: "Reach", group: "Tools", keys: ["G"], when: ["pose"], target: '#toolRail [data-pose-tool="reach"]', layouts: ["desktop"], keywords: "pose ik inverse kinematics drag grab chain" },
   { id: "pose-joint", label: "Joint", group: "Tools", keys: ["J"], when: ["pose"], target: '#toolRail [data-pose-tool="joint"]', layouts: ["desktop"], keywords: "pose hinge ball pivot axis" },
+  { id: "pose-close-loop", label: "Close loop", group: "Tools", when: ["pose"], target: '[data-pose-action="close-loop"]', layouts: ["desktop"], keywords: "pose loop pin line closure joint" },
   { id: "pose-link", label: "Link", group: "Tools", keys: ["L"], when: ["pose"], target: '#toolRail [data-pose-tool="link"]', layouts: ["desktop"], keywords: "pose parent child chain assembly" },
   { id: "ungroup-assembly", label: "Ungroup assembly", group: "Pose", keywords: "ungroup detach assembly pose" },
   { id: "edit-in-pose", label: "Edit in Pose", group: "Pose", keywords: "assembly pose link joints" },

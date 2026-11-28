@@ -12,6 +12,7 @@ import { aboutAxis, bodyOf as massBodyOf, movingBody, partIntegrals, swing, type
 import { poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
 import { createPoseView, type MoveEvent, type PoseCamera, type PoseHit, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
 import { cylinderJoint } from "../pose-cylinder.ts";
+import { closeLoop, removeLoop } from "../pose-loops.ts";
 import { loadModel } from "./workspaces.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import type { Vec3 } from "../model-tree.ts";
@@ -22,7 +23,7 @@ import { fx } from "./fx.ts";
 import { cancelEdit, holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
 import { refreshObjectList } from "./settings.ts";
 import { exportAssembly, linkAssemblyParts, ungroupAssembly } from "./plate-actions.ts";
-import { setAnimationFacts } from "./command-reasons.ts";
+import { setAnimationFacts, setLoopFacts } from "./command-reasons.ts";
 import { session, state } from "./state.ts";
 import { PosePlayback } from "../pose-playback.ts";
 import type { AnimationResult, AnimationPart, PoseAnimation } from "../pose-anim.ts";
@@ -71,6 +72,81 @@ function turnWords(turned: Turned): string {
 /** A turn's options: names so a loop's refusal says the part, and the root's pose so the closure is measured where it stands. */
 function turnOptions(): { poseOf: (id: string) => Affine | undefined; names: (id: string) => string; centreOf: (id: string) => Vec3 | undefined } {
   return { poseOf, names: (id) => state.plate.objects.find((object) => object.id === id)?.name ?? id, centreOf: centre };
+}
+/**
+ * Close a loop, kept while the Joint tool's section is filled in (docs/plan-pose-loops.md L3). `arm` is which point
+ * the next click records. A line's direction is a picked cylinder's axis, or the typed X/Y/Z.
+ */
+interface LoopDraft {
+  forId: string;
+  arm: "a" | "b" | null;
+  at: Vec3 | null;
+  other: string | null;
+  toAt: Vec3 | null;
+  kind: "pin" | "line";
+  axisA: Vec3 | null;
+  axisB: Vec3 | null;
+  typed: [string, string, string];
+}
+let loopDraft: LoopDraft | null = null;
+const LOOP_EMPTY = "No assembly.";
+const LOOP_ONE = "One member picked.";
+function loopNames(id: string): string {
+  return state.plate.objects.find((object) => object.id === id)?.name ?? id;
+}
+function chainHas(assembly: Assembly, id: string, of: string): boolean {
+  const seen = new Set<string>();
+  let cur = assembly.members.find((member) => member.object === of)?.parent ?? null;
+  while (cur && !seen.has(cur)) {
+    if (cur === id) return true;
+    seen.add(cur);
+    cur = assembly.members.find((member) => member.object === cur)?.parent ?? null;
+  }
+  return false;
+}
+/** The same sentence closeLoop returns when one member is the other's parent. */
+function parentLoopSentence(assembly: Assembly, member: string, other: string): string | null {
+  if (chainHas(assembly, member, other)) return `${loopNames(member)} is already ${loopNames(other)}'s parent: that is a joint, not a loop`;
+  if (chainHas(assembly, other, member)) return `${loopNames(other)} is already ${loopNames(member)}'s parent: that is a joint, not a loop`;
+  return null;
+}
+function loopDraftFor(id: string): LoopDraft {
+  if (!loopDraft || loopDraft.forId !== id) loopDraft = { forId: id, arm: null, at: null, other: null, toAt: null, kind: "pin", axisA: null, axisB: null, typed: ["", "", ""] };
+  return loopDraft;
+}
+/** A direction in `fromId`'s frame, written in `toId`'s frame. */
+function axisInFrame(from: Vec3, fromId: string, toId: string): Vec3 | null {
+  const fromPose = poseOf(fromId), toPose = poseOf(toId);
+  if (!fromPose || !toPose) return null;
+  const local = turnDir(inversePose(toPose), turnDir(fromPose, from));
+  return Math.hypot(...local) < 1e-12 ? null : local;
+}
+function lineDirection(draft: LoopDraft): Vec3 | null {
+  if (draft.typed.some((text) => text.trim() !== "")) {
+    const nums = draft.typed.map(Number);
+    if (!nums.every((n) => Number.isFinite(n)) || draft.typed.some((text) => text.trim() === "")) return null;
+    return Math.hypot(...(nums as [number, number, number])) < 1e-12 ? null : nums as unknown as Vec3;
+  }
+  if (draft.axisB) return draft.axisB;
+  if (draft.axisA && draft.other) return axisInFrame(draft.axisA, draft.forId, draft.other);
+  return null;
+}
+/** Why Close loop cannot run. Null when the button can. */
+function loopReason(memberId: string | null): string | null {
+  if (state.stage !== "pose") return "Close loop is in Pose.";
+  if (tool !== "joint") return "Close loop is in the Joint tool.";
+  const row = memberId ? selected() : null;
+  if (!row || row.member.object !== memberId) return LOOP_EMPTY;
+  const draft = loopDraft?.forId === memberId ? loopDraft : null;
+  if (!draft?.at || !draft.other || !draft.toAt) return LOOP_ONE;
+  const parent = parentLoopSentence(row.assembly, memberId, draft.other);
+  if (parent) return parent;
+  if (draft.kind === "line" && !lineDirection(draft)) return "A line needs a direction.";
+  return null;
+}
+function publishLoopFacts(): void {
+  const row = state.stage === "pose" && tool === "joint" ? selected() : null;
+  setLoopFacts({ jointTool: state.stage === "pose" && tool === "joint", reason: loopReason(row?.member.object ?? null) });
 }
 /** What the last Couple gears said: pairs not coupled and why, for the assembly it ran on. */
 let gearNotes: { assembly: string; lines: string[]; made?: string[] } | null = null;
@@ -386,6 +462,7 @@ function setTool(next: Tool): void {
   view?.setMove(next === "move");
   chainSelected = false;
   linkParent = null;
+  if (loopDraft?.arm) loopDraft = { ...loopDraft, arm: null };
   message = next === "link" ? "Choose the parent, then its child." : next === "reach" ? "Drag a point on a jointed part." : next === "joint" ? "Select a linked part, then click its cylindrical face. Shift-click a mesh to snap its pivot." : next === "move" ? "Drag a part in design space. Right-drag turns it. Alt turns snap off. Shift snaps to 1 mm and 15°." : "";
   const nudge = document.querySelector<HTMLElement>("#gizmoNudge");
   if (nudge && state.stage === "pose") nudge.hidden = next !== "move" || !state.plate.selectedId;
@@ -443,9 +520,67 @@ async function pickJoint(id: string, hit: PoseHit): Promise<void> {
     if (serial === pickSerial) { message = `Could not read the selected face: ${error instanceof Error ? error.message : String(error)}`; renderPanel(); }
   }
 }
+/** The next click, while Close a loop is armed, records a point instead of placing a hinge or changing the selection. */
+async function pickLoopPoint(id: string, hit: PoseHit): Promise<void> {
+  const selectedId = state.plate.selectedId;
+  const draft = loopDraft;
+  if (!draft?.arm || !selectedId || draft.forId !== selectedId || !sceneShift) return;
+  const arm = draft.arm;
+  if (arm === "a" && id !== selectedId) { message = "Click the selected part."; renderPanel(); return; }
+  if (arm === "b" && id === selectedId) { message = "Click the other part."; renderPanel(); return; }
+  const object = state.plate.objects.find((part) => part.id === id);
+  if (!object) return;
+  const serial = ++pickSerial;
+  const inverse = inversePose(modelPoseOf(object));
+  const sceneInverse = inversePose(sceneShift);
+  const localPoint = (point: readonly number[]): Vec3 => applyPose(inverse, applyPose(sceneInverse, point));
+  message = "Reading the point…";
+  renderPanel();
+  try {
+    const solid = object.modelTree || object.brep || /\.(step|stp)$/i.test(object.fileName) ? await (await loadModel()).poseSolid(object) : null;
+    if (serial !== pickSerial || state.stage !== "pose" || tool !== "joint" || loopDraft?.forId !== selectedId || loopDraft.arm !== arm) return;
+    let at: Vec3 | undefined;
+    let axis: Vec3 | undefined;
+    if (typeof solid === "string") { message = solid; renderPanel(); return; }
+    if (solid) {
+      const origin = localPoint(hit.ray.origin);
+      const direction = turnDir(inverse, turnDir(sceneInverse, hit.ray.direction));
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(solid.positions, 3));
+      const material = new THREE.MeshBasicMaterial();
+      const mesh = new THREE.Mesh(geometry, material);
+      const ray = new THREE.Raycaster(new THREE.Vector3(...origin), new THREE.Vector3(...direction));
+      const faceIndex = ray.intersectObject(mesh, false)[0]?.faceIndex;
+      geometry.dispose(); material.dispose();
+      const pickedFace = faceIndex == null ? undefined : solid.triangles[faceIndex];
+      const canvas = document.querySelector<HTMLCanvasElement>("#pose");
+      if (canvas) canvas.dataset.jointFace = pickedFace === undefined ? "" : String(pickedFace);
+      const picked = pickedFace === undefined ? null : cylinderJoint(solid, pickedFace);
+      if (!picked) { message = "Click a cylindrical face, or a mesh."; renderPanel(); return; }
+      at = picked.pivot;
+      axis = picked.axis;
+    } else if (hit.shift) {
+      const vertices = hit.triangle.map(localPoint);
+      const candidates = [...vertices, ...vertices.map((v, i) => v.map((n, k) => (n + vertices[(i + 1) % vertices.length]![k]!) / 2) as Vec3), centre(id)];
+      const here = localPoint(hit.point);
+      candidates.sort((a, b) => Math.hypot(...a.map((v, i) => v - here[i]!)) - Math.hypot(...b.map((v, i) => v - here[i]!)));
+      at = candidates[0];
+    } else at = localPoint(hit.point);
+    if (!at || !loopDraft || loopDraft.forId !== selectedId) return;
+    if (arm === "a") loopDraft = { ...loopDraft, at, axisA: axis ?? null, arm: null };
+    else loopDraft = { ...loopDraft, other: id, toAt: at, axisB: axis ?? (loopDraft.other === id ? loopDraft.axisB : null), arm: null };
+    const marked = document.querySelector<HTMLCanvasElement>("#pose");
+    if (marked) marked.dataset.loopPoint = `${arm}:${id}`;
+    message = arm === "a" ? "Point on this part." : `Point on ${loopNames(id)}.`;
+    renderPanel();
+  } catch (error) {
+    if (serial === pickSerial) { message = `Could not read the point: ${error instanceof Error ? error.message : String(error)}`; renderPanel(); }
+  }
+}
 function pick(id: string | null, hit?: PoseHit): void {
   if (!id) return;
   stopAnimation();
+  if (tool === "joint" && hit && loopDraft?.arm && loopDraft.forId === state.plate.selectedId) { void pickLoopPoint(id, hit); return; }
   if (tool === "link") {
     if (!linkParent) { linkParent = id; message = "Now choose the child."; fx.selectPlateObject(id); syncPose(); return; }
     const parent = linkParent;
@@ -728,13 +863,14 @@ function publishAnimationFacts(): void {
 function renderPanel(): void {
   publishAnimationFacts();
   const panel = document.querySelector<HTMLElement>("#posePanel");
-  if (!panel || state.stage !== "pose") return;
+  if (!panel || state.stage !== "pose") { publishLoopFacts(); return; }
   // A Move field being typed in stays where it is: a rebuild that lands mid-typing (a late library read) keeps the number.
   const held = heldMoveCard(panel);
   if (held) for (const node of [...panel.childNodes]) { if (node !== held) node.remove(); }
   else panel.replaceChildren();
   fillPanel(panel);
   if (held) keepMoveCard(held);
+  publishLoopFacts();
 }
 function fillPanel(panel: HTMLElement): void {
   addText(panel, "h3", "Parts");
@@ -847,6 +983,7 @@ function fillPanel(panel: HTMLElement): void {
   if (!row) {
     // A gear in no assembly: Couple gears makes its train (docs/plan-gear-kinds.md, stage 1).
     freeGearSection(panel);
+    if (tool === "joint") loopSection(panel, null);
     return;
   }
   addText(panel, "h3", state.plate.objects.find((item) => item.id === row.member.object)?.name ?? row.member.object);
@@ -877,6 +1014,7 @@ function fillPanel(panel: HTMLElement): void {
       field(panel, "Minimum mm", "min", joint.min, "Free"); field(panel, "Maximum mm", "max", joint.max, "Free");
     } else field(panel, "Cone °", "cone", joint.cone, "Free");
   }
+  if (tool === "joint") loopSection(panel, row);
   contactSection(panel, row.assembly, row.member);
   const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
   button(actions, "Rest", "rest"); button(actions, "Make rest", "make-rest"); button(actions, "Undo", "undo"); button(actions, "Redo", "redo");
@@ -888,6 +1026,70 @@ function fillPanel(panel: HTMLElement): void {
  * on it without a joint, a solid at the filament's density, its centre of gravity in model space and, on a hinge, its
  * inertia, lever arm and period as a pendulum. Read-only; a mesh that does not close says so instead.
  */
+function fmt3(at: Vec3): string {
+  return at.map((value) => String(Math.round(value * 100) / 100)).join(", ");
+}
+/** Close a loop, in the Joint tool (docs/plan-pose-loops.md L3). The button stays, disabled, when it cannot run. */
+function loopSection(panel: HTMLElement, row: { assembly: Assembly; member: Member } | null): void {
+  const box = document.createElement("div"); box.dataset.poseLoop = "section"; panel.append(box);
+  addText(box, "h3", "Close a loop");
+  const memberId = row?.member.object ?? null;
+  const draft = memberId ? loopDraftFor(memberId) : null;
+  if (draft && row) {
+    const mine = button(box, "Pick a point", "loop-arm"); mine.dataset.loopArm = "a"; mine.setAttribute("aria-pressed", String(draft.arm === "a"));
+    addText(box, "p", draft.at ? `On this part: ${fmt3(draft.at)}` : "Click this part, or one of its cylindrical faces.");
+    const other = button(box, "Pick the other", "loop-arm"); other.dataset.loopArm = "b"; other.setAttribute("aria-pressed", String(draft.arm === "b"));
+    addText(box, "p", draft.other && draft.toAt ? `On ${loopNames(draft.other)}: ${fmt3(draft.toAt)}` : "Then click the other part.");
+    const kindLabel = document.createElement("label"); kindLabel.className = "pose-field"; addText(kindLabel, "span", "Loop");
+    const select = document.createElement("select"); select.dataset.poseLoop = "kind"; select.setAttribute("aria-label", "Loop kind");
+    for (const [value, name] of [["pin", "Pin"], ["line", "Line"]] as const) { const option = document.createElement("option"); option.value = value; option.textContent = name; select.append(option); }
+    select.value = draft.kind; kindLabel.append(select); box.append(kindLabel);
+    if (draft.kind === "line") {
+      const hinted = draft.axisB ?? (draft.axisA && draft.other ? axisInFrame(draft.axisA, draft.forId, draft.other) : null);
+      for (let i = 0; i < 3; i++) {
+        const wrap = document.createElement("label"); wrap.className = "pose-field"; addText(wrap, "span", `Line ${"XYZ"[i]}`);
+        const input = document.createElement("input"); input.type = "number"; input.step = "any"; input.dataset.poseLoop = "xyz"[i]!;
+        input.value = draft.typed[i]; input.placeholder = hinted ? String(Math.round(hinted[i] * 10000) / 10000) : "";
+        input.setAttribute("aria-label", `Line ${"XYZ"[i]}`); wrap.append(input); box.append(wrap);
+      }
+    }
+  }
+  const actions = document.createElement("div"); actions.className = "pose-buttons"; box.append(actions);
+  const close = button(actions, "Close loop", "close-loop");
+  const reason = loopReason(memberId);
+  if (reason) { close.setAttribute("aria-disabled", "true"); close.dataset.tip = `Close a loop.\n${reason}`; close.title = reason; }
+  else close.dataset.tip = "Close a loop.";
+  if (!row) return;
+  const loops = (row.assembly.closures ?? []).filter((closure) => closure.a.member === row.member.object || closure.b.member === row.member.object);
+  if (!loops.length) addText(box, "p", "No loops on this part.");
+  for (const closure of loops) {
+    const otherId = closure.a.member === row.member.object ? closure.b.member : closure.a.member;
+    const line = document.createElement("div"); line.className = "pose-coupling";
+    addText(line, "p", `${closure.kind === "line" ? "Line" : "Pin"} to ${loopNames(otherId)}`);
+    const remove = button(line, "Remove", "remove-loop"); remove.dataset.loopId = closure.id;
+    box.append(line);
+  }
+}
+function commitLoop(): void {
+  const row = selected();
+  const draft = loopDraft;
+  if (!row || !draft || draft.forId !== row.member.object || !draft.at || !draft.other || !draft.toAt) return;
+  const along = draft.kind === "line" ? lineDirection(draft) : null;
+  if (draft.kind === "line" && !along) { message = "A line needs a direction."; renderPanel(); return; }
+  const result = closeLoop(row.assembly, { member: row.member.object, at: draft.at, to: draft.other, toAt: draft.toAt, ...(along ? { along } : {}) }, loopNames, poseOf);
+  if ("reason" in result) { message = result.reason; renderPanel(); return; }
+  message = "Loop closed.";
+  loopDraft = { ...draft, arm: null };
+  editAssembly(result.assembly);
+}
+function dropLoop(id: string): void {
+  const row = selected();
+  if (!row) return;
+  const result = removeLoop(row.assembly, id);
+  if ("reason" in result) { message = result.reason; renderPanel(); return; }
+  message = "Loop removed.";
+  editAssembly(result.assembly);
+}
 function massSection(panel: HTMLElement, assembly: Assembly, object: string): void {
   const moving = movingBody(assembly, object);
   if (!moving) return;
@@ -1699,6 +1901,27 @@ function panelClick(event: Event): void {
     else if (row) { gearNotes = null; editAssembly(withFound(row.assembly, undefined)); }
     return;
   }
+  if (action === "loop-arm") {
+    const arm = target.dataset.loopArm === "b" ? "b" : "a";
+    const armed = selected();
+    if (!armed) { message = LOOP_EMPTY; renderPanel(); return; }
+    const draft = loopDraftFor(armed.member.object);
+    loopDraft = { ...draft, arm: draft.arm === arm ? null : arm };
+    message = loopDraft.arm === "a" ? "Click a point on this part." : loopDraft.arm === "b" ? "Click a point on the other part." : "";
+    renderPanel();
+    return;
+  }
+  if (action === "close-loop") {
+    const reason = loopReason(selected()?.member.object ?? null);
+    if (reason) { message = reason; renderPanel(); return; }
+    commitLoop();
+    return;
+  }
+  if (action === "remove-loop") {
+    const id = target.dataset.loopId;
+    if (id) dropLoop(id);
+    return;
+  }
   const row = selected(); if (!row || (action !== "rest" && action !== "make-rest")) return;
   const ids = poseChain([row.assembly], row.member.object);
   // A root that turns on the plate goes back to rest with its train. Its zero stays: the parts hinged on it keep their
@@ -1774,6 +1997,18 @@ function panelChange(event: Event): void {
     coupleDraft = couple === "kind" ? { ...EMPTY_DRAFT, driven: coupleDraft.driven, kind: input.value as CoupleKind } : { ...coupleDraft, [couple]: input.value, ...(couple === "free" ? { freeSet: "1" } : couple === "click" ? { clickSet: "1", manual: "" } : {}) } as CoupleDraft;
     // A choice that changes which fields the form shows draws it again; a typed number waits for Couple.
     if (couple === "kind" || couple === "click" || couple === "driven" || couple === "free") { coupleNote = null; renderPanel(); }
+    return;
+  }
+  const loopKey = input.dataset.poseLoop;
+  if (loopKey && loopDraft) {
+    if (loopKey === "kind") { loopDraft = { ...loopDraft, kind: input.value === "line" ? "line" : "pin" }; renderPanel(); return; }
+    const index = "xyz".indexOf(loopKey);
+    if (index >= 0) {
+      const typed: [string, string, string] = [...loopDraft.typed];
+      typed[index] = input.value;
+      loopDraft = { ...loopDraft, typed };
+      renderPanel();
+    }
     return;
   }
   const name = input.dataset.poseField;
