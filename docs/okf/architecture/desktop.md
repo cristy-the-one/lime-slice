@@ -49,7 +49,7 @@ Inside Tauri the UI calls `slice_model` instead of HTTP. In the browser, `cargo 
 
 # Live bridge
 
-The bridge is off unless `LIME_BRIDGE` is `1`, `true`, or `yes`, and `LIME_BRIDGE_TOKEN` is non-empty. The listener is `127.0.0.1` only. `LIME_BRIDGE_PORT` defaults to 43119. A matching POST is emitted as the `lime-bridge` event after any token field is removed. A body `{"open": "<path>"}` is not mirrored: the window opens that file.[^bridge] The MCP side points at that listener with `LIME_MCP_BRIDGE` and the same token. See [MCP server](mcp-server.md).
+The bridge is off unless `LIME_BRIDGE` is `1`, `true`, or `yes`, and `LIME_BRIDGE_TOKEN` is non-empty. The listener is `127.0.0.1` only. `LIME_BRIDGE_PORT` prefers 43119; unless it is set, a port that Windows reserved or another copy holds falls back to a free loopback port, written to the token file the bundled MCP reads. A matching POST is emitted as the `lime-bridge` event after any token field is removed. A body `{"open": "<path>"}` is not mirrored: the window opens that file.[^bridge] The MCP side points at that listener with `LIME_MCP_BRIDGE` and the same token. See [MCP server](mcp-server.md).
 
 [^conf]: src-tauri/tauri.conf.json
 [^lib]: src-tauri/src/lib.rs

@@ -26,7 +26,7 @@ export async function bridgeReceipts(): Promise<unknown[] | null> {
   const target = bridgeTarget();
   if (!target) return null;
   try {
-    const response = await fetch(new URL("/tandem-receipts", target.url), { headers: { authorization: `Bearer ${target.token}` }, signal: AbortSignal.timeout(1000) });
+    const response = await fetchBridge(target, "/tandem-receipts", { signal: () => AbortSignal.timeout(1000) });
     if (!response.ok || !(response.headers.get("x-lime-bridge-features") ?? "").split(/[\s,]+/).includes("tandem-receipts")) return null;
     const value: unknown = await response.json();
     return Array.isArray(value) ? value : null;
@@ -40,7 +40,7 @@ export async function bridgeHumanContext(): Promise<unknown | null> {
   const target = bridgeTarget();
   if (!target) return null;
   try {
-    const response = await fetch(new URL("/tandem-context", target.url), { headers: { authorization: `Bearer ${target.token}` }, signal: AbortSignal.timeout(1000) });
+    const response = await fetchBridge(target, "/tandem-context", { signal: () => AbortSignal.timeout(1000) });
     if (!response.ok || !(response.headers.get("x-lime-bridge-features") ?? "").split(/[\s,]+/).includes("tandem-context")) return null;
     return await response.json();
   } catch {
@@ -110,6 +110,27 @@ function fromTokenFile(): { url: string; token: string } | null {
   return value;
 }
 
+/**
+ * `fetch` against the bridge. The app may have restarted on another port (it falls back to a free one when Windows
+ * reserved 43119) after this server read its token file, so when the connection fails the file is read again, past
+ * the one-second cache, and the request is tried once more at the new address if the file now names another. The
+ * environment wins over the file, so an address set there never changes.
+ */
+async function fetchBridge(target: { url: string; token: string }, path: string | null, init: Omit<RequestInit, "signal"> & { signal?: () => AbortSignal }): Promise<Response> {
+  const attempt = (at: { url: string; token: string }) => {
+    const { signal, ...rest } = init;
+    return fetch(path === null ? at.url : new URL(path, at.url), { ...rest, headers: { ...(rest.headers as Record<string, string> | undefined), authorization: `Bearer ${at.token}` }, signal: signal?.() });
+  };
+  try {
+    return await attempt(target);
+  } catch (error) {
+    fileCache = null;
+    const fresh = bridgeTarget();
+    if (!fresh || fresh.url === target.url) throw error;
+    return await attempt(fresh);
+  }
+}
+
 /** The mirror's address and token, or null when the mirror is off: the environment, else the app's token file. */
 export function bridgeTarget(): { url: string; token: string } | null {
   const fromEnv = process.env.LIME_MCP_BRIDGE && process.env.LIME_MCP_BRIDGE_TOKEN ? { url: process.env.LIME_MCP_BRIDGE, token: process.env.LIME_MCP_BRIDGE_TOKEN } : null;
@@ -153,11 +174,11 @@ export function bridgeDelivery(): { ok: boolean; why: string } {
 /** True when the window accepted the message. */
 async function send(target: { url: string; token: string }, payload: unknown, link: BridgeLink | undefined, carriedAll: boolean): Promise<boolean> {
   try {
-    const response = await fetch(target.url, {
+    const response = await fetchBridge(target, null, {
       method: "POST",
-      headers: { authorization: `Bearer ${target.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+      signal: () => AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
     if (!response.ok) {
       console.error("lime-mcp: the desktop bridge refused the mirror.");
@@ -203,8 +224,8 @@ export async function bridgeStatus(): Promise<BridgeStatus> {
   const turnOn = "start the app with the bridge launcher, or turn the bridge on with the Tandem light in the app's top bar";
   if (!target) return { bridge: "absent", why: `not configured: LIME_MCP_BRIDGE and LIME_MCP_BRIDGE_TOKEN are not set${bridgeTokenFile() ? " and the app has not turned the bridge on" : ""}; ${turnOn}` };
   try {
-    const response = await fetch(new URL("/health", target.url), { headers: { authorization: `Bearer ${target.token}` }, signal: AbortSignal.timeout(1000) });
-    if (response.ok) return { bridge: "connected", url: target.url };
+    const response = await fetchBridge(target, "/health", { signal: () => AbortSignal.timeout(1000) });
+    if (response.ok) return { bridge: "connected", url: bridgeTarget()?.url ?? target.url };
     if (response.status === 401) return { bridge: "absent", url: target.url, why: "the app refused the bridge token: LIME_MCP_BRIDGE_TOKEN is not the app's" };
     return { bridge: "absent", url: target.url, why: `the app answered ${response.status}` };
   } catch {
