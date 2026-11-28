@@ -200,7 +200,18 @@ test("hole snap and a coaxial pin close both can-press loops, and the lever drag
     el.dataset.lookFrom = "0,1,0";
   });
   await expect(canvas).toHaveAttribute("data-camera-from", "0,1,0");
-  await expect(canvas).toHaveAttribute("data-turn-handles", /0:/);
+  // data-camera-from is the direction asked for, written on the frame that aims the camera. That frame can
+  // publish the ring before the camera matrix has caught up (off the canvas), and the orbit may still be easing.
+  // Drag the ring only once the camera and its projection have stopped changing.
+  let lastView = "";
+  await expect.poll(async () => {
+    const camera = (await canvas.getAttribute("data-camera")) ?? "";
+    const handles = (await canvas.getAttribute("data-turn-handles")) ?? "";
+    const now = `${camera}|${handles}`;
+    const settled = now === lastView && camera.length > 0 && /(?:^|\s)0:/.test(handles);
+    lastView = now;
+    return settled;
+  }, { message: "the turn ring is re-projected after the camera settles" }).toBe(true);
   const posed = () => canvas.getAttribute("data-posed");
   const box = async (id: string): Promise<number[]> => {
     const row = (await posed())?.split(" ").find((part) => part.startsWith(`${id}:`));
@@ -216,6 +227,7 @@ test("hole snap and a coaxial pin close both can-press loops, and the lever drag
   const steps = 8;
   await page.mouse.move(handle[0]!, handle[1]!);
   await page.mouse.down();
+  await expect(canvas, "the drag missed the lever's turn ring").toHaveAttribute("data-turn-active", "0");
   for (let i = 1; i <= steps; i += 1) {
     const theta = (70 * Math.PI / 180) * (i / steps);
     await page.mouse.move(centre[0]! + ox * Math.cos(theta) - oy * Math.sin(theta), centre[1]! + ox * Math.sin(theta) + oy * Math.cos(theta));
