@@ -114,23 +114,8 @@ test("orbit frame cost of Speed, Efficiency and Toughness @perf", async ({ page 
     await page.getByRole("button", { name: "3D", exact: true }).click();
     await settle(page);
     const layers = Number(await page.locator("#rangeHigh").getAttribute("max")) + 1;
-    if (shotPrefix && card === "toughness") await shot(page, "rest");
-
     const rest = frameStats(await previewFrames(page, 3000, true));
 
-    if (shotPrefix && card === "toughness") {
-      const box = await page.locator("#view3d").boundingBox();
-      if (!box) throw new Error("preview canvas has no box");
-      const cx = box.x + box.width / 2;
-      const cy = box.y + box.height / 2;
-      await page.mouse.move(cx, cy);
-      await page.mouse.down();
-      for (let i = 1; i <= 8; i++) await page.mouse.move(cx + i * 14, cy + i * 6);
-      await page.waitForTimeout(400);
-      await shot(page, "orbit");
-      await page.mouse.up();
-      await settle(page);
-    }
     await page.evaluate(() => {
       const w = window as unknown as { __previewPerf: FrameSample[]; __gl: { draws: number; instances: number }; __previewPump: boolean };
       w.__gl.draws = 0;
@@ -148,12 +133,29 @@ test("orbit frame cost of Speed, Efficiency and Toughness @perf", async ({ page 
 
     await settle(page);
     await setKinds(page, INFILL, false);
-    if (shotPrefix && card === "toughness") {
-      await settle(page);
-      await shot(page, "infill-hidden");
-    }
     const hidden = frameStats(await previewFrames(page, 3000, true));
     await setKinds(page, INFILL, true);
+
+    if (shotPrefix && card === "toughness") {
+      await page.evaluate(() => (window as unknown as { __previewReframe?: () => void }).__previewReframe?.());
+      await settle(page);
+      await shot(page, "rest");
+      const box = await page.locator("#view3d").boundingBox();
+      if (!box) throw new Error("preview canvas has no box");
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      for (let i = 1; i <= 8; i++) await page.mouse.move(cx + i * 14, cy + i * 6);
+      await page.waitForTimeout(400);
+      await shot(page, "orbit");
+      await page.mouse.up();
+      await settle(page);
+      await setKinds(page, INFILL, false);
+      await settle(page);
+      await shot(page, "infill-hidden");
+      await setKinds(page, INFILL, true);
+    }
 
     out[card] = { layers, rest, orbit: moving, infillHidden: hidden };
     console.log(`PREVIEW_ORBIT ${card} ${JSON.stringify(out[card])}`);

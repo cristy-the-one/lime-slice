@@ -44,4 +44,17 @@ test("hiding solid infill leaves its instances out of the preview draw", async (
   });
   const restored = frameStats(await previewFrames(page, 400, true));
   expect(restored.instances).toBe(shown.instances);
+
+  const view = await page.locator("#view3d").boundingBox();
+  if (!view) throw new Error("preview canvas has no box");
+  await page.mouse.move(view.x + view.width / 2, view.y + view.height / 2);
+  for (let i = 0; i < 8; i++) await page.mouse.wheel(0, 150);
+  await page.waitForTimeout(300);
+  const lined = frameStats(await previewFrames(page, 400, true));
+  expect(lined.instances).toBeGreaterThan(0);
+  expect(lined.instances).toBeLessThan(restored.instances);
+  for (let i = 0; i < 12; i++) await page.mouse.wheel(0, -200);
+  await page.waitForTimeout(300);
+  const boxed = frameStats(await previewFrames(page, 400, true));
+  expect(boxed.instances).toBe(restored.instances);
 });

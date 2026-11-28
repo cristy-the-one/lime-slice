@@ -24,7 +24,8 @@ export async function watchGl(page: Page) {
     for (const proto of [WebGLRenderingContext.prototype, WebGL2RenderingContext.prototype]) {
       wrap(proto, "drawArrays", -1);
       wrap(proto, "drawElements", -1);
-      wrap(proto, "drawArraysInstanced", 4);
+      // drawArraysInstanced(mode, first, count, primcount); drawElementsInstanced's primcount is the fifth argument.
+      wrap(proto, "drawArraysInstanced", 3);
       wrap(proto, "drawElementsInstanced", 4);
     }
   });
