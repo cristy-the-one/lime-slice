@@ -134,5 +134,25 @@ const ballReach = solvePose(ballLeg, (id) => id === "body" ? IDENTITY_POSE : und
 check("ball reach obeys its cone", !("reason" in ballReach) && Math.abs(Math.atan2(ballReach.point[1], ballReach.point[0]) * 180 / Math.PI - 30) < 1e-6);
 check("reach refuses a missing ball centre", "reason" in solvePose(ballLeg, (id) => id === "body" ? IDENTITY_POSE : undefined, "ball", [10, 0, 0], [0, 10, 0]));
 check("reach refuses a fixed part", "reason" in solvePose(leg, (id) => id === "body" ? IDENTITY_POSE : undefined, "body", [0, 0, 0], [1, 1, 1]));
+// A hinge of length 10 can put the grabbed point on a circle of radius 10. [24, 0, 0] is past that circle; only the slide reaches it.
+const slideLeg: Assembly = { id: "ram", name: "ram", members: [
+  root,
+  { object: "arm", parent: "body", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1], angle: 0, min: -170, max: 170 } },
+  { object: "ram", parent: "arm", offset: [10, 0, 0], turn: [0, 0, 0], joint: { kind: "slide", pivot: [0, 0, 0], axis: [1, 0, 0], travel: 0, min: 0, max: 30 } },
+] };
+const poseBody = (id: string) => id === "body" ? IDENTITY_POSE : undefined;
+const slideReach = solvePose(slideLeg, poseBody, "ram", [0, 0, 0], [24, 0, 0]);
+if ("reason" in slideReach) check("a hinge and a slide reach a point the hinge cannot", false);
+else {
+  const ram = slideReach.assembly.members.find((row) => row.object === "ram")!.joint;
+  const arm = slideReach.assembly.members.find((row) => row.object === "arm")!.joint;
+  check("a hinge and a slide reach a point the hinge cannot", slideReach.reached && slideReach.distance <= 0.05 && ram?.kind === "slide" && Math.abs((ram.travel ?? 0) - 14) < 0.05 && arm?.kind === "hinge" && Math.abs(arm.angle ?? 0) < 1);
+}
+const lockedSlide: Assembly = { ...slideLeg, members: slideLeg.members.map((row) => row.object === "ram" && row.joint?.kind === "slide" ? { ...row, joint: { ...row.joint, min: 0, max: 0 } } : row) };
+const stuck = solvePose(lockedSlide, poseBody, "ram", [0, 0, 0], [24, 0, 0]);
+check("a slide held at its limit cannot reach past the hinge", !("reason" in stuck) && !stuck.reached && Math.hypot(...stuck.point) < 10.05);
+const capped = solvePose(slideLeg, poseBody, "ram", [0, 0, 0], [50, 0, 0]);
+const cappedTravel = !("reason" in capped) ? capped.assembly.members.find((row) => row.object === "ram")!.joint : undefined;
+check("reach stops a slide at its travel limit", !("reason" in capped) && !capped.reached && cappedTravel?.kind === "slide" && cappedTravel.travel === 30 && near(capped.point, [40, 0, 0], 1e-4));
 if (failed) throw new Error(`${failed} pose checks failed`);
 console.log("pose: joints, limits, children, links and rest ok");

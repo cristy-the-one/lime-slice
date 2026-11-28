@@ -142,7 +142,7 @@ Animation = a lust script `//! kind: animation`, `//! api: 1.17`: `let rig = s.r
 - `pose_animate {object, path}` **without `out`** = free collision check of every frame (warnings: pair, frames).
   Iterate params until warnings are empty, then export `out:{gif, frames}`, `fit:{min,max}`, `longEdge`.
 - Keep with `keep:{title, description}`. Member names written literally become required members — take them as text params.
-- Slides can't be keyed (move via couplings); for a nonlinear slide use a far-pivot hinge.
+- From 7.7.0 a slide can be keyed (mm), dragged and reached.
 - MP4: `ffmpeg -framerate 20 -i frames/frame-%03d.png -c:v libx264 -pix_fmt yuv420p out.mp4` (ffmpeg via winget).
 
 ## 8. Render, export, slice

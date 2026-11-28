@@ -30,7 +30,7 @@ export interface PoseScene extends PoseLooks {
   colors?: ReadonlyMap<string, string>;
   /** An animation's background, #rrggbb. It replaces the stage colour and hides the bed, so the colour is the whole backdrop. */
   background?: string;
-  gizmo?: { pivot: [number, number, number]; axes: [number, number, number][]; radius: number };
+  gizmo?: { pivot: [number, number, number]; axes: [number, number, number][]; radius: number; slide?: boolean };
   marks?: { pivot: [number, number, number]; axis?: [number, number, number] }[];
 }
 
@@ -147,7 +147,22 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   const markBall = new THREE.MeshBasicMaterial({ color: hexToThree(colors.pose), depthTest: false });
   const markSphere = new THREE.SphereGeometry(1.5, 10, 8);
   const ringMaterial = new THREE.MeshBasicMaterial({ color: hexToThree(colors.pose), transparent: true, opacity: 0.85, depthTest: false, side: THREE.DoubleSide });
+  // The slide arrow uses its own material so a hover can light it without recolouring a hinge's ring.
+  const slideMaterial = new THREE.MeshBasicMaterial({ color: hexToThree(colors.pose), transparent: true, opacity: 0.85, depthTest: false, side: THREE.DoubleSide });
+  const slidePickMaterial = new THREE.MeshBasicMaterial({ visible: false, depthTest: false, side: THREE.DoubleSide });
+  let slideHot = false;
+  /** The same hot colour a ring takes when the pointer is on it: white, and fully opaque. */
+  function paintSlide(hot: boolean): void {
+    const color = hexToThree(hot ? colors.gizmoHot : colors.pose);
+    if (slideHot === hot && slideMaterial.color.getHex() === color && slideMaterial.opacity === (hot ? 1 : 0.85)) return;
+    slideHot = hot;
+    slideMaterial.color.setHex(color);
+    slideMaterial.opacity = hot ? 1 : 0.85;
+    if (!reachEnabled) canvas.style.cursor = hot ? "grab" : "";
+    kick();
+  }
   let ringGeometry: THREE.TorusGeometry | null = null;
+  let arrowGeometries: THREE.BufferGeometry[] = [];
 
   function geometryOf(positions: Float32Array) {
     let entry = held.get(positions);
@@ -208,6 +223,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     const published: string[] = [];
     const looks: string[] = [];
     let union: Bounds | null = null;
+    let selectedBox: Bounds | null = null;
     for (const part of next.parts) {
       const entry = geometryOf(part.positions);
       const look = lookOf(part.id, next);
@@ -235,6 +251,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
           ? { min: [Math.min(union.min[0], one.min[0]), Math.min(union.min[1], one.min[1]), Math.min(union.min[2], one.min[2])], max: [Math.max(union.max[0], one.max[0]), Math.max(union.max[1], one.max[1]), Math.max(union.max[2], one.max[2])] }
           : one;
       }
+      if (part.id === next.selectedId && one) selectedBox = one;
       if (look !== "part") looks.push(`${part.id}:${look}`);
     }
     group.updateMatrixWorld(true);
@@ -253,18 +270,72 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     gizmos.clear();
     ringGeometry?.dispose();
     ringGeometry = null;
+    for (const geometry of arrowGeometries) geometry.dispose();
+    arrowGeometries = [];
     if (next.gizmo) {
       const { pivot, axes, radius } = next.gizmo;
-      ringGeometry = new THREE.TorusGeometry(radius, Math.max(0.45, radius * 0.035), 8, 96);
-      axes.forEach((axis, index) => {
-        const ring = new THREE.Mesh(ringGeometry!, ringMaterial);
-        ring.position.set(...pivot);
-        ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...axis).normalize());
-        ring.userData.axis = index;
-        ring.userData.direction = new THREE.Vector3(...axis).normalize();
-        ring.renderOrder = 10;
-        gizmos.add(ring);
-      });
+      const at = new THREE.Vector3(...pivot);
+      if (next.gizmo.slide) {
+        const dir = new THREE.Vector3(...axes[0]!).normalize();
+        const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        const back = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().negate());
+        // The part's centre, dropped onto the slide axis. A projection that misses the part keeps the pivot.
+        const centre = selectedBox
+          ? new THREE.Vector3((selectedBox.min[0] + selectedBox.max[0]) / 2, (selectedBox.min[1] + selectedBox.max[1]) / 2, (selectedBox.min[2] + selectedBox.max[2]) / 2)
+          : at.clone();
+        const projected = at.clone().add(dir.clone().multiplyScalar(dir.dot(centre.clone().sub(at))));
+        const onPart = !!selectedBox && projected.x >= selectedBox.min[0] - 1e-4 && projected.x <= selectedBox.max[0] + 1e-4
+          && projected.y >= selectedBox.min[1] - 1e-4 && projected.y <= selectedBox.max[1] + 1e-4
+          && projected.z >= selectedBox.min[2] - 1e-4 && projected.z <= selectedBox.max[2] + 1e-4;
+        const origin = onPart ? projected : at.clone();
+        let minAlong = 0, maxAlong = 0;
+        if (selectedBox) {
+          minAlong = Infinity; maxAlong = -Infinity;
+          for (const x of [selectedBox.min[0], selectedBox.max[0]]) for (const y of [selectedBox.min[1], selectedBox.max[1]]) for (const z of [selectedBox.min[2], selectedBox.max[2]]) {
+            const along = dir.dot(new THREE.Vector3(x, y, z).sub(origin));
+            minAlong = Math.min(minAlong, along); maxAlong = Math.max(maxAlong, along);
+          }
+        }
+        const span = Math.max(maxAlong - minAlong, radius);
+        // Past the box by at least 20% of its extent on each side, so both heads clear the part.
+        const half = Math.max(Math.abs(minAlong), Math.abs(maxAlong)) + span * 0.2;
+        const shaftR = Math.max(1.8, span * 0.07);
+        const headR = shaftR * 2.8;
+        const headLen = Math.min(half * 0.34, Math.max(span * 0.18, headR * 1.4));
+        const shaftLen = Math.max(half - headLen, half * 0.4) * 2;
+        const shaftGeo = new THREE.CylinderGeometry(shaftR, shaftR, shaftLen, 12);
+        const headGeo = new THREE.ConeGeometry(headR, headLen, 16);
+        const pickGeo = new THREE.CylinderGeometry(headR * 1.35, headR * 1.35, half * 2, 10);
+        arrowGeometries.push(shaftGeo, headGeo, pickGeo);
+        const tip = origin.clone().add(dir.clone().multiplyScalar(half - headLen * 0.35));
+        const place = (mesh: THREE.Mesh, along: number, turn: THREE.Quaternion) => {
+          mesh.quaternion.copy(turn);
+          mesh.position.copy(origin).add(dir.clone().multiplyScalar(along));
+          mesh.userData.axis = 0;
+          mesh.userData.direction = dir;
+          mesh.userData.slide = true;
+          mesh.userData.pivot = at;
+          mesh.userData.tip = tip;
+          mesh.renderOrder = 10;
+          mesh.frustumCulled = false;
+          gizmos.add(mesh);
+        };
+        place(new THREE.Mesh(shaftGeo, slideMaterial), 0, quat);
+        place(new THREE.Mesh(headGeo, slideMaterial), half - headLen / 2, quat);
+        place(new THREE.Mesh(headGeo, slideMaterial), -(half - headLen / 2), back);
+        place(new THREE.Mesh(pickGeo, slidePickMaterial), 0, quat);
+      } else {
+        ringGeometry = new THREE.TorusGeometry(radius, Math.max(0.45, radius * 0.035), 8, 96);
+        axes.forEach((axis, index) => {
+          const ring = new THREE.Mesh(ringGeometry!, ringMaterial);
+          ring.position.copy(at);
+          ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...axis).normalize());
+          ring.userData.axis = index;
+          ring.userData.direction = new THREE.Vector3(...axis).normalize();
+          ring.renderOrder = 10;
+          gizmos.add(ring);
+        });
+      }
       gizmos.updateMatrixWorld(true);
     }
     box = union;
@@ -365,16 +436,23 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
           return `${mesh.userData.id}:${(rect.left + (point.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - point.y) * rect.height / 2).toFixed(1)}`;
         }).join(" ");
       } else delete canvas.dataset.reachPoints;
-      if (gizmos.children.length && ringGeometry) {
+      if (gizmos.children.length) {
         const rect = canvas.getBoundingClientRect();
-        const radius = ringGeometry.parameters.radius;
-        const centre = gizmos.children[0]!.position.clone().project(camera);
+        const radius = ringGeometry?.parameters.radius ?? 0;
+        const origin = (gizmos.children[0]!.userData.pivot as THREE.Vector3 | undefined)?.clone() ?? gizmos.children[0]!.position.clone();
+        const centre = origin.project(camera);
         canvas.dataset.turnCenter = `${(rect.left + (centre.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - centre.y) * rect.height / 2).toFixed(1)}`;
-        canvas.dataset.turnHandles = gizmos.children.map((ring) => {
-          const at = ring.localToWorld(new THREE.Vector3(radius, 0, 0)).project(camera);
-          return `${ring.userData.axis}:${(rect.left + (at.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - at.y) * rect.height / 2).toFixed(1)}`;
-        }).join(" ");
-      } else { delete canvas.dataset.turnHandles; delete canvas.dataset.turnCenter; }
+        const handles = new Map<number, string>();
+        for (const ring of gizmos.children) {
+          const axis = ring.userData.axis as number;
+          if (handles.has(axis)) continue;
+          const tip = ring.userData.tip as THREE.Vector3 | undefined;
+          const at = (tip ? tip.clone() : ring.localToWorld(new THREE.Vector3(radius, 0, 0))).project(camera);
+          handles.set(axis, `${axis}:${(rect.left + (at.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - at.y) * rect.height / 2).toFixed(1)}`);
+        }
+        canvas.dataset.turnHandles = [...handles.values()].join(" ");
+        canvas.dataset.turnKind = gizmos.children.some((ring) => ring.userData.slide) ? "slide" : "ring";
+      } else { delete canvas.dataset.turnHandles; delete canvas.dataset.turnCenter; delete canvas.dataset.turnKind; }
       renderViewHelper(renderer, viewHelper);
       still = moved || viewHelper.animating ? 0 : still + 1;
       if (still > STILL_FRAMES) {
@@ -505,7 +583,17 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   // A click picks; a drag orbits. The press position tells them apart.
   const raycaster = new THREE.Raycaster();
   let press: { x: number; y: number; id: number } | null = null;
-  let turnDrag: { pointer: number; axis: number; normal: THREE.Vector3; pivot: THREE.Vector3; from: THREE.Vector3; previous: number; total: number; emitted: number } | null = null;
+  let turnDrag: { pointer: number; axis: number; normal: THREE.Vector3; pivot: THREE.Vector3; from: THREE.Vector3; previous: number; total: number; emitted: number; slide?: boolean; axisDir?: THREE.Vector3; startAlong?: number } | null = null;
+  /** A plane that contains `axis` and faces the camera, so a drag along the arrow reads as millimetres. */
+  const slidePlane = (axis: THREE.Vector3): THREE.Vector3 => {
+    const view = camera.getWorldDirection(new THREE.Vector3());
+    let side = new THREE.Vector3().crossVectors(axis, view);
+    if (side.lengthSq() < 1e-8) {
+      side = new THREE.Vector3().crossVectors(axis, camera.up);
+      if (side.lengthSq() < 1e-8) side = new THREE.Vector3().crossVectors(axis, new THREE.Vector3(1, 0, 0));
+    }
+    return new THREE.Vector3().crossVectors(axis, side).normalize();
+  };
   const rayAt = (x: number, y: number) => {
     const rect = canvas.getBoundingClientRect();
     raycaster.setFromCamera(new THREE.Vector2(((x - rect.left) / rect.width) * 2 - 1, -((y - rect.top) / rect.height) * 2 + 1), camera);
@@ -516,13 +604,21 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     const hit = raycaster.intersectObjects(gizmos.children, false)[0];
     if (!hit) return;
     const ring = hit.object;
-    const normal = (ring.userData.direction as THREE.Vector3).clone();
-    const pivot = ring.position.clone();
-    const point = raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(normal, pivot), new THREE.Vector3());
-    if (!point || point.distanceToSquared(pivot) < 1e-12) return;
-    turnDrag = { pointer: ev.pointerId, axis: ring.userData.axis as number, normal, pivot, from: point.sub(pivot).normalize(), previous: 0, total: 0, emitted: 0 };
+    const direction = (ring.userData.direction as THREE.Vector3).clone();
+    const pivot = ring.userData.slide ? (ring.userData.pivot as THREE.Vector3).clone() : ring.position.clone();
+    if (ring.userData.slide) {
+      const normal = slidePlane(direction);
+      const point = raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(normal, pivot), new THREE.Vector3());
+      if (!point) return;
+      turnDrag = { pointer: ev.pointerId, axis: ring.userData.axis as number, normal, pivot, from: new THREE.Vector3(), previous: 0, total: 0, emitted: 0, slide: true, axisDir: direction, startAlong: point.sub(pivot).dot(direction) };
+    } else {
+      const point = raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(direction, pivot), new THREE.Vector3());
+      if (!point || point.distanceToSquared(pivot) < 1e-12) return;
+      turnDrag = { pointer: ev.pointerId, axis: ring.userData.axis as number, normal: direction, pivot, from: point.sub(pivot).normalize(), previous: 0, total: 0, emitted: 0 };
+    }
     controls.enabled = false;
     canvas.setPointerCapture(ev.pointerId);
+    if (turnDrag.slide) paintSlide(true);
     turnCb({ phase: "start", axis: turnDrag.axis });
     ev.preventDefault();
     ev.stopImmediatePropagation();
@@ -530,6 +626,16 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   canvas.addEventListener("pointermove", (ev) => {
     if (!turnDrag || turnDrag.pointer !== ev.pointerId) return;
     rayAt(ev.clientX, ev.clientY);
+    if (turnDrag.slide && turnDrag.axisDir && turnDrag.startAlong !== undefined) {
+      const point = raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(turnDrag.normal, turnDrag.pivot), new THREE.Vector3());
+      if (point) {
+        const delta = point.sub(turnDrag.pivot).dot(turnDrag.axisDir) - turnDrag.startAlong;
+        if (Math.abs(delta - turnDrag.emitted) > 1e-8) { turnDrag.emitted = delta; turnCb?.({ phase: "change", axis: turnDrag.axis, delta }); }
+      }
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      return;
+    }
     const point = raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(turnDrag.normal, turnDrag.pivot), new THREE.Vector3());
     if (point && point.distanceToSquared(turnDrag.pivot) > 1e-12) {
       const to = point.sub(turnDrag.pivot).normalize();
@@ -548,15 +654,28 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   const endTurn = (ev: PointerEvent) => {
     if (!turnDrag || turnDrag.pointer !== ev.pointerId) return;
     const axis = turnDrag.axis;
+    const wasSlide = !!turnDrag.slide;
     turnDrag = null;
     controls.enabled = true;
     if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+    if (wasSlide) {
+      rayAt(ev.clientX, ev.clientY);
+      paintSlide(!!raycaster.intersectObjects(gizmos.children, false)[0]?.object.userData.slide);
+    }
     turnCb?.({ phase: "end", axis });
     ev.preventDefault();
     ev.stopImmediatePropagation();
   };
   canvas.addEventListener("pointerup", endTurn, true);
   canvas.addEventListener("pointercancel", endTurn, true);
+  canvas.addEventListener("pointermove", (ev) => {
+    if (turnDrag || !gizmos.children.some((child) => child.userData.slide)) {
+      if (!turnDrag && slideHot) paintSlide(false);
+      return;
+    }
+    rayAt(ev.clientX, ev.clientY);
+    paintSlide(!!raycaster.intersectObjects(gizmos.children, false)[0]?.object.userData.slide);
+  });
   let reachDrag: { pointer: number; plane: THREE.Plane } | null = null;
   canvas.addEventListener("pointerdown", (ev) => {
     if (!reachEnabled || ev.button !== 0 || !reachCb) return;
@@ -632,6 +751,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     paint(materials.chain, colors.poseChain);
     paint(materials.clash, colors.amber);
     ringMaterial.color.setHex(hexToThree(colors.pose));
+    slideMaterial.color.setHex(hexToThree(slideHot ? colors.gizmoHot : colors.pose));
     markLine.color.setHex(hexToThree(colors.pose));
     markBall.color.setHex(hexToThree(colors.pose));
     canvas.dataset.poseColor = colors.pose;

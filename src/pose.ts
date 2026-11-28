@@ -204,9 +204,14 @@ export function solvePose(
       const toEnd = minus(applyPose(poses.get(object)!, at), pivot);
       const toTarget = minus(target, pivot);
       let updated: PoseResult;
-      // A slide is a rack's, driven by its pinion: Reach leaves it where it is.
-      if (joint.kind === "slide") continue;
-      if (joint.kind === "hinge") {
+      // A slide steps by the error along its axis, in mm, and stops at its limits (docs/plan-pose-loops.md, L1).
+      if (joint.kind === "slide") {
+        const axis = turnDir(jointPose, joint.axis);
+        const error = minus(target, applyPose(poses.get(object)!, at));
+        const delta = dot(error, axis);
+        if (Math.abs(delta) < 1e-9) continue;
+        updated = moveSlide(member, delta);
+      } else if (joint.kind === "hinge") {
         const axis = turnDir(jointPose, joint.axis);
         const a = minus(toEnd, [axis[0] * dot(toEnd, axis), axis[1] * dot(toEnd, axis), axis[2] * dot(toEnd, axis)]);
         const b = minus(toTarget, [axis[0] * dot(toTarget, axis), axis[1] * dot(toTarget, axis), axis[2] * dot(toTarget, axis)]);
