@@ -6,6 +6,7 @@ import type { Vec3 } from "./model-tree.ts";
 import { alignedHinge, poseChain, solvePose, turnBall, turnHinge } from "./pose.ts";
 import { interference, MESH_TOLERANCE_MM } from "./interference.ts";
 import { trainOf, trainTurn } from "./gear-train.ts";
+import { loopFollowerIds, loopKeyRefusals, loopSentence, solveLoops } from "./pose-loops.ts";
 import { memberNamesOf, nameMatcher } from "./anim-members.ts";
 
 export type Quaternion = [number, number, number, number];
@@ -299,6 +300,8 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
     const lead = rig.find((other) => train.has(other.object) && named.has(other.object)) ?? row;
     for (const id of train) if (id !== lead.object) followers.add(id);
   }
+  const rigName = (id: string) => rig.find((row) => row.object === id)?.name ?? id;
+  if (original.closures?.length) for (const id of loopFollowerIds(original, poseOf)) followers.add(id);
   const keys = animation.keys.map((key) => ({ t: record(key) && typeof key.t === "number" ? key.t : 0, ...(record(key) && typeof key.line === "number" ? { line: key.line } : {}) } as AnimationResult["keys"][number]));
   animation.keys.forEach((key, index) => {
     if (!record(key)) { issues.push({ reason: "Each key must be an object." }); return; }
@@ -379,6 +382,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       issues.push({ reason: `${name(tracked[i]!)} and ${name(other)} are one gear train; key only one of them.` });
     }
   }
+  if (original.closures?.length) for (const reason of loopKeyRefusals(original, named, rigName, poseOf)) issues.push({ reason });
   if (issues.length) return { issues };
   // Frame k at k / fps, through the first grid time at or after the end (`frameTimes`).
   const frameTimesNow = frameTimes(animation.fps, end), count = frameTimesNow.length;
@@ -409,7 +413,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       if (value.kind === "reach") { reaches.push({ id, value }); continue; }
       if (value.kind === "travel") {
         const current = member.joint?.kind === "slide" ? member.joint.travel ?? 0 : 0;
-        const turned = trainTurn(assembly, id, value.value - current, { separate });
+        const turned = trainTurn(assembly, id, value.value - current, { separate, ...(original.closures?.length ? { followLoops: false, poseOf, names: rigName } : {}) });
         if ("reason" in turned) return { issues: [{ reason: `${rig.find((row) => row.object === id)!.name}: ${turned.reason}` }] };
         assembly = turned.assembly;
         continue;
@@ -417,7 +421,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       if (value.kind === "angle" && (trainOf(assembly, id).has(id) || member.parent === null)) {
         // A coupled hinge turns its whole gear train, and a hinged root keeps the parts hinged on it on their pins; a
         // locked train refuses the animation.
-        const turned = trainTurn(assembly, id, value.value - (member.joint?.kind === "hinge" ? member.joint.angle ?? 0 : 0), { separate });
+        const turned = trainTurn(assembly, id, value.value - (member.joint?.kind === "hinge" ? member.joint.angle ?? 0 : 0), { separate, ...(original.closures?.length ? { followLoops: false, poseOf, names: rigName } : {}) });
         if ("reason" in turned) return { issues: [{ reason: `${rig.find((row) => row.object === id)!.name}: ${turned.reason}` }] };
         // A ratchet that held the turn short once its click was seated: the frames show it held, and the warning says so.
         const held = turned.stopped ? `${rig.find((row) => row.object === id)!.name}: ${turned.stopped}` : null;
@@ -443,6 +447,21 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       }
       const solved = solvePose(assembly, poseOf, id, value.at, target, centre);
       if ("reason" in solved) return { issues: [{ reason: solved.reason }] };
+      assembly = solved.assembly;
+    }
+    if (original.closures?.length) {
+      const driven = new Set<string>();
+      for (const id of tracks.keys()) {
+        driven.add(id);
+        for (const other of trainOf(assembly, id)) driven.add(other);
+      }
+      for (const reach of reaches) for (const id of poseChain([assembly], reach.id)) driven.add(id);
+      const solved = solveLoops(assembly, { poseOf, driven, names: rigName, centreOf: centre });
+      if (!solved.closed) {
+        const frame = (frameNumbers.get(time) ?? 0) + 1;
+        const driver = [...driven][0] ?? original.closures[0]!.a.member;
+        return { issues: [{ reason: `frame ${frame}: ${loopSentence(solved.assembly, driver, rigName, solved.cause, solved.assembly)}` }] };
+      }
       assembly = solved.assembly;
     }
     const poses = solveAssembly(assembly, poseOf).poses;

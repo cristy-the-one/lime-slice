@@ -423,7 +423,7 @@ export function* firstContactSteps(assembly: Assembly, poseOf: PoseOf, parts: re
   if (typeof max !== "number" || !Number.isFinite(max) || max < 0 || max > (kind === "hinge" ? MAX_RANGE_DEG : MAX_RANGE_MM)) return { reason: kind === "hinge" ? `max is degrees, from 0 to ${MAX_RANGE_DEG}.` : `max is mm, from 0 to ${MAX_RANGE_MM}.` };
 
   const at = (value: number): { turned: Turned; poses: Map<string, Affine> } | { reason: string } => {
-    const turned = trainTurn(assembly, body.body, value - from);
+    const turned = trainTurn(assembly, body.body, value - from, { poseOf, names: name });
     if ("reason" in turned) return { reason: turned.reason };
     return { turned, poses: solveAssembly(turned.assembly, poseOf).poses };
   };

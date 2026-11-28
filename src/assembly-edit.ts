@@ -18,6 +18,7 @@ import { ratchetFromStamps } from "./plugins/clock-parts.ts";
 import { couplingLine, crossedNotes, declareCoupling, findCouplings, prepareTrain, preparedLines, removeDeclared, trainCheck, trainScales, trainTurn, type DeclareSpec, type GearPart, type Prepared } from "./gear-train.ts";
 import { gearsInTree, type WorldGear } from "./gear-pair.ts";
 import { assemblyOf, attached, DECLARED_KINDS, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withFound, withMember, withRootAt, type Assembly, type Coupling, type Member, type MemberExprs } from "./assembly.ts";
+import { closeLoop, removeLoop } from "./pose-loops.ts";
 
 /** What a reply says of a part the plate does not hold. */
 export const UNKNOWN_PART = "That object is not on the plate. Call plate_list for the current handles.";
@@ -232,7 +233,7 @@ export function placeManyEdit(world: AssemblyWorld, input: Record<string, unknow
 function modelPlaceMany(w: Work, input: Record<string, unknown>): Reply {
   const ids = input.objects as string[];
   if (typeof input.to !== "string") return refuse("bad-placement", "Give to: the part these objects join.");
-  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.travel !== undefined || input.reach !== undefined || input.until !== undefined || input.root !== undefined || input.reply !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
+  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.travel !== undefined || input.reach !== undefined || input.until !== undefined || input.root !== undefined || input.reply !== undefined || input.loop !== undefined || input.unloop !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
   if (new Set(ids).size !== ids.length) return refuse("bad-placement", "Each object can appear only once.");
   const parent = w.find(input.to);
   if (!parent) return refuse("no-object", `to: ${UNKNOWN_PART}`, "plate");
@@ -272,6 +273,7 @@ function modelPlace(w: Work, obj: AssemblyPart, input: Record<string, unknown>):
   if (input.root !== undefined) return rerootMember(w, obj, input);
   if (input.gears !== undefined) return gearsMember(w, obj, input);
   if (input.couple !== undefined) return coupleMember(w, obj, input);
+  if (input.loop !== undefined || input.unloop !== undefined) return loopMember(w, obj, input);
   if (input.joint !== undefined || input.angle !== undefined || input.travel !== undefined || input.reach !== undefined) return poseMember(w, obj, input);
   if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return refuse("bad-frame", 'frame is "part" or "model".');
   const assemblies = w.assemblies;
@@ -347,7 +349,7 @@ function modelPlace(w: Work, obj: AssemblyPart, input: Record<string, unknown>):
  */
 function rerootMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>): Reply {
   if (input.root !== true) return refuse("bad-placement", "root takes true: this part becomes its assembly's fixed root.");
-  if (input.to !== undefined || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.travel !== undefined || input.reach !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined)) return refuse("conflicting-arguments", "Give root:true on its own (assembly may rename); every pose is kept.");
+  if (input.to !== undefined || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.travel !== undefined || input.reach !== undefined || input.loop !== undefined || input.unloop !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined)) return refuse("conflicting-arguments", "Give root:true on its own (assembly may rename); every pose is kept.");
   const assemblies = w.assemblies;
   const mine = assemblyOf(assemblies, obj.id);
   if (!mine) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", "assembly");
@@ -559,6 +561,49 @@ function coupleMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>
   };
 }
 
+const finitePoint = (value: unknown): Vec3 | null => Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === "number" && Number.isFinite(n)) ? [value[0], value[1], value[2]] : null;
+
+/** Close a loop between this part and another, or drop one. One undo step. The Joint tool that draws it is later. */
+function loopMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>): Reply {
+  const mixed = [...PLACE_KEYS, "to", "assembly", "frame", "joint", "angle", "travel", "reach", "until", "root", "gears", "couple", "objects"];
+  if (mixed.some((key) => input[key] !== undefined) || (input.loop !== undefined && input.unloop !== undefined)) return refuse("conflicting-arguments", "Set a loop on its own.");
+  const assemblies = w.assemblies;
+  const mine = assemblyOf(assemblies, obj.id);
+  if (!mine) return refuse("bad-placement", "Both parts of a loop are in one assembly.");
+  if (input.unloop !== undefined) {
+    if (typeof input.unloop !== "string" || !input.unloop) return refuse("bad-argument", "unloop names a loop, or the other member.");
+    const removed = removeLoop(mine, input.unloop);
+    const gone = "reason" in removed ? removeLoop(mine, obj.id, input.unloop) : removed;
+    if ("reason" in gone) return refuse("bad-assembly", gone.reason);
+    w.remember("Loop");
+    w.setAssemblies(assemblies.map((row) => row.id === mine.id ? gone.assembly : row));
+    return { ok: true, assembly: mine.name, loops: gone.assembly.closures ?? [], ...(input.compact === true ? {} : { note: "The loop is gone. Each part moves on its own joint again." }) };
+  }
+  const given = input.loop;
+  if (!given || typeof given !== "object" || Array.isArray(given)) return refuse("bad-argument", "loop needs to, at and toAt.");
+  const row = given as Record<string, unknown>;
+  if (typeof row.to !== "string" || !row.to) return refuse("bad-argument", "loop needs to: the other member.");
+  const other = w.find(row.to);
+  if (!other) return refuse("no-object", `to: ${UNKNOWN_PART}`, "plate");
+  const at = finitePoint(row.at), toAt = finitePoint(row.toAt);
+  const along = row.along === undefined ? undefined : finitePoint(row.along);
+  if (!at || !toAt || (row.along !== undefined && !along)) return refuse("bad-argument", "A loop's at, toAt and along are three finite numbers.");
+  const closed = closeLoop(mine, { member: obj.id, at, to: other.id, toAt, ...(along ? { along } : {}) }, (id) => w.name(id), w.poseOf);
+  if ("reason" in closed) return refuse("bad-assembly", closed.reason);
+  w.remember("Loop");
+  w.setAssemblies(assemblies.map((one) => one.id === mine.id ? closed.assembly : one));
+  const moved = w.writeSolved(closed.assembly, "");
+  const closure = closed.closure;
+  return {
+    ok: true,
+    assembly: closed.assembly.name,
+    loop: { id: closure.id, kind: closure.kind, a: closure.a.member, at: closure.a.at, b: closure.b.member, toAt: closure.b.at, ...(closure.b.along ? { along: closure.b.along } : {}) },
+    loops: closed.assembly.closures ?? [],
+    ...moved,
+    ...(input.compact === true ? {} : { note: "The loop is closed. Turning one joint moves the others. The print layout is unchanged." }),
+  };
+}
+
 /** Change a joint and optionally move its chain, validating everything before writing a pose. */
 function poseMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>): Reply {
   if (input.to !== undefined || input.assembly !== undefined || input.frame !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined)) return refuse("conflicting-arguments", "Set a joint, angle or reach separately from placement and linking.");
@@ -644,7 +689,7 @@ function poseMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>):
     const target = (input.angle ?? input.travel) as number;
     if (typeof target !== "number" || !Number.isFinite(target)) return refuse("bad-placement", "Give a finite number.");
     // A coupled joint turns its gear train (docs/plan-gear-coupling.md); a locked train is refused and nothing moves.
-    const turned = trainTurn(assembly, obj.id, target - jointAt(member.joint));
+    const turned = trainTurn(assembly, obj.id, target - jointAt(member.joint), { poseOf: w.poseOf, names: (id) => w.name(id), centreOf: (id) => w.world.centre(id) });
     if ("reason" in turned) return refuse("bad-placement", turned.reason);
     assembly = turned.assembly; member = assembly.members.find((row) => row.object === obj.id)!;
     train = turned.angles.filter((row) => row.object !== obj.id);

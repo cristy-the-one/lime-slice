@@ -125,6 +125,7 @@ function systemAt(p: Prepared, friction: number): System | { reason: string } {
  */
 /** `note` hears each stage of the set-up as it starts, for a caller that shows it. */
 export function prepareMotion(assembly: Assembly, parts: readonly DynPart[], spec: MotionSpec, nameOf: (id: string) => string, note?: (stage: string) => void): Prepared | { reason: string } {
+  if (assembly.closures?.length) return { reason: "Loops are not simulated yet." };
   note?.("Weighing the parts…");
   const inputs = inputsOf(spec);
   const system = buildSystem(assembly, parts, inputs, nameOf);
