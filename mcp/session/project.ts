@@ -129,6 +129,7 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
         chain: obj.chain,
         jointLimits: obj.jointLimits,
         sheet: obj.sheet,
+        glass: obj.glass,
       }))
     : [{
         id: undefined as string | undefined,
@@ -152,6 +153,7 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
         chain: undefined,
         jointLimits: undefined,
         sheet: undefined as true | undefined,
+        glass: undefined as true | undefined,
       }];
   const objects: { object: string; name: string }[] = [];
   for (const row of rows) {
@@ -186,6 +188,8 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
     if (row.brep) obj.brep = row.brep;
     // --- Organic surfaces S4. The app's mark (`PlateObject.sheet`), as src/plate.ts `assemblePlate` reads it.
     if (row.sheet === true) obj.sheet = true;
+    // The app's glass mark (`PlateObject.glass`): Pose draws the part see-through.
+    if (row.glass === true) obj.glass = true;
     objects.push({ object: obj.id, name: shownName(obj.name) });
   }
   // A tool a saved join took off the plate comes back off the plate, with its history, so model_undo of that join can
@@ -351,6 +355,7 @@ function fileObject(this: Session, obj: PlateObject): NonNullable<LimeProject["o
   };
   // --- Organic surfaces S4. As the app writes it (src/app/project-io.ts); the file is then version 5.
   if (obj.sheet) row.sheet = true;
+  if (obj.glass) row.glass = true;
   return row;
 }
 

@@ -28,6 +28,8 @@ export interface ThemeColors {
   spark: string;
   sheet: string;
   gizmoHot: string;
+  /** The outline of the object under the pointer in Model, Pose and Prepare: bright, for the dark viewport both themes share. */
+  hover: string;
   axisX: string;
   axisY: string;
   axisZ: string;
@@ -72,6 +74,7 @@ export function themeColors(): ThemeColors {
     spark: pick("--spark", "#3a4250"),
     sheet: pick("--sheet", "#f4efe4"),
     gizmoHot: pick("--gizmo-hot", "#ffffff"),
+    hover: pick("--hover", "#ffe14d"),
     axisX: pick("--axis-x", "#e85d4c"),
     axisY: pick("--axis-y", "#8fce6a"),
     axisZ: pick("--axis-z", "#6aa7ff"),

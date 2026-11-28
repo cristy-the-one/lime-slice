@@ -373,6 +373,7 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   '[data-pose-action="animation-keep"]': ["pose"],
   '[data-pose-action="animation-save"]': ["pose"],
   '[data-pose-action="animation-library"]': ["pose"],
+  "[data-pose-glass]": ["pose"],
   "#heightAdd": ["prepare", "preview", "gcode"],
   "#volumeBox": ["prepare", "preview", "gcode"],
   "#volumeCylinder": ["prepare", "preview", "gcode"],

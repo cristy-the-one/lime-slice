@@ -275,7 +275,7 @@ export function installEvents(ctx: ViewCtx): void {
       ctx.objectPickCb(object);
       return;
     }
-    // Ctrl-click on a grey object opens it, as picking its row in the plate does.
+    // Ctrl-click on a grey object selects it, as picking its row in the plate does. The camera stays where it is.
     const other = ctx.grabHooks && grabIntent(ev) === "move" ? ctx.objectAt(ev) : null;
     if (other) {
       ctx.grabHooks!.select(other);
@@ -286,6 +286,17 @@ export function installEvents(ctx: ViewCtx): void {
     if (probed) ctx.stressProbeCb(probed);
     ctx.setHover(ctx.pickAt(ev));
   });
+
+  // Ctrl+double-click frames the object under the pointer: a grey one is opened first, the open solid is framed where it is.
+  // A plain double-click on a face starts a sketch there (src/app/sketch/pointer.ts), so this chord is free.
+  canvas.addEventListener("dblclick", (ev) => {
+    if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || !ctx.grabHooks || ctx.sketchCapture || ctx.sketchLock || ctx.objectPicking) return;
+    const grey = ctx.objectAt(ev);
+    if (!grey && !ctx.solidAt(ev.clientX, ev.clientY)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    ctx.grabHooks.frame(grey);
+  }, { capture: true });
 
   // --- S2: zoom along the normal while the sketch view is locked. OrbitControls would dolly in screen space. ---
   canvas.addEventListener("wheel", (ev) => {

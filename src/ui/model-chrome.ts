@@ -101,8 +101,10 @@ interface ModelChromeHooks {
   grabEnd(): void;
   /** Esc: the pose goes back and no step lands. */
   grabCancel(): void;
-  /** Ctrl-click on a grey object: it becomes the open one. */
+  /** Ctrl-click on a grey object: it becomes the open one, and the camera stays. */
   openObject(id: string): void;
+  /** Ctrl+double-click: frame that object (opened first when it is another), or with null the open one. */
+  frameObject(id: string | null): void;
   /** The other objects Align to... can line the open one up with. */
   alignChoices(): JoinChoice[];
   /** Line the open object up with another, as one Place step. False when nothing moved. */
@@ -747,6 +749,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   const grab: ModelGrabHooks = {
     ready: () => tool === "place" && !card && !edit && !!hooks?.grabReady(),
     select: (id) => hooks?.openObject(id),
+    frame: (id) => hooks?.frameObject(id),
     start: () => !!hooks?.grabStart(),
     move: (pose) => hooks?.grabMove(pose),
     end: () => hooks?.grabEnd(),

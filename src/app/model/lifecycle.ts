@@ -125,6 +125,9 @@ export function forgetModelTrees() {
   S.open = null;
   S.shownFor = null;
   S.framedFor = null;
+  S.keepViewFor = null;
+  S.seenIds = null;
+  S.addedIds.clear();
   // The edit history went with the old plate, so a move still under way is dropped, not kept as a step.
   window.clearTimeout(S.placeTimer);
   S.placeBefore = null;

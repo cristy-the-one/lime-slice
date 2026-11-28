@@ -198,6 +198,12 @@ export const S = {
   parked: null as string | null,
   /** The object the camera last framed. A new solid of the same object keeps the user's view. */
   framedFor: null as string | null,
+  /** A Ctrl-click in the view selected this object: opening it leaves the camera where it is. Taken by `takeKeepView`. */
+  keepViewFor: null as string | null,
+  /** The plate objects Model has listed, to tell one that was added from one that was there. Null until it first lists a plate. */
+  seenIds: null as Set<string> | null,
+  /** Objects added while Model was open, whose first look reveals them (the least camera move) instead of framing them. */
+  addedIds: new Set<string>(),
   /** Place moves of the open object in this visit, for Undo and Redo while Place is open. One gesture is one step. */
   placeUndo: [] as PlaceStep[],
   placeRedo: [] as PlaceStep[],
@@ -274,3 +280,9 @@ export const S = {
   /** Prepare's Re-aim for an object: Model opens on it, and the steps are re-aimed once its solid is on screen. */
   reaimQueued: null as string | null,
 };
+/** Whether `id` was just selected from the view (a Ctrl-click): its first look leaves the camera alone. Reads the mark once. */
+export function takeKeepView(id: string | null | undefined): boolean {
+  if (!id || S.keepViewFor !== id) return false;
+  S.keepViewFor = null;
+  return true;
+}

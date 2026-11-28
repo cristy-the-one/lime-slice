@@ -808,6 +808,8 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   const jointLimits = readJointLimits(row.jointLimits);
   if (jointLimits) object.jointLimits = jointLimits;
   if (row.sheet === true) object.sheet = true;
+  // A glass part: drawn see-through in Pose. An older file has no field and reads as opaque. The version stays.
+  if (row.glass === true) object.glass = true;
   if (row.brep !== undefined && row.brep !== null) {
     const brep = readMesh(row.brep);
     if (typeof brep === "string") {

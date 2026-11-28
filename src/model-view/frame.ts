@@ -12,6 +12,7 @@ import type { ViewCtx } from "./ctx";
 export function installFrame(ctx: ViewCtx): void {
   const { camera, canvas, controls, glide, posed, renderer, scene, sketchGroup, viewHelper } = ctx;
   ctx.frameBox = frameBox;
+  ctx.revealBox = revealBox;
   ctx.kick = kick;
   ctx.measureSolid = measureSolid;
   ctx.publishCamera = publishCamera;
@@ -60,6 +61,66 @@ export function installFrame(ctx: ViewCtx): void {
     controls.update();
     camera.position.copy(look).add(new THREE.Vector3(1, -1.15, 0.72).normalize().multiplyScalar(dist));
     controls.target.copy(look);
+    camera.updateProjectionMatrix();
+    controls.update();
+    controls.enableDamping = true;
+    kick();
+  }
+
+  /**
+   * A new object must be seen. When all of `box` is in the view nothing moves. Otherwise the camera backs away along its
+   * own line of sight, about the same target, just far enough: what was in view stays in view, and nothing turns.
+   */
+  function revealBox(box: Box) {
+    camera.updateMatrixWorld(true);
+    const corners: THREE.Vector3[] = [];
+    for (const x of [box.min[0], box.max[0]]) for (const y of [box.min[1], box.max[1]]) for (const z of [box.min[2], box.max[2]]) corners.push(new THREE.Vector3(x, y, z));
+    const halfV = Math.tan((camera.fov * Math.PI) / 360);
+    const halfH = halfV * camera.aspect;
+    const target = controls.target.clone();
+    const line = camera.position.clone().sub(target);
+    const dist0 = line.length();
+    if (dist0 < 1e-6) return;
+    const dir = line.clone().divideScalar(dist0);
+    const margin = 0.94;
+    const spot = new THREE.Vector3();
+    /** Whether every corner is in front of the camera and inside the frame when the camera stands `d` from its target. */
+    const fits = (d: number) => {
+      const eye = target.clone().addScaledVector(dir, d);
+      camera.position.copy(eye);
+      camera.updateMatrixWorld(true);
+      return corners.every((corner) => {
+        spot.copy(corner).applyMatrix4(camera.matrixWorldInverse);
+        const depth = -spot.z;
+        return depth > camera.near && Math.abs(spot.x) <= depth * halfH * margin && Math.abs(spot.y) <= depth * halfV * margin;
+      });
+    };
+    const home = camera.position.clone();
+    if (fits(dist0)) {
+      camera.position.copy(home);
+      camera.updateMatrixWorld(true);
+      return;
+    }
+    let far = dist0;
+    const limit = Number.isFinite(controls.maxDistance) ? controls.maxDistance : dist0 * 400;
+    while (!fits(far) && far < limit) far *= 1.5;
+    if (!fits(far)) {
+      camera.position.copy(home);
+      camera.updateMatrixWorld(true);
+      return;
+    }
+    let near = dist0;
+    for (let step = 0; step < 28; step += 1) {
+      const mid = (near + far) / 2;
+      if (fits(mid)) far = mid;
+      else near = mid;
+    }
+    controls.enableDamping = false;
+    controls.update();
+    camera.position.copy(target).addScaledVector(dir, far);
+    camera.near = Math.max(0.01, far / 200);
+    camera.far = Math.max(camera.far, far * 20);
+    controls.target.copy(target);
     camera.updateProjectionMatrix();
     controls.update();
     controls.enableDamping = true;
@@ -156,6 +217,7 @@ export function installFrame(ctx: ViewCtx): void {
     renderer.setPixelRatio(window.devicePixelRatio || 1);
     renderer.setSize(width, height, false);
     ctx.syncLineResolution();
+    ctx.hoverResize();
     kick();
   }
 }

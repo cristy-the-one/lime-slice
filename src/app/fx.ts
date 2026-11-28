@@ -57,6 +57,7 @@ export interface Fx {
   scheduleAuto: SliceRun["scheduleAuto"];
   // plate-actions.ts, shell-actions.ts, main.ts
   selectPlateObject: PlateActions["selectPlateObject"];
+  framePlateObject: PlateActions["framePlateObject"];
   notePivotTriple: PlateActions["notePivotTriple"];
   separateShells: ShellActions["separateShells"];
   drawPaint: () => void;

@@ -8,6 +8,7 @@ import { type Vec3, lineParam } from "../model-drag";
 import { featureAtHit } from "../measure-feature";
 import { segmentDistance } from "./helpers";
 import type { ViewCtx } from "./ctx";
+import { hoverDrawer, mountHover } from "../hover";
 
 export function installPicking(ctx: ViewCtx): void {
   const { body, camera, canvas, context, controls, pointer, posed, projected, raycaster, snapMark, snapMarkText } = ctx;
@@ -17,6 +18,7 @@ export function installPicking(ctx: ViewCtx): void {
   ctx.finishFace = finishFace;
   ctx.greyHit = greyHit;
   ctx.objectAt = objectAt;
+  ctx.solidAt = solidAt;
   ctx.pickAt = pickAt;
   ctx.pickEdge = pickEdge;
   ctx.sectionHit = sectionHit;
@@ -210,7 +212,7 @@ export function installPicking(ctx: ViewCtx): void {
   }
 
   /** The grey object under the pointer, unless the open solid is in front of it. */
-  function objectAt(ev: PointerEvent): string | null {
+  function objectAt(ev: { clientX: number; clientY: number }): string | null {
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
@@ -219,6 +221,16 @@ export function installPicking(ctx: ViewCtx): void {
     const hit = raycaster.intersectObjects(ctx.mesh ? [...context.children, ctx.mesh] : context.children, false).find((item) => item.object !== ctx.mesh || !ctx.cutAway(item.point));
     const id = hit?.object.userData.id;
     return typeof id === "string" ? id : null;
+  }
+
+  /** The open solid is what is under this point, with no grey object in front of it. */
+  function solidAt(x: number, y: number): boolean {
+    if (!ctx.mesh) return false;
+    ctx.rayAt(x, y);
+    const own = ctx.solidHit(raycaster.intersectObject(ctx.mesh, false));
+    if (!own) return false;
+    const other = ctx.greyHit();
+    return !other || other.distance > own.distance;
   }
 
   /** The feature near the hit that a Measure point lands on exactly: a corner, an edge's middle, a flat face's middle, the box. */
@@ -297,4 +309,25 @@ export function installPicking(ctx: ViewCtx): void {
     }
     return [point.x, point.y, point.z];
   }
+
+  // The grey object a Ctrl-click would select is outlined while the pointer is over it (src/hover.ts). Not in a sketch.
+  const outline = hoverDrawer(ctx.scene, canvas, () => ctx.colors.hover, () => ctx.kick());
+  const hover = mountHover({
+    canvas,
+    pick(x, y) {
+      if (!ctx.grabHooks && !ctx.objectPicking) return null;
+      if (ctx.sketchCapture || ctx.sketchLock) return null;
+      const id = objectAt({ clientX: x, clientY: y });
+      if (!id) return null;
+      const part = ctx.contextList.find((row) => row.id === id && !row.self);
+      const node = context.children.find((child) => child.userData.id === id);
+      if (!part || !node) return null;
+      context.updateMatrixWorld(true);
+      return { id, positions: part.positions, matrixWorld: node.matrixWorld };
+    },
+    draw: outline.draw,
+  });
+  ctx.hoverRefresh = () => hover.refresh();
+  ctx.hoverTheme = outline.recolor;
+  ctx.hoverResize = outline.resize;
 }
