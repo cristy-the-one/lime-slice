@@ -503,6 +503,9 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
           canvas.dataset.cameraFrom = `${x},${y},${z}`;
         }
       }
+      // lookAt refreshes the world matrix and then changes the quaternion, so a projection in this same frame
+      // would use the camera from before the aim and publish the ring off the canvas. Publish where it stands now.
+      camera.updateMatrixWorld(true);
       // A test names a part-local point (`id:x,y,z`). Project it with this camera so a click can land on a known hole.
       const projectSpec = canvas.dataset.projectLocal;
       if (projectSpec) {
@@ -707,6 +710,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     controls.enabled = false;
     canvas.setPointerCapture(ev.pointerId);
     if (turnDrag.slide) paintSlide(true);
+    canvas.dataset.turnActive = String(turnDrag.axis);
     turnCb({ phase: "start", axis: turnDrag.axis });
     ev.preventDefault();
     ev.stopImmediatePropagation();
@@ -744,6 +748,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     const axis = turnDrag.axis;
     const wasSlide = !!turnDrag.slide;
     turnDrag = null;
+    delete canvas.dataset.turnActive;
     controls.enabled = true;
     if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
     if (wasSlide) {
