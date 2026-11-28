@@ -111,9 +111,12 @@ test("Link, type a hinge, turn its ring, undo and save the assembled pose", asyn
   await panel.getByRole("button", { name: "Redo", exact: true }).click();
   await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
   await page.reload();
-  await page.locator("#projectFile").setInputFiles({ name: "posed.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(after)) });
+  // Pose is already open when the saved project is read. Opening used to force Prepare in the
+  // middle of that read, and the panel then never listed the knee (CI, main run 46140241987).
   await page.locator("#tabPose").click();
+  await page.locator("#projectFile").setInputFiles({ name: "posed.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(after)) });
   await page.locator(`#posePanel [data-object='${knee}']`).click();
+  await expect(page.locator("html")).toHaveAttribute("data-stage", "pose");
   await expect.poll(async () => Math.abs(Number(await page.locator("#posePanel").getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
 });
 

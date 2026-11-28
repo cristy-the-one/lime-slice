@@ -119,7 +119,9 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   offerAssemblySplit(name, bytes, state.sourcePos, state.plate.selectedId);
   place("load");
   await offerForeignRecipe(name, bytes);
-  fx.setStage("prepare");
+  // A mesh opens onto Prepare. A project restore that is already in Pose stays there: this used to
+  // send it back while the file was still reading, and the parts that landed next never reached the panel.
+  if (!(session.projectRestoring && state.stage === "pose")) fx.setStage("prepare");
   // An Add that started during this read was aimed at the plate it replaced.
   session.meshEpoch += 1;
 }
