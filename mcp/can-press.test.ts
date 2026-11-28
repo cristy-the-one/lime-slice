@@ -158,3 +158,5 @@ if (failed) {
   process.exit(1);
 }
 console.log("can-press: ram slide, 2 loops, stroke, and lever drag ok");
+// The engine worker keeps the event loop alive. Without this the CI step sits until its 40 minute timeout.
+process.exit(0);
