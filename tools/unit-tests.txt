@@ -45,6 +45,7 @@ src/project.test.ts
 src/assembly.test.ts
 src/pose.test.ts
 src/pose-anim.test.ts
+src/pose-loops.test.ts
 src/anim-members.test.ts
 src/animation-gif.test.ts
 src/pose-playback.test.ts
@@ -54,6 +55,7 @@ src/recipe/animation-run.test.ts
 mcp/assembly-bulk.test.ts
 mcp/assembly-link.test.ts
 mcp/pose.test.ts
+mcp/pose-loops.test.ts
 mcp/render-unnamed.test.ts
 mcp/slice-collisions.test.ts
 mcp/autosave-projects.test.ts

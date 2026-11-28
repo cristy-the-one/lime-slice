@@ -169,6 +169,22 @@ export interface Assembly {
    * (docs/plan-coupling-kinds.md). An older app reads the gear ones only.
    */
   couplings?: Coupling[];
+  /**
+   * Closed loops (docs/plan-pose-loops.md): a pin or a line between two members, solved after the tree.
+   * An older app ignores the field. The project version stays 4.
+   */
+  closures?: Closure[];
+}
+
+/**
+ * A closed loop. `at` and `along` are in that member's part frame. A pin makes the two points meet. A line keeps
+ * `a`'s point on the line through `b`'s point in the direction `along`.
+ */
+export interface Closure {
+  id: string;
+  a: { member: string; at: Vec3 };
+  b: { member: string; at: Vec3; along?: Vec3 };
+  kind: "pin" | "line";
 }
 
 /** A coupling's two ends by label: its gears' for a mesh, its bodies' for a declared one. */
@@ -451,7 +467,7 @@ export function withoutMember(assembly: Assembly, object: string, poseOf: PoseOf
   let members = assembly.members.filter((member) => member.object !== object);
   if (parent === null) {
     const heir = children.find((member) => member.object === newRoot) ?? children[0];
-    if (!heir) return members.length >= 2 ? withCouplings({ ...assembly, members }, assembly.couplings?.filter((row) => !touches(row, [object]))) : null;
+    if (!heir) return members.length >= 2 ? dropClosure(withCouplings({ ...assembly, members }, assembly.couplings?.filter((row) => !touches(row, [object]))), object) : null;
     parent = heir.object;
     members = members.map((member) => (member === heir ? { object: member.object, parent: null, offset: [0, 0, 0], turn: [0, 0, 0], ...(member.held ? { held: true as const } : {}) } : member));
   }
@@ -462,7 +478,12 @@ export function withoutMember(assembly: Assembly, object: string, poseOf: PoseOf
     const joint = reparentJoint(member.joint, oldParent, parentPose);
     return { object: member.object, parent, ...memberFields(relativePose(parentPose, poseOf(member.object) ?? IDENTITY_POSE)), ...(joint ? { joint } : {}), ...(member.held ? { held: true as const } : {}) };
   });
-  return members.length >= 2 ? withCouplings({ ...assembly, members }, assembly.couplings?.filter((row) => !touches(row, [object]))) : null;
+  return members.length >= 2 ? dropClosure(withCouplings({ ...assembly, members }, assembly.couplings?.filter((row) => !touches(row, [object]))), object) : null;
+}
+
+/** A loop naming `gone` is dropped with that member, as a coupling that no longer fits is. */
+function dropClosure(assembly: Assembly, gone: string): Assembly {
+  return withClosures(assembly, assembly.closures?.filter((row) => row.a.member !== gone && row.b.member !== gone));
 }
 
 export type Body = { body: string; fixed: boolean } | { reason: string };
@@ -572,6 +593,22 @@ function touches(coupling: Coupling, objects: readonly string[]): boolean {
 export function withCouplings(assembly: Assembly, couplings: Coupling[] | undefined): Assembly {
   const { couplings: _old, ...rest } = assembly;
   return couplings && couplings.length > 0 ? { ...rest, couplings } : rest;
+}
+
+/** `assembly` with `closures`, the field left out when there are none. */
+export function withClosures(assembly: Assembly, closures: Closure[] | undefined): Assembly {
+  const { closures: _old, ...rest } = assembly;
+  return closures && closures.length > 0 ? { ...rest, closures } : rest;
+}
+
+/**
+ * Pose's loop solver, registered when that chunk loads (`src/pose-loops.ts`). Until then a saved loop is kept as it
+ * stands and solved on the next turn. Nothing in the first chunk calls the solver.
+ */
+type ClosureSettle = (assembly: Assembly, poseOf: PoseOf) => Assembly;
+let closureSettle: ClosureSettle | null = null;
+export function setClosureSettle(fn: ClosureSettle | null): void {
+  closureSettle = fn;
 }
 
 /**
@@ -730,6 +767,35 @@ export function readCouplings(value: unknown): Coupling[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** The loops a file keeps. A damaged row is left out; a loop whose members are gone is dropped later, with them. */
+function readClosures(value: unknown): Closure[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: Closure[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.id !== "string" || !row.id || (row.kind !== "pin" && row.kind !== "line")) continue;
+    const a = readClosureEnd(row.a, false);
+    const b = readClosureEnd(row.b, row.kind === "line");
+    if (!a || !b || a.member === b.member) continue;
+    if (row.kind === "line" && !b.along) continue;
+    out.push({ id: row.id, kind: row.kind, a, b });
+  }
+  return out.length ? out : undefined;
+}
+
+function readClosureEnd(value: unknown, wantAlong: boolean): { member: string; at: Vec3; along?: Vec3 } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const at = readVec(row.at);
+  if (typeof row.member !== "string" || !row.member || !at) return null;
+  const along = row.along === undefined ? undefined : readVec(row.along);
+  if (row.along !== undefined && !along) return null;
+  if (wantAlong && !along) return null;
+  if (along && Math.hypot(...along) < 1e-12) return null;
+  return { member: row.member, at, ...(along ? { along } : {}) };
+}
+
 const USES: readonly JointUse[] = ["hinge", "slide", "fixed"];
 
 /** A declared coupling row as a file keeps it, or null when damaged. */
@@ -842,7 +908,7 @@ export function readAssemblies(value: unknown, objects: readonly { id: string; m
     if (out.some((assembly) => assembly.id === row.id)) continue;
     const members = row.members.map(readMember);
     if (members.some((member) => member === null) || !wellFormed(members as Member[])) continue;
-    let assembly: Assembly | null = withCouplings({ id: row.id, name: row.name, members: members as Member[] }, readCouplings(row.couplings));
+    let assembly: Assembly | null = withClosures(withCouplings({ id: row.id, name: row.name, members: members as Member[] }, readCouplings(row.couplings)), readClosures(row.closures));
     for (const member of members as Member[]) {
       if (!assembly) break;
       if (claimed.has(member.object) || !objects.some((obj) => obj.id === member.object)) assembly = withoutMember(assembly, member.object, poseOf);
@@ -858,6 +924,11 @@ export function readAssemblies(value: unknown, objects: readonly { id: string; m
       } else assembly = withRootAt(assembly, at);
     }
     if (assembly.couplings) assembly = withCouplings(assembly, assembly.couplings.filter((coupling) => couplingFits(assembly!, coupling)));
+    if (assembly.closures) {
+      const have = new Set(assembly.members.map((member) => member.object));
+      assembly = withClosures(assembly, assembly.closures.filter((row) => have.has(row.a.member) && have.has(row.b.member)));
+      if (closureSettle && assembly.closures?.length) assembly = closureSettle(assembly, poseOf);
+    }
     for (const member of assembly.members) claimed.add(member.object);
     out.push(assembly);
   }

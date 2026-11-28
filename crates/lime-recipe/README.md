@@ -146,6 +146,12 @@ end)` returns exactly those times (before 1.17 it returned the old `round(end * 
 `k as f64 / fps as f64` is the same number, so a script that keys every `1/fps` puts each key on a frame. A plugin of an
 earlier level built against this crate gets the new times too: they are the host's. See `docs/plan-pose-animation.md`.
 
+## Closed loops (API 1.20)
+
+`Session::close_loop(a, at, b, at_b)` pins two part-frame points together: `model_place {object, loop:{to, at, toAt}}`.
+`Session::close_loop_on_line` adds `along`, so the first point stays on that line. Turning one joint of the loop moves
+the others. A part and its own parent are a joint, not a loop, and are refused.
+
 ## Keyable slides (API 1.19)
 
 `Aim::Travel(mm)` keys a slide's travel in millimetres. It encodes as a JSON number, the same shape as a hinge's degrees;

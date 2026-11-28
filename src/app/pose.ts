@@ -68,6 +68,10 @@ let coupleNote: { assembly: string; text: string } | null = null;
 function turnWords(turned: Turned): string {
   return [...(turned.slipped ?? []), ...(turned.stopped ? [`Stopped: ${turned.stopped}`] : [])].join(" ");
 }
+/** A turn's options: names so a loop's refusal says the part, and the root's pose so the closure is measured where it stands. */
+function turnOptions(): { poseOf: (id: string) => Affine | undefined; names: (id: string) => string; centreOf: (id: string) => Vec3 | undefined } {
+  return { poseOf, names: (id) => state.plate.objects.find((object) => object.id === id)?.name ?? id, centreOf: centre };
+}
 /** What the last Couple gears said: pairs not coupled and why, for the assembly it ran on. */
 let gearNotes: { assembly: string; lines: string[]; made?: string[] } | null = null;
 let reachStart: { assembly: Assembly; object: string; at: Vec3; poses: Map<string, Affine>; centres: Map<string, Vec3>; shift: Affine } | null = null;
@@ -466,7 +470,7 @@ function turn(event: TurnEvent): void {
   // A slide's delta is millimetres along its axis. trainTurn clamps it and turns a pinion a rack drives.
   if ((joint.kind === "hinge" || joint.kind === "slide") && dragAssembly) {
     // A coupled hinge turns its gear train with it (docs/plan-gear-coupling.md); a locked one says why and stays.
-    const train = trainTurn(dragAssembly, dragStart.object, event.delta);
+    const train = trainTurn(dragAssembly, dragStart.object, event.delta, turnOptions());
     if ("reason" in train) { message = train.reason; renderPanel(); return; }
     message = turnWords(train);
     writeAssembly(train.assembly); return;
@@ -1261,7 +1265,7 @@ async function exactContact(): Promise<void> {
   if (!a || !b) return;
   const volumes: [number, number] = [meshVolume(a.sourcePos), meshVolume(b.sourcePos)];
   const measure = async (value: number): Promise<KernelVerdict | { reason: string }> => {
-    const turned = trainTurn(held.before, answer.body, value - answer.from);
+    const turned = trainTurn(held.before, answer.body, value - answer.from, turnOptions());
     if ("reason" in turned) return { reason: turned.reason };
     const poses = solveAssembly(turned.assembly, poseOf).poses;
     const pa = poses.get(a.id), pb = poses.get(b.id);
@@ -1291,7 +1295,7 @@ async function exactContact(): Promise<void> {
     contactNote = { object, text: `The kernel finds ${kernel.meshAnswer.volumeMm3} mm³ shared at the facets' contact (${at(kernel.meshValue)}) and found no pose it calls clear within ${checks}. Nothing moved: the pose stays at ${at(answer.value)}.` };
     renderPanel(); return;
   }
-  const turned = trainTurn(held.before, answer.body, kernel.value - answer.from);
+  const turned = trainTurn(held.before, answer.body, kernel.value - answer.from, turnOptions());
   if ("reason" in turned) { contactNote = { object, text: turned.reason }; renderPanel(); return; }
   const there = kernel.at.verdict === "clear" ? "no shared volume" : `${kernel.at.volumeMm3} mm³ shared, a touch`;
   const short = kernel.backedOff > 0 ? `, ${at(kernel.backedOff)} short of the facets' contact` : ", at the facets' own contact";
@@ -1707,7 +1711,7 @@ function panelClick(event: Event): void {
     if (action === "rest" && drives(member.joint)) {
       // Through its gear train, if it has one: the train follows the gear (or the rack) back to rest.
       const live = assembly.members.find((row) => row.object === member.object)!;
-      const result = trainTurn(assembly, member.object, -jointAt(live.joint));
+      const result = trainTurn(assembly, member.object, -jointAt(live.joint), turnOptions());
       if ("reason" in result) { message = result.reason; renderPanel(); return; }
       assembly = result.assembly;
       continue;
@@ -1796,13 +1800,13 @@ function panelChange(event: Event): void {
   const value = input.value.trim() === "" && optional ? undefined : Number(input.value);
   if ((value === undefined && !optional) || (value !== undefined && (!Number.isFinite(value) || input.value.trim() === ""))) { message = "Enter a finite number."; renderPanel(); return; }
   if (name === "travel" && old.kind === "slide") {
-    const next = trainTurn(row.assembly, row.member.object, value! - (old.travel ?? 0));
+    const next = trainTurn(row.assembly, row.member.object, value! - (old.travel ?? 0), turnOptions());
     if ("reason" in next) { message = next.reason; renderPanel(); return; }
     message = turnWords(next);
     editAssembly(next.assembly); return;
   }
   if (name === "angle" && old.kind === "hinge") {
-    const next = trainTurn(row.assembly, row.member.object, value! - (old.angle ?? 0));
+    const next = trainTurn(row.assembly, row.member.object, value! - (old.angle ?? 0), turnOptions());
     if ("reason" in next) { message = next.reason; renderPanel(); return; }
     message = turnWords(next);
     editAssembly(next.assembly); return;

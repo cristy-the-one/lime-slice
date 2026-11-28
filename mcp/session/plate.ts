@@ -378,6 +378,7 @@ function plateList(this: Session, input: Record<string, unknown>): Record<string
       ...(joint ? { joint: structuredClone(joint) } : {}),
       ...(member?.held ? { held: true } : {}),
       ...(aligned !== null ? { aligned } : {}),
+      ...((group?.closures ?? []).some((closure) => closure.a.member === obj.id || closure.b.member === obj.id) ? { loops: (group?.closures ?? []).filter((closure) => closure.a.member === obj.id || closure.b.member === obj.id).map((closure) => structuredClone(closure)) } : {}),
       scalePercent: obj.scale * 100,
       ...(obj.sheet ? { sheet: true, sheetNote: "Open sheet: not printed. Thicken it or sew it shut to make a solid." } : {}),
       notes: this.plateNotes(obj, placed.bounds),
