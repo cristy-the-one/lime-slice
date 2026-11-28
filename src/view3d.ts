@@ -8,6 +8,7 @@ import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-pla
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
 import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, layerUp, MARGIN_SHADE, MAX_KINDS, meshCenter, ODD_LAYER_BIT, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
+import { layoutBeads, visibleSpans, type KindLayout } from "./preview-draw";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { planeLean } from "./belt-scene";
@@ -298,6 +299,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   /** A pointer is on the controls, and whether frames draw at one pixel per CSS pixel. */
   let held = false;
   let lowRes = false;
+  /** Wall time of the previous preview frame, for the orbit perf spec. */
+  let lastPerf = 0;
   function requestRender() {
     if (frameQueued) return;
     frameQueued = true;
@@ -305,16 +308,30 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
   function frame() {
     frameQueued = false;
-    const moved = glide(performance.now());
+    const now = performance.now();
+    const frameMs = lastPerf ? now - lastPerf : 0;
+    lastPerf = now;
+    const moved = glide(now);
     // An orbit draws at device pixel ratio 1 from its first move until the camera settles, then once sharp.
-    const low = moved ? held || lowRes : held && lowRes;
-    if (low !== lowRes) {
-      lowRes = low;
+    const coarse = moved ? held || lowRes : held && lowRes;
+    if (coarse !== lowRes) {
+      lowRes = coarse;
       applyPixelRatio(renderer, lowRes);
     }
     fitSection();
     renderer.render(scene, camera);
     drawMeasure();
+    const host = window as unknown as {
+      __previewPerf?: { ms: number; calls: number; instances: number }[];
+      __gl?: { draws: number; instances: number };
+      __previewPump?: boolean;
+    };
+    if (host.__previewPerf && host.__gl) {
+      host.__previewPerf.push({ ms: frameMs, calls: host.__gl.draws, instances: host.__gl.instances });
+      host.__gl.draws = 0;
+      host.__gl.instances = 0;
+    }
+    if (host.__previewPump) requestRender();
   }
   controls.addEventListener("change", requestRender);
   onMeasureChange(requestRender);
@@ -357,11 +374,49 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     camera.updateProjectionMatrix();
   }
 
+  function ensureBeads(draw: BeadDraw, n: number) {
+    while (draw.box.length < n) {
+      const box = new THREE.Mesh(instanced(BOX_CORNERS, BOX_INDEX, draw.cull), marginMat);
+      const face = new THREE.Mesh(instanced(FACE_CORNERS, FACE_INDEX, draw.cull), faceMat);
+      draw.box.push(box);
+      draw.face.push(face);
+      draw.group?.add(box, face);
+    }
+  }
+
+  /** One instanced draw per visible kind span. Hidden kinds are not submitted; the shader mask stays as a fallback. */
+  function showBeads(draw: BeadDraw, lo: number, hi: number, interiorFrom: number | null) {
+    const spans = visibleSpans(draw.layouts, kinds, lo, hi, hidden, interiorFrom);
+    ensureBeads(draw, spans.length);
+    for (let i = 0; i < draw.box.length; i++) {
+      const span = spans[i];
+      const box = draw.box[i];
+      const face = draw.face[i];
+      if (!span || !box || !face) {
+        if (box) box.visible = false;
+        if (face) face.visible = false;
+        continue;
+      }
+      box.visible = true;
+      face.visible = true;
+      for (const mesh of [box, face]) {
+        const geometry = mesh.geometry as THREE.InstancedBufferGeometry;
+        geometry.instanceCount = span.count;
+        if (mesh.userData.spanFrom === span.from) continue;
+        mesh.userData.spanFrom = span.from;
+        geometry.setAttribute("segA", new THREE.InterleavedBufferAttribute(draw.xyz, 3, span.from * 3));
+        geometry.setAttribute("segB", new THREE.InterleavedBufferAttribute(draw.xyz, 3, (span.from + 1) * 3));
+        geometry.setAttribute("segStyle", new THREE.InterleavedBufferAttribute(draw.style, STYLE_WORDS, span.from * STYLE_WORDS));
+        geometry.setAttribute("segValue", new THREE.InterleavedBufferAttribute(draw.values, 2, span.from * 2));
+      }
+    }
+  }
+
   function applyFocus() {
     for (const c of chunks) {
       const lo = Math.max(low, c.first) - c.first;
       const hi = Math.min(high, c.first + c.chunk.indices.length - 1) - c.first;
-      showLayers(c.beads, c.chunk.beads, lo, hi);
+      showBeads(c.beads, lo, hi, null);
       showLayers(c.travel, c.chunk.travel, showTravel ? lo : 1, showTravel ? hi : 0);
     }
     placePlane();
@@ -730,7 +785,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   function dropChunks(drop: Iterable<ChunkMeshes>) {
     for (const c of drop) {
-      for (const mesh of [...c.beads.meshes, ...c.travel.meshes]) {
+      for (const mesh of [...c.beads.box, ...c.beads.face, ...c.travel.meshes]) {
         mesh.removeFromParent();
         mesh.geometry.dispose();
       }
@@ -834,9 +889,10 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
         let meshes = shown.get(chunk);
         shown.delete(chunk);
         if (!meshes) {
-          meshes = chunkMeshes(chunk, sphere, marginMat, faceMat, travelMat);
+          meshes = chunkMeshes(chunk, sphere, travelMat);
           const group = objectGroup(chunk.object);
-          for (const mesh of [...meshes.beads.meshes, ...meshes.travel.meshes]) group.add(mesh);
+          meshes.beads.group = group;
+          for (const mesh of meshes.travel.meshes) group.add(mesh);
         }
         meshes.first = first;
         chunks.push(meshes);
@@ -862,6 +918,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     setHidden(next) {
       hidden = new Set(next);
       applyHidden();
+      applyFocus();
       requestRender();
     },
     setColorMode(mode) {
@@ -1033,13 +1090,26 @@ function asBounds(min: number[], max: number[]): AxisBounds {
   };
 }
 
-/** One chunk's draws: margin box and bright face share the bead points; travel lines have their own. */
+/** One chunk's draws. Beads are reordered by kind so a hidden kind is a span the draw skips. */
 interface ChunkMeshes {
   chunk: PreviewChunk;
   /** Position of the chunk's first layer in the whole preview. */
   first: number;
-  beads: PointDraw;
+  beads: BeadDraw;
   travel: PointDraw;
+}
+
+/** Instanced bead draws. One box and face pair per visible span, sharing the kind-ordered buffers. */
+interface BeadDraw {
+  layouts: KindLayout[];
+  xyz: THREE.InstancedInterleavedBuffer;
+  style: THREE.InstancedInterleavedBuffer;
+  /** Stress and safety factor of the segment starting at each point; −1 has no reading. */
+  values: THREE.InstancedInterleavedBuffer;
+  box: THREE.Mesh[];
+  face: THREE.Mesh[];
+  group: THREE.Object3D | null;
+  cull: THREE.Sphere;
 }
 
 /** Meshes drawing one point run, one instance per point. */
@@ -1064,11 +1134,18 @@ const FACE_CORNERS = [0, INNER_HALF_SCALE, 0, 0, -INNER_HALF_SCALE, 0, 1, INNER_
 const FACE_INDEX = [1, 3, 2, 1, 2, 0];
 const LINE_CORNERS = [0, 0, 0, 1, 0, 0];
 
-function chunkMeshes(chunk: PreviewChunk, sphere: THREE.Sphere, margin: THREE.Material, face: THREE.Material, travel: THREE.Material): ChunkMeshes {
-  const beads = pointDraw(chunk.beads, [
-    new THREE.Mesh(instanced(BOX_CORNERS, BOX_INDEX, sphere), margin),
-    new THREE.Mesh(instanced(FACE_CORNERS, FACE_INDEX, sphere), face),
-  ]);
+function chunkMeshes(chunk: PreviewChunk, sphere: THREE.Sphere, travel: THREE.Material): ChunkMeshes {
+  const laid = layoutBeads(chunk.beads);
+  const beads: BeadDraw = {
+    layouts: laid.layouts,
+    xyz: new THREE.InstancedInterleavedBuffer(laid.xyz, 3),
+    style: new THREE.InstancedInterleavedBuffer(laid.style, STYLE_WORDS),
+    values: new THREE.InstancedInterleavedBuffer(new Float32Array((laid.xyz.length / 3) * 2).fill(-1), 2),
+    box: [],
+    face: [],
+    group: null,
+    cull: sphere,
+  };
   const lines = pointDraw(chunk.travel, [new THREE.LineSegments(instanced(LINE_CORNERS, null, sphere), travel)]);
   return { chunk, first: 0, beads, travel: lines };
 }

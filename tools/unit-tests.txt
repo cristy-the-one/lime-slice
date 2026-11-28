@@ -34,6 +34,7 @@ src/support-pick.test.ts
 src/support-edit-list.test.ts
 src/preview-patch.test.ts
 src/preview-geom.test.ts
+src/preview-draw.test.ts
 src/ui/compact/support-edit.test.ts
 src/mesh-place.test.ts
 src/pivot.test.ts
