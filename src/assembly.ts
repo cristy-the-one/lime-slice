@@ -301,23 +301,29 @@ export function evaluateMember(member: Member, params: Params): { member: Member
  */
 export function solveAssembly(assembly: Assembly, poseOf: PoseOf, params?: Params): Solved {
   const errors: MemberError[] = [];
-  const members = assembly.members.map((member) => {
-    if (!params) return member;
+  const members = params ? assembly.members.map((member) => {
     const read = evaluateMember(member, params);
     for (const error of read.errors) errors.push({ object: member.object, error });
     return read.member;
-  });
+  }) : assembly.members;
   const poses = new Map<string, Affine>();
   const root = members.find((member) => member.parent === null);
   if (root) {
     // A hinged root's own numbers say where it has turned to; a fixed root stands at its model pose.
     poses.set(root.object, turnsOnPlate(root) ? memberPose(root) : poseOf(root.object) ?? IDENTITY_POSE);
+    // One pass indexes the children by parent, in member order, so a large assembly is not scanned once per parent.
+    const children = new Map<string, Member[]>();
+    for (const member of members) {
+      if (member.parent === null) continue;
+      const list = children.get(member.parent);
+      if (list) list.push(member); else children.set(member.parent, [member]);
+    }
     const queue = [root.object];
-    while (queue.length > 0) {
-      const parent = queue.shift()!;
+    for (let head = 0; head < queue.length; head += 1) {
+      const parent = queue[head]!;
       const at = poses.get(parent)!;
-      for (const child of members) {
-        if (child.parent !== parent || poses.has(child.object)) continue;
+      for (const child of children.get(parent) ?? []) {
+        if (poses.has(child.object)) continue;
         poses.set(child.object, thenPose(memberPose(child), at));
         queue.push(child.object);
       }

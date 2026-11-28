@@ -3,8 +3,8 @@
  * to its place by damped least squares on the joints the loop leaves free. This module is loaded with Pose, not with
  * the first chunk: it registers itself on the assembly reader and on reach.
  */
-import { jointAt, setClosureSettle, solveAssembly, withClosures, type Assembly, type Closure, type Joint, type PoseOf } from "./assembly.ts";
-import { applyPose, turnDir, type Affine } from "./model-space.ts";
+import { jointAt, memberPose, setClosureSettle, solveAssembly, withClosures, type Assembly, type Closure, type Joint, type PoseOf } from "./assembly.ts";
+import { applyPose, thenPose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { setReachSettle, turnBall, turnInAssembly } from "./pose.ts";
 
@@ -154,9 +154,46 @@ function closureError(closure: Closure, poses: ReadonlyMap<string, Affine>): num
   return [dot(rest, u), dot(rest, v)];
 }
 
-function errorsOf(assembly: Assembly, poseOf: PoseOf): number[] {
+interface Reading { errors: number[]; gap: number; poses: ReadonlyMap<string, Affine> }
+
+/** The closure errors and the greatest closure distance from one solve of the assembly. */
+function readingOf(assembly: Assembly, poseOf: PoseOf): Reading {
   const poses = solveAssembly(assembly, poseOf).poses;
-  return (assembly.closures ?? []).flatMap((closure) => closureError(closure, poses));
+  const errors: number[] = [];
+  let gap = 0;
+  for (const closure of assembly.closures ?? []) {
+    const row = closureError(closure, poses);
+    for (const value of row) errors.push(value);
+    const distance = hypot(row);
+    if (distance > gap) gap = distance;
+  }
+  return { errors, gap, poses };
+}
+
+/** Closure errors with only `id` and the parts below it placed again; every other pose is the base solve's. */
+function errorsBelow(assembly: Assembly, base: Reading, id: string): number[] | null {
+  const moved = memberOf(assembly, id);
+  const above = moved?.parent ? base.poses.get(moved.parent) : undefined;
+  if (!moved || !above) return null;
+  const poses = new Map(base.poses);
+  poses.set(id, thenPose(memberPose(moved), above));
+  const queue = [id];
+  for (let head = 0; head < queue.length; head += 1) {
+    const parent = queue[head]!;
+    const at = poses.get(parent)!;
+    for (const child of assembly.members) {
+      if (child.parent !== parent || queue.includes(child.object)) continue;
+      poses.set(child.object, thenPose(memberPose(child), at));
+      queue.push(child.object);
+    }
+  }
+  const out: number[] = [];
+  for (const closure of assembly.closures ?? []) for (const value of closureError(closure, poses)) out.push(value);
+  return out;
+}
+
+function errorsOf(assembly: Assembly, poseOf: PoseOf): number[] {
+  return readingOf(assembly, poseOf).errors;
 }
 
 function distances(assembly: Assembly, poseOf: PoseOf): number[] {
@@ -194,32 +231,37 @@ function applyDof(assembly: Assembly, dof: Dof, delta: number, centreOf: (id: st
   return "reason" in turned ? null : turned;
 }
 
-function solveLinear(A: number[][], b: number[]): number[] | null {
-  const n = b.length;
-  const M = A.map((row, i) => [...row, b[i]!]);
+/** Gauss-Jordan with partial pivoting on `M`, an n by n+1 augmented matrix in one flat array. Null when a pivot vanishes. */
+function solveLinear(M: Float64Array, n: number): Float64Array | null {
+  const w = n + 1;
   for (let col = 0; col < n; col += 1) {
     let best = col;
-    for (let r = col + 1; r < n; r += 1) if (Math.abs(M[r]![col]!) > Math.abs(M[best]![col]!)) best = r;
-    const lead = M[best]![col]!;
+    for (let r = col + 1; r < n; r += 1) if (Math.abs(M[r * w + col]!) > Math.abs(M[best * w + col]!)) best = r;
+    const lead = M[best * w + col]!;
     if (Math.abs(lead) < 1e-14) return null;
-    [M[col], M[best]] = [M[best]!, M[col]!];
-    for (let c = col; c <= n; c += 1) M[col]![c]! /= lead;
+    if (best !== col) for (let c = 0; c < w; c += 1) { const t = M[col * w + c]!; M[col * w + c] = M[best * w + c]!; M[best * w + c] = t; }
+    for (let c = col; c <= n; c += 1) M[col * w + c]! /= lead;
     for (let r = 0; r < n; r += 1) {
       if (r === col) continue;
-      const f = M[r]![col]!;
+      const f = M[r * w + col]!;
       if (f === 0) continue;
-      for (let c = col; c <= n; c += 1) M[r]![c]! -= f * M[col]![c]!;
+      for (let c = col; c <= n; c += 1) M[r * w + c]! -= f * M[col * w + c]!;
     }
   }
-  return M.map((row) => row[n]!);
+  const out = new Float64Array(n);
+  for (let r = 0; r < n; r += 1) out[r] = M[r * w + n]!;
+  return out;
 }
 
-function jacobian(assembly: Assembly, dofs: Dof[], poseOf: PoseOf, centreOf: (id: string) => Vec3 | undefined): number[][] {
-  const base = errorsOf(assembly, poseOf);
+function jacobian(assembly: Assembly, dofs: Dof[], poseOf: PoseOf, centreOf: (id: string) => Vec3 | undefined, known?: Reading): number[][] {
+  const reading = known ?? readingOf(assembly, poseOf);
+  const base = reading.errors;
+  // With no couplings a hinge or slide nudge moves one member, so only the parts below it need placing again.
+  const local = !assembly.couplings?.length;
   return dofs.map((dof) => {
     const nudged = applyDof(assembly, dof, STEP_EPS, centreOf);
     if (!nudged) return base.map(() => 0);
-    const next = errorsOf(nudged, poseOf);
+    const next = (local && dof.kind !== "ball" ? errorsBelow(nudged, reading, dof.id) : null) ?? errorsOf(nudged, poseOf);
     return next.map((value, i) => (value - (base[i] ?? 0)) / STEP_EPS);
   });
 }
@@ -252,27 +294,31 @@ export function solveLoops(assembly: Assembly, options: LoopDriver = {}): LoopSo
   let current = assembly;
   let lambda = 1e-3;
   let skip = new Set<string>();
-  let gap = closureGapMm(current, poseOf);
+  let reading = readingOf(current, poseOf);
+  let gap = reading.gap;
   for (let iter = 0; iter < 48 && gap > CLOSE_MM; iter += 1) {
     let dofs = free.flatMap((id) => dofsOf(current, id)).filter((dof) => !skip.has(dofKey(dof)));
     if (!dofs.length) { skip = new Set(); dofs = free.flatMap((id) => dofsOf(current, id)); }
     if (!dofs.length) break;
-    const base = errorsOf(current, poseOf);
-    const cols = jacobian(current, dofs, poseOf, centreOf);
+    const base = reading.errors;
+    const cols = jacobian(current, dofs, poseOf, centreOf, reading);
     const n = dofs.length;
-    const A = Array.from({ length: n }, () => Array<number>(n).fill(0));
-    const rhs = Array<number>(n).fill(0);
-    for (let j = 0; j < n; j += 1) for (let k = 0; k < n; k += 1) {
-      let sum = j === k ? lambda : 0;
-      for (let i = 0; i < base.length; i += 1) sum += (cols[j]![i] ?? 0) * (cols[k]![i] ?? 0);
-      A[j]![k] = sum;
-    }
+    const m = base.length;
+    const w = n + 1;
+    const aug = new Float64Array(n * w);
     for (let j = 0; j < n; j += 1) {
+      const cj = cols[j]!;
+      for (let k = 0; k < n; k += 1) {
+        const ck = cols[k]!;
+        let sum = j === k ? lambda : 0;
+        for (let i = 0; i < m; i += 1) sum += (cj[i] ?? 0) * (ck[i] ?? 0);
+        aug[j * w + k] = sum;
+      }
       let sum = 0;
-      for (let i = 0; i < base.length; i += 1) sum += (cols[j]![i] ?? 0) * (base[i] ?? 0);
-      rhs[j] = -sum;
+      for (let i = 0; i < m; i += 1) sum += (cj[i] ?? 0) * (base[i] ?? 0);
+      aug[j * w + n] = -sum;
     }
-    const dx = solveLinear(A, rhs);
+    const dx = solveLinear(aug, n);
     if (!dx) { lambda = Math.min(lambda * 10, 1e12); continue; }
     const clamped = new Set<string>();
     let trial = current;
@@ -291,9 +337,11 @@ export function solveLoops(assembly: Assembly, options: LoopDriver = {}): LoopSo
       trial = next;
       moved = true;
     }
-    const nextGap = closureGapMm(trial, poseOf);
+    const next = moved ? readingOf(trial, poseOf) : reading;
+    const nextGap = moved ? next.gap : Infinity;
     if (moved && nextGap < gap - 1e-15 && !drifted(trial, starts)) {
       current = trial;
+      reading = next;
       gap = nextGap;
       lambda = Math.max(lambda * 0.3, 1e-8);
       skip = clamped;
