@@ -5,8 +5,11 @@
  *   and glTF animation playback checking frame k node matrices against the player's sampled frame k (decision 1);
  * - 3MF: unzip and parse, one build item per member with 3MF transform, shared objects, posed bounds;
  * - STL: one file and ZIP of one STL per member, triangle counts and posed bounds;
- * - OBJ + MTL: one group per member, material per colour, triangle counts and posed bounds.
+ * - OBJ + MTL: one group per member, material per colour, triangle counts and posed bounds;
+ * - Glass: one glass part and one opaque part of the same colour, in GLB, 3MF and OBJ;
+ *   a project with no glass part stays byte-identical.
  */
+import { createHash } from "node:crypto";
 import { unzipSync } from "fflate";
 import { quaternionRotation, solveAssembly, type Assembly } from "./assembly.ts";
 import { applyPose, type Affine } from "./model-space.ts";
@@ -397,6 +400,107 @@ function parseGlb(bytes: Uint8Array) {
   );
   const shearErr = orderedPoseProblem(shearedOrdered);
   check("sheared member pose is refused", typeof shearErr === "string" && shearErr.includes("no shear or mirror"), String(shearErr));
+}
+
+// --- 8. One glass part and one opaque part of the same colour ---
+{
+  const pose: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+  const windowAsm: Assembly = {
+    id: "asm_glass",
+    name: "Window",
+    members: [
+      { object: "pane", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] },
+      { object: "frame", parent: null, offset: [20, 0, 0], turn: [0, 0, 0] },
+    ],
+  };
+  const glassOrdered = orderExportMembers(
+    windowAsm,
+    (id) => (id === "pane" ? "Pane" : "Frame"),
+    (id) => id,
+    (id) => (id === "pane" ? boxMesh(10, 10, 1) : boxMesh(4, 12, 12)),
+    () => pose,
+    () => "#4080c0",
+    (id) => id === "pane",
+  );
+  const pane = glassOrdered.members.find((row) => row.object === "pane")!;
+  const frame = glassOrdered.members.find((row) => row.object === "frame")!;
+  check("glass member is marked glass", pane.glass === true, `glass=${String(pane.glass)}`);
+  check("opaque member is not marked glass", frame.glass === undefined, `glass=${String(frame.glass)}`);
+
+  const { json } = parseGlb(encodePoseGlb(glassOrdered));
+  const materials = json.materials as {
+    name: string;
+    alphaMode?: string;
+    pbrMetallicRoughness: { baseColorFactor: number[] };
+  }[];
+  check("GLB has a separate material per (colour, glass)", materials.length === 2, `got ${materials.length}: ${JSON.stringify(materials)}`);
+  const paneNode = json.nodes.find((node: { name: string }) => node.name === "Pane");
+  const frameNode = json.nodes.find((node: { name: string }) => node.name === "Frame");
+  const matOf = (node: { mesh: number }) => materials[json.meshes[node.mesh].primitives[0].material as number]!;
+  const paneMat = matOf(paneNode);
+  const frameMat = matOf(frameNode);
+  check(
+    "GLB glass material is BLEND at alpha 0.28",
+    paneMat.alphaMode === "BLEND" && paneMat.pbrMetallicRoughness.baseColorFactor[3] === 0.28,
+    JSON.stringify(paneMat),
+  );
+  check(
+    "GLB opaque material stays alpha 1 with no alphaMode",
+    frameMat.pbrMetallicRoughness.baseColorFactor[3] === 1 && frameMat.alphaMode === undefined,
+    JSON.stringify(frameMat),
+  );
+
+  const xml = new TextDecoder().decode(unzipSync(encodePose3mf(glassOrdered))["3D/3dmodel.model"]!);
+  const display = [...xml.matchAll(/displaycolor="([^"]+)"/g)].map((match) => match[1]);
+  check("3MF opaque colour keeps #RRGGBBFF", display.includes("#4080C0FF"), display.join(" "));
+  check("3MF glass colour carries alpha #4080C047", display.includes("#4080C047"), display.join(" "));
+
+  const mtl = new TextDecoder().decode(encodePoseObjMtl(glassOrdered, "window.mtl").mtl);
+  const blocks = mtl.split(/(?=^newmtl )/m).filter((block) => block.startsWith("newmtl"));
+  const dissolve = (block: string) => /^d /m.test(block) || /^Tr /m.test(block);
+  const glassBlock = blocks.find((block) => dissolve(block));
+  const opaqueBlock = blocks.find((block) => !dissolve(block));
+  check("MTL has one glass material and one opaque material", blocks.length === 2, mtl);
+  check("MTL glass material has d 0.28 and Tr 0.72", glassBlock?.includes("d 0.28") === true && glassBlock.includes("Tr 0.72"), mtl);
+  check("MTL opaque material has no dissolve", opaqueBlock !== undefined && !dissolve(opaqueBlock), mtl);
+}
+
+// --- 9. A project with no glass part exports the same bytes as before glass was carried ---
+{
+  const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const glb = encodePoseGlb(ordered);
+  const tmf = unzipSync(encodePose3mf(ordered));
+  const obj = encodePoseObjMtl(ordered, "robot-arm-pose.mtl");
+  const model = tmf["3D/3dmodel.model"]!;
+  check("no-glass GLB is byte-identical", sha(glb) === "ef793b1e08e17cd50c7774fb85d179c896f2ef6aa66e797f7c88d597e62eb932", sha(glb));
+  check("no-glass 3MF model is byte-identical", sha(model) === "9658f9ff2187adb51f5ce541ee3a3b43964b94f8dedfb3bb09907bdd99b4ca56", sha(model));
+  check(
+    "no-glass 3MF package parts are byte-identical",
+    sha(tmf["[Content_Types].xml"]!) === "ec0f198c3805b3ede47b9a7254d7a22c849cc8b7a271fa96814ca86c95103be8" &&
+      sha(tmf["_rels/.rels"]!) === "465f67e7a55f044dfaa29cacc1516cf948872cdea5b4379eae717c4245388416",
+    `${sha(tmf["[Content_Types].xml"]!)} ${sha(tmf["_rels/.rels"]!)}`,
+  );
+  check("no-glass OBJ is byte-identical", sha(obj.obj) === "f5277b55b7279df92c576b003f69637762eca9c9c06ad9b7ccba1eee2c2c4e29", sha(obj.obj));
+  check("no-glass MTL is byte-identical", sha(obj.mtl) === "a3eb6d3d38fca0ba3382a232c7f9da4f4b165b432451f999939efad6776d3662", sha(obj.mtl));
+  // The dialog and MCP always pass glassOf. False for every part must match omitting it.
+  const notGlass = orderExportMembers(
+    lastFrame.assembly,
+    (id) => names[id]!,
+    (id) => partKeys[id]!,
+    (id) => meshes[id]!,
+    (id) => lastFrame.poses.get(id),
+    (id) => colors[id],
+    () => false,
+  );
+  const notGlassObj = encodePoseObjMtl(notGlass, "robot-arm-pose.mtl");
+  check(
+    "glass callback false for every part stays byte-identical",
+    notGlass.members.every((row) => row.glass === undefined) &&
+      sha(encodePoseGlb(notGlass)) === sha(glb) &&
+      sha(notGlassObj.obj) === sha(obj.obj) &&
+      sha(notGlassObj.mtl) === sha(obj.mtl) &&
+      sha(unzipSync(encodePose3mf(notGlass))["3D/3dmodel.model"]!) === sha(model),
+  );
 }
 
 if (failed > 0) {

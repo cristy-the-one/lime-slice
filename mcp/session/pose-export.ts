@@ -316,6 +316,7 @@ export async function writePoseAssembly(
     (id) => meshByKey.get(keyFor(id)) ?? new Float32Array(0),
     (id) => poses.get(id),
     (id) => colors.get(id),
+    (id) => this.find(id)?.glass === true,
   );
   if (!ordered.members.length) return refuse("no-assembly", "This assembly has no part on the plate.", undefined, NEXT.assembly);
 
