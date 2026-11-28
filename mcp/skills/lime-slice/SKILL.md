@@ -144,6 +144,7 @@ Animation = a lust script `//! kind: animation`, `//! api: 1.17`: `let rig = s.r
 - Keep with `keep:{title, description}`. Member names written literally become required members — take them as text params.
 - From 7.7.0 a slide can be keyed (mm), dragged and reached.
 - From 7.7.0 a loop is `model_place {loop}` (or `close_loop`): a pin, or a line with `along`. Turning one joint moves the others.
+- From 7.7.0 `model_place {glass:true}` draws a part see-through in Pose (saved with the project; drawing only).
 - MP4: `ffmpeg -framerate 20 -i frames/frame-%03d.png -c:v libx264 -pix_fmt yuv420p out.mp4` (ffmpeg via winget).
 
 ## 8. Render, export, slice
