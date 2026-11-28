@@ -238,8 +238,9 @@ test("closing a loop between two cylinders is one undo step", async ({ page }) =
   const canvas = page.locator("#pose");
   // The hole axis is Z, so Front looks at it from the side. The point is the axis centre, not a pixel search.
   const clickHole = async (id: string, arm: string): Promise<void> => {
-    await canvas.evaluate((el, spec) => { delete el.dataset.loopPoint; delete el.dataset.jointFace; el.dataset.projectLocal = spec; }, `${id}:0,0,25`);
     await page.locator("[data-pose-view='front']").click();
+    // Front aims at once. Project after that, or a projection from the previous camera is already on the canvas and the click misses.
+    await canvas.evaluate((el, spec) => { delete el.dataset.loopPoint; delete el.dataset.jointFace; delete el.dataset.projected; el.dataset.projectLocal = spec; }, `${id}:0,0,25`);
     await expect(canvas).toHaveAttribute("data-projected", new RegExp(`(?:^| )${id}:`));
     const row = (await canvas.getAttribute("data-projected"))!.split(" ").find((part) => part.startsWith(`${id}:`))!;
     const [x, y] = row.slice(id.length + 1).split(",").map(Number);
