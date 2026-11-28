@@ -1,13 +1,11 @@
 //! title: Lever can press
 //! description: A bench can-crusher press: a welded I-beam C-frame on a folded base plate, a can chamber with a viewing slot, two guide rods under a head plate bolted to the arm, and a ram (crosshead, ratchet bar, platen, plunger) driven by a fork lever through twin toggle links. Every dimension follows the parameters; the lever, links and ram are jointed so the press can be animated (press-stroke animation).
-//! api: 1.16
+//! api: 1.20
 //! budget: 240s
 use lime_recipe::{Json, Part, Session};
 use lime_recipe::geom2d::{Poly, Pt, Region};
 
 const PI: f64 = std::f64::consts::PI;
-/// The ram rides a hinge this far behind it: over the stroke its arc is straight to a fraction of a tenth.
-pub const RAM_PIVOT: f64 = 200000.0;
 
 // ---------------------------------------------------------------- helpers
 fn put(s: &mut Session, p: &Part, j: Json, label: &str) {
@@ -337,7 +335,23 @@ fn main() {
     for lk in [&link_l, &link_rt] {
         joint(&mut s, lk, [c0[0], 0.0, c0[1]], axis, -180.0, 180.0);
     }
-    // a slide can't be keyed: the ram swings on a hinge far behind it (+ is down)
-    joint(&mut s, &ram, [RAM_PIVOT, 0.0, zr0], axis, -0.5, 0.5);
+    // The ram slides down the guide rods. Travel 0 is the built (up) pose; +Z drops as travel grows
+    // along -Z. The limits cover the lever's extra 5° past the stroke, plus 1 mm.
+    let margin = 5.0;
+    let z_hi = ram_z(zp, r, l, th0 - margin);
+    let z_lo = ram_z(zp, r, l, th1 + margin);
+    let t_hi = zr0 - z_hi;
+    let t_lo = zr0 - z_lo;
+    let slide = Json::obj().set("kind", "slide").set("pivot", [0.0, 0.0, zr0]).set("axis", [0.0, 0.0, -1.0]).set("min", t_hi - 1.0).set("max", t_lo + 1.0);
+    if let Err(e) = s.joint(&ram, slide) {
+        s.refuse(&format!("joint ram: {}", e.reason));
+    }
+    // Each link's far end stays on the ram pin. The point is on the hole axis (Y = 0).
+    if let Err(e) = s.close_loop(&link_l, [0.0, 0.0, zr0], &ram, [0.0, 0.0, zr0]) {
+        s.refuse(&format!("loop link L: {}", e.reason));
+    }
+    if let Err(e) = s.close_loop(&link_rt, [0.0, 0.0, zr0], &ram, [0.0, 0.0, zr0]) {
+        s.refuse(&format!("loop link R: {}", e.reason));
+    }
     s.done_with(&frame, Json::obj().set("stroke", zr0 - zr1).set("ramTop", zr0).set("ramBottom", zr1).set("leverPivotZ", zp));
 }

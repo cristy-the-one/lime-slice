@@ -26,6 +26,20 @@ const EMPTY_ANIMATION: AnimationFacts = {
 
 let animationFacts: AnimationFacts = { ...EMPTY_ANIMATION };
 
+/** Why Close loop cannot run, published by the Joint tool. `jointTool` is false until that tool is open. */
+export interface LoopFacts {
+  jointTool: boolean;
+  reason: string | null;
+}
+
+const EMPTY_LOOP: LoopFacts = { jointTool: false, reason: null };
+let loopFacts: LoopFacts = { ...EMPTY_LOOP };
+
+/** Pose publishes this whenever the Joint tool's panel is rebuilt. */
+export function setLoopFacts(next: LoopFacts): void {
+  loopFacts = next;
+}
+
 /** Pose publishes this whenever the animation panel is rebuilt, including before that panel is on screen. */
 export function setAnimationFacts(next: AnimationFacts): void {
   animationFacts = next;
@@ -99,6 +113,10 @@ export function actionReason(id: string): string | null {
       return state.stage === "prepare" ? null : "Calibrate is in Prepare.";
     case "measure-points":
       return state.stage === "prepare" ? null : "Measure between points is in Prepare.";
+    case "pose-close-loop":
+      if (state.stage !== "pose") return "Close loop is in Pose.";
+      if (!loopFacts.jointTool) return "Close loop is in the Joint tool.";
+      return loopFacts.reason;
     case "pose-animation-play":
       if (state.stage !== "pose") return "Play is in Pose.";
       if (animationFacts.preparing) return "An animation is already being prepared.";

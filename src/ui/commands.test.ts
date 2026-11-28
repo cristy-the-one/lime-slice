@@ -367,6 +367,7 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   '[data-fly="flyColor"]': ["preview"],
   '[data-fly="flyFeatures"]': ["preview"],
   '[data-fly="flyBed"]': ["prepare", "preview"],
+  '[data-pose-action="close-loop"]': ["pose"],
   '[data-pose-action="animation-play"]': ["pose"],
   '[data-pose-action="animation-stop"]': ["pose"],
   '[data-pose-action="animation-keep"]': ["pose"],
@@ -820,7 +821,12 @@ check(
   missing.map((control) => `${control.where} ${control.label || control.tool || control.id}`).join("; "),
 );
 
+const closeLoop = COMMANDS.find((command) => command.id === "pose-close-loop");
+check("pose-close-loop is Close loop, in Tools, in Pose, with no key", !!closeLoop && closeLoop.label === "Close loop" && closeLoop.group === "Tools" && JSON.stringify(closeLoop.when) === JSON.stringify(["pose"]) && !closeLoop.keys?.length);
+check("pose-close-loop targets the Joint tool's Close loop button", closeLoop?.target === '[data-pose-action="close-loop"]');
+
 const animationActions = ["animation-play", "animation-stop", "animation-keep", "animation-save", "animation-library"];
+check("pose still builds close-loop", poseSource.includes(`"close-loop"`));
 for (const action of animationActions) {
   check(`pose still builds ${action}`, poseSource.includes(`"${action}"`));
   check(`R3 ${action} has a command`, targetCovers({ where: "pose", id: "", tool: "", pose: "", mode: "", fly: "", file: "", label: action }) || COMMANDS.some((command) => (command.target ?? "").includes(`[data-pose-action="${action}"]`)));

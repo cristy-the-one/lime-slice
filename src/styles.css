@@ -2076,6 +2076,7 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
 .pose-panel .pose-error { color: var(--danger); }
 /* Couplings (docs/plan-coupling-kinds.md): each declared coupling with its Remove, the form's lead and help. */
 .pose-panel .pose-coupling { display: flex; align-items: center; gap: 8px; }
+.pose-panel [data-pose-action="close-loop"][aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
 .pose-panel .pose-coupling p { flex: 1; margin: 4px 0; font-size: 12px; }
 .pose-panel .pose-couple-lead { margin: 10px 0 2px; font-size: 12px; }
 .pose-panel .pose-couple-help { margin: 6px 0 0; font-size: 11px; color: var(--text-dim); }

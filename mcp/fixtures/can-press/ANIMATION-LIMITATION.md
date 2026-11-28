@@ -1,5 +1,15 @@
 # Lever can press: why the animation is "cheated", and how the GIF works around it
 
+## Resolved by L1–L3
+
+The cheat below is history. The press no longer needs it.
+
+1. **L1.** A slide can be keyed and dragged. The ram is a slide down the guide rods (axis `[0, 0, -1]`, travel 0 at the top, limits covering the stroke), not a hinge 200 m away.
+2. **L2.** `close_loop` pins each link's far end to the ram pin. The solver follows on every frame and every drag, so the script no longer computes link and ram angles.
+3. **L3.** The Joint tool's Close a loop makes the same closure. `lever-press-stroke` keys only the lever (press, dwell, return). Keys at the stroke's turning points are enough, because the loop solves every frame.
+
+## History
+
 Project: `C:\Users\mariu\lime-workspace\can-press` (git, main). Build plugin `lever-can-press`
 (`recipes/can_press.rs`), animation plugin `lever-press-stroke` (`recipes/press_stroke.rs`).
 
