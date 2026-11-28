@@ -422,7 +422,10 @@ function placeHandles(at: HTMLElement) {
   }
   ensureAxes(at);
   const shown = shownPoles(nu, nv);
-  const focused = document.activeElement instanceof HTMLButtonElement && document.activeElement.classList.contains("nurbs-pole") && at.contains(document.activeElement);
+  const active = document.activeElement;
+  const focused = active instanceof HTMLButtonElement && active.classList.contains("nurbs-pole") && at.contains(active);
+  // A handle that has focus but is not the selected one (focused, Enter not pressed yet) keeps focus through a repaint.
+  const focusedPole = focused && active.tabIndex !== 0 ? `${active.dataset.nurbsIu},${active.dataset.nurbsIv}` : null;
   while (pool.length < shown.length) {
     const button = poleButton();
     pool.push(button);
@@ -486,9 +489,11 @@ function placeHandles(at: HTMLElement) {
     }
     if (visible) button.style.transform = `translate(${projected[i * 3]!.toFixed(1)}px, ${projected[i * 3 + 1]!.toFixed(1)}px) translate(-50%, -50%)`;
   });
-  // Focus stays on the selected pole's handle while the selection moves (a window reassigns the buttons).
+  // Focus stays on the selected pole's handle while the selection moves (a window reassigns the buttons), and on a
+  // focused pole not yet selected while it is still drawn.
   if (focused) {
-    const mine = pool.find((button) => button.tabIndex === 0 && !button.hidden);
+    const held = focusedPole ? pool.find((button) => !button.hidden && `${button.dataset.nurbsIu},${button.dataset.nurbsIv}` === focusedPole) : undefined;
+    const mine = held ?? pool.find((button) => button.tabIndex === 0 && !button.hidden);
     if (mine && document.activeElement !== mine) mine.focus();
     else if (!mine) focusLost = true;
   }
