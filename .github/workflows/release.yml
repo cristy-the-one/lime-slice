@@ -9,6 +9,11 @@ on:
       - "v*"
   workflow_dispatch:
 
+env:
+  # The Open CASCADE the installers ship: its install folder, its cache key and install.py --version.
+  # Kept equal to ci.yml's OCCT_VERSION; docs/plan-occt-8.md's O4 moves both to 8.0.2.
+  OCCT_VERSION: "7.9.2"
+
 jobs:
   # The installer jobs start together. When each one looked for the draft and
   # created it if missing, two of them could both create one, and v2.0.1's
@@ -167,33 +172,34 @@ jobs:
         id: occt-cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          restore-keys: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 120
         env:
           CMAKE_OSX_ARCHITECTURES: ${{ matrix.label == 'macos-intel' && 'x86_64' || '' }}
-        run: python tools/occt/install.py --prefix "${{ runner.temp }}/occt-7.9.2"
+        run: python tools/occt/install.py --version ${{ env.OCCT_VERSION }} --prefix "${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}"
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: ${{ runner.temp }}/occt-7.9.2
-          key: occt-7.9.2-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+          path: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
+          key: occt-${{ env.OCCT_VERSION }}-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       # stage_bundle.py gives the Linux libraries runpath $ORIGIN. They depend
       # on each other by soname, and linuxdeploy's ldd does not search a
       # neighbour that has an empty runpath, so the AppImage step fails.
       - name: Stage OCCT libraries and notices
-        run: python tools/occt/stage_bundle.py --prefix "${{ runner.temp }}/occt-7.9.2" --dest src-tauri/resources/occt
+        run: python tools/occt/stage_bundle.py --prefix "${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}" --dest src-tauri/resources/occt
 
       - name: Build the Open CASCADE bridge
         if: matrix.platform != 'windows-latest'
         env:
-          OCCT_ROOT: ${{ runner.temp }}/occt-7.9.2
+          OCCT_ROOT: ${{ runner.temp }}/occt-${{ env.OCCT_VERSION }}
         shell: bash
         run: |
           set -euo pipefail
@@ -221,7 +227,7 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $env:OCCT_ROOT = "${{ runner.temp }}\occt-7.9.2"
+          $env:OCCT_ROOT = "${{ runner.temp }}\occt-${{ env.OCCT_VERSION }}"
           cargo build -p lime-model-occt --release
           New-Item -ItemType Directory -Force -Path src-tauri/resources/occt/lib | Out-Null
           Copy-Item target\release\lime_model_occt.dll src-tauri/resources/occt/lib/
